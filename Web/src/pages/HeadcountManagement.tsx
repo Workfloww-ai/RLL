@@ -103,7 +103,7 @@ export default function HeadcountManagement() {
     <div className="flex flex-col h-[calc(100vh-8rem)]">
       <div className="mb-6 flex justify-between items-end shrink-0">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">HC Management</h1>
+          <h1 className="text-2xl font-bold text-slate-800">User Management</h1>
           <p className="text-slate-500 mt-1 text-sm font-medium">Manage employees, onboard new joiners, and process exits.</p>
         </div>
         <div className="flex gap-3">

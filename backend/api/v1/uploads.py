@@ -1,5 +1,5 @@
 from typing import List
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks, status
 from backend.services.import_pipeline import import_pipeline, upload_batches_db, upload_logs_db
 from backend.core.security import RoleChecker
 from backend.schemas.transactional import UploadBatchResponse, UploadLogResponse
@@ -8,21 +8,24 @@ router = APIRouter(prefix="/uploads", tags=["Excel Upload & Import Pipeline"])
 
 admin_only = RoleChecker(["admin"])
 
-@router.post("/", response_model=UploadBatchResponse)
+@router.post("/", response_model=UploadBatchResponse, status_code=status.HTTP_202_ACCEPTED)
 async def upload_excel(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     current_user: dict = Depends(admin_only)
 ):
     """
-    Excel Upload Endpoint (Admin Only).
-    Stores uploaded .xlsx, .xls, or .numbers spreadsheet in Supabase Storage ('excel-uploads'),
-    executes format & column validation, detects duplicate records, populates Supabase database
-    tables ('upload_batches', 'upload_logs', 'sales', 'dashboard_summary_daily', 'audit_logs'),
-    and returns full upload batch summary.
+    Async Excel Upload Endpoint (Admin Only).
+    Stores uploaded file in temp disk & Supabase Storage, creates initial batch record,
+    dispatches high-performance background ingestion, and immediately returns 202 Accepted.
     """
     try:
         user_id = current_user.get("user_id", "00000000-0000-0000-0000-000000000001")
-        batch_record = await import_pipeline.process_file_upload(file, user_id)
+        batch_record, temp_path = await import_pipeline.prepare_file_upload(file, user_id)
+        
+        # Enqueue heavy processing task asynchronously
+        background_tasks.add_task(import_pipeline.process_file_background, batch_record, temp_path, user_id)
+        
         return batch_record
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))

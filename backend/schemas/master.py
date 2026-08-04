@@ -35,7 +35,7 @@ class OfficeResponse(OfficeBase):
 
 # Headquarters Schema
 class HeadquartersBase(BaseModel):
-    headquarters_name: str
+    name: str
     is_active: bool = True
 
 class HeadquartersCreate(HeadquartersBase):
@@ -65,16 +65,23 @@ class CircleResponse(CircleBase):
 
 # Depot Schema
 class DepotBase(BaseModel):
-    circle_id: int
-    depot_code: str
-    depot_name: str
-    address: Optional[str] = None
+    name: str
+    headquarters_id: Optional[int] = None
+    office_id: Optional[int] = None
+    circle_id: Optional[int] = None
+    is_active: bool = True
 
 class DepotCreate(DepotBase):
     pass
 
+class DepotUpdate(BaseModel):
+    name: Optional[str] = None
+    headquarters_id: Optional[int] = None
+    is_active: Optional[bool] = None
+
 class DepotResponse(DepotBase):
     depot_id: int
+    headquarters_name: Optional[str] = "Unassigned"
     created_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 

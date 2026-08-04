@@ -16,7 +16,7 @@ export default function DashboardLayout({ currentView, onViewChange, onLogout, u
   const navItems = [
     { id: 'stock' as ViewState, label: 'Stock Upload', icon: Package },
     { id: 'territory' as ViewState, label: 'Territory Management', icon: Map },
-    { id: 'headcount' as ViewState, label: 'HC Management', icon: Users },
+    { id: 'headcount' as ViewState, label: 'User Management', icon: Users },
   ];
 
   return (

@@ -31,21 +31,38 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
     }
   };
 
-  const processFile = (file: File) => {
+  const processFile = async (file: File) => {
     setUploadState({ status: 'uploading', progress: 0, fileName: file.name });
     
-    // Simulate upload progress
-    let progress = 0;
-    const interval = setInterval(() => {
-      progress += 10;
-      setUploadState(prev => ({ ...prev, progress }));
-      
-      if (progress >= 100) {
-        clearInterval(interval);
-        setUploadState({ status: 'success', progress: 100, fileName: file.name });
-        if (onUploadComplete) onUploadComplete(file.name);
+    // Initial progress indication while request starts
+    setUploadState(prev => ({ ...prev, progress: 30 }));
+
+    try {
+      const token = localStorage.getItem('token');
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await fetch('http://localhost:8000/api/v1/uploads/', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        body: formData
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || 'Upload failed');
       }
-    }, 200);
+
+      setUploadState({ status: 'success', progress: 100, fileName: file.name });
+      if (onUploadComplete) onUploadComplete(file.name);
+    } catch (error) {
+      console.error('Upload error:', error);
+      setUploadState({ status: 'idle', progress: 0 });
+      alert('Upload failed. Please check the console for details.');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
   };
 
   const resetUpload = () => {

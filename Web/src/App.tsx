@@ -31,6 +31,7 @@ export default function App() {
       onLogout={() => {
         setIsAuthenticated(false);
         setUserName(null);
+        localStorage.removeItem('token');
       }}
     >
       {currentView === 'stock' && <StockUpload />}

@@ -5,23 +5,24 @@ from pydantic import BaseModel, ConfigDict
 
 # Upload Batches
 class UploadBatchBase(BaseModel):
-    file_name: str
-    storage_path: str
-    uploaded_by: UUID
+    source_file: str
+    load_type: str = "daily"
+    covers_start: date
+    covers_end: date
+    row_count: Optional[int] = None
+    status: str = "pending"
+    uploaded_by: Optional[UUID] = None
+    is_active: bool = True
+    created_by: Optional[UUID] = None
+    updated_by: Optional[UUID] = None
 
 class UploadBatchCreate(UploadBatchBase):
     pass
 
 class UploadBatchResponse(UploadBatchBase):
-    upload_batch_id: int
-    total_rows: int = 0
-    imported_rows: int = 0
-    duplicate_rows: int = 0
-    failed_rows: int = 0
-    processing_time_seconds: Optional[float] = 0.0
-    upload_status: str = "processing"
-    remarks: Optional[str] = None
+    batch_id: int
     created_at: datetime
+    updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
 
