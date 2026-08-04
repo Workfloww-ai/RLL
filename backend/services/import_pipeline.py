@@ -209,6 +209,8 @@ class ImportPipelineEngine:
 
         for idx, row in df.iterrows():
             row_num = idx + 1
+            if row_num % 10000 == 0:
+                logger.info(f"Processing row {row_num}/{total_rows} in memory...")
             try:
                 sales_date_raw = str(row.get(col_map["Date"], datetime.today().strftime('%Y-%m-%d'))).strip().split(" ")[0]
                 depot_name_val = str(row.get(col_map["Depot Code"], "DEFAULT")).strip()
@@ -389,7 +391,10 @@ class ImportPipelineEngine:
                 
                 # Batch insert in chunks of 500
                 chunk_size = 500
+                total_chunks = (len(db_sales) + chunk_size - 1) // chunk_size
                 for i in range(0, len(db_sales), chunk_size):
+                    chunk_num = (i // chunk_size) + 1
+                    logger.info(f"Populating chunk {chunk_num}/{total_chunks} in Supabase (rows {i} to {i+chunk_size})...")
                     client.table("sales").insert(db_sales[i:i + chunk_size]).execute()
             except Exception as e:
                 logger.warning(f"Error persisting sales to Supabase: {e}")
