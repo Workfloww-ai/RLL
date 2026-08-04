@@ -1,6 +1,0 @@
-REQUIRED_HEADERS = {
-    "DATE",
-    "LICENSEE_NAME",
-    "TRADE",
-    "GROUP NAME",
-}
