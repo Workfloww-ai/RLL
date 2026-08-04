@@ -7,14 +7,20 @@ from pydantic import BaseModel, ConfigDict
 class UploadBatchBase(BaseModel):
     source_file: str
     load_type: str = "daily"
-    covers_start: date
-    covers_end: date
+    covers_start: Optional[date] = None
+    covers_end: Optional[date] = None
     row_count: Optional[int] = None
     status: str = "pending"
+    upload_status: Optional[str] = "pending"
     uploaded_by: Optional[UUID] = None
     is_active: bool = True
     created_by: Optional[UUID] = None
     updated_by: Optional[UUID] = None
+    remarks: Optional[str] = None
+    imported_rows: Optional[int] = 0
+    failed_rows: Optional[int] = 0
+    duplicate_rows: Optional[int] = 0
+    processing_time_seconds: Optional[float] = 0.0
 
 class UploadBatchCreate(UploadBatchBase):
     pass

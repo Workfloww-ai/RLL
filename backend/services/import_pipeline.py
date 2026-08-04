@@ -134,6 +134,11 @@ class ImportPipelineEngine:
         logger.info(f"[Batch {batch_id}] Starting background processing for file: {filename}")
         self._log_pipeline_step(batch_id, "PARSING_FILE", "started", f"Parsing file {filename}")
 
+        batch_record["status"] = "processing"
+        batch_record["upload_status"] = "processing"
+        batch_record["remarks"] = "Parsing Excel rows and validating structure..."
+        self._update_batch_record_in_supabase(batch_id, batch_record)
+
         try:
             # Step 1: Parse Raw Rows
             raw_rows = []
@@ -369,6 +374,7 @@ class ImportPipelineEngine:
 
             processing_time = round(time.time() - start_time, 2)
             final_status = "loaded" if failed_rows == 0 else "failed"
+            upload_status = "completed" if final_status == "loaded" else "failed"
 
             batch_record.update({
                 "imported_rows": imported_rows,
@@ -376,8 +382,9 @@ class ImportPipelineEngine:
                 "failed_rows": failed_rows,
                 "processing_time_seconds": processing_time,
                 "status": final_status,
+                "upload_status": upload_status,
                 "updated_at": datetime.now().isoformat(),
-                "remarks": f"Imported {imported_rows} rows in {processing_time}s. Duplicates: {duplicate_rows}, Failed: {failed_rows}."
+                "remarks": f"Successfully saved {imported_rows} records into database in {processing_time}s. Duplicates: {duplicate_rows}, Failed: {failed_rows}." if final_status == "loaded" else f"Import completed with {failed_rows} failed rows."
             })
             self._update_batch_record_in_supabase(batch_id, batch_record)
             self._log_pipeline_step(batch_id, "LOAD_SALES_FACT", "succeeded", f"Imported {imported_rows} sales records into sales_fact.")
@@ -407,6 +414,8 @@ class ImportPipelineEngine:
         """
         batch_record, temp_path = await self.prepare_file_upload(file, user_id)
         self.process_file_background(batch_record, temp_path, user_id)
+        batch_record["upload_status"] = "completed" if batch_record.get("status") in ["loaded", "completed"] else batch_record.get("status")
+        batch_record["total_rows"] = batch_record.get("row_count", 0)
         return batch_record
 
     def _insert_batch_record_to_supabase(self, record: Dict[str, Any]) -> Optional[int]:
