@@ -21,7 +21,7 @@ async def get_summary_report(
 
 @router.get("/export")
 async def export_sales_report(
-    format: str = Query("csv", regex="^(csv|json|excel)$")
+    format: str = Query("csv", pattern="^(csv|json|excel)$")
 ):
     overview = analytics_service.get_dashboard_overview()
     if format == "json":

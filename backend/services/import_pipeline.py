@@ -1,506 +1,3 @@
-# import io
-# import os
-# import time
-# import logging
-# import tempfile
-# from datetime import datetime
-# from typing import Dict, Any, List, Optional
-# import pandas as pd
-# from fastapi import UploadFile
-# from numbers_parser import Document
-# from backend.db.client import get_supabase
-# from backend.services.master_service import master_service
-
-# logger = logging.getLogger(__name__)
-
-# # Mandatory column names expected in daily government excel uploads
-# MANDATORY_COLUMNS = [
-#     "Date", "Depot Code", "License Number", "Brand Code", "Packing Size", 
-#     "Cases", "Bottles", "Bulk Liters", "Sale Value"
-# ]
-
-# # Fallback in-memory DBs for local/offline execution when Supabase instance is unreachable
-# upload_batches_db: Dict[int, Dict[str, Any]] = {}
-# upload_logs_db: List[Dict[str, Any]] = []
-# sales_db: List[Dict[str, Any]] = []
-# dashboard_summary_db: Dict[str, Dict[str, Any]] = {}
-# audit_logs_db: List[Dict[str, Any]] = []
-# batch_counter = 1
-# sales_counter = 1
-
-# class ImportPipelineEngine:
-
-#     def create_initial_batch(self, filename: str, user_id: str) -> Dict[str, Any]:
-#         global batch_counter
-#         filename_lower = filename.lower()
-#         allowed_extensions = (".xlsx", ".xls", ".numbers", ".csv")
-#         if not filename_lower.endswith(allowed_extensions):
-#             raise ValueError(f"Invalid file format '{filename}'. Only {', '.join(allowed_extensions)} files are accepted.")
-
-#         batch_id = batch_counter
-#         batch_counter += 1
-#         storage_path = f"uploads/{int(time.time())}_{filename}"
-
-#         batch_record = {
-#             "upload_batch_id": batch_id,
-#             "file_name": filename,
-#             "storage_path": storage_path,
-#             "uploaded_by": user_id,
-#             "total_rows": 0,
-#             "imported_rows": 0,
-#             "duplicate_rows": 0,
-#             "failed_rows": 0,
-#             "processing_time_seconds": 0.0,
-#             "upload_status": "processing",
-#             "remarks": "File upload accepted. Ingesting background task...",
-#             "created_at": datetime.now().isoformat()
-#         }
-#         sb_id = self._insert_batch_record_to_supabase(batch_record)
-#         if sb_id:
-#             batch_id = sb_id
-#         batch_record["upload_batch_id"] = batch_id
-#         upload_batches_db[batch_id] = batch_record
-#         return batch_record
-
-#     def process_file_upload_async(self, filename: str, contents: bytes, user_id: str, batch_id: int):
-#         global sales_counter
-#         start_time = time.time()
-#         filename_lower = filename.lower()
-#         client = get_supabase()
-
-#         # Step 1: Storage upload in background thread
-#         storage_path = upload_batches_db.get(batch_id, {}).get("storage_path", f"uploads/{int(time.time())}_{filename}")
-#         if client:
-#             try:
-#                 try:
-#                     client.storage.get_bucket("excel-uploads")
-#                 except Exception:
-#                     try:
-#                         client.storage.create_bucket("excel-uploads", options={"public": False})
-#                     except Exception:
-#                         pass
-                
-#                 client.storage.from_("excel-uploads").upload(
-#                     path=storage_path,
-#                     file=contents,
-#                     file_options={"content-type": "application/octet-stream", "upsert": "true"}
-#                 )
-#             except Exception as st_err:
-#                 logger.warning(f"Could not upload to Supabase Storage: {st_err}. Proceeding with parsing.")
-
-#         # Step 2: High speed DataFrame parsing
-#         if filename_lower.endswith(".numbers"):
-#             with tempfile.NamedTemporaryFile(suffix=".numbers", delete=False) as tmp:
-#                 tmp.write(contents)
-#                 tmp_path = tmp.name
-#             try:
-#                 doc = Document(tmp_path)
-#                 sheets = doc.sheets
-#                 if sheets and sheets[0].tables:
-#                     raw_rows = list(sheets[0].tables[0].rows(values_only=True))
-#                     header_row_idx = 0
-#                     for idx, row in enumerate(raw_rows[:15]):
-#                         row_str = [str(cell).strip().lower() if cell is not None else "" for cell in row]
-#                         if sum(1 for kw in ["date", "brand", "depot", "case", "licensee"] if any(kw in cell for cell in row_str)) >= 2:
-#                             header_row_idx = idx
-#                             break
-#                     headers = [str(cell).strip() if cell is not None else f"Column_{i+1}" for i, cell in enumerate(raw_rows[header_row_idx])]
-#                     df = pd.DataFrame(raw_rows[header_row_idx + 1:], columns=headers).dropna(how="all")
-#                 else:
-#                     df = pd.DataFrame()
-#             finally:
-#                 if os.path.exists(tmp_path):
-#                     os.remove(tmp_path)
-#         elif filename_lower.endswith(".csv"):
-#             df = pd.read_csv(io.BytesIO(contents)).dropna(how="all")
-#         else:
-#             try:
-#                 df = pd.read_excel(io.BytesIO(contents), engine="calamine").dropna(how="all")
-#             except Exception:
-#                 df = pd.read_excel(io.BytesIO(contents), engine="openpyxl" if filename_lower.endswith(".xlsx") else None).dropna(how="all")
-
-#         total_rows = len(df)
-#         batch_record = upload_batches_db[batch_id]
-#         batch_record["total_rows"] = total_rows
-
-#         if total_rows == 0:
-#             batch_record.update({
-#                 "upload_status": "failed",
-#                 "remarks": "Uploaded file contains no data rows.",
-#                 "processing_time_seconds": round(time.time() - start_time, 2)
-#             })
-#             self._update_batch_record_in_supabase(batch_id, batch_record)
-#             return
-
-
-#         # Step 3: Column Validation with flexible Government Excel Column Aliases (case-insensitive via .lower())
-#         COLUMN_ALIASES = {
-#             "Date": ["date", "sales date", "invoice date"],
-#             "Depot Code": ["depot_name", "depot code", "depot_code", "depot"],
-#             "License Number": ["licensee_name", "license number", "license_number", "licensee"],
-#             "Brand Code": ["brand_name", "brand code", "brand_code", "brand"],
-#             "Packing Size": ["packing_in_ml", "packing size", "packing_size", "packing"],
-#             "Cases": ["total_case", "cases", "total_cases"],
-#             "Bottles": ["total_btl", "bottles", "total_bottles"],
-#             "Bulk Liters": ["total_bl", "bulk liters", "total_bulk_liters"],
-#             "Sale Value": ["sale value", "amount", "total_amount", "sale_value", "value"]
-#         }
-
-#         col_map = {}
-#         missing_cols = []
-        
-#         for std_col, aliases in COLUMN_ALIASES.items():
-#             found_col = None
-#             for c in df.columns:
-#                 c_clean = str(c).strip().lower()
-#                 if any(alias == c_clean or alias in c_clean for alias in aliases):
-#                     found_col = c
-#                     break
-#             if found_col:
-#                 col_map[std_col] = found_col
-#             elif std_col == "Sale Value":
-#                 col_map["Sale Value"] = None
-#             else:
-#                 missing_cols.append(std_col)
-
-#         if missing_cols:
-#             log_entry = {
-#                 "upload_batch_id": batch_id,
-#                 "row_number": 0,
-#                 "column_name": ", ".join(missing_cols),
-#                 "error_type": "MISSING_MANDATORY_COLUMNS",
-#                 "error_message": f"File is missing required columns: {missing_cols}",
-#                 "raw_data": {"columns_found": [str(c).strip().lower() for c in df.columns]},
-#                 "created_at": datetime.now().isoformat()
-#             }
-#             upload_logs_db.append(log_entry)
-#             self._save_log_record_to_supabase(log_entry)
-
-#             batch_record.update({
-#                 "upload_status": "failed",
-#                 "failed_rows": total_rows,
-#                 "remarks": f"Missing mandatory columns: {missing_cols}",
-#                 "processing_time_seconds": round(time.time() - start_time, 2)
-#             })
-#             self._update_batch_record_in_supabase(batch_id, batch_record)
-#             return batch_record
-
-#         # Pre-fetch master caches into memory once to eliminate per-row DB calls
-#         master_service.prefetch_all_caches()
-
-#         # Step 4: High Performance Processing & Bulk Ingestion
-#         imported_rows = 0
-#         duplicate_rows = 0
-#         failed_rows = 0
-#         seen_keys = set()
-#         new_sales = []
-#         pending_logs = []
-
-#         records = df.to_dict('records')
-#         for idx, row in enumerate(records):
-#             row_num = idx + 1
-#             try:
-#                 sales_date_raw = str(row.get(col_map["Date"], datetime.today().strftime('%Y-%m-%d'))).strip().split(" ")[0]
-#                 depot_name_val = str(row.get(col_map["Depot Code"], "DEFAULT")).strip()
-#                 licensee_name_val = str(row.get(col_map["License Number"], "DEFAULT")).strip()
-#                 brand_name_val = str(row.get(col_map["Brand Code"], "DEFAULT")).strip()
-#                 packing_name_val = str(row.get(col_map["Packing Size"], "DEFAULT")).strip()
-
-#                 cases = float(row.get(col_map["Cases"], 0.0) or 0.0)
-#                 bottles = float(row.get(col_map["Bottles"], 0.0) or 0.0)
-#                 bulk_liters = float(row.get(col_map["Bulk Liters"], 0.0) or 0.0)
-                
-#                 raw_sale_val = row.get(col_map["Sale Value"]) if col_map.get("Sale Value") else None
-#                 if raw_sale_val is not None and str(raw_sale_val).strip() != "":
-#                     sale_value = float(raw_sale_val)
-#                 else:
-#                     sale_value = round(cases * 5000.0, 2)
-
-#                 # In-memory resolution (cached)
-#                 depot_id = master_service.resolve_depot_id(depot_name_val)
-#                 licensee_id = master_service.resolve_licensee_id(licensee_name_val, depot_id)
-#                 brand_id = master_service.resolve_brand_id(brand_name_val)
-#                 packing_size_id = master_service.resolve_packing_size_id(packing_name_val)
-
-#                 sale_entry = {
-#                     "sale_id": sales_counter,
-#                     "upload_batch_id": batch_id,
-#                     "sales_date": sales_date_raw,
-#                     "depot_id": depot_id,
-#                     "licensee_id": licensee_id,
-#                     "brand_id": brand_id,
-#                     "packing_size_id": packing_size_id,
-#                     "total_cases": cases,
-#                     "total_bottles": bottles,
-#                     "total_bulk_liters": bulk_liters,
-#                     "sale_value": sale_value,
-#                     "created_at": datetime.now().isoformat()
-#                 }
-#                 sales_counter += 1
-#                 new_sales.append(sale_entry)
-#                 imported_rows += 1
-
-#             except Exception as e:
-#                 failed_rows += 1
-#                 err_log = {
-#                     "upload_batch_id": batch_id,
-#                     "row_number": row_num,
-#                     "column_name": None,
-#                     "error_type": "ROW_PROCESSING_ERROR",
-#                     "error_message": str(e),
-#                     "raw_data": {str(k): str(v) for k, v in row.items()},
-#                     "created_at": datetime.now().isoformat()
-#                 }
-#                 upload_logs_db.append(err_log)
-#                 pending_logs.append(err_log)
-
-#         # Bulk save logs if any errors occurred
-#         if pending_logs:
-#             self._save_bulk_logs_to_supabase(pending_logs)
-
-#         # Step 6: Bulk Insert Sales in Chunks
-#         sales_db.extend(new_sales)
-#         self._save_sales_to_supabase(new_sales)
-
-#         # Step 7: Update Dashboard Summary Aggregations
-#         for s in new_sales:
-#             s_date = s["sales_date"]
-#             if s_date not in dashboard_summary_db:
-#                 dashboard_summary_db[s_date] = {
-#                     "summary_date": s_date,
-#                     "total_sales": 0.0,
-#                     "total_cases": 0.0,
-#                     "total_bottles": 0.0,
-#                     "total_bulk_liters": 0.0,
-#                     "total_brands": set(),
-#                     "total_licensees": set(),
-#                     "top_brand_id": s["brand_id"],
-#                     "top_depot_id": s["depot_id"]
-#                 }
-#             ds = dashboard_summary_db[s_date]
-#             ds["total_sales"] += s["sale_value"]
-#             ds["total_cases"] += s["total_cases"]
-#             ds["total_bottles"] += s["total_bottles"]
-#             ds["total_bulk_liters"] += s["total_bulk_liters"]
-#             ds["total_brands"].add(s["brand_id"])
-#             ds["total_licensees"].add(s["licensee_id"])
-
-#         self._save_dashboard_summary_to_supabase(dashboard_summary_db)
-
-#         # Step 8: Update Upload Batch Record
-#         processing_time = round(time.time() - start_time, 2)
-#         batch_record.update({
-#             "imported_rows": imported_rows,
-#             "duplicate_rows": duplicate_rows,
-#             "failed_rows": failed_rows,
-#             "processing_time_seconds": processing_time,
-#             "upload_status": "completed" if failed_rows == 0 else "partial_success",
-#             "remarks": f"Imported {imported_rows} rows successfully. Duplicates: {duplicate_rows}, Failed: {failed_rows}."
-#         })
-#         self._update_batch_record_in_supabase(batch_id, batch_record)
-
-#         # Step 9: Audit Log
-#         audit_entry = {
-#             "user_id": user_id,
-#             "action": "UPLOAD_EXCEL_SALES",
-#             "table_name": "sales",
-#             "record_id": str(batch_id),
-#             "new_value": {"batch_id": batch_id, "imported_rows": imported_rows},
-#             "created_at": datetime.now().isoformat()
-#         }
-#         audit_logs_db.append(audit_entry)
-#         self._save_audit_log_to_supabase(audit_entry)
-
-#         return batch_record
-
-#     def _insert_batch_record_to_supabase(self, record: Dict[str, Any]) -> Optional[int]:
-#         client = get_supabase()
-#         if client:
-#             try:
-#                 rec = {
-#                     "file_name": record["file_name"],
-#                     "storage_path": record["storage_path"],
-#                     "uploaded_by": record.get("uploaded_by"),
-#                     "total_rows": record.get("total_rows", 0),
-#                     "imported_rows": record.get("imported_rows", 0),
-#                     "upload_status": record.get("upload_status", "processing"),
-#                     "remarks": record.get("remarks")
-#                 }
-#                 res = client.table("upload_batches").insert(rec).execute()
-#                 if res.data and len(res.data) > 0:
-#                     real_id = res.data[0].get("batch_id") or res.data[0].get("upload_batch_id")
-#                     logger.info(f"Persisted upload_batch to Supabase with ID {real_id}")
-#                     return real_id
-#             except Exception as e:
-#                 logger.warning(f"Error inserting upload_batch into Supabase: {e}")
-#         return None
-
-#     def _update_batch_record_in_supabase(self, batch_id: int, updates: Dict[str, Any]):
-#         client = get_supabase()
-#         if client:
-#             try:
-#                 rec = {
-#                     "total_rows": updates.get("total_rows", 0),
-#                     "imported_rows": updates.get("imported_rows", 0),
-#                     "upload_status": updates.get("upload_status", "completed"),
-#                     "remarks": updates.get("remarks")
-#                 }
-#                 try:
-#                     client.table("upload_batches").update(rec).eq("batch_id", batch_id).execute()
-#                 except Exception:
-#                     client.table("upload_batches").update(rec).eq("upload_batch_id", batch_id).execute()
-#                 logger.info(f"Updated upload_batch ID {batch_id} in Supabase")
-#             except Exception as e:
-#                 logger.warning(f"Error updating upload_batch ID {batch_id} in Supabase: {e}")
-
-#     def _save_log_record_to_supabase(self, log_record: Dict[str, Any]):
-#         client = get_supabase()
-#         if client:
-#             try:
-#                 clean_log = {
-#                     "batch_id": log_record.get("upload_batch_id") or log_record.get("batch_id"),
-#                     "row_number": log_record.get("row_number", 0),
-#                     "column_name": log_record.get("column_name"),
-#                     "error_message": log_record.get("error_message", ""),
-#                     "raw_data": log_record.get("raw_data")
-#                 }
-#                 client.table("upload_validation_errors").insert(clean_log).execute()
-#             except Exception as e:
-#                 logger.warning(f"Error persisting upload_validation_error to Supabase: {e}")
-
-#     def _save_bulk_logs_to_supabase(self, logs_list: List[Dict[str, Any]]):
-#         client = get_supabase()
-#         if client and logs_list:
-#             try:
-#                 clean_logs = []
-#                 for log_record in logs_list:
-#                     clean_logs.append({
-#                         "batch_id": log_record.get("upload_batch_id") or log_record.get("batch_id"),
-#                         "row_number": log_record.get("row_number", 0),
-#                         "column_name": log_record.get("column_name"),
-#                         "error_message": log_record.get("error_message", ""),
-#                         "raw_data": log_record.get("raw_data")
-#                     })
-#                 chunk_size = 500
-#                 for i in range(0, len(clean_logs), chunk_size):
-#                     client.table("upload_validation_errors").insert(clean_logs[i:i + chunk_size]).execute()
-#             except Exception as e:
-#                 logger.warning(f"Error bulk persisting upload_validation_errors to Supabase: {e}")
-
-
-
-#     def _save_sales_to_supabase(self, sales_list: List[Dict[str, Any]]):
-#         client = get_supabase()
-#         if client and sales_list:
-#             try:
-#                 db_sales = []
-#                 for s in sales_list:
-#                     item = {
-#                         "batch_id": s["upload_batch_id"],
-#                         "sale_date": s["sales_date"],
-#                         "depot_id": s["depot_id"],
-#                         "licensee_id": s["licensee_id"],
-#                         "brand_id": s["brand_id"],
-#                         "packaging_id": s["packing_size_id"],
-#                         "total_case": s["total_cases"],
-#                         "total_btl": s["total_bottles"],
-#                         "total_bl": s["total_bulk_liters"]
-#                     }
-#                     db_sales.append(item)
-                
-#                 # Batch insert into target sales_fact table in ultra-large chunks of 5000
-#                 chunk_size = 5000
-#                 for i in range(0, len(db_sales), chunk_size):
-#                     chunk = db_sales[i:i + chunk_size]
-#                     try:
-#                         client.table("sales_fact").insert(chunk).execute()
-#                     except Exception:
-#                         client.table("sales").insert(chunk).execute()
-
-#             except Exception as e:
-#                 logger.warning(f"Error persisting sales_fact to Supabase: {e}")
-
-
-#     def _save_dashboard_summary_to_supabase(self, summary_dict: Dict[str, Dict[str, Any]]):
-#         client = get_supabase()
-#         if client and summary_dict:
-#             try:
-#                 for s_date, ds in summary_dict.items():
-#                     record = {
-#                         "sale_date": s_date,
-#                         "brand_id": ds["top_brand_id"],
-#                         "depot_id": ds["top_depot_id"],
-#                         "total_case": round(ds["total_cases"], 2),
-#                         "total_btl": round(ds["total_bottles"], 2),
-#                         "total_bl": round(ds["total_bulk_liters"], 2)
-#                     }
-#                     try:
-#                         client.table("dashboard_summary_daily").upsert(record, on_conflict="sale_date").execute()
-#                     except Exception:
-#                         pass
-#             except Exception as e:
-#                 logger.warning(f"Error persisting dashboard_summary to Supabase: {e}")
-
-
-#     def _save_audit_log_to_supabase(self, audit_record: Dict[str, Any]):
-#         client = get_supabase()
-#         if client:
-#             try:
-#                 client.table("audit_logs").insert(audit_record).execute()
-#             except Exception as e:
-#                 logger.warning(f"Error persisting audit_log to Supabase: {e}")
-
-# import_pipeline = ImportPipelineEngine()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 import io
 import os
 import gc
@@ -706,17 +203,17 @@ class ImportPipelineEngine:
     @staticmethod
     def _normalize_header(value) -> str:
         """
-        Normalize an Excel header for matching.
+        Normalize an Excel header for matching by converting to lowercase
+        and stripping all whitespace, underscores, hyphens, dots, and special characters.
+        Example: "  Depot_Code-Name. (ML) " -> "depotcodename-ml"
         """
-
         if value is None:
             return ""
 
-        value = str(value).strip().lower()
-
-        value = " ".join(value.split())
-
-        return value
+        text = str(value).strip().lower()
+        # Remove all whitespace, underscores, hyphens, dots, slashes, and special symbols
+        import re
+        return re.sub(r"[\s\-_.\/\\(),:;]", "", text)
 
     @staticmethod
     def _number(value, default: float = 0.0) -> float:
@@ -865,13 +362,14 @@ class ImportPipelineEngine:
         allowed_extensions = (
             ".xlsx",
             ".xls",
+            ".xlsb",
             ".numbers",
             ".csv",
         )
 
         if not filename_lower.endswith(allowed_extensions):
             raise ValueError(
-                "Invalid file type. Only .xlsx, .xls, .numbers files are accepted."
+                "Invalid file type. Only .xlsx, .xls, .xlsb, .numbers, and .csv files are accepted."
             )
 
         client = get_supabase()
@@ -1165,6 +663,10 @@ class ImportPipelineEngine:
 
             # Step 9 - Bulk Insert Sales Fact Records in chunks with progress
             if fact_records:
+                distinct_dates = list({str(r.get("sale_date", "")).strip() for r in fact_records if r.get("sale_date")})
+                from backend.db.supabase_client import ensure_calendar_dates
+                ensure_calendar_dates(distinct_dates)
+
                 self._bulk_insert(
                     table="sales_fact",
                     records=fact_records,
@@ -1172,20 +674,13 @@ class ImportPipelineEngine:
                     batch_id=batch_id,
                 )
 
-            # Step 10 - Dashboard Summary
-            if not valid_fact_df.empty:
-                summary_df = (
-                    valid_fact_df.groupby(["sale_date", "depot_id", "brand_id"], as_index=False)[
-                        ["total_case", "total_btl", "total_bl"]
-                    ].sum()
-                )
-                summary_records = summary_df.to_dict("records")
-                self._bulk_insert(
-                    table="dashboard_summary_daily",
-                    records=summary_records,
-                    chunk_size=5000,
-                    batch_id=batch_id,
-                )
+            # Step 10 - Trigger Analytics Summaries Refresh (Daily + Monthly) ONLY after complete sales_fact ingestion
+            if fact_records and imported_rows > 0:
+                distinct_dates = list({r.get("sale_date") for r in fact_records if r.get("sale_date")})
+                from backend.services.analytics_refresh_service import analytics_refresh_service
+                refresh_ok = analytics_refresh_service.refresh_sales_analytics_for_dates(distinct_dates)
+                if not refresh_ok:
+                    logger.warning(f"Analytics summary refresh encountered minor issues for batch {batch_id}.")
 
             final_status = "loaded" if imported_rows > 0 else "failed"
             self._update_batch(batch_id=batch_id, row_count=total_rows, status=final_status)
@@ -1598,49 +1093,98 @@ class ImportPipelineEngine:
         filename_lower = filename.lower()
 
         # ----------------------------------------------------
-        # APPLE NUMBERS
+        # APPLE NUMBERS (.numbers)
         # ----------------------------------------------------
+        if filename_lower.endswith(".numbers"):
+            try:
+                return self._parse_numbers(contents)
+            except Exception as e_num:
+                logger.warning(f"Dedicated _parse_numbers failed: {e_num}. Trying general parsers...")
 
-        if filename_lower.endswith(
-            ".numbers"
-        ):
-
-            return self._parse_numbers(
-                contents
-            )
-
-        # ----------------------------------------------------
-        # ROBUST MULTI-ENGINE FILE PARSER (EXCEL / CSV / MISMATCHES)
-        # ----------------------------------------------------
         raw_dataframe = None
 
-        # 1. Try Excel engines
-        for engine in ["calamine", "openpyxl", "xlrd"]:
+        # ----------------------------------------------------
+        # 1. EXCEL PARSING (.xlsx, .xls, .xlsb, etc.)
+        # ----------------------------------------------------
+        excel_engines = ["calamine", "pyxlsb", "openpyxl", "xlrd"]
+        for engine in excel_engines:
             try:
                 raw_dataframe = pd.read_excel(io.BytesIO(contents), header=None, engine=engine)
-                if raw_dataframe is not None and not raw_dataframe.empty:
+                if raw_dataframe is not None and not raw_dataframe.empty and len(raw_dataframe) > 0:
                     break
             except Exception:
                 continue
 
-        # 2. If Excel engines fail, fallback to CSV parsing with multiple encodings
-        if raw_dataframe is None or raw_dataframe.empty:
-            for enc in ["utf-8", "utf-8-sig", "cp1252", "latin1", "iso-8859-1"]:
-                try:
-                    raw_dataframe = pd.read_csv(io.BytesIO(contents), header=None, encoding=enc, low_memory=False)
-                    if raw_dataframe is not None and not raw_dataframe.empty:
-                        break
-                except Exception:
-                    continue
+        # Dedicated pyxlsb engine parser for binary files (.xlsb)
+        if (raw_dataframe is None or raw_dataframe.empty) and filename_lower.endswith(".xlsb"):
+            try:
+                import pyxlsb
+                rows = []
+                with pyxlsb.open_workbook(io.BytesIO(contents)) as wb:
+                    sheet_name = wb.sheets[0]
+                    with wb.get_sheet(sheet_name) as sheet:
+                        for row in sheet.rows():
+                            rows.append([cell.v for cell in row])
+                if rows:
+                    raw_dataframe = pd.DataFrame(rows)
+            except Exception as e_xlsb:
+                logger.warning(f"Dedicated pyxlsb workbook parsing failed: {e_xlsb}")
 
+        # ----------------------------------------------------
+        # 2. CSV / TSV / DELIMITED TEXT PARSING
+        # ----------------------------------------------------
+        if raw_dataframe is None or raw_dataframe.empty:
+            encodings_to_try = ["utf-8", "utf-8-sig", "cp1252", "latin1", "iso-8859-1", "ascii"]
+            delimiters_to_try = [",", ";", "\t", "|"]
+
+            for enc in encodings_to_try:
+                for sep in delimiters_to_try:
+                    try:
+                        df_test = pd.read_csv(
+                            io.BytesIO(contents),
+                            header=None,
+                            encoding=enc,
+                            sep=sep,
+                            low_memory=False,
+                            on_bad_lines="skip"
+                        )
+                        # Ensure parser actually separated columns instead of 1 giant string column
+                        if df_test is not None and not df_test.empty and len(df_test.columns) > 1:
+                            raw_dataframe = df_test
+                            break
+                    except Exception:
+                        continue
+                if raw_dataframe is not None and not raw_dataframe.empty:
+                    break
+
+        # ----------------------------------------------------
+        # 3. LEGACY HTML / XML TABLE EXPORTS (Government Software .xls/.csv exports)
+        # ----------------------------------------------------
         if raw_dataframe is None or raw_dataframe.empty:
             try:
-                raw_dataframe = pd.read_csv(io.BytesIO(contents), header=None, encoding="latin1", on_bad_lines="skip", low_memory=False)
+                html_dfs = pd.read_html(io.BytesIO(contents))
+                if html_dfs and len(html_dfs) > 0:
+                    raw_dataframe = html_dfs[0]
+            except Exception:
+                pass
+
+        # ----------------------------------------------------
+        # 4. LAST RESORT: STANDARD CSV READ
+        # ----------------------------------------------------
+        if raw_dataframe is None or raw_dataframe.empty:
+            try:
+                raw_dataframe = pd.read_csv(
+                    io.BytesIO(contents),
+                    header=None,
+                    encoding="latin1",
+                    on_bad_lines="skip",
+                    low_memory=False
+                )
             except Exception:
                 pass
 
         if raw_dataframe is None or raw_dataframe.empty:
-            raise ValueError("Could not parse file. Unrecognized Excel/CSV file format.")
+            raise ValueError(f"Could not parse file '{filename}'. Unrecognized or corrupted file format.")
 
         header_index = self._detect_header_row(raw_dataframe)
         if header_index is None:
@@ -2046,7 +1590,7 @@ class ImportPipelineEngine:
         self,
         table: str,
         records: List[Dict[str, Any]],
-        chunk_size: int = 5000,
+        chunk_size: int = 500,
         batch_id: Optional[int] = None,
         chunk_number_offset: int = 0,
     ):
