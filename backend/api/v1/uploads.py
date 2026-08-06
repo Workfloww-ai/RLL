@@ -16,22 +16,36 @@ async def upload_excel(
     current_user: dict = Depends(admin_only)
 ):
     """
-    Async Excel Upload Endpoint (Admin Only).
-    Stores uploaded file in temp disk & Supabase Storage, creates initial batch record,
-    dispatches high-performance background ingestion, and immediately returns 202 Accepted.
+    Asynchronous High-Throughput Excel Upload Endpoint (Admin Only).
+    Instantly returns '202 Accepted' with batch_id and status='processing'.
+    Executes heavy Excel parsing (100,000+ rows), column validation, master resolution,
+    and bulk Supabase inserts in a non-blocking background thread.
     """
     try:
         user_id = current_user.get("user_id", "00000000-0000-0000-0000-000000000001")
-        batch_record, temp_path = await import_pipeline.prepare_file_upload(file, user_id)
         
-        # Enqueue heavy processing task asynchronously
-        background_tasks.add_task(import_pipeline.process_file_background, batch_record, temp_path, user_id)
+        # Read contents immediately into memory
+        contents = await file.read()
+        filename = file.filename or "uploaded_file.xlsx"
+
+        # Initialize batch record immediately for instant client response
+        batch_record = import_pipeline.create_initial_batch(filename, user_id)
         
+        # Dispatch heavy 100k row processing to background worker
+        background_tasks.add_task(
+            import_pipeline.process_file_upload_async,
+            filename,
+            contents,
+            user_id,
+            batch_record["upload_batch_id"]
+        )
+
         return batch_record
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"File processing error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"File upload initialization error: {str(e)}")
+
 
 @router.get("/batches", response_model=List[UploadBatchResponse])
 async def list_upload_batches():
