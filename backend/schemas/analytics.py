@@ -14,9 +14,19 @@ class BrandAnalyticsItem(BaseModel):
     total_bottles: float
     total_bl: float
 
+class CompanyAnalyticsItem(BaseModel):
+    company_id: int
+    company_name: str
+    total_cases: float
+    total_bottles: float
+    total_bl: float
+    brands: List[BrandAnalyticsItem]
+
 class DashboardResponse(BaseModel):
     period: str = Field(..., description="period type: daily, mtd, ytd")
     from_date: str
     to_date: str
     totals: TotalsSummary
-    brands: List[BrandAnalyticsItem]
+    companies: List[CompanyAnalyticsItem] = []
+    brands: List[BrandAnalyticsItem] = []
+
