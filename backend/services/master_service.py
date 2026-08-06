@@ -400,7 +400,7 @@ class MasterService:
         client = get_supabase()
         if client:
             try:
-                res = client.table("offices").select("*").execute()
+                res = client.table("offices").select("office_id, name, is_active").execute()
                 if res.data:
                     return res.data
             except Exception:
@@ -411,7 +411,7 @@ class MasterService:
         client = get_supabase()
         if client:
             try:
-                res = client.table("circles").select("*").execute()
+                res = client.table("circles").select("circle_id, office_id, headquarters_id, name, is_active").execute()
                 if res.data:
                     return res.data
             except Exception:
@@ -422,7 +422,7 @@ class MasterService:
         client = get_supabase()
         if client:
             try:
-                res = client.table("depots").select("*").execute()
+                res = client.table("depots").select("depot_id, name, headquarters_id, office_id, circle_id, is_active").execute()
                 if res.data:
                     return res.data
             except Exception:
@@ -433,7 +433,7 @@ class MasterService:
         client = get_supabase()
         if client:
             try:
-                res = client.table("licensees").select("*").execute()
+                res = client.table("licensees").select("licensee_id, licensee_name, trade, group_id, headquarters_id, is_active").execute()
                 if res.data:
                     return res.data
             except Exception:
@@ -444,7 +444,7 @@ class MasterService:
         client = get_supabase()
         if client:
             try:
-                res = client.table("brands").select("*").execute()
+                res = client.table("brands").select("brand_id, brand_name, company_id, is_active").execute()
                 if res.data:
                     return res.data
             except Exception:
@@ -455,7 +455,7 @@ class MasterService:
         client = get_supabase()
         if client:
             try:
-                res = client.table("headquarters").select("*").execute()
+                res = client.table("headquarters").select("headquarters_id, name, is_active").execute()
                 if res.data:
                     return res.data
             except Exception as e:
@@ -466,29 +466,127 @@ class MasterService:
         client = get_supabase()
         if client:
             try:
-                res = client.table("depots").select("depot_id, name, headquarters_id, office_id, circle_id, is_active, headquarters(name)").execute()
-                if res.data:
-                    result = []
-                    for d in res.data:
-                        hq_obj = d.get("headquarters") or {}
-                        hq_name = hq_obj.get("name") if isinstance(hq_obj, dict) else "Unassigned"
-                        item = dict(d)
-                        item["headquarters_name"] = hq_name or "Unassigned"
-                        result.append(item)
-                    return result
+                # 1. Fetch depots and headquarters
+                dep_res = client.table("depots").select("depot_id, name, headquarters_id, office_id, circle_id, is_active, headquarters(name)").execute()
+                depots_data = dep_res.data or []
+
+                if not depots_data:
+                    dep_res2 = client.table("depots").select("depot_id, name, headquarters_id, office_id, circle_id, is_active").execute()
+                    depots_data = dep_res2.data or []
+
+                hq_res = client.table("headquarters").select("headquarters_id, name, is_active").execute()
+                hq_map = {h["headquarters_id"]: h["name"] for h in (hq_res.data or []) if "headquarters_id" in h}
+
+                # 2. Fetch user mappings from user_depot and public.users
+                user_depot_data = []
+                try:
+                    ud_res = client.table("user_depot").select("user_id, depot_id").execute()
+                    user_depot_data = ud_res.data or []
+                except Exception as ud_err:
+                    logger.warning(f"Could not fetch user_depot mappings: {ud_err}")
+
+                users_data = []
+                try:
+                    u_res = client.table("users").select("user_id, first_name, last_name, email, is_active").execute()
+                    users_data = u_res.data or []
+                except Exception as u_err:
+                    logger.warning(f"Could not fetch users: {u_err}")
+
+                users_map: Dict[str, Dict[str, Any]] = {}
+                for u in users_data:
+                    uid = str(u["user_id"])
+                    fn = u.get("first_name") or ""
+                    ln = u.get("last_name") or ""
+                    full_name = f"{fn} {ln}".strip() or u.get("email") or "Unnamed User"
+                    users_map[uid] = {
+                        "user_id": uid,
+                        "name": full_name,
+                        "email": u.get("email", "")
+                    }
+
+                # Build depot -> user mapping
+                depot_user_map: Dict[int, List[Dict[str, Any]]] = {}
+                for ud in user_depot_data:
+                    d_id = ud.get("depot_id")
+                    u_id = str(ud.get("user_id"))
+                    if d_id and u_id in users_map:
+                        if d_id not in depot_user_map:
+                            depot_user_map[d_id] = []
+                        depot_user_map[d_id].append(users_map[u_id])
+
+                # Build hq -> user mapping (users assigned to depots belonging to that HQ)
+                hq_user_map: Dict[int, List[Dict[str, Any]]] = {}
+                for d in depots_data:
+                    d_id = d.get("depot_id")
+                    hq_id = d.get("headquarters_id")
+                    if hq_id and d_id in depot_user_map:
+                        if hq_id not in hq_user_map:
+                            hq_user_map[hq_id] = []
+                        for u_info in depot_user_map[d_id]:
+                            if not any(x["user_id"] == u_info["user_id"] for x in hq_user_map[hq_id]):
+                                hq_user_map[hq_id].append(u_info)
+
+                result = []
+                for d in depots_data:
+                    hq_obj = d.get("headquarters") or {}
+                    hq_name = hq_obj.get("name") if isinstance(hq_obj, dict) else hq_map.get(d.get("headquarters_id"), "Unassigned")
+                    
+                    item = dict(d)
+                    item["headquarters_name"] = hq_name or "Unassigned"
+
+                    d_id = d.get("depot_id")
+                    assigned_users = depot_user_map.get(d_id, [])
+                    if assigned_users:
+                        item["assigned_user_id"] = assigned_users[0]["user_id"]
+                        item["depot_user"] = ", ".join([u["name"] for u in assigned_users])
+                        item["depot_user_email"] = assigned_users[0]["email"]
+                    else:
+                        item["assigned_user_id"] = None
+                        item["depot_user"] = "Unassigned"
+                        item["depot_user_email"] = None
+
+                    hq_id = d.get("headquarters_id")
+                    assigned_hq_users = hq_user_map.get(hq_id, [])
+                    if assigned_hq_users:
+                        item["hq_user"] = ", ".join([u["name"] for u in assigned_hq_users])
+                        item["hq_user_email"] = assigned_hq_users[0]["email"]
+                    else:
+                        item["hq_user"] = "Unassigned"
+                        item["hq_user_email"] = None
+
+                    result.append(item)
+                return result
+
             except Exception as e:
-                logger.warning(f"Failed to fetch depots with HQ from Supabase: {e}")
+                logger.warning(f"Failed to fetch depots with HQ and users from Supabase: {e}")
+
         raw_depots = self.get_depots()
         for d in raw_depots:
             if "headquarters_name" not in d:
                 d["headquarters_name"] = "Unassigned"
+            if "depot_user" not in d:
+                d["depot_user"] = "Unassigned"
+            if "hq_user" not in d:
+                d["hq_user"] = "Unassigned"
         return raw_depots
 
     def update_depot(self, depot_id: int, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         client = get_supabase()
         if client:
             try:
-                res = client.table("depots").update(payload).eq("depot_id", depot_id).execute()
+                assigned_user_id = payload.pop("assigned_user_id", "NO_CHANGE")
+
+                if payload:
+                    res = client.table("depots").update(payload).eq("depot_id", depot_id).execute()
+                else:
+                    res = client.table("depots").select("*").eq("depot_id", depot_id).execute()
+
+                if assigned_user_id != "NO_CHANGE":
+                    # Update user_depot mapping
+                    client.table("user_depot").delete().eq("depot_id", depot_id).execute()
+                    if assigned_user_id and str(assigned_user_id).strip().lower() not in ("unassigned", "none", "", "null"):
+                        client.table("user_depot").insert({"user_id": str(assigned_user_id), "depot_id": depot_id}).execute()
+
                 if res.data:
                     return res.data[0]
             except Exception as e:
@@ -499,6 +597,7 @@ class MasterService:
         client = get_supabase()
         if client:
             try:
+                client.table("user_depot").delete().eq("depot_id", depot_id).execute()
                 client.table("depots").delete().eq("depot_id", depot_id).execute()
                 return True
             except Exception as e:
@@ -509,7 +608,7 @@ class MasterService:
         client = get_supabase()
         if client:
             try:
-                res = client.table("packing_sizes").select("*").execute()
+                res = client.table("packagings").select("packaging_id, packing_raw, bottle_size_ml, is_active").execute()
                 if res.data:
                     return res.data
             except Exception:
@@ -520,7 +619,7 @@ class MasterService:
         client = get_supabase()
         if client:
             try:
-                res = client.table("packagings").select("*").execute()
+                res = client.table("packagings").select("packaging_id, packing_raw, bottle_size_ml, is_active").execute()
                 if res.data:
                     return res.data
             except Exception:
@@ -890,7 +989,7 @@ class MasterService:
                         self._headquarter_cache[k] = row.get("headquarters_id") or row.get("id")
             except Exception:
                 try:
-                    res = client.table("headquarters").select("*").execute()
+                    res = client.table("headquarters").select("headquarters_id, name").execute()
                     for row in res.data or []:
                         k = self._clean(row.get("name"))
                         if k:
@@ -931,7 +1030,7 @@ class MasterService:
                             self._company_cache[k] = row.get("company_id") or row.get("id")
                 except Exception:
                     try:
-                        res = client.table("companies").select("*").execute()
+                        res = client.table("companies").select("company_id, company_name, name").execute()
                         for row in res.data or []:
                             k = self._clean(row.get("name") or row.get("company_name"))
                             if k:

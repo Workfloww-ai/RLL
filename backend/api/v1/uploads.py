@@ -59,24 +59,27 @@ async def get_upload_batch(batch_id: int):
     client = get_supabase()
     if client:
         try:
-            res = client.table("upload_batches").select("*").eq("batch_id", batch_id).execute()
-            if res.data and len(res.data) > 0:
+            res = client.table("upload_batches").select("batch_id, source_file, file_name, storage_path, load_type, covers_start, covers_end, row_count, total_rows, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, upload_status, remarks, uploaded_by, created_at, updated_at").eq("batch_id", batch_id).execute()
+            if res.data:
                 return res.data[0]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to fetch batch {batch_id} status from Supabase: {e}")
             
-    raise HTTPException(status_code=404, detail="Upload batch not found.")
+    return upload_batches_db.get(batch_id, {
+        "batch_id": batch_id,
+        "status": "not_found",
+        "remarks": "Batch record not found."
+    })
 
 @router.get("/batches/{batch_id}/logs", response_model=List[UploadLogResponse])
 async def get_batch_logs(batch_id: int):
     logs = [log for log in upload_logs_db if log.get("upload_batch_id") == batch_id or log.get("batch_id") == batch_id]
-    if not logs:
-        client = get_supabase()
-        if client:
-            try:
-                res = client.table("upload_validation_errors").select("*").eq("batch_id", batch_id).execute()
-                if res.data:
-                    return res.data
-            except Exception:
-                pass
+    client = get_supabase()
+    if client:
+        try:
+            res = client.table("upload_validation_errors").select("error_id, batch_id, raw_id, row_number, column_name, error_message, created_at").eq("batch_id", batch_id).execute()
+            if res.data:
+                return res.data
+        except Exception:
+            pass
     return logs

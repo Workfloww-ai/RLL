@@ -372,39 +372,41 @@ class ImportPipelineEngine:
         client = get_supabase()
         batch_id = None
 
+        today_str = datetime.now().strftime("%Y-%m-%d")
+
         if client:
             payload = {
                 "source_file": filename,
+                "file_name": filename,
                 "load_type": "daily",
+                "covers_start": today_str,
+                "covers_end": today_str,
                 "row_count": 0,
+                "total_rows": 0,
+                "imported_rows": 0,
                 "status": "pending",
+                "upload_status": "pending",
+                "remarks": "File accepted. Processing started.",
             }
-            if user_id and user_id != "00000000-0000-0000-0000-000000000001":
+            if user_id and len(str(user_id)) == 36 and user_id != "00000000-0000-0000-0000-000000000001":
                 payload["uploaded_by"] = user_id
 
             try:
                 response = client.table("upload_batches").insert(payload).execute()
                 if response.data:
                     batch_id = response.data[0].get("batch_id") or response.data[0].get("upload_batch_id")
-            except Exception:
+            except Exception as exc:
                 try:
                     payload.pop("uploaded_by", None)
                     response = client.table("upload_batches").insert(payload).execute()
                     if response.data:
                         batch_id = response.data[0].get("batch_id") or response.data[0].get("upload_batch_id")
-                except Exception as exc:
-                    logger.warning(f"Could not create upload_batches in Supabase: {exc}")
+                except Exception as exc2:
+                    logger.warning(f"Could not create upload_batches in Supabase: {exc2}")
 
         if not batch_id:
             batch_id = len(upload_batches_db) + 1
 
-
-        # ----------------------------------------------------
-        # Keep response compatible with your existing
-        # UploadBatchResponse Pydantic schema.
-        # ----------------------------------------------------
-
-        today_str = datetime.now().strftime("%Y-%m-%d")
         batch_record = {
             "batch_id": batch_id,
             "upload_batch_id": batch_id,
@@ -653,8 +655,11 @@ class ImportPipelineEngine:
             # Step 9 - Bulk Insert Sales Fact Records in chunks with progress
             if fact_records:
                 distinct_dates = list({str(r.get("sale_date", "")).strip() for r in fact_records if r.get("sale_date")})
-                from backend.db.supabase_client import ensure_calendar_dates
-                ensure_calendar_dates(distinct_dates)
+                try:
+                    from backend.db.supabase_client import ensure_calendar_dates
+                    ensure_calendar_dates(distinct_dates)
+                except Exception as e_cal:
+                    logger.warning(f"dim_calendar population notice: {e_cal}")
 
                 self._bulk_insert(
                     table="sales_fact",
@@ -1552,6 +1557,7 @@ class ImportPipelineEngine:
         if not client or not batch_id:
             return
 
+        now_iso = datetime.now().isoformat()
         payload = {
             "batch_id": batch_id,
             "chunk_number": chunk_number,
@@ -1561,6 +1567,8 @@ class ImportPipelineEngine:
             "status": status,
             "inserted_rows": inserted_rows,
             "error_message": error_message,
+            "created_at": now_iso,
+            "updated_at": now_iso,
         }
         if started_at:
             payload["started_at"] = started_at
@@ -1573,7 +1581,10 @@ class ImportPipelineEngine:
                 on_conflict="batch_id,chunk_number"
             ).execute()
         except Exception as exc:
-            logger.warning(f"Could not record batch_chunks row: {exc}")
+            try:
+                client.table("batch_chunks").insert(payload).execute()
+            except Exception as e2:
+                logger.warning(f"Could not record batch_chunks row: {exc} | fallback: {e2}")
 
     def _bulk_insert(
         self,
@@ -1719,21 +1730,25 @@ class ImportPipelineEngine:
         row_count: Optional[int] = None,
         status: Optional[str] = None,
     ):
+        local_batch = upload_batches_db.get(batch_id)
+        if local_batch:
+            if status is not None:
+                local_batch["status"] = status
+                local_batch["upload_status"] = status
+            if row_count is not None:
+                local_batch["total_rows"] = row_count
+                local_batch["row_count"] = row_count
 
         client = get_supabase()
-
         if not client:
-            raise RuntimeError(
-                "Supabase connection unavailable."
-            )
+            logger.info("Supabase client unavailable; in-memory batch %s updated.", batch_id)
+            return
 
         payload = {}
 
         if row_count is not None:
-
-            payload[
-                "row_count"
-            ] = row_count
+            payload["row_count"] = row_count
+            payload["total_rows"] = row_count
 
         if status is not None:
             allowed_statuses = {
@@ -1744,12 +1759,22 @@ class ImportPipelineEngine:
                 "completed",
                 "failed",
             }
-
-            if status not in allowed_statuses:
-                raise ValueError(f"Invalid upload status: {status}")
-
             db_status = "loaded" if status == "completed" else status
-            payload["status"] = db_status
+            if db_status in allowed_statuses:
+                payload["status"] = db_status
+                payload["upload_status"] = db_status
+
+        if local_batch:
+            if "imported_rows" in local_batch:
+                payload["imported_rows"] = local_batch["imported_rows"]
+            if "failed_rows" in local_batch:
+                payload["failed_rows"] = local_batch["failed_rows"]
+            if "duplicate_rows" in local_batch:
+                payload["duplicate_rows"] = local_batch["duplicate_rows"]
+            if "remarks" in local_batch and local_batch["remarks"]:
+                payload["remarks"] = local_batch["remarks"]
+            if "processing_time_seconds" in local_batch:
+                payload["processing_time_seconds"] = local_batch["processing_time_seconds"]
 
         if not payload:
             return
@@ -1881,14 +1906,10 @@ class ImportPipelineEngine:
                 message,
         }
 
-        (
-            client
-            .table(
-                "upload_pipeline_logs"
-            )
-            .insert(record)
-            .execute()
-        )
+        try:
+            client.table("upload_pipeline_logs").insert(record).execute()
+        except Exception as exc:
+            logger.warning(f"Could not write upload_pipeline_log for batch {batch_id}: {exc}")
 
     # ========================================================
     # DASHBOARD SUMMARY

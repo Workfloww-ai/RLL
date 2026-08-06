@@ -11,7 +11,7 @@ interface FileUploadProps {
   onUploadComplete?: (fileName: string) => void;
 }
 
-export default function FileUpload({ title, instructions, accept = ".xlsx, .xls, .csv", uploadEndpoint, onUploadComplete }: FileUploadProps) {
+export default function FileUpload({ title, instructions, accept = ".xlsx, .xls, .xlsb, .csv, .numbers", uploadEndpoint, onUploadComplete }: FileUploadProps) {
   const [uploadState, setUploadState] = useState<FileUploadState>({ status: 'idle', progress: 0 });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -30,14 +30,16 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0 && uploadState.status === 'idle') {
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0 && uploadState.status !== 'uploading' && uploadState.status !== 'processing') {
       processFile(e.dataTransfer.files[0]);
     }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      processFile(e.target.files[0]);
+      const selectedFile = e.target.files[0];
+      e.target.value = '';
+      processFile(selectedFile);
     }
   };
 
@@ -47,7 +49,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
     }
 
     let pollAttempts = 0;
-    const maxPollAttempts = 120; // Allow up to 2 minutes polling
+    const maxPollAttempts = 360; // Allow up to 6 minutes polling for 500k+ row files
 
     pollTimerRef.current = setInterval(async () => {
       pollAttempts += 1;
@@ -72,7 +74,12 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
         }
 
         const batchInfo = await res.json();
-        const currentStatus = (batchInfo.status || batchInfo.upload_status || '').toLowerCase();
+        const statusMain = (batchInfo.status || '').toLowerCase();
+        const statusUpload = (batchInfo.upload_status || '').toLowerCase();
+
+        const isSuccess = ['loaded', 'completed', 'success'].includes(statusMain) || ['loaded', 'completed', 'success'].includes(statusUpload);
+        const isFailed = statusMain === 'failed' || statusUpload === 'failed';
+
         const imported = batchInfo.imported_rows ?? batchInfo.row_count ?? 0;
         const total = batchInfo.row_count ?? 0;
 
@@ -84,7 +91,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
           currentProgress = Math.min(90, 40 + pollAttempts * 2);
         }
 
-        if (currentStatus === 'loaded' || currentStatus === 'completed' || currentStatus === 'success') {
+        if (isSuccess) {
           // Backend has confirmed all data is completely saved in database!
           if (pollTimerRef.current) clearInterval(pollTimerRef.current);
           setUploadState({
@@ -99,7 +106,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
             statusMessage: batchInfo.remarks || 'All records successfully verified and saved into database!'
           });
           if (onUploadComplete) onUploadComplete(fileName);
-        } else if (currentStatus === 'failed') {
+        } else if (isFailed) {
           // Background ingestion encountered errors
           if (pollTimerRef.current) clearInterval(pollTimerRef.current);
 
@@ -216,7 +223,18 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
         return;
       }
 
-      const batchId = data.batch_id;
+      const batchId = data.batch_id ?? data.upload_batch_id ?? data.id;
+
+      if (!batchId) {
+        setUploadState({
+          status: 'success',
+          progress: 100,
+          fileName: file.name,
+          statusMessage: data.remarks || data.message || 'File upload completed.'
+        });
+        if (onUploadComplete) onUploadComplete(file.name);
+        return;
+      }
 
       // Transition to processing state & start polling backend until DB insertion confirmed
       setUploadState({
@@ -253,18 +271,10 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-bold text-slate-800">{title}</h2>
           <div className="flex items-center gap-2">
-            {uploadState.status === 'processing' && (
-              <span className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 border border-amber-200 text-amber-700 text-[10px] font-bold rounded-full uppercase tracking-wider animate-pulse">
-                <RefreshCw size={10} className="animate-spin" /> Saving to Database
-              </span>
-            )}
             {uploadState.status === 'success' && (
               <span className="flex items-center gap-1 px-2.5 py-1 bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-bold rounded-full uppercase tracking-wider">
                 <Check size={11} /> Saved in DB
               </span>
-            )}
-            {uploadState.status === 'idle' && (
-              <span className="px-2.5 py-1 bg-slate-100 text-slate-600 text-[10px] font-bold rounded-full uppercase tracking-wider">Ready</span>
             )}
           </div>
         </div>
@@ -347,10 +357,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                   </div>
                 </div>
 
-                <h3 className="text-sm font-bold text-slate-800">Processing & Ingesting into Database...</h3>
-                <p className="text-xs text-amber-700 font-medium mt-1 bg-amber-50 px-3 py-1 rounded-md border border-amber-100">
-                  {uploadState.statusMessage || "Writing records to database..."}
-                </p>
+                <h3 className="text-sm font-bold text-slate-800">Processing...</h3>
 
                 <div className="w-full h-2.5 bg-slate-200 rounded-full overflow-hidden mt-4">
                   <motion.div 
@@ -359,11 +366,6 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                     animate={{ width: `${uploadState.progress}%` }}
                     transition={{ duration: 0.4 }}
                   />
-                </div>
-
-                <div className="mt-4 text-[11px] text-slate-400 bg-slate-100/80 px-3 py-1.5 rounded-lg border border-slate-200/60 flex items-center gap-1.5">
-                  <Server size={12} className="text-slate-500 shrink-0" />
-                  <span>Waiting for backend total database confirmation...</span>
                 </div>
               </motion.div>
             )}

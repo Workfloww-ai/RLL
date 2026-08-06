@@ -31,7 +31,7 @@ class UserService:
 
         try:
             # 1. Fetch all users from public.users
-            users_res = client.table("users").select("*").execute()
+            users_res = client.table("users").select("user_id, email, first_name, last_name, phone, manager_id, is_active, created_at").execute()
             raw_users = users_res.data if users_res.data is not None else []
 
             if not raw_users:
@@ -55,7 +55,7 @@ class UserService:
                         user_role_id_by_user[u_id] = ur_id
 
             # 3. Fetch reporting manager hierarchy from public.ase_tsm_mapping
-            mapping_res = client.table("ase_tsm_mapping").select("*").execute()
+            mapping_res = client.table("ase_tsm_mapping").select("mapping_id, ase_user_id, tsm_user_id, is_active").execute()
             mapping_data = mapping_res.data or []
 
             # Map ase_user_id -> tsm_user_id
@@ -289,8 +289,19 @@ class UserService:
                             "ase_user_role_id": user_role_id,
                             "tsm_user_role_id": mgr_role_id
                         }).execute()
-                except Exception as e:
-                    logger.warning(f"Could not update ase_tsm_mapping: {e}")
+                except Exception as mgr_err:
+                    logger.warning(f"Could not update ase_tsm_mapping: {mgr_err}")
+
+            # 4. If depot_name provided, insert/update user_depot mapping
+            if depot_name and depot_name != "Unassigned":
+                try:
+                    dep_res = client.table("depots").select("depot_id").ilike("name", depot_name.strip()).limit(1).execute()
+                    if dep_res.data:
+                        d_id = dep_res.data[0]["depot_id"]
+                        client.table("user_depot").delete().eq("user_id", user_id).execute()
+                        client.table("user_depot").insert({"user_id": user_id, "depot_id": d_id}).execute()
+                except Exception as d_err:
+                    logger.warning(f"Could not update user_depot mapping during create_user: {d_err}")
 
         except Exception as e:
             logger.error(f"Error creating user in Supabase: {e}")
@@ -394,6 +405,21 @@ class UserService:
                 except Exception as e:
                     logger.warning(f"Could not update ase_tsm_mapping during update_user: {e}")
 
+            # Update user_depot if depotName or depot_name in payload
+            depot_name_update = payload.get("depotName") or payload.get("depot_name")
+            if depot_name_update is not None:
+                if str(depot_name_update).strip().lower() in ("unassigned", "none", "", "null"):
+                    client.table("user_depot").delete().eq("user_id", user_id).execute()
+                else:
+                    try:
+                        dep_res = client.table("depots").select("depot_id").ilike("name", str(depot_name_update).strip()).limit(1).execute()
+                        if dep_res.data:
+                            d_id = dep_res.data[0]["depot_id"]
+                            client.table("user_depot").delete().eq("user_id", user_id).execute()
+                            client.table("user_depot").insert({"user_id": user_id, "depot_id": d_id}).execute()
+                    except Exception as d_err:
+                        logger.warning(f"Could not update user_depot during update_user: {d_err}")
+
         except Exception as e:
             logger.error(f"Error updating user {user_id} in Supabase: {e}")
 
@@ -443,7 +469,22 @@ class UserService:
         try:
             filename_lower = filename.lower()
             if filename_lower.endswith('.csv'):
-                sheets_to_try = [pd.read_csv(io.BytesIO(file_content), header=None)]
+                df_csv = None
+                for enc in ['utf-8', 'utf-8-sig', 'cp1252', 'latin1', 'iso-8859-1']:
+                    try:
+                        df_csv = pd.read_csv(io.BytesIO(file_content), header=None, encoding=enc, on_bad_lines='skip')
+                        if df_csv is not None and not df_csv.empty:
+                            break
+                    except Exception:
+                        continue
+                sheets_to_try = [df_csv] if df_csv is not None else []
+            elif filename_lower.endswith('.xlsb'):
+                try:
+                    xl = pd.ExcelFile(io.BytesIO(file_content), engine='pyxlsb')
+                    sheets_to_try = [xl.parse(s, header=None) for s in xl.sheet_names]
+                except Exception:
+                    xl = pd.ExcelFile(io.BytesIO(file_content))
+                    sheets_to_try = [xl.parse(s, header=None) for s in xl.sheet_names]
             else:
                 xl = pd.ExcelFile(io.BytesIO(file_content))
                 sheets_to_try = [xl.parse(s, header=None) for s in xl.sheet_names]

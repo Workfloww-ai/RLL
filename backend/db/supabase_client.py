@@ -314,8 +314,8 @@ def ensure_calendar_dates(dates: List[str]) -> bool:
             client.table("dim_calendar").upsert(rows, on_conflict="date_id").execute()
         return True
     except Exception as e:
-        logger.error(f"ensure_calendar_dates error: {e}")
-        raise
+        logger.warning(f"ensure_calendar_dates error (non-fatal): {e}")
+        return False
 def bulk_insert_sales_fact(records: List[Dict[str, Any]]) -> bool:
     """Bulk-inserts resolved rows into sales_fact."""
     if not records:
@@ -349,7 +349,7 @@ def get_raw_sales_for_batch(batch_id: int, page: int = 0, page_size: int = 5000)
         start = page * page_size
         res = (
             client.table("raw_sales_upload")
-            .select("*")
+            .select("raw_id, batch_id, sale_date_raw, company_raw, licensee_raw, trade_raw, group_name_raw, hq_raw, deo_office_raw, circle_office_raw, depot_raw, ase_raw, asm_tsm_raw, brand_name_raw, packing_raw, total_case, total_btl, total_bl")
             .eq("batch_id", batch_id)
             .range(start, start + page_size - 1)
             .execute()
@@ -373,10 +373,10 @@ def get_batch_details(batch_id: int) -> Dict[str, Any]:
             "error_count": 0,
         }
     try:
-        batch_res = client.table("upload_batches").select("*").eq("batch_id", batch_id).execute()
+        batch_res = client.table("upload_batches").select("batch_id, source_file, file_name, storage_path, status, upload_status, row_count, total_rows, imported_rows, remarks, created_at").eq("batch_id", batch_id).execute()
         logs_res = (
             client.table("upload_pipeline_logs")
-            .select("*")
+            .select("log_id, batch_id, step, status, message, logged_at")
             .eq("batch_id", batch_id)
             .order("log_id")
             .execute()

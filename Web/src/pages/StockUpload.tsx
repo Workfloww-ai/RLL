@@ -10,10 +10,10 @@ export default function StockUpload() {
       </div>
 
       <FileUpload 
-        title="Sales Inventory Upload"
+        title=""
         instructions={[
           "Ensure column headers match exactly with the provided template.",
-          "Accepted formats: .xlsx, .xls, .csv.",
+          "Accepted formats: .xlsx, .xls, .xlsb, .csv, .numbers.",
           "Maximum file size: 30MB.",
           "System handles duplicate removal automatically based on Timestamp."
         ]}
