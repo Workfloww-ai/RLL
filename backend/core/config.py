@@ -1,4 +1,4 @@
-import os
+from typing import Any
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -10,15 +10,14 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     
     # Supabase credentials
-    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "https://wgpxmvrbbgpzkomdutlk.supabase.co")
-    SUPABASE_KEY: str = os.getenv(
-        "SUPABASE_SECRET_KEY", 
-        os.getenv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndncHhtdnJiYmdwemtvbWR1dGxrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUyMTQ1MTEsImV4cCI6MjEwMDc5MDUxMX0.Tv0dfV6GcT6fwvu9cMnwxrTfmy8DsaCrjMQu50FbEtg")
-    )
-    SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", SUPABASE_KEY)
+    SUPABASE_URL: str = ""
+    SUPABASE_KEY: str = ""
+    SUPABASE_SECRET_KEY: str = ""
+    NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: str = ""
+    SUPABASE_SERVICE_ROLE_KEY: str = ""
     
     # JWT Configuration
-    JWT_SECRET: str = os.getenv("JWT_SECRET", "super-secret-jwt-key-for-rll-analytics")
+    JWT_SECRET: str = ""
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 # 24 hours
     
@@ -27,5 +26,11 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore"
     )
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.SUPABASE_KEY:
+            self.SUPABASE_KEY = self.SUPABASE_SECRET_KEY or self.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+        if not self.SUPABASE_SERVICE_ROLE_KEY:
+            self.SUPABASE_SERVICE_ROLE_KEY = self.SUPABASE_SECRET_KEY or self.SUPABASE_KEY
 
 settings = Settings()
