@@ -377,7 +377,7 @@ export default function HeadcountManagement() {
                     ) : searchQuery ? (
                       "No records found matching your search query."
                     ) : (
-                      "No personnel records found in database. Click 'Add Employee' or 'Bulk Upload' to add personnel."
+                      "No Data Found."
                     )}
                   </td>
                 </tr>

@@ -58,28 +58,47 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
 }
 
 export default function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [userName, setUserName] = useState<string | null>(null);
-  const [currentView, setCurrentView] = useState<ViewState>('stock');
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    return Boolean(localStorage.getItem('token'));
+  });
+  const [userName, setUserName] = useState<string | null>(() => {
+    return localStorage.getItem('user_name');
+  });
+  const [currentView, setCurrentView] = useState<ViewState>(() => {
+    const savedView = localStorage.getItem('current_view');
+    return (savedView as ViewState) || 'stock';
+  });
+
+  const handleViewChange = (view: ViewState) => {
+    setCurrentView(view);
+    localStorage.setItem('current_view', view);
+  };
+
+  const handleLogin = (name: string) => {
+    setUserName(name);
+    setIsAuthenticated(true);
+    localStorage.setItem('user_name', name);
+  };
+
+  const handleLogout = () => {
+    setIsAuthenticated(false);
+    setUserName(null);
+    localStorage.removeItem('token');
+    localStorage.removeItem('user_name');
+    localStorage.removeItem('current_view');
+  };
 
   if (!isAuthenticated) {
-    return <Login onLogin={(name) => {
-      setUserName(name);
-      setIsAuthenticated(true);
-    }} />;
+    return <Login onLogin={handleLogin} />;
   }
 
   return (
     <ErrorBoundary>
       <DashboardLayout 
         currentView={currentView} 
-        onViewChange={setCurrentView}
+        onViewChange={handleViewChange}
         userName={userName}
-        onLogout={() => {
-          setIsAuthenticated(false);
-          setUserName(null);
-          localStorage.removeItem('token');
-        }}
+        onLogout={handleLogout}
       >
         {currentView === 'stock' && <StockUpload />}
         {currentView === 'territory' && <TerritoryManagement />}

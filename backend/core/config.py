@@ -10,10 +10,10 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     
     # Supabase credentials
-    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "https://your-supabase-project.supabase.co")
+    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "https://wgpxmvrbbgpzkomdutlk.supabase.co")
     SUPABASE_KEY: str = os.getenv(
         "SUPABASE_SECRET_KEY", 
-        os.getenv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "sb_secret_dummy_key")
+        os.getenv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndncHhtdnJiYmdwemtvbWR1dGxrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUyMTQ1MTEsImV4cCI6MjEwMDc5MDUxMX0.Tv0dfV6GcT6fwvu9cMnwxrTfmy8DsaCrjMQu50FbEtg")
     )
     SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", SUPABASE_KEY)
     

@@ -262,9 +262,6 @@ export default function TerritoryManagement() {
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh
           </button>
-          <button className="px-4 py-2 bg-[#004B87] text-white text-xs font-bold rounded shadow-sm hover:bg-blue-800 transition-colors">
-            Export Data
-          </button>
         </div>
       </div>
 
@@ -370,7 +367,7 @@ export default function TerritoryManagement() {
               ) : paginatedDepots.length === 0 ? (
                 <tr>
                   <td colSpan={4} className="px-6 py-12 text-center text-sm font-medium text-slate-500">
-                    No territory records found matching your filters.
+                    No Territory Records Found.
                   </td>
                 </tr>
               ) : (

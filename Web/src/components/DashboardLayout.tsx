@@ -11,7 +11,7 @@ interface DashboardLayoutProps {
 }
 
 export default function DashboardLayout({ currentView, onViewChange, onLogout, userName, children }: DashboardLayoutProps) {
-  const displayUserName = userName || 'Rahul Sharma';
+  const displayUserName = userName || 'Admin User';
   const userInitial = displayUserName.charAt(0).toUpperCase();
   const navItems = [
     { id: 'stock' as ViewState, label: 'Sales Upload', icon: Package },

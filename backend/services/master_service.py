@@ -451,7 +451,69 @@ class MasterService:
                 pass
         return []
 
+    def get_headquarters(self) -> List[Dict[str, Any]]:
+        client = get_supabase()
+        if client:
+            try:
+                res = client.table("headquarters").select("*").execute()
+                if res.data:
+                    return res.data
+            except Exception as e:
+                logger.warning(f"Failed to fetch headquarters from Supabase: {e}")
+        return []
+
+    def get_depots_with_hq(self) -> List[Dict[str, Any]]:
+        client = get_supabase()
+        if client:
+            try:
+                res = client.table("depots").select("depot_id, name, headquarters_id, office_id, circle_id, is_active, headquarters(name)").execute()
+                if res.data:
+                    result = []
+                    for d in res.data:
+                        hq_obj = d.get("headquarters") or {}
+                        hq_name = hq_obj.get("name") if isinstance(hq_obj, dict) else "Unassigned"
+                        item = dict(d)
+                        item["headquarters_name"] = hq_name or "Unassigned"
+                        result.append(item)
+                    return result
+            except Exception as e:
+                logger.warning(f"Failed to fetch depots with HQ from Supabase: {e}")
+        raw_depots = self.get_depots()
+        for d in raw_depots:
+            if "headquarters_name" not in d:
+                d["headquarters_name"] = "Unassigned"
+        return raw_depots
+
+    def update_depot(self, depot_id: int, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        client = get_supabase()
+        if client:
+            try:
+                res = client.table("depots").update(payload).eq("depot_id", depot_id).execute()
+                if res.data:
+                    return res.data[0]
+            except Exception as e:
+                logger.error(f"Failed to update depot {depot_id}: {e}")
+        return None
+
+    def delete_depot(self, depot_id: int) -> bool:
+        client = get_supabase()
+        if client:
+            try:
+                client.table("depots").delete().eq("depot_id", depot_id).execute()
+                return True
+            except Exception as e:
+                logger.error(f"Failed to delete depot {depot_id}: {e}")
+        return False
+
     def get_packing_sizes(self) -> List[Dict[str, Any]]:
+        client = get_supabase()
+        if client:
+            try:
+                res = client.table("packing_sizes").select("*").execute()
+                if res.data:
+                    return res.data
+            except Exception:
+                pass
         return self.get_packagings()
 
     def get_packagings(self) -> List[Dict[str, Any]]:

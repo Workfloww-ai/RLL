@@ -871,13 +871,6 @@ class ImportPipelineEngine:
                 "Invalid file type. Only .xlsx, .xls, .numbers files are accepted."
             )
 
-        contents = await file.read()
-
-        suffix = os.path.splitext(filename_lower)[1]
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(contents)
-            temp_path = tmp.name
-
         client = get_supabase()
         batch_id = None
 
@@ -945,10 +938,6 @@ class ImportPipelineEngine:
             batch_id,
         )
         return batch_record
-
-    async def process_file_upload(self, file: UploadFile, user_id: str) -> Dict[str, Any]:
-        batch_record, temp_path = await self.prepare_file_upload(file, user_id)
-        return self.process_file_background(batch_record, temp_path, user_id)
 
     # ========================================================
     # MAIN BACKGROUND PIPELINE

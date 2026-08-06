@@ -10,46 +10,7 @@ from backend.core.security import MOCK_USERS
 logger = logging.getLogger(__name__)
 
 # Fallback seed data in case Supabase is offline or empty
-FALLBACK_USERS = [
-    {
-        "id": "u1",
-        "user_id": "u1",
-        "first_name": "Rahul",
-        "last_name": "Sharma",
-        "name": "Rahul Sharma",
-        "email": "rahul.sharma@rll.com",
-        "phone": "+91 9876543210",
-        "phoneNumber": "+91 9876543210",
-        "role": "Area Sales Manager",
-        "reportingManager": "Unassigned",
-        "reporting_manager": "Unassigned",
-        "depotName": "Jaipur Main Depot",
-        "depot_name": "Jaipur Main Depot",
-        "headquarters": "Jaipur HQ",
-        "circleName": "North Circle",
-        "isActive": True,
-        "is_active": True
-    },
-    {
-        "id": "u2",
-        "user_id": "u2",
-        "first_name": "Manoj",
-        "last_name": "Tiwari",
-        "name": "Manoj Tiwari",
-        "email": "manoj.tiwari@rll.com",
-        "phone": "+91 9812345678",
-        "phoneNumber": "+91 9812345678",
-        "role": "Territory Executive",
-        "reportingManager": "Rahul Sharma",
-        "reporting_manager": "Rahul Sharma",
-        "depotName": "Mansarovar Depot",
-        "depot_name": "Mansarovar Depot",
-        "headquarters": "Jaipur HQ",
-        "circleName": "North Circle",
-        "isActive": True,
-        "is_active": True
-    }
-]
+FALLBACK_USERS: List[Dict[str, Any]] = []
 
 
 class UserService:
