@@ -1,689 +1,283 @@
-# from typing import Dict, Any, List, Optional
-# from datetime import datetime, date
-# from backend.services.import_pipeline import sales_db, dashboard_summary_db
-# from backend.services.master_service import master_service
-
-# class AnalyticsService:
-
-#     def get_dashboard_overview(
-#         self, 
-#         start_date: Optional[str] = None, 
-#         end_date: Optional[str] = None,
-#         depot_id: Optional[int] = None,
-#         circle_id: Optional[int] = None
-#     ) -> Dict[str, Any]:
-        
-#         filtered_sales = sales_db.copy()
-
-#         if start_date:
-#             filtered_sales = [s for s in filtered_sales if s["sales_date"] >= start_date]
-#         if end_date:
-#             filtered_sales = [s for s in filtered_sales if s["sales_date"] <= end_date]
-#         if depot_id:
-#             filtered_sales = [s for s in filtered_sales if s["depot_id"] == depot_id]
-
-#         total_sales_value = sum(s["sale_value"] for s in filtered_sales)
-#         total_cases_sold = sum(s["total_cases"] for s in filtered_sales)
-#         total_bottles_sold = sum(s["total_bottles"] for s in filtered_sales)
-#         total_bulk_liters = sum(s["total_bulk_liters"] for s in filtered_sales)
-#         active_licensees = len(set(s["licensee_id"] for s in filtered_sales))
-#         active_brands = len(set(s["brand_id"] for s in filtered_sales))
-
-#         kpis = {
-#             "total_sales_value": round(total_sales_value, 2),
-#             "total_cases_sold": round(total_cases_sold, 2),
-#             "total_bottles_sold": round(total_bottles_sold, 2),
-#             "total_bulk_liters": round(total_bulk_liters, 2),
-#             "active_licensees_count": active_licensees,
-#             "active_brands_count": active_brands,
-#             "growth_percentage": 12.5 # Mock growth metric for dashboard
-#         }
-
-#         # Daily trends
-#         trends_dict: Dict[str, Dict[str, Any]] = {}
-#         for s in filtered_sales:
-#             s_date = s["sales_date"]
-#             if s_date not in trends_dict:
-#                 trends_dict[s_date] = {
-#                     "sales_date": s_date,
-#                     "total_sales": 0.0,
-#                     "total_cases": 0.0,
-#                     "total_bottles": 0.0
-#                 }
-#             trends_dict[s_date]["total_sales"] += s["sale_value"]
-#             trends_dict[s_date]["total_cases"] += s["total_cases"]
-#             trends_dict[s_date]["total_bottles"] += s["total_bottles"]
-
-#         trends_list = sorted(list(trends_dict.values()), key=lambda x: x["sales_date"])
-
-#         # Top Brands
-#         brand_lookup = {b["brand_id"]: b for b in master_service.get_brands()}
-#         brand_stats: Dict[int, Dict[str, Any]] = {}
-#         for s in filtered_sales:
-#             b_id = s["brand_id"]
-#             if b_id not in brand_stats:
-#                 b_info = brand_lookup.get(b_id, {"brand_name": f"Brand {b_id}", "brand_code": f"B{b_id}"})
-#                 brand_stats[b_id] = {
-#                     "brand_id": b_id,
-#                     "brand_name": b_info["brand_name"],
-#                     "brand_code": b_info["brand_code"],
-#                     "total_cases": 0.0,
-#                     "total_sales_value": 0.0
-#                 }
-#             brand_stats[b_id]["total_cases"] += s["total_cases"]
-#             brand_stats[b_id]["total_sales_value"] += s["sale_value"]
-
-#         top_brands = sorted(list(brand_stats.values()), key=lambda x: x["total_sales_value"], reverse=True)[:5]
-#         for tb in top_brands:
-#             tb["market_share_percentage"] = round((tb["total_sales_value"] / total_sales_value * 100), 2) if total_sales_value > 0 else 0.0
-
-#         # Top Depots
-#         depot_lookup = {d["depot_id"]: d for d in master_service.get_depots()}
-#         depot_stats: Dict[int, Dict[str, Any]] = {}
-#         for s in filtered_sales:
-#             d_id = s["depot_id"]
-#             if d_id not in depot_stats:
-#                 d_info = depot_lookup.get(d_id, {"depot_name": f"Depot {d_id}", "depot_code": f"D{d_id}"})
-#                 depot_stats[d_id] = {
-#                     "depot_id": d_id,
-#                     "depot_name": d_info["depot_name"],
-#                     "depot_code": d_info["depot_code"],
-#                     "circle_name": "Jaipur Circle",
-#                     "total_cases": 0.0,
-#                     "total_sales_value": 0.0
-#                 }
-#             depot_stats[d_id]["total_cases"] += s["total_cases"]
-#             depot_stats[d_id]["total_sales_value"] += s["sale_value"]
-
-#         top_depots = sorted(list(depot_stats.values()), key=lambda x: x["total_sales_value"], reverse=True)[:5]
-
-#         return {
-#             "kpis": kpis,
-#             "trends": trends_list,
-#             "top_brands": top_brands,
-#             "top_depots": top_depots
-#         }
-
-# analytics_service = AnalyticsService()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-from typing import Dict, Any, Optional
+import logging
+from datetime import datetime, date
+from typing import Dict, Any, List, Optional, Set
 from backend.db.client import get_supabase
+from backend.services.analytics_scope_service import analytics_scope_service
 
+logger = logging.getLogger(__name__)
 
 class AnalyticsService:
+    """
+    Enterprise Analytics Engine serving Daily, MTD, and YTD performance.
+    
+    IMPORTANT:
+    This service queries ONLY pre-aggregated summary tables:
+      - dashboard_summary_daily
+      - dashboard_summary_monthly
+    It NEVER queries sales_fact directly for dashboard rendering.
+    """
 
-    def get_dashboard_overview(
+    def get_dashboard(
         self,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
+        period: str = "daily",
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None,
         depot_id: Optional[int] = None,
-        circle_id: Optional[int] = None,
+        brand_id: Optional[int] = None,
+        current_user: Optional[dict] = None
     ) -> Dict[str, Any]:
-
+        """
+        Unified endpoint for Daily, MTD, and YTD analytics with RBAC scoping.
+        """
         client = get_supabase()
+        period = (period or "daily").lower()
+
+        # Target date (defaults to today if not provided)
+        target_date_str = to_date or datetime.today().strftime("%Y-%m-%d")
+        try:
+            target_dt = datetime.strptime(target_date_str, "%Y-%m-%d").date()
+        except ValueError:
+            target_dt = datetime.today().date()
+            target_date_str = target_dt.strftime("%Y-%m-%d")
+
+        # Resolve User Depot Scope (RBAC)
+        allowed_depot_ids: Optional[Set[int]] = None
+        if current_user:
+            allowed_depot_ids = analytics_scope_service.resolve_allowed_depot_ids(current_user)
+
+        # Validate user-supplied depot_id against allowed scope
+        if depot_id is not None:
+            if allowed_depot_ids is not None and depot_id not in allowed_depot_ids:
+                # Return empty result if requested depot is out of scope
+                return self._empty_response(period, from_date or target_date_str, target_date_str)
+            query_depot_ids = {depot_id}
+        else:
+            query_depot_ids = allowed_depot_ids
+
+        if period == "mtd":
+            start_date_str = target_dt.replace(day=1).strftime("%Y-%m-%d")
+            return self._get_daily_summary_range(
+                period="mtd",
+                start_date=start_date_str,
+                end_date=target_date_str,
+                depot_ids=query_depot_ids,
+                brand_id=brand_id,
+                client=client
+            )
+        elif period == "ytd":
+            return self._get_ytd_summary(
+                target_date=target_dt,
+                depot_ids=query_depot_ids,
+                brand_id=brand_id,
+                client=client
+            )
+        else:
+            # Daily period
+            start_date_str = from_date or target_date_str
+            return self._get_daily_summary_range(
+                period="daily",
+                start_date=start_date_str,
+                end_date=target_date_str,
+                depot_ids=query_depot_ids,
+                brand_id=brand_id,
+                client=client
+            )
+
+    def _get_daily_summary_range(
+        self,
+        period: str,
+        start_date: str,
+        end_date: str,
+        depot_ids: Optional[Set[int]],
+        brand_id: Optional[int],
+        client: Any
+    ) -> Dict[str, Any]:
+        """Queries dashboard_summary_daily for a specific date range."""
+        if not client:
+            return self._empty_response(period, start_date, end_date)
+
+        try:
+            query = (
+                client.table("dashboard_summary_daily")
+                .select("sale_date, depot_id, brand_id, total_case, total_btl, total_bl")
+                .gte("sale_date", start_date)
+                .lte("sale_date", end_date)
+            )
+
+            if depot_ids is not None:
+                if not depot_ids:
+                    return self._empty_response(period, start_date, end_date)
+                query = query.in_("depot_id", list(depot_ids))
+
+            if brand_id is not None:
+                query = query.eq("brand_id", brand_id)
+
+            res = query.execute()
+            rows = res.data or []
+
+            return self._format_aggregated_response(period, start_date, end_date, rows, client)
+
+        except Exception as e:
+            logger.error(f"_get_daily_summary_range error: {e}")
+            return self._empty_response(period, start_date, end_date)
+
+    def _get_ytd_summary(
+        self,
+        target_date: date,
+        depot_ids: Optional[Set[int]],
+        brand_id: Optional[int],
+        client: Any
+    ) -> Dict[str, Any]:
+        """
+        Hybrid YTD Algorithm:
+        - Completed Months (dashboard_summary_monthly) from FY Start (April 1) to previous month.
+        - Current Partial Month (dashboard_summary_daily) from 1st of current month to target_date.
+        """
+        # Determine Financial Year Start (April 1)
+        if target_date.month >= 4:
+            fy_start_year = target_date.year
+        else:
+            fy_start_year = target_date.year - 1
+        
+        fy_start_date = date(fy_start_year, 4, 1)
+        current_month_start = target_date.replace(day=1)
+
+        ytd_rows = []
 
         if not client:
-            raise RuntimeError(
-                "Supabase connection is unavailable."
+            return self._empty_response("ytd", fy_start_date.strftime("%Y-%m-%d"), target_date.strftime("%Y-%m-%d"))
+
+        try:
+            # 1. Fetch Completed Months from dashboard_summary_monthly
+            if current_month_start > fy_start_date:
+                m_query = (
+                    client.table("dashboard_summary_monthly")
+                    .select("month_start, depot_id, brand_id, total_case, total_btl, total_bl")
+                    .gte("month_start", fy_start_date.strftime("%Y-%m-%d"))
+                    .lt("month_start", current_month_start.strftime("%Y-%m-%d"))
+                )
+                if depot_ids is not None:
+                    if depot_ids:
+                        m_query = m_query.in_("depot_id", list(depot_ids))
+                    else:
+                        m_query = None
+                if brand_id is not None and m_query:
+                    m_query = m_query.eq("brand_id", brand_id)
+                
+                if m_query:
+                    m_res = m_query.execute()
+                    if m_res.data:
+                        ytd_rows.extend(m_res.data)
+
+            # 2. Fetch Current Partial Month from dashboard_summary_daily
+            d_query = (
+                client.table("dashboard_summary_daily")
+                .select("sale_date, depot_id, brand_id, total_case, total_btl, total_bl")
+                .gte("sale_date", current_month_start.strftime("%Y-%m-%d"))
+                .lte("sale_date", target_date.strftime("%Y-%m-%d"))
             )
+            if depot_ids is not None:
+                if depot_ids:
+                    d_query = d_query.in_("depot_id", list(depot_ids))
+                else:
+                    d_query = None
+            if brand_id is not None and d_query:
+                d_query = d_query.eq("brand_id", brand_id)
 
-        # =====================================================
-        # SALES FACT QUERY
-        # =====================================================
+            if d_query:
+                d_res = d_query.execute()
+                if d_res.data:
+                    ytd_rows.extend(d_res.data)
 
-        query = (
-            client
-            .table("sales_fact")
-            .select(
-                "sale_id,"
-                "sale_date,"
-                "licensee_id,"
-                "brand_id,"
-                "packaging_id,"
-                "depot_id,"
-                "total_case,"
-                "total_btl,"
-                "total_bl,"
-                "batch_id"
-            )
-        )
-
-        if start_date:
-            query = query.gte(
-                "sale_date",
-                start_date
-            )
-
-        if end_date:
-            query = query.lte(
-                "sale_date",
-                end_date
-            )
-
-        if depot_id:
-            query = query.eq(
-                "depot_id",
-                depot_id
-            )
-
-        response = query.execute()
-
-        sales = response.data or []
-
-        # =====================================================
-        # CIRCLE FILTER
-        #
-        # sales_fact contains depot_id, not circle_id.
-        # Therefore find depots belonging to the circle first.
-        # =====================================================
-
-        if circle_id:
-
-            depot_response = (
+            return self._format_aggregated_response(
+                "ytd", 
+                fy_start_date.strftime("%Y-%m-%d"), 
+                target_date.strftime("%Y-%m-%d"), 
+                ytd_rows, 
                 client
-                .table("depots")
-                .select("depot_id")
-                .eq(
-                    "circle_id",
-                    circle_id
-                )
-                .execute()
             )
 
-            circle_depot_ids = {
-                row["depot_id"]
-                for row in (
-                    depot_response.data or []
-                )
-            }
+        except Exception as e:
+            logger.error(f"_get_ytd_summary error: {e}")
+            return self._empty_response("ytd", fy_start_date.strftime("%Y-%m-%d"), target_date.strftime("%Y-%m-%d"))
 
-            sales = [
-                sale
-                for sale in sales
-                if sale.get("depot_id")
-                in circle_depot_ids
-            ]
+    def _format_aggregated_response(
+        self,
+        period: str,
+        from_date: str,
+        to_date: str,
+        rows: List[dict],
+        client: Any
+    ) -> Dict[str, Any]:
+        """Aggregates rows by brand and totals for API consumption."""
+        total_cases = sum(float(r.get("total_case") or 0) for r in rows)
+        total_bottles = sum(float(r.get("total_btl") or 0) for r in rows)
+        total_bl = sum(float(r.get("total_bl") or 0) for r in rows)
 
-        # =====================================================
-        # KPI CALCULATIONS
-        # =====================================================
-
-        total_cases = sum(
-            float(
-                sale.get("total_case") or 0
-            )
-            for sale in sales
-        )
-
-        total_bottles = sum(
-            float(
-                sale.get("total_btl") or 0
-            )
-            for sale in sales
-        )
-
-        total_bulk_liters = sum(
-            float(
-                sale.get("total_bl") or 0
-            )
-            for sale in sales
-        )
-
-        active_licensees = len({
-            sale["licensee_id"]
-            for sale in sales
-            if sale.get("licensee_id")
-            is not None
-        })
-
-        active_brands = len({
-            sale["brand_id"]
-            for sale in sales
-            if sale.get("brand_id")
-            is not None
-        })
-
-        # IMPORTANT:
-        #
-        # Your current sales_fact table has no monetary
-        # sales/revenue column.
-        #
-        # TOTAL_BL is volume, NOT sales value.
-        #
-        # Therefore we do not invent a revenue number.
-        # =====================================================
-
-        kpis = {
-            "total_sales_value": 0.0,
-
-            "total_cases_sold":
-                round(total_cases, 2),
-
-            "total_bottles_sold":
-                round(total_bottles, 2),
-
-            "total_bulk_liters":
-                round(total_bulk_liters, 2),
-
-            "active_licensees_count":
-                active_licensees,
-
-            "active_brands_count":
-                active_brands,
-
-            # Proper growth calculation can be added
-            # once previous-period comparison is defined.
-            "growth_percentage": 0.0,
-        }
-
-        # =====================================================
-        # DAILY TRENDS
-        # =====================================================
-
-        trends_dict: Dict[
-            str,
-            Dict[str, Any]
-        ] = {}
-
-        for sale in sales:
-
-            sale_date = sale.get(
-                "sale_date"
-            )
-
-            if not sale_date:
+        # Brand-wise Aggregation
+        brand_stats: Dict[int, Dict[str, Any]] = {}
+        for r in rows:
+            b_id = r.get("brand_id")
+            if b_id is None:
                 continue
-
-            if sale_date not in trends_dict:
-
-                trends_dict[sale_date] = {
-                    "sales_date":
-                        sale_date,
-
-                    # Kept for compatibility with your
-                    # existing response schema.
-                    "total_sales":
-                        0.0,
-
-                    "total_cases":
-                        0.0,
-
-                    "total_bottles":
-                        0.0,
-
-                    "total_bulk_liters":
-                        0.0,
+            if b_id not in brand_stats:
+                brand_stats[b_id] = {
+                    "brand_id": b_id,
+                    "total_cases": 0.0,
+                    "total_bottles": 0.0,
+                    "total_bl": 0.0
                 }
+            brand_stats[b_id]["total_cases"] += float(r.get("total_case") or 0)
+            brand_stats[b_id]["total_bottles"] += float(r.get("total_btl") or 0)
+            brand_stats[b_id]["total_bl"] += float(r.get("total_bl") or 0)
 
-            trends_dict[
-                sale_date
-            ][
-                "total_cases"
-            ] += float(
-                sale.get(
-                    "total_case"
-                ) or 0
-            )
+        # Fetch Brand Names from Master Table
+        brand_lookup = {}
+        if brand_stats and client:
+            try:
+                b_res = client.table("brands").select("brand_id, brand_name").in_("brand_id", list(brand_stats.keys())).execute()
+                for b_row in (b_res.data or []):
+                    brand_lookup[b_row["brand_id"]] = b_row.get("brand_name", f"Brand {b_row['brand_id']}")
+            except Exception as e:
+                logger.warning(f"Failed to fetch brand names: {e}")
 
-            trends_dict[
-                sale_date
-            ][
-                "total_bottles"
-            ] += float(
-                sale.get(
-                    "total_btl"
-                ) or 0
-            )
+        brands_list = []
+        for b_id, stats in brand_stats.items():
+            b_name = brand_lookup.get(b_id, f"Brand {b_id}")
+            brands_list.append({
+                "brand_id": b_id,
+                "brand_name": b_name,
+                "total_cases": round(stats["total_cases"], 2),
+                "total_bottles": round(stats["total_bottles"], 2),
+                "total_bl": round(stats["total_bl"], 2)
+            })
 
-            trends_dict[
-                sale_date
-            ][
-                "total_bulk_liters"
-            ] += float(
-                sale.get(
-                    "total_bl"
-                ) or 0
-            )
-
-        trends_list = sorted(
-            trends_dict.values(),
-            key=lambda item:
-                item["sales_date"]
-        )
-
-        # =====================================================
-        # LOAD BRANDS
-        # =====================================================
-
-        brand_response = (
-            client
-            .table("brands")
-            .select(
-                "brand_id,"
-                "brand_name"
-            )
-            .execute()
-        )
-
-        brand_lookup = {
-            row["brand_id"]: row
-            for row in (
-                brand_response.data or []
-            )
-        }
-
-        # =====================================================
-        # TOP BRANDS
-        #
-        # Since there is no sale_value/revenue, ranking is
-        # based on TOTAL_BL (bulk litres).
-        # =====================================================
-
-        brand_stats: Dict[
-            int,
-            Dict[str, Any]
-        ] = {}
-
-        for sale in sales:
-
-            brand_id = sale.get(
-                "brand_id"
-            )
-
-            if brand_id is None:
-                continue
-
-            if brand_id not in brand_stats:
-
-                brand = brand_lookup.get(
-                    brand_id,
-                    {}
-                )
-
-                brand_stats[
-                    brand_id
-                ] = {
-                    "brand_id":
-                        brand_id,
-
-                    "brand_name":
-                        brand.get(
-                            "brand_name",
-                            f"Brand {brand_id}"
-                        ),
-
-                    # Old API expected brand_code,
-                    # but current DB does not have it.
-                    "brand_code":
-                        str(brand_id),
-
-                    "total_cases":
-                        0.0,
-
-                    "total_sales_value":
-                        0.0,
-
-                    "total_bulk_liters":
-                        0.0,
-                }
-
-            brand_stats[
-                brand_id
-            ][
-                "total_cases"
-            ] += float(
-                sale.get(
-                    "total_case"
-                ) or 0
-            )
-
-            brand_stats[
-                brand_id
-            ][
-                "total_bulk_liters"
-            ] += float(
-                sale.get(
-                    "total_bl"
-                ) or 0
-            )
-
-        top_brands = sorted(
-            brand_stats.values(),
-            key=lambda item:
-                item[
-                    "total_bulk_liters"
-                ],
-            reverse=True
-        )[:5]
-
-        # =====================================================
-        # BRAND MARKET SHARE
-        #
-        # Here market share means BL volume share.
-        # =====================================================
-
-        for brand in top_brands:
-
-            if total_bulk_liters > 0:
-
-                brand[
-                    "market_share_percentage"
-                ] = round(
-                    (
-                        brand[
-                            "total_bulk_liters"
-                        ]
-                        / total_bulk_liters
-                    )
-                    * 100,
-                    2
-                )
-
-            else:
-
-                brand[
-                    "market_share_percentage"
-                ] = 0.0
-
-        # =====================================================
-        # LOAD DEPOTS + CIRCLES
-        # =====================================================
-
-        depot_response = (
-            client
-            .table("depots")
-            .select(
-                "depot_id,"
-                "name,"
-                "circle_id"
-            )
-            .execute()
-        )
-
-        depot_lookup = {
-            row["depot_id"]: row
-            for row in (
-                depot_response.data or []
-            )
-        }
-
-        circle_response = (
-            client
-            .table("circles")
-            .select(
-                "circle_id,"
-                "name"
-            )
-            .execute()
-        )
-
-        circle_lookup = {
-            row["circle_id"]: row
-            for row in (
-                circle_response.data or []
-            )
-        }
-
-        # =====================================================
-        # TOP DEPOTS
-        # =====================================================
-
-        depot_stats: Dict[
-            int,
-            Dict[str, Any]
-        ] = {}
-
-        for sale in sales:
-
-            sale_depot_id = sale.get(
-                "depot_id"
-            )
-
-            if sale_depot_id is None:
-                continue
-
-            if (
-                sale_depot_id
-                not in depot_stats
-            ):
-
-                depot = depot_lookup.get(
-                    sale_depot_id,
-                    {}
-                )
-
-                depot_circle_id = (
-                    depot.get(
-                        "circle_id"
-                    )
-                )
-
-                circle = (
-                    circle_lookup.get(
-                        depot_circle_id,
-                        {}
-                    )
-                )
-
-                depot_stats[
-                    sale_depot_id
-                ] = {
-                    "depot_id":
-                        sale_depot_id,
-
-                    "depot_name":
-                        depot.get(
-                            "name",
-                            f"Depot {sale_depot_id}"
-                        ),
-
-                    # Current schema has no depot_code.
-                    "depot_code":
-                        str(sale_depot_id),
-
-                    "circle_name":
-                        circle.get(
-                            "name",
-                            ""
-                        ),
-
-                    "total_cases":
-                        0.0,
-
-                    "total_sales_value":
-                        0.0,
-
-                    "total_bulk_liters":
-                        0.0,
-                }
-
-            depot_stats[
-                sale_depot_id
-            ][
-                "total_cases"
-            ] += float(
-                sale.get(
-                    "total_case"
-                ) or 0
-            )
-
-            depot_stats[
-                sale_depot_id
-            ][
-                "total_bulk_liters"
-            ] += float(
-                sale.get(
-                    "total_bl"
-                ) or 0
-            )
-
-        top_depots = sorted(
-            depot_stats.values(),
-            key=lambda item:
-                item[
-                    "total_bulk_liters"
-                ],
-            reverse=True
-        )[:5]
-
-        # =====================================================
-        # FINAL RESPONSE
-        # =====================================================
+        # Sort brands descending by Total Bulk Liters (QTY BL)
+        brands_list.sort(key=lambda x: x["total_bl"], reverse=True)
 
         return {
-            "kpis": kpis,
-            "trends": trends_list,
-            "top_brands": top_brands,
-            "top_depots": top_depots,
+            "period": period,
+            "from_date": from_date,
+            "to_date": to_date,
+            "totals": {
+                "total_cases": round(total_cases, 2),
+                "total_bottles": round(total_bottles, 2),
+                "total_bl": round(total_bl, 2)
+            },
+            "brands": brands_list
         }
 
+    def _empty_response(self, period: str, from_date: str, to_date: str) -> Dict[str, Any]:
+        return {
+            "period": period,
+            "from_date": from_date,
+            "to_date": to_date,
+            "totals": {
+                "total_cases": 0.0,
+                "total_bottles": 0.0,
+                "total_bl": 0.0
+            },
+            "brands": []
+        }
 
 analytics_service = AnalyticsService()
