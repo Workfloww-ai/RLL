@@ -14,7 +14,7 @@ export default function DashboardLayout({ currentView, onViewChange, onLogout, u
   const displayUserName = userName || 'Rahul Sharma';
   const userInitial = displayUserName.charAt(0).toUpperCase();
   const navItems = [
-    { id: 'stock' as ViewState, label: 'Stock Upload', icon: Package },
+    { id: 'stock' as ViewState, label: 'Sales Upload', icon: Package },
     { id: 'territory' as ViewState, label: 'Territory Management', icon: Map },
     { id: 'headcount' as ViewState, label: 'User Management', icon: Users },
   ];

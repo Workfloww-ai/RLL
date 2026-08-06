@@ -2,3 +2,6 @@
 # macOS
 .DS_Store
 **/.DS_Store
+
+backend/.venv_fresh/
+backend/venv_sys/

@@ -7,10 +7,11 @@ interface FileUploadProps {
   title: string;
   instructions: string[];
   accept?: string;
+  uploadEndpoint?: string;
   onUploadComplete?: (fileName: string) => void;
 }
 
-export default function FileUpload({ title, instructions, accept = ".xlsx, .xls, .csv", onUploadComplete }: FileUploadProps) {
+export default function FileUpload({ title, instructions, accept = ".xlsx, .xls, .csv", uploadEndpoint, onUploadComplete }: FileUploadProps) {
   const [uploadState, setUploadState] = useState<FileUploadState>({ status: 'idle', progress: 0 });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -181,7 +182,9 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
         headers['Authorization'] = `Bearer ${token}`;
       }
 
-      const response = await fetch('http://localhost:8000/api/v1/uploads/', {
+      const targetUrl = uploadEndpoint || 'http://localhost:8000/api/v1/uploads/';
+
+      const response = await fetch(targetUrl, {
         method: 'POST',
         headers,
         body: formData
@@ -200,6 +203,19 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
       }
 
       const data = await response.json();
+
+      if (uploadEndpoint) {
+        setUploadState({
+          status: 'success',
+          progress: 100,
+          fileName: file.name,
+          importedRows: data.imported_count || 0,
+          statusMessage: data.message || 'Excel roster data successfully imported and mapped across database tables.'
+        });
+        if (onUploadComplete) onUploadComplete(file.name);
+        return;
+      }
+
       const batchId = data.batch_id;
 
       // Transition to processing state & start polling backend until DB insertion confirmed

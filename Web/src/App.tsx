@@ -11,6 +11,52 @@ import HeadcountManagement from './pages/HeadcountManagement';
 import Login from './pages/Login';
 import { ViewState } from './types';
 
+interface ErrorBoundaryProps {
+  children: React.ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error('ErrorBoundary caught an error:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="p-8 max-w-lg mx-auto my-12 bg-white border border-red-200 rounded-xl shadow-lg text-center font-sans">
+          <div className="w-12 h-12 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4 font-bold text-xl">
+            !
+          </div>
+          <h2 className="text-xl font-bold text-slate-800 mb-2">Something went wrong</h2>
+          <p className="text-xs text-slate-500 mb-4">{this.state.error?.message || 'An unexpected error occurred.'}</p>
+          <button
+            onClick={() => this.setState({ hasError: false, error: null })}
+            className="px-4 py-2 bg-[#004B87] text-white rounded text-xs font-bold hover:bg-blue-800 transition-colors"
+          >
+            Try Again
+          </button>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [userName, setUserName] = useState<string | null>(null);
@@ -24,20 +70,22 @@ export default function App() {
   }
 
   return (
-    <DashboardLayout 
-      currentView={currentView} 
-      onViewChange={setCurrentView}
-      userName={userName}
-      onLogout={() => {
-        setIsAuthenticated(false);
-        setUserName(null);
-        localStorage.removeItem('token');
-      }}
-    >
-      {currentView === 'stock' && <StockUpload />}
-      {currentView === 'territory' && <TerritoryManagement />}
-      {currentView === 'headcount' && <HeadcountManagement />}
-    </DashboardLayout>
+    <ErrorBoundary>
+      <DashboardLayout 
+        currentView={currentView} 
+        onViewChange={setCurrentView}
+        userName={userName}
+        onLogout={() => {
+          setIsAuthenticated(false);
+          setUserName(null);
+          localStorage.removeItem('token');
+        }}
+      >
+        {currentView === 'stock' && <StockUpload />}
+        {currentView === 'territory' && <TerritoryManagement />}
+        {currentView === 'headcount' && <HeadcountManagement />}
+      </DashboardLayout>
+    </ErrorBoundary>
   );
 }
 

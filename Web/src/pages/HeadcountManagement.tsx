@@ -1,21 +1,59 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import FileUpload from '../components/FileUpload';
-import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X } from 'lucide-react';
+import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X, RefreshCw } from 'lucide-react';
 import { User } from '../types';
 
-const INITIAL_USERS: User[] = [
-  { id: 'u1', name: 'Rahul Sharma', phoneNumber: '+91 9876543210', role: 'Area Sales Manager', depotName: 'Mansarovar', circleName: 'Jaipur City', headquarters: 'Jaipur North', reportingManager: 'Arun K. Verma', isActive: true },
-  { id: 'u2', name: 'Vikram Singh', phoneNumber: '+91 9876543211', role: 'Area Sales Manager', depotName: 'Pal Road', circleName: 'Jodhpur Rural', headquarters: 'Jodhpur West', reportingManager: 'Pooja Singhania', isActive: true },
-  { id: 'u3', name: 'Priya Desai', phoneNumber: '+91 9876543212', role: 'Territory Executive', depotName: 'Unassigned', circleName: 'Unassigned', headquarters: 'Unassigned', reportingManager: 'Arun K. Verma', isActive: false },
-];
+const INITIAL_USERS: User[] = [];
+
+const normalizeUser = (u: any): User => {
+  if (!u) {
+    return {
+      id: `u_${Math.random().toString(36).slice(2, 7)}`,
+      name: 'Unknown User',
+      role: 'Territory Executive',
+      depotName: 'Unassigned',
+      circleName: 'Unassigned',
+      headquarters: 'Unassigned',
+      reportingManager: 'Unassigned',
+      phoneNumber: '',
+      isActive: true,
+    };
+  }
+
+  const id = String(u.id || u.user_id || `u_${Math.random().toString(36).slice(2, 7)}`);
+  const firstName = u.firstName || u.first_name || '';
+  const lastName = u.lastName || u.last_name || '';
+  const rawName = u.name || `${firstName} ${lastName}`.trim() || u.email || 'Unnamed User';
+
+  const role = u.role || u.role_name || 'Territory Executive';
+  const depotName = u.depotName || u.depot_name || u.depot || 'Unassigned';
+  const circleName = u.circleName || u.circle_name || u.circle || 'Unassigned';
+  const headquarters = u.headquarters || u.headquarters_name || u.hq || 'Unassigned';
+  const reportingManager = u.reportingManager || u.reporting_manager || u.manager || 'Unassigned';
+  const phoneNumber = u.phoneNumber || u.phone_number || u.phone || '';
+  const isActive = u.isActive ?? u.is_active ?? true;
+
+  return {
+    id,
+    name: rawName,
+    role,
+    depotName,
+    circleName,
+    headquarters,
+    reportingManager,
+    phoneNumber,
+    isActive,
+  };
+};
 
 export default function HeadcountManagement() {
-  const [users, setUsers] = useState<User[]>(INITIAL_USERS);
+  const [users, setUsers] = useState<User[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [showUpload, setShowUpload] = useState(false);
   const [isAdding, setIsAdding] = useState(false);
-  
-  const [newUser, setNewUser] = useState({ firstName: '', lastName: '', phoneNumber: '', role: 'Territory Executive', id: '', headquarters: 'Unassigned', depotName: 'Unassigned', isActive: true });
+  const [loading, setLoading] = useState(false);
+
+  const [newUser, setNewUser] = useState({ firstName: '', lastName: '', phoneNumber: '', email: '', role: 'Territory Executive', id: '', headquarters: 'Unassigned', depotName: 'Unassigned', reportingManager: 'Unassigned', isActive: true });
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
@@ -23,34 +61,71 @@ export default function HeadcountManagement() {
   const [editRole, setEditRole] = useState<User['role']>('Territory Executive');
   const [editDepot, setEditDepot] = useState("");
   const [editHQ, setEditHQ] = useState("");
+  const [editReportingManager, setEditReportingManager] = useState("");
   const [editIsActive, setEditIsActive] = useState(true);
+
+  const fetchUsers = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('http://localhost:8000/api/v1/users/');
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setUsers(data.map(normalizeUser));
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch users from backend API:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchUsers();
+  }, []);
 
   const handleEditClick = (user: User) => {
     setEditingId(user.id);
-    setEditName(user.name);
+    setEditName(user.name || "");
     setEditPhone(user.phoneNumber || "");
-    setEditRole(user.role);
-    setEditDepot(user.depotName);
-    setEditHQ(user.headquarters);
+    setEditRole(user.role || 'Territory Executive');
+    setEditDepot(user.depotName || "Unassigned");
+    setEditHQ(user.headquarters || "Unassigned");
+    setEditReportingManager(user.reportingManager || "");
     setEditIsActive(user.isActive ?? true);
   };
 
-  const handleSave = (userId: string) => {
-    setUsers((prev) =>
-      prev.map((u) =>
-        u.id === userId
-          ? {
-              ...u,
-              name: editName,
-              phoneNumber: editPhone,
-              role: editRole,
-              depotName: editDepot,
-              headquarters: editHQ,
-              isActive: editIsActive,
-            }
-          : u,
-      ),
-    );
+  const handleSave = async (userId: string) => {
+    const updatedPayload = {
+      name: editName,
+      phone: editPhone,
+      phoneNumber: editPhone,
+      role: editRole,
+      depotName: editDepot,
+      headquarters: editHQ,
+      reportingManager: editReportingManager,
+      reporting_manager: editReportingManager,
+      isActive: editIsActive,
+      is_active: editIsActive,
+    };
+
+    try {
+      const res = await fetch(`http://localhost:8000/api/v1/users/${userId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedPayload)
+      });
+      if (res.ok) {
+        const updatedUser = await res.json();
+        setUsers((prev) => prev.map((u) => u.id === userId ? normalizeUser({ ...u, ...updatedUser }) : u));
+      } else {
+        setUsers((prev) => prev.map((u) => u.id === userId ? normalizeUser({ ...u, ...updatedPayload }) : u));
+      }
+    } catch (err) {
+      console.error('Error updating user on backend:', err);
+      setUsers((prev) => prev.map((u) => u.id === userId ? normalizeUser({ ...u, ...updatedPayload }) : u));
+    }
     setEditingId(null);
   };
 
@@ -58,37 +133,72 @@ export default function HeadcountManagement() {
     setEditingId(null);
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
+    try {
+      await fetch(`http://localhost:8000/api/v1/users/${id}`, { method: 'DELETE' });
+    } catch (err) {
+      console.error('Error deleting user on backend:', err);
+    }
     setUsers(users.filter(u => u.id !== id));
   };
 
-  const handleAdd = () => {
-    if (newUser.firstName && newUser.lastName && newUser.id) {
+  const handleAdd = async () => {
+    if ((newUser.firstName || newUser.email) && (newUser.id || newUser.firstName)) {
       const fullName = `${newUser.firstName} ${newUser.lastName}`.trim();
-      const userToAdd = {
+      const userPayload = {
         ...newUser,
+        first_name: newUser.firstName,
+        last_name: newUser.lastName,
         name: fullName,
+        phone: newUser.phoneNumber,
+        phoneNumber: newUser.phoneNumber,
         circleName: 'Unassigned',
-        reportingManager: 'Unassigned'
+        reportingManager: newUser.reportingManager || 'Unassigned',
+        reporting_manager: newUser.reportingManager || 'Unassigned',
+        is_active: newUser.isActive
       };
-      // Remove firstName and lastName from the object being saved
-      delete (userToAdd as any).firstName;
-      delete (userToAdd as any).lastName;
-      
-      setUsers([userToAdd as User, ...users]);
+
+      try {
+        const res = await fetch('http://localhost:8000/api/v1/users/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(userPayload)
+        });
+        if (res.ok) {
+          const created = await res.json();
+          setUsers([normalizeUser(created), ...users]);
+        } else {
+          setUsers([normalizeUser(userPayload), ...users]);
+        }
+      } catch (err) {
+        console.error('Error creating user on backend:', err);
+        setUsers([normalizeUser(userPayload), ...users]);
+      }
+
       setIsAdding(false);
-      setNewUser({ firstName: '', lastName: '', phoneNumber: '', role: 'Territory Executive', id: '', headquarters: 'Unassigned', depotName: 'Unassigned', isActive: true });
+      setNewUser({ firstName: '', lastName: '', phoneNumber: '', email: '', role: 'Territory Executive', id: '', headquarters: 'Unassigned', depotName: 'Unassigned', reportingManager: 'Unassigned', isActive: true });
     }
   };
 
-  const filteredUsers = users.filter(user => 
-    user.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-    user.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    user.role.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (user.phoneNumber && user.phoneNumber.includes(searchQuery)) ||
-    user.headquarters.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    user.depotName.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const query = (searchQuery || '').toLowerCase().trim();
+  const filteredUsers = users.filter(user => {
+    if (!user) return false;
+    const name = (user.name || '').toLowerCase();
+    const id = (user.id || '').toLowerCase();
+    const role = (user.role || '').toLowerCase();
+    const phone = (user.phoneNumber || '').toLowerCase();
+    const hq = (user.headquarters || '').toLowerCase();
+    const depot = (user.depotName || '').toLowerCase();
+    const manager = (user.reportingManager || '').toLowerCase();
+
+    return name.includes(query) ||
+           id.includes(query) ||
+           role.includes(query) ||
+           phone.includes(query) ||
+           hq.includes(query) ||
+           depot.includes(query) ||
+           manager.includes(query);
+  });
 
   const getRoleColor = (role: string) => {
     switch (role) {
@@ -136,10 +246,12 @@ export default function HeadcountManagement() {
         <div className="mb-6 shrink-0">
           <FileUpload 
             title="Upload Headcount Roster"
+            uploadEndpoint="http://localhost:8000/api/v1/users/upload-roster"
+            onUploadComplete={() => fetchUsers()}
             instructions={[
-              "Ensure the file contains: Employee ID, Full Name, Role.",
-              "New employees will be added to the unassigned pool.",
-              "Use the main view to manage individual records if preferred."
+              "Ensure the file contains: Full Name, Role, Email, Phone, Reporting Manager, Depot Name.",
+              "Records are automatically mapped across users, user_roles, and ase_tsm_mapping database tables.",
+              "Use the main view to manage individual records after upload."
             ]}
           />
         </div>
@@ -149,16 +261,6 @@ export default function HeadcountManagement() {
         <div className="mb-6 bg-white p-4 rounded-xl shadow-sm border border-[#004B87]/40 ring-2 ring-[#004B87]/10 flex flex-col gap-4 shrink-0">
           <h3 className="font-bold text-slate-800 text-sm">Add New Employee</h3>
           <div className="flex gap-4 items-end">
-            <div className="flex-1 space-y-1">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Employee ID</label>
-              <input 
-                type="text" 
-                value={newUser.id}
-                onChange={(e) => setNewUser({...newUser, id: e.target.value})}
-                placeholder="e.g. u7"
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
-              />
-            </div>
             <div className="flex-[2] space-y-1">
               <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">First Name</label>
               <input 
@@ -221,6 +323,16 @@ export default function HeadcountManagement() {
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
               />
             </div>
+            <div className="flex-1 space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Reporting Manager</label>
+              <input 
+                type="text" 
+                value={newUser.reportingManager}
+                onChange={(e) => setNewUser({...newUser, reportingManager: e.target.value})}
+                placeholder="Manager Name"
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
+              />
+            </div>
             <div className="flex gap-2">
               <button 
                 onClick={handleAdd}
@@ -249,6 +361,7 @@ export default function HeadcountManagement() {
                 <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Role</th>
                 <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Depot</th>
                 <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">HQ</th>
+                <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Reporting Manager</th>
                 <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Active/Inactive</th>
                 <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Actions</th>
               </tr>
@@ -256,8 +369,16 @@ export default function HeadcountManagement() {
             <tbody className="divide-y divide-slate-100">
               {filteredUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-6 py-12 text-center text-sm font-medium text-slate-500">
-                    No records found matching your search.
+                  <td colSpan={8} className="px-6 py-12 text-center text-sm font-medium text-slate-500">
+                    {loading ? (
+                      <span className="inline-flex items-center gap-2 text-slate-600 font-semibold">
+                        <RefreshCw className="w-4 h-4 animate-spin text-[#004B87]" /> Loading personnel from database...
+                      </span>
+                    ) : searchQuery ? (
+                      "No records found matching your search query."
+                    ) : (
+                      "No personnel records found in database. Click 'Add Employee' or 'Bulk Upload' to add personnel."
+                    )}
                   </td>
                 </tr>
               ) : (
@@ -278,7 +399,6 @@ export default function HeadcountManagement() {
                           </div>
                           <div>
                             <p className="font-bold text-slate-800 text-sm">{user.name}</p>
-                            <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{user.id}</p>
                           </div>
                         </div>
                       )}
@@ -337,6 +457,20 @@ export default function HeadcountManagement() {
                       ) : (
                         <p className={`text-xs font-bold ${user.headquarters === "Unassigned" ? "text-slate-400 italic" : "text-slate-700"}`}>
                           {user.headquarters}
+                        </p>
+                      )}
+                    </td>
+                    <td className="px-6 py-4">
+                      {editingId === user.id ? (
+                        <input
+                          type="text"
+                          value={editReportingManager}
+                          onChange={(e) => setEditReportingManager(e.target.value)}
+                          className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#004B87]"
+                        />
+                      ) : (
+                        <p className={`text-xs font-bold ${!user.reportingManager || user.reportingManager === "Unassigned" ? "text-slate-400 italic" : "text-slate-700"}`}>
+                          {user.reportingManager || "Unassigned"}
                         </p>
                       )}
                     </td>
