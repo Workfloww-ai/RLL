@@ -1,40 +1,22 @@
-from typing import List, Optional
-from datetime import date
-from pydantic import BaseModel
+from typing import Optional, List
+# pyrefly: ignore [missing-import]
+from pydantic import BaseModel, Field
 
-class KPICards(BaseModel):
-    total_sales_value: float
-    total_cases_sold: float
-    total_bottles_sold: float
-    total_bulk_liters: float
-    active_licensees_count: int
-    active_brands_count: int
-    growth_percentage: Optional[float] = 0.0
+class TotalsSummary(BaseModel):
+    total_cases: float = Field(..., description="Total Cases sold")
+    total_bottles: float = Field(..., description="Total Bottles sold")
+    total_bl: float = Field(..., description="Total Bulk Liters sold")
 
-class SalesTrendItem(BaseModel):
-    sales_date: date
-    total_sales: float
-    total_cases: float
-    total_bottles: float
-
-class TopBrandItem(BaseModel):
+class BrandAnalyticsItem(BaseModel):
     brand_id: int
     brand_name: str
-    brand_code: str
     total_cases: float
-    total_sales_value: float
-    market_share_percentage: float
+    total_bottles: float
+    total_bl: float
 
-class TopDepotItem(BaseModel):
-    depot_id: int
-    depot_name: str
-    depot_code: str
-    circle_name: Optional[str] = None
-    total_cases: float
-    total_sales_value: float
-
-class DashboardOverview(BaseModel):
-    kpis: KPICards
-    trends: List[SalesTrendItem]
-    top_brands: List[TopBrandItem]
-    top_depots: List[TopDepotItem]
+class DashboardResponse(BaseModel):
+    period: str = Field(..., description="period type: daily, mtd, ytd")
+    from_date: str
+    to_date: str
+    totals: TotalsSummary
+    brands: List[BrandAnalyticsItem]

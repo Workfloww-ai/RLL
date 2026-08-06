@@ -10,14 +10,10 @@ def get_supabase_client() -> Optional[Client]:
     if _client is not None:
         return _client
     url = settings.SUPABASE_URL
-    key = settings.SUPABASE_SECRET_KEY
-    print("=" * 60)
-    print("SUPABASE URL :", url)
-    print("KEY PREFIX   :", key[:25])
-    print("=" * 60)
+    key = getattr(settings, "SUPABASE_SERVICE_ROLE_KEY", getattr(settings, "SUPABASE_ANON_KEY", getattr(settings, "SUPABASE_KEY", "")))
     if not url or not key:
         logger.warning(
-            "SUPABASE_URL or SUPABASE_SECRET_KEY is missing. "
+            "SUPABASE_URL or SUPABASE key is missing. "
             "Supabase operations will be skipped (mock mode)."
         )
         return None
@@ -291,16 +287,25 @@ def ensure_calendar_dates(dates: List[str]) -> bool:
         for d in normalized_dates:
             try:
                 dt = datetime.strptime(d, "%Y-%m-%d")
+                m = dt.month
+                y = dt.year
+                fy_start = y if m >= 4 else y - 1
+                fy_label = f"{fy_start}-{str(fy_start + 1)[-2:]}"
+                fy_month = (m - 3) if m >= 4 else (m + 9)
+
                 rows.append({
                     "date_id": d,
-                    "year": dt.year,
-                    "quarter": (dt.month - 1) // 3 + 1,
-                    "month": dt.month,
+                    "year": y,
+                    "quarter": (m - 1) // 3 + 1,
+                    "month": m,
                     "month_name": dt.strftime("%B"),
                     "day": dt.day,
                     "day_of_week": dt.isoweekday(),
                     "day_name": dt.strftime("%A"),
                     "is_weekend": dt.isoweekday() in (6, 7),
+                    "financial_year_start": fy_start,
+                    "financial_year_label": fy_label,
+                    "financial_month": fy_month,
                     "is_active": True,
                 })
             except Exception:
@@ -395,5 +400,3 @@ def get_batch_details(batch_id: int) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"get_batch_details error: {e}")
         return {"batch_id": batch_id, "error": str(e)}
-print("URL:", settings.SUPABASE_URL)
-print("KEY:", settings.SUPABASE_SECRET_KEY[:20])
