@@ -1,0 +1,6 @@
+{
+  "name": "Rajasthan Liquors Limited Sales Dashboard",
+  "description": "Mobile sales dashboard for Rajasthan Liquors Limited (RLL) with company cards, brand breakdown modal, leaderboard drawer, and period metrics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

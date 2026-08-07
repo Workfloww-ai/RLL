@@ -78,10 +78,16 @@ class DepotUpdate(BaseModel):
     name: Optional[str] = None
     headquarters_id: Optional[int] = None
     is_active: Optional[bool] = None
+    assigned_user_id: Optional[str] = None
 
 class DepotResponse(DepotBase):
     depot_id: int
     headquarters_name: Optional[str] = "Unassigned"
+    assigned_user_id: Optional[str] = None
+    depot_user: Optional[str] = "Unassigned"
+    depot_user_email: Optional[str] = None
+    hq_user: Optional[str] = "Unassigned"
+    hq_user_email: Optional[str] = None
     created_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 

@@ -11,10 +11,10 @@ interface DashboardLayoutProps {
 }
 
 export default function DashboardLayout({ currentView, onViewChange, onLogout, userName, children }: DashboardLayoutProps) {
-  const displayUserName = userName || 'Rahul Sharma';
+  const displayUserName = userName || 'Admin User';
   const userInitial = displayUserName.charAt(0).toUpperCase();
   const navItems = [
-    { id: 'stock' as ViewState, label: 'Stock Upload', icon: Package },
+    { id: 'stock' as ViewState, label: 'Sales Upload', icon: Package },
     { id: 'territory' as ViewState, label: 'Territory Management', icon: Map },
     { id: 'headcount' as ViewState, label: 'User Management', icon: Users },
   ];
@@ -26,7 +26,7 @@ export default function DashboardLayout({ currentView, onViewChange, onLogout, u
         <div className="p-6 mb-4">
           <div className="flex items-center gap-3">
             <img src="/images/rll.png" alt="RLL Logo" className="w-12 h-12 object-contain bg-white rounded p-0.5" />
-            <h1 className="text-white font-bold tracking-tight text-xl">RLL ADMIN</h1>
+            <h1 className="text-white font-bold tracking-tight text-xl">RLL</h1>
           </div>
         </div>
 
@@ -79,7 +79,7 @@ export default function DashboardLayout({ currentView, onViewChange, onLogout, u
             <div className="flex items-center gap-2 pl-4 border-l border-slate-200">
               <div className="text-right">
                 <p className="text-xs font-bold text-slate-700 leading-none">{displayUserName}</p>
-                <p className="text-[10px] text-slate-400 font-medium uppercase mt-1">Master Admin</p>
+                <p className="text-[10px] text-slate-400 font-medium uppercase mt-1">Admin</p>
               </div>
               <div className="w-8 h-8 bg-slate-200 rounded-full border-2 border-white shadow-sm flex items-center justify-center text-slate-600 font-bold text-xs">
                 {userInitial}

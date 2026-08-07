@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { 
   Search, Filter, Edit2, Check, X, MapPin, Trash2, RefreshCw, 
-  ChevronLeft, ChevronRight, ArrowUpDown, ChevronUp, ChevronDown, RotateCcw
+  ChevronLeft, ChevronRight, ArrowUpDown, ChevronUp, ChevronDown, RotateCcw,
+  User as UserIcon, Building2
 } from "lucide-react";
 
 interface DepotRecord {
@@ -10,6 +11,11 @@ interface DepotRecord {
   headquarters_id: number | null;
   headquarters_name: string;
   is_active: boolean;
+  assigned_user_id?: string | null;
+  depot_user?: string;
+  depot_user_email?: string;
+  hq_user?: string;
+  hq_user_email?: string;
 }
 
 interface HeadquartersRecord {
@@ -18,12 +24,19 @@ interface HeadquartersRecord {
   is_active: boolean;
 }
 
-type SortField = "name" | "headquarters_name" | "is_active";
+interface UserOption {
+  user_id: string;
+  name: string;
+  email: string;
+}
+
+type SortField = "name" | "headquarters_name" | "depot_user" | "hq_user" | "is_active";
 type SortDirection = "asc" | "desc";
 
 export default function TerritoryManagement() {
   const [depots, setDepots] = useState<DepotRecord[]>([]);
   const [headquartersList, setHeadquartersList] = useState<HeadquartersRecord[]>([]);
+  const [usersList, setUsersList] = useState<UserOption[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Search & Filters
@@ -44,6 +57,7 @@ export default function TerritoryManagement() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState("");
   const [editHqId, setEditHqId] = useState<number | "">("");
+  const [editAssignedUserId, setEditAssignedUserId] = useState<string>("");
   const [editIsActive, setEditIsActive] = useState(true);
 
   const token = localStorage.getItem("token");
@@ -53,9 +67,10 @@ export default function TerritoryManagement() {
     try {
       const headers = { Authorization: `Bearer ${token}` };
       
-      const [depotsRes, hqRes] = await Promise.all([
+      const [depotsRes, hqRes, usersRes] = await Promise.all([
         fetch("http://localhost:8000/api/v1/master-data/depots", { headers }),
-        fetch("http://localhost:8000/api/v1/master-data/headquarters", { headers })
+        fetch("http://localhost:8000/api/v1/master-data/headquarters", { headers }),
+        fetch("http://localhost:8000/api/v1/users/", { headers })
       ]);
 
       if (depotsRes.ok) {
@@ -66,6 +81,18 @@ export default function TerritoryManagement() {
         const hqData = await hqRes.json();
         setHeadquartersList(hqData);
       }
+      if (usersRes.ok) {
+        const usersData = await usersRes.json();
+        if (Array.isArray(usersData)) {
+          setUsersList(
+            usersData.map((u: any) => ({
+              user_id: String(u.id || u.user_id),
+              name: u.name || `${u.first_name || u.firstName || ''} ${u.last_name || u.lastName || ''}`.trim() || u.email || 'Unnamed User',
+              email: u.email || ''
+            }))
+          );
+        }
+      }
     } catch (error) {
       console.error("Error fetching territory data:", error);
     } finally {
@@ -73,8 +100,13 @@ export default function TerritoryManagement() {
     }
   };
 
+  const isMounted = useRef(false);
+
   useEffect(() => {
-    fetchData();
+    if (!isMounted.current) {
+      isMounted.current = true;
+      fetchData();
+    }
   }, []);
 
   // Reset to page 1 whenever filters or search query change
@@ -101,7 +133,9 @@ export default function TerritoryManagement() {
       result = result.filter(
         (d) =>
           d.name.toLowerCase().includes(query) ||
-          (d.headquarters_name && d.headquarters_name.toLowerCase().includes(query))
+          (d.headquarters_name && d.headquarters_name.toLowerCase().includes(query)) ||
+          (d.depot_user && d.depot_user.toLowerCase().includes(query)) ||
+          (d.hq_user && d.hq_user.toLowerCase().includes(query))
       );
     }
 
@@ -119,8 +153,8 @@ export default function TerritoryManagement() {
 
     // Sorting
     result.sort((a, b) => {
-      let aVal: any = a[sortField];
-      let bVal: any = b[sortField];
+      let aVal: any = a[sortField] || "";
+      let bVal: any = b[sortField] || "";
 
       if (typeof aVal === "string") aVal = aVal.toLowerCase();
       if (typeof bVal === "string") bVal = bVal.toLowerCase();
@@ -145,6 +179,7 @@ export default function TerritoryManagement() {
     setEditingId(depot.depot_id);
     setEditName(depot.name);
     setEditHqId(depot.headquarters_id ?? "");
+    setEditAssignedUserId(depot.assigned_user_id || "");
     setEditIsActive(depot.is_active);
   };
 
@@ -153,7 +188,8 @@ export default function TerritoryManagement() {
       const payload = {
         name: editName.trim(),
         headquarters_id: editHqId !== "" ? Number(editHqId) : null,
-        is_active: editIsActive
+        is_active: editIsActive,
+        assigned_user_id: editAssignedUserId !== "" ? editAssignedUserId : null
       };
 
       const res = await fetch(`http://localhost:8000/api/v1/master-data/depots/${depotId}`, {
@@ -166,23 +202,8 @@ export default function TerritoryManagement() {
       });
 
       if (res.ok) {
-        const selectedHq = headquartersList.find((h) => h.headquarters_id === Number(editHqId));
-        const hqName = selectedHq ? selectedHq.name : "Unassigned";
-
-        setDepots((prev) =>
-          prev.map((d) =>
-            d.depot_id === depotId
-              ? {
-                  ...d,
-                  name: editName.trim(),
-                  headquarters_id: editHqId !== "" ? Number(editHqId) : null,
-                  headquarters_name: hqName,
-                  is_active: editIsActive
-                }
-              : d
-          )
-        );
         setEditingId(null);
+        await fetchData(); // Refresh data from backend database
       } else {
         alert("Failed to update depot in Supabase.");
       }
@@ -232,7 +253,7 @@ export default function TerritoryManagement() {
             Territory Management
           </h1>
           <p className="text-slate-500 mt-1 text-sm font-medium">
-            Instantly edit alignments and locations across the organization.
+            Instantly edit alignments, depots, headquarters, and assigned users across the organization.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
@@ -240,7 +261,7 @@ export default function TerritoryManagement() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
             <input
               type="text"
-              placeholder="Search location..."
+              placeholder="Search location or user..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-9 pr-4 py-2 bg-white border border-slate-200 rounded text-xs font-bold text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#004B87] w-64"
@@ -261,9 +282,6 @@ export default function TerritoryManagement() {
             className="flex items-center gap-2 px-3 py-2 border border-slate-200 text-xs font-bold text-slate-600 rounded bg-white hover:bg-slate-50"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh
-          </button>
-          <button className="px-4 py-2 bg-[#004B87] text-white text-xs font-bold rounded shadow-sm hover:bg-blue-800 transition-colors">
-            Export Data
           </button>
         </div>
       </div>
@@ -328,6 +346,7 @@ export default function TerritoryManagement() {
                     )}
                   </div>
                 </th>
+
                 <th 
                   onClick={() => handleSort("headquarters_name")}
                   className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
@@ -341,6 +360,35 @@ export default function TerritoryManagement() {
                     )}
                   </div>
                 </th>
+
+                <th 
+                  onClick={() => handleSort("depot_user")}
+                  className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span>Depot User</span>
+                    {sortField === "depot_user" ? (
+                      sortDirection === "asc" ? <ChevronUp className="w-3 h-3 text-[#004B87]" /> : <ChevronDown className="w-3 h-3 text-[#004B87]" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 text-slate-300" />
+                    )}
+                  </div>
+                </th>
+
+                <th 
+                  onClick={() => handleSort("hq_user")}
+                  className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span>HQ User</span>
+                    {sortField === "hq_user" ? (
+                      sortDirection === "asc" ? <ChevronUp className="w-3 h-3 text-[#004B87]" /> : <ChevronDown className="w-3 h-3 text-[#004B87]" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 text-slate-300" />
+                    )}
+                  </div>
+                </th>
+
                 <th 
                   onClick={() => handleSort("is_active")}
                   className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
@@ -354,6 +402,7 @@ export default function TerritoryManagement() {
                     )}
                   </div>
                 </th>
+
                 <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">
                   Actions
                 </th>
@@ -362,15 +411,15 @@ export default function TerritoryManagement() {
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan={4} className="px-6 py-12 text-center text-sm font-medium text-slate-500">
+                  <td colSpan={6} className="px-6 py-12 text-center text-sm font-medium text-slate-500">
                     <RefreshCw className="w-6 h-6 animate-spin mx-auto text-[#004B87] mb-2" />
                     Loading territory records from database...
                   </td>
                 </tr>
               ) : paginatedDepots.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-6 py-12 text-center text-sm font-medium text-slate-500">
-                    No territory records found matching your filters.
+                  <td colSpan={6} className="px-6 py-12 text-center text-sm font-medium text-slate-500">
+                    No Territory Records Found.
                   </td>
                 </tr>
               ) : (
@@ -379,6 +428,7 @@ export default function TerritoryManagement() {
                     key={depot.depot_id}
                     className="hover:bg-slate-50/50 transition-colors group"
                   >
+                    {/* Depot Name */}
                     <td className="px-6 py-4">
                       {editingId === depot.depot_id ? (
                         <input
@@ -400,6 +450,8 @@ export default function TerritoryManagement() {
                         </div>
                       )}
                     </td>
+
+                    {/* HQ Name */}
                     <td className="px-6 py-4">
                       {editingId === depot.depot_id ? (
                         <select
@@ -416,7 +468,7 @@ export default function TerritoryManagement() {
                         </select>
                       ) : (
                         <div className="flex items-center gap-2">
-                          <MapPin
+                          <Building2
                             className={`w-3.5 h-3.5 ${depot.headquarters_name === "Unassigned" ? "text-slate-300" : "text-[#004B87]"}`}
                           />
                           <span
@@ -427,6 +479,65 @@ export default function TerritoryManagement() {
                         </div>
                       )}
                     </td>
+
+                    {/* Depot User */}
+                    <td className="px-6 py-4">
+                      {editingId === depot.depot_id ? (
+                        <select
+                          value={editAssignedUserId}
+                          onChange={(e) => setEditAssignedUserId(e.target.value)}
+                          className="w-full px-2.5 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#004B87]"
+                        >
+                          <option value="">Unassigned</option>
+                          {usersList.map((u) => (
+                            <option key={u.user_id} value={u.user_id}>
+                              {u.name} ({u.email})
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <UserIcon
+                            className={`w-3.5 h-3.5 ${!depot.depot_user || depot.depot_user === "Unassigned" ? "text-slate-300" : "text-emerald-600"}`}
+                          />
+                          <div>
+                            <span
+                              className={`text-xs font-bold block ${!depot.depot_user || depot.depot_user === "Unassigned" ? "text-slate-400 italic" : "text-slate-700"}`}
+                            >
+                              {depot.depot_user || "Unassigned"}
+                            </span>
+                            {depot.depot_user_email && (
+                              <span className="text-[10px] text-slate-400 font-medium block">
+                                {depot.depot_user_email}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </td>
+
+                    {/* HQ User */}
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-2">
+                        <UserIcon
+                          className={`w-3.5 h-3.5 ${!depot.hq_user || depot.hq_user === "Unassigned" ? "text-slate-300" : "text-blue-600"}`}
+                        />
+                        <div>
+                          <span
+                            className={`text-xs font-bold block ${!depot.hq_user || depot.hq_user === "Unassigned" ? "text-slate-400 italic" : "text-slate-700"}`}
+                          >
+                            {depot.hq_user || "Unassigned"}
+                          </span>
+                          {depot.hq_user_email && (
+                            <span className="text-[10px] text-slate-400 font-medium block">
+                              {depot.hq_user_email}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+
+                    {/* Status */}
                     <td className="px-6 py-4">
                       {editingId === depot.depot_id ? (
                         <select
@@ -447,6 +558,7 @@ export default function TerritoryManagement() {
                       )}
                     </td>
 
+                    {/* Actions */}
                     <td className="px-6 py-4 text-right">
                       {editingId === depot.depot_id ? (
                         <div className="flex items-center justify-end gap-2">

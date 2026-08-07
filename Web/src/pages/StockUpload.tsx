@@ -5,16 +5,16 @@ export default function StockUpload() {
   return (
     <div className="max-w-7xl w-full space-y-6">
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-slate-800">Stock Data Upload</h1>
-        <p className="text-slate-500 mt-1 text-sm font-medium">Upload the latest inventory data for real-time outlet visibility.</p>
+        <h1 className="text-2xl font-bold text-slate-800">Sales Data Upload</h1>
+        <p className="text-slate-500 mt-1 text-sm font-medium">Upload the latest sales data for real-time outlet visibility.</p>
       </div>
 
       <FileUpload 
-        title="Stock Inventory Upload"
+        title=""
         instructions={[
           "Ensure column headers match exactly with the provided template.",
-          "Accepted formats: .xlsx, .xls, .csv.",
-          "Maximum file size: 10MB.",
+          "Accepted formats: .xlsx, .xls, .xlsb, .csv, .numbers.",
+          "Maximum file size: 30MB.",
           "System handles duplicate removal automatically based on Timestamp."
         ]}
       />

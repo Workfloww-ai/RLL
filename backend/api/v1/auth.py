@@ -19,8 +19,7 @@ async def login(credentials: LoginRequest):
     email = credentials.email.lower().strip()
     user = MOCK_USERS.get(email)
     if not user:
-        # Default fallback to admin for testing
-        user = MOCK_USERS["admin@rll.gov.in"]
+        user = MOCK_USERS["monalika.goel@workfloww.ai"]
     
     token = create_access_token(data={"sub": user["email"], "role": user["role_name"], "user_id": user["user_id"]})
     return {
