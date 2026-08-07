@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import FileUpload from '../components/FileUpload';
-import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X, RefreshCw } from 'lucide-react';
+import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X, RefreshCw, Mail, Phone, Shield } from 'lucide-react';
 import { User } from '../types';
 
 const INITIAL_USERS: User[] = [];
@@ -10,6 +10,7 @@ const normalizeUser = (u: any): User => {
     return {
       id: `u_${Math.random().toString(36).slice(2, 7)}`,
       name: 'Unknown User',
+      email: '',
       role: 'Territory Executive',
       depotName: 'Unassigned',
       circleName: 'Unassigned',
@@ -24,6 +25,7 @@ const normalizeUser = (u: any): User => {
   const firstName = u.firstName || u.first_name || '';
   const lastName = u.lastName || u.last_name || '';
   const rawName = u.name || `${firstName} ${lastName}`.trim() || u.email || 'Unnamed User';
+  const email = u.email || u.user_email || '';
 
   const role = u.role || u.role_name || 'Territory Executive';
   const depotName = u.depotName || u.depot_name || u.depot || 'Unassigned';
@@ -36,6 +38,7 @@ const normalizeUser = (u: any): User => {
   return {
     id,
     name: rawName,
+    email,
     role,
     depotName,
     circleName,
@@ -53,14 +56,24 @@ export default function HeadcountManagement() {
   const [isAdding, setIsAdding] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const [newUser, setNewUser] = useState({ firstName: '', lastName: '', phoneNumber: '', email: '', role: 'Territory Executive', id: '', headquarters: 'Unassigned', depotName: 'Unassigned', reportingManager: 'Unassigned', isActive: true });
+  const [newUser, setNewUser] = useState({ 
+    firstName: '', 
+    lastName: '', 
+    phoneNumber: '', 
+    email: '', 
+    role: 'ASE', 
+    id: '', 
+    headquarters: 'Unassigned', 
+    depotName: 'Unassigned', 
+    reportingManager: 'Unassigned', 
+    isActive: true 
+  });
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editPhone, setEditPhone] = useState("");
-  const [editRole, setEditRole] = useState<User['role']>('Territory Executive');
-  const [editDepot, setEditDepot] = useState("");
-  const [editHQ, setEditHQ] = useState("");
+  const [editEmail, setEditEmail] = useState("");
+  const [editRole, setEditRole] = useState<User['role']>('ASE');
   const [editReportingManager, setEditReportingManager] = useState("");
   const [editIsActive, setEditIsActive] = useState(true);
 
@@ -89,9 +102,8 @@ export default function HeadcountManagement() {
     setEditingId(user.id);
     setEditName(user.name || "");
     setEditPhone(user.phoneNumber || "");
+    setEditEmail(user.email || "");
     setEditRole(user.role || 'Territory Executive');
-    setEditDepot(user.depotName || "Unassigned");
-    setEditHQ(user.headquarters || "Unassigned");
     setEditReportingManager(user.reportingManager || "");
     setEditIsActive(user.isActive ?? true);
   };
@@ -101,9 +113,8 @@ export default function HeadcountManagement() {
       name: editName,
       phone: editPhone,
       phoneNumber: editPhone,
+      email: editEmail,
       role: editRole,
-      depotName: editDepot,
-      headquarters: editHQ,
       reportingManager: editReportingManager,
       reporting_manager: editReportingManager,
       isActive: editIsActive,
@@ -134,6 +145,7 @@ export default function HeadcountManagement() {
   };
 
   const handleDelete = async (id: string) => {
+    if (!confirm("Are you sure you want to delete this user record?")) return;
     try {
       await fetch(`http://localhost:8000/api/v1/users/${id}`, { method: 'DELETE' });
     } catch (err) {
@@ -152,6 +164,7 @@ export default function HeadcountManagement() {
         name: fullName,
         phone: newUser.phoneNumber,
         phoneNumber: newUser.phoneNumber,
+        email: newUser.email,
         circleName: 'Unassigned',
         reportingManager: newUser.reportingManager || 'Unassigned',
         reporting_manager: newUser.reportingManager || 'Unassigned',
@@ -187,25 +200,30 @@ export default function HeadcountManagement() {
     const id = (user.id || '').toLowerCase();
     const role = (user.role || '').toLowerCase();
     const phone = (user.phoneNumber || '').toLowerCase();
-    const hq = (user.headquarters || '').toLowerCase();
-    const depot = (user.depotName || '').toLowerCase();
+    const email = (user.email || '').toLowerCase();
     const manager = (user.reportingManager || '').toLowerCase();
 
     return name.includes(query) ||
            id.includes(query) ||
            role.includes(query) ||
            phone.includes(query) ||
-           hq.includes(query) ||
-           depot.includes(query) ||
+           email.includes(query) ||
            manager.includes(query);
   });
 
   const getRoleColor = (role: string) => {
     switch (role) {
-      case 'Area Sales Manager': return 'bg-sky-50 text-sky-700';
-      case 'Territory Executive': return 'bg-emerald-50 text-emerald-700';
-      case 'Regional Supervisor': return 'bg-indigo-50 text-indigo-700';
-      default: return 'bg-slate-50 text-slate-700';
+      case 'TSM':
+      case 'Area Sales Manager':
+        return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+      case 'ASE':
+      case 'Territory Executive':
+        return 'bg-[#004B87]/10 text-[#004B87] border-[#004B87]/30';
+      case 'Regional Supervisor':
+      case 'RS':
+        return 'bg-indigo-50 text-indigo-700 border-indigo-200';
+      default:
+        return 'bg-slate-100 text-slate-700 border-slate-200';
     }
   };
 
@@ -214,30 +232,30 @@ export default function HeadcountManagement() {
       <div className="mb-6 flex justify-between items-end shrink-0">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">User Management</h1>
-          <p className="text-slate-500 mt-1 text-sm font-medium">Manage employees, onboard new joiners, and process exits.</p>
+          <p className="text-slate-500 mt-1 text-sm font-medium">Manage employees, onboard new joiners, phone numbers, emails, and reporting managers.</p>
         </div>
         <div className="flex gap-3">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-3.5 h-3.5" />
             <input 
               type="text" 
-              placeholder="Search personnel..." 
+              placeholder="Search by name, number, email..." 
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 pr-4 py-2 bg-white border border-slate-200 rounded text-xs font-bold text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#004B87] w-64" 
+              className="pl-9 pr-4 py-2 bg-white border border-slate-200 rounded text-xs font-bold text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#004B87] w-72" 
             />
           </div>
           <button 
             onClick={() => setShowUpload(!showUpload)}
             className="flex items-center gap-2 px-3 py-1.5 border border-slate-200 text-xs font-bold text-slate-600 rounded bg-white hover:bg-slate-50"
           >
-            <UploadCloud className="w-3 h-3" /> Bulk Upload
+            <UploadCloud className="w-3.5 h-3.5" /> Bulk Upload
           </button>
           <button 
             onClick={() => setIsAdding(true)}
             className="flex items-center gap-2 px-3 py-1.5 bg-[#004B87] text-white text-xs font-bold rounded shadow-sm hover:bg-blue-800 transition-colors"
           >
-            <UserPlus className="w-3 h-3" /> Add Employee
+            <UserPlus className="w-3.5 h-3.5" /> Add Employee
           </button>
         </div>
       </div>
@@ -249,8 +267,8 @@ export default function HeadcountManagement() {
             uploadEndpoint="http://localhost:8000/api/v1/users/upload-roster"
             onUploadComplete={() => fetchUsers()}
             instructions={[
-              "Ensure the file contains: Full Name, Role, Email, Phone, Reporting Manager, Depot Name.",
-              "Records are automatically mapped across users, user_roles, and ase_tsm_mapping database tables.",
+              "Ensure the file contains: Full Name, Phone Number, Email, Role, Reporting Manager.",
+              "Records are automatically mapped across users and reporting manager structures.",
               "Use the main view to manage individual records after upload."
             ]}
           />
@@ -260,8 +278,8 @@ export default function HeadcountManagement() {
       {isAdding && (
         <div className="mb-6 bg-white p-4 rounded-xl shadow-sm border border-[#004B87]/40 ring-2 ring-[#004B87]/10 flex flex-col gap-4 shrink-0">
           <h3 className="font-bold text-slate-800 text-sm">Add New Employee</h3>
-          <div className="flex gap-4 items-end">
-            <div className="flex-[2] space-y-1">
+          <div className="flex flex-wrap gap-4 items-end">
+            <div className="flex-1 min-w-[140px] space-y-1">
               <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">First Name</label>
               <input 
                 type="text" 
@@ -271,7 +289,7 @@ export default function HeadcountManagement() {
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
               />
             </div>
-            <div className="flex-[2] space-y-1">
+            <div className="flex-1 min-w-[140px] space-y-1">
               <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Last Name</label>
               <input 
                 type="text" 
@@ -281,8 +299,8 @@ export default function HeadcountManagement() {
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
               />
             </div>
-            <div className="flex-1 space-y-1">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Phone</label>
+            <div className="flex-1 min-w-[140px] space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Phone Number</label>
               <input 
                 type="text" 
                 value={newUser.phoneNumber}
@@ -291,39 +309,29 @@ export default function HeadcountManagement() {
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
               />
             </div>
-            <div className="flex-[2] space-y-1">
+            <div className="flex-1 min-w-[180px] space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Email</label>
+              <input 
+                type="email" 
+                value={newUser.email}
+                onChange={(e) => setNewUser({...newUser, email: e.target.value})}
+                placeholder="e.g. manoj.tiwari@rll.com"
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
+              />
+            </div>
+            <div className="flex-1 min-w-[160px] space-y-1">
               <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Role</label>
               <select 
                 value={newUser.role}
                 onChange={(e) => setNewUser({...newUser, role: e.target.value as any})}
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
               >
-                <option value="Area Sales Manager">Area Sales Manager</option>
-                <option value="Territory Executive">Territory Executive</option>
+                <option value="ASE">ASE</option>
+                <option value="TSM">TSM</option>
                 <option value="Regional Supervisor">Regional Supervisor</option>
               </select>
             </div>
-            <div className="flex-1 space-y-1">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">HQ</label>
-              <input 
-                type="text" 
-                value={newUser.headquarters}
-                onChange={(e) => setNewUser({...newUser, headquarters: e.target.value})}
-                placeholder="HQ Name"
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
-              />
-            </div>
-            <div className="flex-1 space-y-1">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Depot</label>
-              <input 
-                type="text" 
-                value={newUser.depotName}
-                onChange={(e) => setNewUser({...newUser, depotName: e.target.value})}
-                placeholder="Depot Name"
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
-              />
-            </div>
-            <div className="flex-1 space-y-1">
+            <div className="flex-1 min-w-[160px] space-y-1">
               <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Reporting Manager</label>
               <input 
                 type="text" 
@@ -358,18 +366,17 @@ export default function HeadcountManagement() {
               <tr className="bg-slate-50 border-b border-slate-200">
                 <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Name</th>
                 <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Phone Number</th>
+                <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Email</th>
                 <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Role</th>
-                <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Depot</th>
-                <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">HQ</th>
                 <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Reporting Manager</th>
-                <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Active/Inactive</th>
+                <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Status</th>
                 <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {filteredUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-6 py-12 text-center text-sm font-medium text-slate-500">
+                  <td colSpan={7} className="px-6 py-12 text-center text-sm font-medium text-slate-500">
                     {loading ? (
                       <span className="inline-flex items-center gap-2 text-slate-600 font-semibold">
                         <RefreshCw className="w-4 h-4 animate-spin text-[#004B87]" /> Loading personnel from database...
@@ -384,6 +391,7 @@ export default function HeadcountManagement() {
               ) : (
                 filteredUsers.map(user => (
                   <tr key={user.id} className="hover:bg-slate-50/50 transition-colors group">
+                    {/* Name */}
                     <td className="px-6 py-4">
                       {editingId === user.id ? (
                         <input
@@ -394,7 +402,7 @@ export default function HeadcountManagement() {
                         />
                       ) : (
                         <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-[#004B87] font-bold text-xs">
+                          <div className="w-8 h-8 rounded-full bg-[#004B87]/10 flex items-center justify-center text-[#004B87] font-bold text-xs">
                             {user.name.charAt(0)}
                           </div>
                           <div>
@@ -403,6 +411,8 @@ export default function HeadcountManagement() {
                         </div>
                       )}
                     </td>
+
+                    {/* Phone Number */}
                     <td className="px-6 py-4">
                       {editingId === user.id ? (
                         <input
@@ -412,9 +422,31 @@ export default function HeadcountManagement() {
                           className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#004B87]"
                         />
                       ) : (
-                        <p className="text-xs font-bold text-slate-600">{user.phoneNumber || 'N/A'}</p>
+                        <div className="flex items-center gap-2 text-slate-600">
+                          <Phone className="w-3.5 h-3.5 text-slate-400" />
+                          <span className="text-xs font-bold">{user.phoneNumber || 'N/A'}</span>
+                        </div>
                       )}
                     </td>
+
+                    {/* Email */}
+                    <td className="px-6 py-4">
+                      {editingId === user.id ? (
+                        <input
+                          type="email"
+                          value={editEmail}
+                          onChange={(e) => setEditEmail(e.target.value)}
+                          className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#004B87]"
+                        />
+                      ) : (
+                        <div className="flex items-center gap-2 text-slate-600">
+                          <Mail className="w-3.5 h-3.5 text-slate-400" />
+                          <span className="text-xs font-semibold">{user.email || 'N/A'}</span>
+                        </div>
+                      )}
+                    </td>
+
+                    {/* Role */}
                     <td className="px-6 py-4">
                       {editingId === user.id ? (
                         <select
@@ -422,44 +454,18 @@ export default function HeadcountManagement() {
                           onChange={(e) => setEditRole(e.target.value as any)}
                           className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#004B87]"
                         >
-                          <option value="Area Sales Manager">Area Sales Manager</option>
-                          <option value="Territory Executive">Territory Executive</option>
+                          <option value="ASE">ASE</option>
+                          <option value="TSM">TSM</option>
                           <option value="Regional Supervisor">Regional Supervisor</option>
                         </select>
                       ) : (
-                        <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${getRoleColor(user.role)}`}>
+                        <span className={`px-2.5 py-1 rounded border text-[10px] font-bold uppercase tracking-wider ${getRoleColor(user.role)}`}>
                           {user.role}
                         </span>
                       )}
                     </td>
-                    <td className="px-6 py-4">
-                      {editingId === user.id ? (
-                        <input
-                          type="text"
-                          value={editDepot}
-                          onChange={(e) => setEditDepot(e.target.value)}
-                          className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#004B87]"
-                        />
-                      ) : (
-                        <p className={`text-xs font-bold ${user.depotName === "Unassigned" ? "text-slate-400 italic" : "text-slate-700"}`}>
-                          {user.depotName}
-                        </p>
-                      )}
-                    </td>
-                    <td className="px-6 py-4">
-                      {editingId === user.id ? (
-                        <input
-                          type="text"
-                          value={editHQ}
-                          onChange={(e) => setEditHQ(e.target.value)}
-                          className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#004B87]"
-                        />
-                      ) : (
-                        <p className={`text-xs font-bold ${user.headquarters === "Unassigned" ? "text-slate-400 italic" : "text-slate-700"}`}>
-                          {user.headquarters}
-                        </p>
-                      )}
-                    </td>
+
+                    {/* Reporting Manager */}
                     <td className="px-6 py-4">
                       {editingId === user.id ? (
                         <input
@@ -474,6 +480,8 @@ export default function HeadcountManagement() {
                         </p>
                       )}
                     </td>
+
+                    {/* Status */}
                     <td className="px-6 py-4">
                       {editingId === user.id ? (
                         <select
@@ -493,6 +501,8 @@ export default function HeadcountManagement() {
                         </div>
                       )}
                     </td>
+
+                    {/* Actions */}
                     <td className="px-6 py-4 text-right">
                       {editingId === user.id ? (
                         <div className="flex items-center justify-end gap-2">
