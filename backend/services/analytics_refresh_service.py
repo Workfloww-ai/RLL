@@ -33,18 +33,14 @@ class AnalyticsRefreshService:
         success = True
         for d_str in unique_dates:
             try:
-                # 1. Trigger RPC refresh_sales_analytics
-                res = client.rpc("refresh_sales_analytics", {"p_sale_date": d_str}).execute()
-                logger.info(f"Successfully refreshed analytics for date: {d_str}")
+                # Trigger refreshes
+                client.rpc("refresh_dashboard_daily", {"p_sale_date": d_str}).execute()
+                client.rpc("refresh_dashboard_monthly", {"p_date": d_str}).execute()
+                client.rpc("refresh_company_sales_summary", {"p_sale_date": d_str}).execute()
+                logger.info(f"Successfully refreshed all analytics & company_sales_summary for date: {d_str}")
             except Exception as e:
-                logger.warning(f"RPC refresh_sales_analytics failed for date {d_str}, trying individual table refresh: {e}")
-                # Fallback python/SQL execution if RPC is not enabled or RPC permissions vary
-                try:
-                    client.rpc("refresh_dashboard_daily", {"p_sale_date": d_str}).execute()
-                    client.rpc("refresh_dashboard_monthly", {"p_date": d_str}).execute()
-                except Exception as fallback_err:
-                    logger.error(f"Failed to refresh analytics summaries for date {d_str}: {fallback_err}")
-                    success = False
+                logger.warning(f"RPC refresh failed for date {d_str}: {e}")
+                success = False
 
         return success
 

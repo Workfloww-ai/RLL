@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Period, ViewMode, Company } from './types';
 import {
   INITIAL_COMPANIES,
@@ -13,6 +13,8 @@ import { CompanyCard } from './components/CompanyCard';
 import { DepotsView } from './components/DepotsView';
 import { TsmView } from './components/TsmView';
 import { BrandModal } from './components/BrandModal';
+import { LoginScreen } from './components/LoginScreen';
+import { fetchMobileSales } from './lib/api';
 import {
   Search,
   Wifi,
@@ -20,27 +22,55 @@ import {
   Signal,
   ShieldAlert,
   X,
+  LogOut,
 } from 'lucide-react';
 
 export default function App() {
+  const [user, setUser] = useState<any>(() => {
+    const saved = localStorage.getItem('rll_mobile_user');
+    return saved ? JSON.parse(saved) : null;
+  });
+
   const [period, setPeriod] = useState<Period>('Daily');
-  const [dateFrom, setDateFrom] = useState<string>('2026-08-07');
-  const [dateTo, setDateTo] = useState<string>('2026-08-07');
+  const [dateFrom, setDateFrom] = useState<string>('2026-04-30');
+  const [dateTo, setDateTo] = useState<string>('2026-04-30');
   const [viewMode, setViewMode] = useState<ViewMode>('companies');
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
-
-  // Headquarter selection state
   const [selectedHq, setSelectedHq] = useState<string>('All Headquarters');
+  const [apiData, setApiData] = useState<any>(null);
 
-  // Dynamic date multiplier
+  // Fetch backend aggregated sales when user, dates, or HQ selection change
+  useEffect(() => {
+    if (!user) return;
+    fetchMobileSales(dateFrom, dateTo, period, selectedHq).then((res) => {
+      if (res) {
+        setApiData(res);
+      }
+    });
+  }, [user, dateFrom, dateTo, period, selectedHq]);
+
+  const handleLogout = () => {
+    localStorage.removeItem('rll_mobile_token');
+    localStorage.removeItem('rll_mobile_user');
+    setUser(null);
+  };
+
+  // Dynamic date multiplier (Only scale mock data; live API returns pre-aggregated exact metrics)
   const scaleFactor = useMemo(() => {
+    if (apiData && apiData.companies && apiData.companies.length > 0) {
+      return 1;
+    }
     return calculateDateFactor(dateFrom, dateTo, period);
-  }, [dateFrom, dateTo, period]);
+  }, [dateFrom, dateTo, period, apiData]);
 
-  // Filter companies: Exclude any "Others" if required, or match Image 1 list
+  // Filter companies: Use live API fetched companies if available, else fallback to INITIAL_COMPANIES
   const filteredCompanies = useMemo(() => {
-    return INITIAL_COMPANIES.filter((c) => {
+    const rawCompanies: Company[] = (apiData && apiData.companies && apiData.companies.length > 0) 
+      ? apiData.companies 
+      : INITIAL_COMPANIES;
+
+    return rawCompanies.filter((c) => {
       // Headquarter Filter
       if (selectedHq !== 'All Headquarters' && c.hqLocation) {
         if (c.hqLocation.toLowerCase() !== selectedHq.toLowerCase()) {
@@ -56,7 +86,7 @@ export default function App() {
 
       return matchCompany || matchBrands;
     });
-  }, [searchQuery, selectedHq]);
+  }, [searchQuery, selectedHq, apiData]);
 
   // Sort companies: Pinned (RLL then Diageo/In brew) at top, remaining sorted alphabetically ascending (A-Z)
   const sortedCompanies = useMemo(() => {
@@ -117,11 +147,25 @@ export default function App() {
           <span>09:41</span>
           <div className="w-20 h-4 bg-black/30 rounded-full mx-auto" />
           <div className="flex items-center gap-1.5">
+            {user && (
+              <button
+                onClick={handleLogout}
+                title="Logout"
+                className="hover:text-amber-400 transition-colors mr-1 cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5 text-white/80 hover:text-amber-400" />
+              </button>
+            )}
             <Signal className="w-3 h-3 text-white" />
             <Wifi className="w-3 h-3 text-white" />
             <Battery className="w-3.5 h-3.5 text-white" />
           </div>
         </div>
+
+        {!user ? (
+          <LoginScreen onLoginSuccess={(u) => setUser(u)} />
+        ) : (
+          <>
 
         {/* Minimal Streamlined Dashboard Header Component */}
         <Header
@@ -246,7 +290,7 @@ export default function App() {
           {/* VIEW 2: DEPOTS TAB */}
           {viewMode === 'depots' && (
             <DepotsView
-              depots={INITIAL_DEPOTS}
+              depots={(apiData && apiData.depots && apiData.depots.length > 0) ? apiData.depots : INITIAL_DEPOTS}
               period={period}
               scaleFactor={scaleFactor}
               selectedHq={selectedHq}
@@ -256,7 +300,7 @@ export default function App() {
           {/* VIEW 3: TSM TAB */}
           {viewMode === 'tsm' && (
             <TsmView
-              tsms={INITIAL_TSMS}
+              tsms={(apiData && apiData.tsms && apiData.tsms.length > 0) ? apiData.tsms : INITIAL_TSMS}
               period={period}
               scaleFactor={scaleFactor}
               selectedHq={selectedHq}
@@ -279,6 +323,8 @@ export default function App() {
           scaleFactor={scaleFactor}
           onClose={() => setSelectedCompany(null)}
         />
+          </>
+        )}
       </main>
     </div>
   );

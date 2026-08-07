@@ -162,10 +162,10 @@ export const INITIAL_COMPANIES: Company[] = [
     name: 'RLL',
     isPinned: true,
     hqLocation: 'Sriganganagar',
-    data: createMetrics(890, 4700),
+    data: createMetrics(595, 482),
     brands: [
-      { id: '8-pm-premium-black', name: '8 PM PREMIUM BLACK EXQUISITE WHISKY', data: createMetrics(450, 2400) },
-      { id: '8-pm-special-rare', name: '8 PM SPECIAL RARE WHISKY', data: createMetrics(440, 2300) },
+      { id: '8-pm-premium-black', name: '8 PM PREMIUM BLACK EXQUISITE WHISKY', data: createMetrics(300, 242) },
+      { id: '8-pm-special-rare', name: '8 PM SPECIAL RARE WHISKY', data: createMetrics(295, 240) },
     ],
   },
   {

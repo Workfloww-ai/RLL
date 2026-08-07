@@ -16,6 +16,7 @@ from backend.api.v1.uploads import router as uploads_router
 from backend.api.v1.dashboard import router as dashboard_router
 from backend.api.v1.analytics import router as analytics_router
 from backend.api.v1.reports import router as reports_router
+from backend.api.v1.mobile import router as mobile_router
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -43,6 +44,7 @@ app.add_middleware(
 
 # Register v1 API Routers
 app.include_router(auth_router, prefix=settings.API_V1_STR)
+app.include_router(mobile_router, prefix=settings.API_V1_STR)
 app.include_router(users_router, prefix=settings.API_V1_STR)
 app.include_router(master_data_router, prefix=settings.API_V1_STR)
 app.include_router(uploads_router, prefix=settings.API_V1_STR)

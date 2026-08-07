@@ -26,12 +26,12 @@ export const Header: React.FC<HeaderProps> = ({
   headquartersList,
 }) => {
   const periods: Period[] = ['Daily', 'MTD', 'YTD'];
-  const TODAY = '2026-08-07';
+  const TODAY = '2026-04-30';
 
   const handlePeriodChange = (p: Period) => {
     setPeriod(p);
     if (p === 'MTD') {
-      setDateFrom('2026-08-01');
+      setDateFrom('2026-04-01');
       setDateTo(TODAY);
     } else if (p === 'YTD') {
       setDateFrom('2026-04-01');
