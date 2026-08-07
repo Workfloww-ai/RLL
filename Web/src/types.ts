@@ -25,7 +25,8 @@ export interface Territory {
 export interface User {
   id: string;
   name: string;
-  role: 'Area Sales Manager' | 'Territory Executive' | 'Regional Supervisor';
+  email?: string;
+  role: 'ASE' | 'TSM' | 'Regional Supervisor' | string;
   depotName: string;
   circleName: string;
   headquarters: string;

@@ -466,7 +466,74 @@ class MasterService:
         client = get_supabase()
         if client:
             try:
-                # 1. Fetch depots and headquarters
+                # 1. Fetch territory data from public.raw_sales_upload table
+                try:
+                    raw_res = client.table("raw_sales_upload").select("raw_id, depot_raw, hq_raw, ase_raw, asm_tsm_raw, is_active").execute()
+                    raw_data = raw_res.data or []
+
+                    if raw_data:
+                        unique_map: Dict[str, Dict[str, Any]] = {}
+                        item_counter = 1
+
+                        for row in raw_data:
+                            depot_name = (row.get("depot_raw") or "Unassigned").strip()
+                            hq_name = (row.get("hq_raw") or "Unassigned").strip()
+                            ase_raw = row.get("ase_raw") or ""
+                            tsm_raw = row.get("asm_tsm_raw") or ""
+                            is_active = row.get("is_active", True)
+
+                            # Split names separated by slashes or commas ("Sharad/Deepak/CP Tak")
+                            ase_names = [p.strip() for p in ase_raw.replace(",", "/").split("/") if p.strip()]
+                            tsm_names = [p.strip() for p in tsm_raw.replace(",", "/").split("/") if p.strip()]
+                            first_tsm = tsm_names[0] if tsm_names else "Unassigned"
+
+                            # 1. Add ASE records
+                            for ase_name in ase_names:
+                                if ase_name.lower() in ["none", "null"]:
+                                    ase_name = "Unassigned"
+
+                                key = f"ASE::{depot_name}::{hq_name}::{ase_name}".lower()
+                                if key not in unique_map:
+                                    unique_map[key] = {
+                                        "depot_id": item_counter,
+                                        "name": depot_name,
+                                        "headquarters_id": item_counter,
+                                        "headquarters_name": hq_name,
+                                        "is_active": is_active,
+                                        "assigned_user_id": f"usr_{item_counter}",
+                                        "depot_user": ase_name,
+                                        "depot_user_role": "ASE",
+                                        "depot_user_email": "",
+                                        "hq_user": first_tsm,
+                                        "hq_user_email": ""
+                                    }
+                                    item_counter += 1
+
+                            # 2. Add TSM records
+                            for tsm_name in tsm_names:
+                                if tsm_name and tsm_name.lower() not in ["unassigned", "none", "null"]:
+                                    key = f"TSM::{depot_name}::{hq_name}::{tsm_name}".lower()
+                                    if key not in unique_map:
+                                        unique_map[key] = {
+                                            "depot_id": item_counter,
+                                            "name": depot_name,
+                                            "headquarters_id": item_counter,
+                                            "headquarters_name": hq_name,
+                                            "is_active": is_active,
+                                            "assigned_user_id": f"usr_{item_counter}",
+                                            "depot_user": tsm_name,
+                                            "depot_user_role": "TSM",
+                                            "depot_user_email": "",
+                                            "hq_user": tsm_name,
+                                            "hq_user_email": ""
+                                        }
+                                        item_counter += 1
+
+                        return list(unique_map.values())
+                except Exception as raw_err:
+                    logger.warning(f"Could not fetch from raw_sales_upload: {raw_err}")
+
+                # Fallback: Fetch depots and headquarters from depots table
                 dep_res = client.table("depots").select("depot_id, name, headquarters_id, office_id, circle_id, is_active, headquarters(name)").execute()
                 depots_data = dep_res.data or []
 
@@ -514,7 +581,7 @@ class MasterService:
                             depot_user_map[d_id] = []
                         depot_user_map[d_id].append(users_map[u_id])
 
-                # Build hq -> user mapping (users assigned to depots belonging to that HQ)
+                # Build hq -> user mapping
                 hq_user_map: Dict[int, List[Dict[str, Any]]] = {}
                 for d in depots_data:
                     d_id = d.get("depot_id")

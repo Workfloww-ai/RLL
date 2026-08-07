@@ -8,6 +8,14 @@ from backend.services.user_service import user_service
 client = TestClient(app)
 
 def test_list_users_api():
+    # Ensure at least 1 user exists for testing
+    user_service.create_user({
+        "first_name": "Test",
+        "last_name": "User",
+        "email": "test.user@rll.com",
+        "role": "Territory Executive",
+        "is_active": True
+    })
     response = client.get("/api/v1/users/")
     assert response.status_code == 200
     data = response.json()

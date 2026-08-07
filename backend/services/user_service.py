@@ -19,67 +19,108 @@ class UserService:
 
     def list_users(self) -> List[Dict[str, Any]]:
         """
-        Fetch users by joining the 3 main tables:
-        1. public.users
-        2. public.user_roles + public.roles
-        3. public.ase_tsm_mapping (reporting manager mapping)
-        plus depots/headquarters if available.
+        Fetch users from public.raw_sales_upload table (ase_raw, asm_tsm_raw),
+        leaving phone number and email blank as specified.
+        Fallback to public.users table if raw_sales_upload is empty.
         """
         client = get_supabase()
         if not client:
             return self.in_memory_users
 
         try:
-            # 1. Fetch all users from public.users
+            # 1. Fetch personnel from public.raw_sales_upload
+            try:
+                raw_res = client.table("raw_sales_upload").select("raw_id, ase_raw, asm_tsm_raw, is_active").execute()
+                raw_data = raw_res.data or []
+
+                if raw_data:
+                    users_map: Dict[str, Dict[str, Any]] = {}
+                    user_counter = 1
+
+                    for row in raw_data:
+                        ase_raw = row.get("ase_raw") or ""
+                        tsm_raw = row.get("asm_tsm_raw") or ""
+                        is_active = row.get("is_active", True)
+
+                        ase_names = [p.strip() for p in ase_raw.replace(",", "/").split("/") if p.strip()]
+                        tsm_names = [p.strip() for p in tsm_raw.replace(",", "/").split("/") if p.strip()]
+
+                        first_tsm = tsm_names[0] if tsm_names else "Unassigned"
+
+                        for ase in ase_names:
+                            if ase and ase.lower() not in ["unassigned", "none", "null"] and ase not in users_map:
+                                users_map[ase] = {
+                                    "user_id": f"u_{user_counter}",
+                                    "id": f"u_{user_counter}",
+                                    "name": ase,
+                                    "first_name": ase.split()[0] if ase.split() else ase,
+                                    "last_name": " ".join(ase.split()[1:]) if len(ase.split()) > 1 else "",
+                                    "phone": "",
+                                    "phoneNumber": "",
+                                    "email": "",
+                                    "role": "ASE",
+                                    "depotName": "Unassigned",
+                                    "circleName": "Unassigned",
+                                    "headquarters": "Unassigned",
+                                    "reportingManager": first_tsm,
+                                    "is_active": is_active,
+                                    "isActive": is_active
+                                }
+                                user_counter += 1
+
+                        for tsm in tsm_names:
+                            if tsm and tsm.lower() not in ["unassigned", "none", "null"] and tsm not in users_map:
+                                users_map[tsm] = {
+                                    "user_id": f"u_{user_counter}",
+                                    "id": f"u_{user_counter}",
+                                    "name": tsm,
+                                    "first_name": tsm.split()[0] if tsm.split() else tsm,
+                                    "last_name": " ".join(tsm.split()[1:]) if len(tsm.split()) > 1 else "",
+                                    "phone": "",
+                                    "phoneNumber": "",
+                                    "email": "",
+                                    "role": "TSM",
+                                    "depotName": "Unassigned",
+                                    "circleName": "Unassigned",
+                                    "headquarters": "Unassigned",
+                                    "reportingManager": "Unassigned",
+                                    "is_active": is_active,
+                                    "isActive": is_active
+                                }
+                                user_counter += 1
+
+                    if users_map:
+                        return list(users_map.values())
+            except Exception as raw_err:
+                logger.warning(f"Could not fetch users from raw_sales_upload: {raw_err}")
+
+            # Fallback to public.users table
             users_res = client.table("users").select("user_id, email, first_name, last_name, phone, manager_id, is_active, created_at").execute()
             raw_users = users_res.data if users_res.data is not None else []
 
             if not raw_users:
                 return self.in_memory_users
 
-            # 2. Fetch user roles joined with roles table (public.user_roles + public.roles)
             user_roles_res = client.table("user_roles").select("user_role_id, user_id, role_id, is_active, roles(role_id, role_name)").execute()
             user_roles_data = user_roles_res.data or []
 
-            # Map user_id -> role_name & user_role_id
             role_by_user_id: Dict[str, str] = {}
-            user_role_id_by_user: Dict[str, int] = {}
             for ur in user_roles_data:
                 u_id = str(ur.get("user_id"))
-                ur_id = ur.get("user_role_id")
                 role_obj = ur.get("roles") or {}
                 role_name = role_obj.get("role_name") or "Territory Executive"
                 if ur.get("is_active", True):
                     role_by_user_id[u_id] = role_name
-                    if ur_id:
-                        user_role_id_by_user[u_id] = ur_id
 
-            # 3. Fetch reporting manager hierarchy from public.ase_tsm_mapping
             mapping_res = client.table("ase_tsm_mapping").select("mapping_id, ase_user_id, tsm_user_id, is_active").execute()
             mapping_data = mapping_res.data or []
 
-            # Map ase_user_id -> tsm_user_id
             ase_to_tsm: Dict[str, str] = {}
             for m in mapping_data:
                 ase_id = str(m.get("ase_user_id"))
                 tsm_id = str(m.get("tsm_user_id"))
                 ase_to_tsm[ase_id] = tsm_id
 
-            # 4. Fetch depots and user_depot assignments
-            depot_by_user: Dict[str, Dict[str, str]] = {}
-            try:
-                user_depot_res = client.table("user_depot").select("user_id, depot_id, depots(depot_id, name, headquarters(name))").execute()
-                for ud in user_depot_res.data or []:
-                    u_id = str(ud.get("user_id"))
-                    dep_obj = ud.get("depots") or {}
-                    dep_name = dep_obj.get("name") or "Unassigned"
-                    hq_obj = dep_obj.get("headquarters") or {}
-                    hq_name = hq_obj.get("name") or "Unassigned" if isinstance(hq_obj, dict) else "Unassigned"
-                    depot_by_user[u_id] = {"depot_name": dep_name, "headquarters": hq_name}
-            except Exception as d_err:
-                logger.warning(f"Could not fetch user_depot mappings: {d_err}")
-
-            # Map user_id -> user_dict for quick name lookup
             user_dict_by_id = {str(u["user_id"]): u for u in raw_users}
 
             result = []
@@ -89,7 +130,6 @@ class UserService:
                 last_name = u.get("last_name") or ""
                 full_name = f"{first_name} {last_name}".strip() or "Unnamed User"
 
-                # Manager resolution: check manager_id or ase_tsm_mapping
                 manager_id = u.get("manager_id") or ase_to_tsm.get(uid)
                 manager_name = "Unassigned"
                 if manager_id and str(manager_id) in user_dict_by_id:
@@ -98,24 +138,22 @@ class UserService:
                     mgr_ln = mgr_obj.get("last_name") or ""
                     manager_name = f"{mgr_fn} {mgr_ln}".strip() or "Unassigned"
 
-                depot_info = depot_by_user.get(uid, {"depot_name": "Unassigned", "headquarters": "Unassigned"})
-
                 result.append({
                     "id": uid,
                     "user_id": uid,
                     "first_name": first_name,
                     "last_name": last_name,
                     "name": full_name,
-                    "email": u.get("email", ""),
-                    "phone": u.get("phone", ""),
-                    "phoneNumber": u.get("phone", ""),
+                    "email": "",
+                    "phone": "",
+                    "phoneNumber": "",
                     "role": role_by_user_id.get(uid, "Territory Executive"),
                     "reportingManager": manager_name,
                     "reporting_manager": manager_name,
                     "manager_id": str(manager_id) if manager_id else None,
-                    "depotName": depot_info["depot_name"],
-                    "depot_name": depot_info["depot_name"],
-                    "headquarters": depot_info["headquarters"],
+                    "depotName": "Unassigned",
+                    "depot_name": "Unassigned",
+                    "headquarters": "Unassigned",
                     "circleName": "Unassigned",
                     "isActive": u.get("is_active", True),
                     "is_active": u.get("is_active", True)
