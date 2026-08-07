@@ -24,8 +24,8 @@ import {
 
 export default function App() {
   const [period, setPeriod] = useState<Period>('Daily');
-  const [dateFrom, setDateFrom] = useState<string>('2026-08-01');
-  const [dateTo, setDateTo] = useState<string>('2026-08-06');
+  const [dateFrom, setDateFrom] = useState<string>('2026-08-07');
+  const [dateTo, setDateTo] = useState<string>('2026-08-07');
   const [viewMode, setViewMode] = useState<ViewMode>('companies');
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');

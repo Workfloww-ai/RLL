@@ -26,18 +26,19 @@ export const Header: React.FC<HeaderProps> = ({
   headquartersList,
 }) => {
   const periods: Period[] = ['Daily', 'MTD', 'YTD'];
+  const TODAY = '2026-08-07';
 
   const handlePeriodChange = (p: Period) => {
     setPeriod(p);
     if (p === 'MTD') {
       setDateFrom('2026-08-01');
-      setDateTo('2026-08-31');
+      setDateTo(TODAY);
     } else if (p === 'YTD') {
       setDateFrom('2026-04-01');
-      setDateTo('2026-08-06');
+      setDateTo(TODAY);
     } else if (p === 'Daily') {
-      setDateFrom('2026-08-01');
-      setDateTo('2026-08-06');
+      setDateFrom(TODAY);
+      setDateTo(TODAY);
     }
   };
 
@@ -81,10 +82,10 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </div>
 
-      {/* Row 2: Inline Controls Bar (All HQ Dropdown & Date Range Inputs - No Popout) */}
+      {/* Row 2: Inline Controls Bar (All HQ Dropdown & Date Selection) */}
       <div className="grid grid-cols-12 gap-2 bg-black/20 p-2 rounded-xl border border-white/10 text-xs">
-        {/* All Headquarters Dropdown */}
-        <div className="col-span-5 relative flex items-center bg-white/10 rounded-lg px-2 py-1 border border-white/15">
+        {/* Headquarters Dropdown */}
+        <div className={`${period === 'Daily' ? 'col-span-7' : 'col-span-5'} relative flex items-center bg-white/10 rounded-lg px-2 py-1 border border-white/15`}>
           <MapPin className="w-3.5 h-3.5 text-slate-300 shrink-0 mr-1" />
           <select
             value={selectedHq}
@@ -100,29 +101,63 @@ export const Header: React.FC<HeaderProps> = ({
           </select>
         </div>
 
-        {/* Date From & Date To */}
-        <div className="col-span-7 flex items-center justify-between gap-1 bg-white/10 rounded-lg px-2 py-1 border border-white/15 text-[10px]">
-          <div className="flex items-center gap-1 min-w-0">
-            <Calendar className="w-3 h-3 text-slate-300 shrink-0" />
-            <input
-              type="date"
-              value={dateFrom}
-              onChange={(e) => setDateFrom(e.target.value)}
-              id="header-date-from"
-              className="bg-transparent text-white font-bold w-[78px] focus:outline-none cursor-pointer text-[10px]"
-            />
+        {/* Date Selector: Single Date for Daily (col-span-5), Range for MTD/YTD (col-span-7) */}
+        {period === 'Daily' ? (
+          <div className="col-span-5 flex items-center justify-center bg-white/10 rounded-lg px-2 py-1 border border-white/15 text-[10px]">
+            <div className="flex items-center gap-1.5 min-w-0 justify-center w-full">
+              <Calendar className="w-3 h-3 text-slate-300 shrink-0" />
+              <input
+                type="date"
+                value={dateFrom}
+                max={TODAY}
+                onChange={(e) => {
+                  const val = e.target.value > TODAY ? TODAY : e.target.value;
+                  setDateFrom(val);
+                  setDateTo(val);
+                }}
+                id="header-date-single"
+                className="bg-transparent text-white font-bold focus:outline-none cursor-pointer text-[10px] text-center w-full"
+              />
+            </div>
           </div>
-          <span className="text-slate-400 font-bold">-</span>
-          <div className="flex items-center min-w-0">
-            <input
-              type="date"
-              value={dateTo}
-              onChange={(e) => setDateTo(e.target.value)}
-              id="header-date-to"
-              className="bg-transparent text-white font-bold w-[78px] focus:outline-none cursor-pointer text-[10px]"
-            />
+        ) : (
+          <div className="col-span-7 flex items-center justify-between gap-1 bg-white/10 rounded-lg px-2 py-1 border border-white/15 text-[10px]">
+            <div className="flex items-center gap-1 min-w-0">
+              <Calendar className="w-3 h-3 text-slate-300 shrink-0" />
+              <input
+                type="date"
+                value={dateFrom}
+                max={TODAY}
+                disabled={period === 'YTD'}
+                onChange={(e) => {
+                  if (period !== 'YTD') {
+                    const val = e.target.value > TODAY ? TODAY : e.target.value;
+                    setDateFrom(val);
+                  }
+                }}
+                id="header-date-from"
+                className={`bg-transparent text-white font-bold w-[78px] focus:outline-none text-[10px] ${
+                  period === 'YTD' ? 'opacity-75 cursor-not-allowed' : 'cursor-pointer'
+                }`}
+                title={period === 'YTD' ? 'Start date is fixed for YTD' : undefined}
+              />
+            </div>
+            <span className="text-slate-400 font-bold">-</span>
+            <div className="flex items-center min-w-0">
+              <input
+                type="date"
+                value={dateTo}
+                max={TODAY}
+                onChange={(e) => {
+                  const val = e.target.value > TODAY ? TODAY : e.target.value;
+                  setDateTo(val);
+                }}
+                id="header-date-to"
+                className="bg-transparent text-white font-bold w-[78px] focus:outline-none cursor-pointer text-[10px]"
+              />
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </header>
   );

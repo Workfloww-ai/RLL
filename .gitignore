@@ -36,3 +36,5 @@ coverage/
 backend/.venv_fresh/
 backend/venv_sys/
 
+.DS_Store
+
