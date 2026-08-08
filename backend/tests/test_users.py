@@ -97,3 +97,63 @@ def test_upload_excel_roster():
                 user_service.delete_user(u["id"])
     except Exception:
         pass
+
+def test_list_roles_api():
+    response = client.get("/api/v1/users/roles")
+    assert response.status_code == 200
+    roles = response.json()
+    assert isinstance(roles, list)
+    assert len(roles) >= 3
+    role_names = [r.get("role_name") for r in roles]
+    assert any(rn in role_names for rn in ["ASE", "TSM", "Area Sales Executive", "Territory Sales Manager"])
+
+def test_user_hierarchy_api():
+    response = client.get("/api/v1/users/hierarchy")
+    assert response.status_code == 200
+    hierarchy = response.json()
+    assert isinstance(hierarchy, list)
+
+def test_user_roles_and_ase_tsm_mapping_connection():
+    # 1. Create TSM User
+    tsm_user = user_service.create_user({
+        "first_name": "Rajesh",
+        "last_name": "Sharma",
+        "email": "rajesh.tsm@rll.com",
+        "phone": "+91 9811122233",
+        "role": "TSM",
+        "is_active": True
+    })
+    tsm_id = tsm_user.get("user_id") or tsm_user.get("id")
+
+    # 2. Create ASE User assigned to TSM
+    ase_user = user_service.create_user({
+        "first_name": "Vikas",
+        "last_name": "Singh",
+        "email": "vikas.ase@rll.com",
+        "phone": "+91 9844455566",
+        "role": "ASE",
+        "reporting_manager": "Rajesh Sharma",
+        "is_active": True
+    })
+    ase_id = ase_user.get("user_id") or ase_user.get("id")
+
+    try:
+        users = user_service.list_users()
+        created_ase = next((u for u in users if u["id"] == ase_id), None)
+        assert created_ase is not None
+        assert created_ase["reportingManager"] == "Rajesh Sharma"
+        assert created_ase["role"] == "ASE"
+
+        # Check hierarchy
+        hierarchy = user_service.get_hierarchy()
+        if hierarchy:
+            matched = [h for h in hierarchy if h.get("ase_user_id") == ase_id or h.get("ase_name") == "Vikas Singh"]
+            if matched:
+                assert matched[0]["tsm_name"] in ("Rajesh Sharma", "TSM User")
+
+    finally:
+        if ase_id:
+            user_service.delete_user(ase_id)
+        if tsm_id:
+            user_service.delete_user(tsm_id)
+

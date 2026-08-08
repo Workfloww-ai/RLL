@@ -9,6 +9,11 @@ export interface Metrics {
 export interface Brand {
   id: string;
   name: string;
+  brand_id?: string;
+  brand_name?: string;
+  company_id?: string;
+  is_active?: boolean;
+  created_at?: string;
   category?: string;
   data: Record<Period, Metrics>;
 }
@@ -16,6 +21,10 @@ export interface Brand {
 export interface Company {
   id: string;
   name: string;
+  company_id?: string;
+  company_name?: string;
+  is_active?: boolean;
+  created_at?: string;
   isPinned: boolean;
   category?: string;
   hqLocation?: string;

@@ -77,6 +77,8 @@ export default function HeadcountManagement() {
   const [editReportingManager, setEditReportingManager] = useState("");
   const [editIsActive, setEditIsActive] = useState(true);
 
+  const [availableRoles, setAvailableRoles] = useState<{ role_id: string; role_name: string; description?: string }[]>([]);
+
   const fetchUsers = async () => {
     setLoading(true);
     try {
@@ -94,8 +96,23 @@ export default function HeadcountManagement() {
     }
   };
 
+  const fetchRoles = async () => {
+    try {
+      const res = await fetch('http://localhost:8000/api/v1/users/roles');
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setAvailableRoles(data);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch roles from backend API:', err);
+    }
+  };
+
   useEffect(() => {
     fetchUsers();
+    fetchRoles();
   }, []);
 
   const handleEditClick = (user: User) => {
@@ -326,9 +343,9 @@ export default function HeadcountManagement() {
                 onChange={(e) => setNewUser({...newUser, role: e.target.value as any})}
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
               >
-                <option value="ASE">ASE</option>
-                <option value="TSM">TSM</option>
-                <option value="Regional Supervisor">Regional Supervisor</option>
+                {(availableRoles.length > 0 ? availableRoles.map(r => r.role_name) : ["ASE", "TSM", "Regional Supervisor", "Admin"]).map((rName) => (
+                  <option key={rName} value={rName}>{rName}</option>
+                ))}
               </select>
             </div>
             <div className="flex-1 min-w-[160px] space-y-1">
@@ -454,9 +471,9 @@ export default function HeadcountManagement() {
                           onChange={(e) => setEditRole(e.target.value as any)}
                           className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#004B87]"
                         >
-                          <option value="ASE">ASE</option>
-                          <option value="TSM">TSM</option>
-                          <option value="Regional Supervisor">Regional Supervisor</option>
+                          {(availableRoles.length > 0 ? availableRoles.map(r => r.role_name) : ["ASE", "TSM", "Regional Supervisor", "Admin"]).map((rName) => (
+                            <option key={rName} value={rName}>{rName}</option>
+                          ))}
                         </select>
                       ) : (
                         <span className={`px-2.5 py-1 rounded border text-[10px] font-bold uppercase tracking-wider ${getRoleColor(user.role)}`}>
