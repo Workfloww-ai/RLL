@@ -361,7 +361,7 @@ def get_raw_sales_for_batch(batch_id: int, page: int = 0, page_size: int = 5000)
 # ---------------------------------------------------------------------------
 # Status Reporting
 # ---------------------------------------------------------------------------
-def get_batch_details(batch_id: int) -> Dict[str, Any]:
+def get_batch_details(batch_id: Any) -> Dict[str, Any]:
     """Fetches batch info, pipeline logs, and error count for status reporting."""
     client = get_supabase_client()
     if not client:

@@ -3,6 +3,8 @@ from datetime import datetime, date
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
+from typing import Optional, List, Any, Dict, Union
+
 # Upload Batches
 class UploadBatchBase(BaseModel):
     source_file: Optional[str] = None
@@ -29,8 +31,8 @@ class UploadBatchCreate(UploadBatchBase):
     pass
 
 class UploadBatchResponse(UploadBatchBase):
-    batch_id: Optional[int] = None
-    upload_batch_id: Optional[int] = None
+    batch_id: Optional[Union[str, UUID, int]] = None
+    upload_batch_id: Optional[Union[str, UUID, int]] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
@@ -38,7 +40,7 @@ class UploadBatchResponse(UploadBatchBase):
 
 # Upload Logs
 class UploadLogBase(BaseModel):
-    upload_batch_id: int
+    upload_batch_id: Union[str, UUID, int]
     row_number: Optional[int] = None
     column_name: Optional[str] = None
     error_type: Optional[str] = None
@@ -49,7 +51,7 @@ class UploadLogCreate(UploadLogBase):
     pass
 
 class UploadLogResponse(UploadLogBase):
-    upload_log_id: int
+    upload_log_id: Union[str, UUID, int]
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
@@ -57,21 +59,21 @@ class UploadLogResponse(UploadLogBase):
 # Sales Schema
 class SaleBase(BaseModel):
     sales_date: date
-    depot_id: int
-    licensee_id: int
-    brand_id: int
-    packing_size_id: int
+    depot_id: Union[str, UUID, int]
+    licensee_id: Union[str, UUID, int]
+    brand_id: Union[str, UUID, int]
+    packing_size_id: Union[str, UUID, int]
     total_cases: float = 0.0
     total_bottles: float = 0.0
     total_bulk_liters: float = 0.0
     sale_value: float = 0.0
-    upload_batch_id: Optional[int] = None
+    upload_batch_id: Optional[Union[str, UUID, int]] = None
 
 class SaleCreate(SaleBase):
     pass
 
 class SaleResponse(SaleBase):
-    sale_id: int
+    sale_id: Union[str, UUID, int]
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
@@ -85,11 +87,11 @@ class DashboardSummaryDailyBase(BaseModel):
     total_bulk_liters: float = 0.0
     total_brands: int = 0
     total_licensees: int = 0
-    top_brand_id: Optional[int] = None
-    top_depot_id: Optional[int] = None
+    top_brand_id: Optional[Union[str, UUID, int]] = None
+    top_depot_id: Optional[Union[str, UUID, int]] = None
 
 class DashboardSummaryDailyResponse(DashboardSummaryDailyBase):
-    dashboard_summary_id: int
+    dashboard_summary_id: Union[str, UUID, int]
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
@@ -108,6 +110,6 @@ class AuditLogCreate(BaseModel):
     request_method: Optional[str] = None
 
 class AuditLogResponse(AuditLogCreate):
-    audit_log_id: int
+    audit_log_id: Union[str, UUID, int]
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)

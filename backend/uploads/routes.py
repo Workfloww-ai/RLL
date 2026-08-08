@@ -182,7 +182,7 @@ async def upload_excel_sync(
     return get_batch_details(batch_id)
 # ── GET /uploads/batch/{batch_id}  ─  progress & status ──────────────────
 @router.get("/batch/{batch_id}", summary="Check upload batch status")
-async def get_batch_status(batch_id: int):
+async def get_batch_status(batch_id: str):
     """
     Returns real-time status, pipeline logs, and error count for an upload batch.
     """
