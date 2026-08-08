@@ -8,21 +8,25 @@ from backend.services.user_service import user_service
 client = TestClient(app)
 
 def test_list_users_api():
-    # Ensure at least 1 user exists for testing
-    user_service.create_user({
+    created = user_service.create_user({
         "first_name": "Test",
         "last_name": "User",
         "email": "test.user@rll.com",
         "role": "Territory Executive",
         "is_active": True
     })
-    response = client.get("/api/v1/users/")
-    assert response.status_code == 200
-    data = response.json()
-    assert isinstance(data, list)
-    assert len(data) > 0
-    assert "role" in data[0]
-    assert "reportingManager" in data[0]
+    try:
+        response = client.get("/api/v1/users/")
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data, list)
+        assert len(data) > 0
+        assert "role" in data[0]
+        assert "reportingManager" in data[0]
+    finally:
+        u_id = created.get("user_id") or created.get("id")
+        if u_id:
+            user_service.delete_user(u_id)
 
 def test_create_and_delete_user():
     new_user_payload = {
@@ -84,3 +88,12 @@ def test_upload_excel_roster():
     assert result["status"] == "success"
     assert result["imported_count"] == 2
     assert "users, user_roles, and ase_tsm_mapping" in result["message"]
+
+    # Cleanup test roster users from DB
+    try:
+        all_u = user_service.list_users()
+        for u in all_u:
+            if u.get("email") in ("rohan.mehta@rll.com", "suresh.verma@rll.com"):
+                user_service.delete_user(u["id"])
+    except Exception:
+        pass

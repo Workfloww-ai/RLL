@@ -96,65 +96,42 @@ async def get_mobile_sales(
     client = get_supabase()
     records = []
     
-    # Determine table target & date parameters
-    if period.upper() == "DAILY":
-        target_table = "dashboard_summary_daily"
-        # Determine target date filter or max sale_date in DB
-        target_date = date_to or date_from
-        if not target_date:
-            try:
-                max_res = client.table("dashboard_summary_daily").select("sale_date").order("sale_date", desc=True).limit(1).execute()
-                if max_res.data and max_res.data[0].get("sale_date"):
-                    target_date = max_res.data[0]["sale_date"]
-            except Exception:
-                target_date = "2026-04-30"
-        
-        try:
-            page = 0
-            page_size = 1000
-            while True:
-                res = client.table("dashboard_summary_daily").select(
-                    "sale_date, total_case, total_btl, total_bl, company_id, ase_raw, asm_tsm_raw, companies(company_name), brands(brand_id, brand_name), depots(depot_id, name), headquarters(headquarters_id, name)"
-                ).eq("sale_date", target_date).range(page * page_size, (page + 1) * page_size - 1).execute()
-                chunk = res.data or []
-                if not chunk:
-                    break
-                records.extend(chunk)
-                page += 1
-                
-            # Fallback to latest available date if selected date has 0 records
-            if not records:
-                max_res = client.table("dashboard_summary_daily").select("sale_date").order("sale_date", desc=True).limit(1).execute()
-                if max_res.data and max_res.data[0].get("sale_date"):
-                    latest_date = max_res.data[0]["sale_date"]
-                    page = 0
-                    while True:
-                        res = client.table("dashboard_summary_daily").select(
-                            "sale_date, total_case, total_btl, total_bl, company_id, ase_raw, asm_tsm_raw, companies(company_name), brands(brand_id, brand_name), depots(depot_id, name), headquarters(headquarters_id, name)"
-                        ).eq("sale_date", latest_date).range(page * page_size, (page + 1) * page_size - 1).execute()
-                        chunk = res.data or []
-                        if not chunk:
-                            break
-                        records.extend(chunk)
-                        page += 1
-        except Exception as e:
-            logger.warning(f"Error reading dashboard_summary_daily: {e}")
-    else:
-        # MTD or YTD -> Query master table dashboard_summary_monthly
-        try:
-            page = 0
-            page_size = 1000
-            while True:
-                res = client.table("dashboard_summary_monthly").select(
-                    "total_case, total_btl, total_bl, company_id, ase_raw, asm_tsm_raw, companies(company_name), brands(brand_id, brand_name), depots(depot_id, name), headquarters(headquarters_id, name)"
-                ).range(page * page_size, (page + 1) * page_size - 1).execute()
-                chunk = res.data or []
-                if not chunk:
-                    break
-                records.extend(chunk)
-                page += 1
-        except Exception as e:
-            logger.warning(f"Error reading master dashboard_summary_monthly: {e}")
+    # Query dashboard_summary_daily for exact date or date ranges
+    try:
+        # Determine latest available date if not provided
+        max_date = date_to or date_from
+        if not max_date:
+            max_res = client.table("dashboard_summary_daily").select("sale_date").order("sale_date", desc=True).limit(1).execute()
+            if max_res.data and max_res.data[0].get("sale_date"):
+                max_date = max_res.data[0]["sale_date"]
+            else:
+                max_date = "2026-04-30"
+
+        # Calculate start date based on period
+        if period.upper() == "DAILY":
+            start_date = max_date
+        elif period.upper() == "MTD":
+            # First day of the month
+            start_date = max_date[:8] + "01"
+        elif period.upper() == "YTD":
+            # First day of the year
+            start_date = max_date[:4] + "-01-01"
+        else:
+            start_date = date_from or max_date
+
+        page = 0
+        page_size = 1000
+        while True:
+            res = client.table("dashboard_summary_daily").select(
+                "sale_date, total_case, total_btl, total_bl, company_id, ase_raw, asm_tsm_raw, companies(company_name), brands(brand_id, brand_name), depots(depot_id, name), headquarters(headquarters_id, name)"
+            ).gte("sale_date", start_date).lte("sale_date", max_date).range(page * page_size, (page + 1) * page_size - 1).execute()
+            chunk = res.data or []
+            if not chunk:
+                break
+            records.extend(chunk)
+            page += 1
+    except Exception as e:
+        logger.warning(f"Error querying dashboard_summary_daily: {e}")
 
     companies_map: Dict[str, Dict[str, Any]] = {}
     depots_map: Dict[str, Dict[str, Any]] = {}
@@ -183,7 +160,6 @@ async def get_mobile_sales(
 
         cases = int(row.get("total_case") or 0)
         bottles = int(row.get("total_btl") or 0)
-        bl = float(row.get("total_bl") or 0.0)
 
         if selected_hq != "All Headquarters" and hq_name.lower() != selected_hq.lower():
             continue
@@ -196,16 +172,15 @@ async def get_mobile_sales(
                 "isPinned": comp_id in ["rll", "diageo-inbrew"],
                 "hqLocation": hq_name,
                 "data": {
-                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                    "Daily": {"cases": 0, "bottles": 0},
+                    "MTD": {"cases": 0, "bottles": 0},
+                    "YTD": {"cases": 0, "bottles": 0},
                 },
                 "brands_map": {}
             }
         for p in ["Daily", "MTD", "YTD"]:
             companies_map[comp_id]["data"][p]["cases"] += cases
             companies_map[comp_id]["data"][p]["bottles"] += bottles
-            companies_map[comp_id]["data"][p]["bl"] += bl
 
         b_map = companies_map[comp_id]["brands_map"]
         if brand_id not in b_map:
@@ -213,15 +188,14 @@ async def get_mobile_sales(
                 "id": brand_id,
                 "name": brand_name,
                 "data": {
-                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                    "Daily": {"cases": 0, "bottles": 0},
+                    "MTD": {"cases": 0, "bottles": 0},
+                    "YTD": {"cases": 0, "bottles": 0},
                 }
             }
         for p in ["Daily", "MTD", "YTD"]:
             b_map[brand_id]["data"][p]["cases"] += cases
             b_map[brand_id]["data"][p]["bottles"] += bottles
-            b_map[brand_id]["data"][p]["bl"] += bl
 
         # --- B. DEPOT AGGREGATION ---
         if depot_id not in depots_map:
@@ -230,16 +204,15 @@ async def get_mobile_sales(
                 "name": depot_name,
                 "hqName": hq_name,
                 "data": {
-                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                    "Daily": {"cases": 0, "bottles": 0},
+                    "MTD": {"cases": 0, "bottles": 0},
+                    "YTD": {"cases": 0, "bottles": 0},
                 },
                 "brands_map": {}
             }
         for p in ["Daily", "MTD", "YTD"]:
             depots_map[depot_id]["data"][p]["cases"] += cases
             depots_map[depot_id]["data"][p]["bottles"] += bottles
-            depots_map[depot_id]["data"][p]["bl"] += bl
 
         db_map = depots_map[depot_id]["brands_map"]
         if brand_id not in db_map:
@@ -247,15 +220,14 @@ async def get_mobile_sales(
                 "brandId": brand_id,
                 "brandName": brand_name,
                 "data": {
-                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                    "Daily": {"cases": 0, "bottles": 0},
+                    "MTD": {"cases": 0, "bottles": 0},
+                    "YTD": {"cases": 0, "bottles": 0},
                 }
             }
         for p in ["Daily", "MTD", "YTD"]:
             db_map[brand_id]["data"][p]["cases"] += cases
             db_map[brand_id]["data"][p]["bottles"] += bottles
-            db_map[brand_id]["data"][p]["bl"] += bl
 
         # --- C. TSM AGGREGATION ---
         if tsm_id not in tsms_map:
@@ -264,16 +236,15 @@ async def get_mobile_sales(
                 "name": tsm_name_raw,
                 "hqLocation": hq_name,
                 "data": {
-                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                    "Daily": {"cases": 0, "bottles": 0},
+                    "MTD": {"cases": 0, "bottles": 0},
+                    "YTD": {"cases": 0, "bottles": 0},
                 },
                 "brands_map": {}
             }
         for p in ["Daily", "MTD", "YTD"]:
             tsms_map[tsm_id]["data"][p]["cases"] += cases
             tsms_map[tsm_id]["data"][p]["bottles"] += bottles
-            tsms_map[tsm_id]["data"][p]["bl"] += bl
 
         tb_map = tsms_map[tsm_id]["brands_map"]
         if brand_id not in tb_map:
@@ -281,15 +252,14 @@ async def get_mobile_sales(
                 "brandId": brand_id,
                 "brandName": brand_name,
                 "data": {
-                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                    "Daily": {"cases": 0, "bottles": 0},
+                    "MTD": {"cases": 0, "bottles": 0},
+                    "YTD": {"cases": 0, "bottles": 0},
                 }
             }
         for p in ["Daily", "MTD", "YTD"]:
             tb_map[brand_id]["data"][p]["cases"] += cases
             tb_map[brand_id]["data"][p]["bottles"] += bottles
-            tb_map[brand_id]["data"][p]["bl"] += bl
 
     # Format lists
     formatted_companies = []

@@ -3,6 +3,7 @@ import sys
 from backend.db.client import get_supabase
 from backend.services.master_service import master_service
 from backend.db.supabase_client import ensure_calendar_dates
+from backend.services.user_service import user_service
 from backend.services.analytics_refresh_service import analytics_refresh_service
 
 logging.basicConfig(level=logging.INFO)
@@ -15,6 +16,14 @@ def process_batch_raw(batch_id: int):
         return
 
     logger.info(f"--- Processing Batch {batch_id} ---")
+
+    # 0. Populate Users, Roles & Hierarchy from Raw Staging Data
+    try:
+        user_stats = user_service.populate_users_and_hierarchy_from_raw(batch_id)
+        logger.info(f"Batch {batch_id}: Populated {user_stats.get('users', 0)} users and {user_stats.get('mappings', 0)} hierarchy mappings.")
+    except Exception as u_err:
+        logger.warning(f"Batch {batch_id}: Failed to populate users & hierarchy: {u_err}")
+
     master_service.prefetch_all_caches()
 
     # 1. Fetch raw sales
@@ -47,6 +56,7 @@ def process_batch_raw(batch_id: int):
     unique_offices = list({r["deo_office_raw"] for r in all_raw if r.get("deo_office_raw")})
     unique_circles = list({r["circle_office_raw"] for r in all_raw if r.get("circle_office_raw")})
     unique_hqs = list({r["hq_raw"] for r in all_raw if r.get("hq_raw")})
+    unique_companies = list({r["company_raw"] for r in all_raw if r.get("company_raw")})
     unique_brands = list({r["brand_name_raw"] for r in all_raw if r.get("brand_name_raw")})
     unique_packagings = list({r["packing_raw"] for r in all_raw if r.get("packing_raw")})
 
@@ -54,6 +64,7 @@ def process_batch_raw(batch_id: int):
     office_cache = master_service.bulk_resolve_offices(unique_offices)
     circle_cache = master_service.bulk_resolve_circles(unique_circles)
     hq_cache = master_service.bulk_resolve_headquarters(unique_hqs)
+    company_cache = master_service.bulk_resolve_companies(unique_companies)
 
     depot_items = [
         {
@@ -107,6 +118,7 @@ def process_batch_raw(batch_id: int):
         brd_id = brand_cache.get(clean_fn(r.get("brand_name_raw")))
         pkg_id = packaging_cache.get(clean_fn(r.get("packing_raw")))
         dep_id = depot_cache.get(clean_fn(r.get("depot_raw")))
+        cmp_id = company_cache.get(clean_fn(r.get("company_raw")))
 
         if s_date and lic_id and brd_id and pkg_id and dep_id:
             sale_dates.add(s_date)
@@ -114,6 +126,7 @@ def process_batch_raw(batch_id: int):
                 "sale_date": s_date,
                 "licensee_id": lic_id,
                 "brand_id": brd_id,
+                "company_id": cmp_id,
                 "packaging_id": pkg_id,
                 "depot_id": dep_id,
                 "total_case": float(r.get("total_case") or 0.0),
@@ -155,10 +168,18 @@ def process_batch_raw(batch_id: int):
     # 5. Trigger analytics refresh for batch dates
     analytics_refresh_service.refresh_sales_analytics_for_dates(list(sale_dates))
     
-    # 6. Update batch status
+    # 6. Clean up temporary raw staging data after full processing
+    try:
+        client.table("raw_sales_upload").delete().eq("batch_id", batch_id).execute()
+        logger.info(f"Batch {batch_id}: Cleaned up temporary raw_sales_upload data.")
+    except Exception as clean_err:
+        logger.warning(f"Batch {batch_id}: Failed to delete temporary raw records: {clean_err}")
+
+    # 7. Update batch status
     client.table("upload_batches").update({"status": "loaded"}).eq("batch_id", batch_id).execute()
     logger.info(f"--- Batch {batch_id} Processing Successfully Completed! ---")
 
 if __name__ == "__main__":
     for b_id in [10, 2]:
         process_batch_raw(b_id)
+

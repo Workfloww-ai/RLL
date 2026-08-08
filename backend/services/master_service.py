@@ -918,9 +918,7 @@ class MasterService:
                     self._packaging_cache[key] = row["packaging_id"]
 
             logger.info(
-                "Master caches loaded: "
-                "groups=%d offices=%d circles=%d depots=%d "
-                "licensees=%d brands=%d packagings=%d",
+                "Successfully prefetched master caches: Groups=%d, Offices=%d, Circles=%d, Depots=%d, Licensees=%d, Brands=%d, Packagings=%d.",
                 len(self._group_cache),
                 len(self._office_cache),
                 len(self._circle_cache),
@@ -955,7 +953,8 @@ class MasterService:
                     k = self._clean(row.get("group_name"))
                     if k:
                         self._group_cache[k] = row["group_id"]
-            except Exception:
+            except Exception as e_grp:
+                logger.warning(f"bulk_resolve_groups insert notice: {e_grp}")
                 try:
                     res = client.table("groups").select("group_id,group_name").execute()
                     for row in res.data or []:
@@ -965,13 +964,9 @@ class MasterService:
                 except Exception:
                     pass
 
-        for key in missing.keys():
-            if key not in self._group_cache:
-                self._group_cache[key] = len(self._group_cache) + 1
-
         return self._group_cache
 
-    def bulk_resolve_offices(self, names: List[str]) -> Dict[str, int]:
+    def bulk_resolve_offices(self, names: List[str]) -> Dict[str, Any]:
         client = get_supabase()
         missing = {}
         for name in names:
@@ -988,7 +983,8 @@ class MasterService:
                     k = self._clean(row.get("name"))
                     if k:
                         self._office_cache[k] = row["office_id"]
-            except Exception:
+            except Exception as e_off:
+                logger.warning(f"bulk_resolve_offices insert notice: {e_off}")
                 try:
                     res = client.table("offices").select("office_id,name").execute()
                     for row in res.data or []:
@@ -998,13 +994,9 @@ class MasterService:
                 except Exception:
                     pass
 
-        for key in missing.keys():
-            if key not in self._office_cache:
-                self._office_cache[key] = len(self._office_cache) + 1
-
         return self._office_cache
 
-    def bulk_resolve_circles(self, names: List[str]) -> Dict[str, int]:
+    def bulk_resolve_circles(self, names: List[str]) -> Dict[str, Any]:
         client = get_supabase()
         missing = {}
         for name in names:
@@ -1021,7 +1013,8 @@ class MasterService:
                     k = self._clean(row.get("name"))
                     if k:
                         self._circle_cache[k] = row["circle_id"]
-            except Exception:
+            except Exception as e_cir:
+                logger.warning(f"bulk_resolve_circles insert notice: {e_cir}")
                 try:
                     res = client.table("circles").select("circle_id,name").execute()
                     for row in res.data or []:
@@ -1031,13 +1024,9 @@ class MasterService:
                 except Exception:
                     pass
 
-        for key in missing.keys():
-            if key not in self._circle_cache:
-                self._circle_cache[key] = len(self._circle_cache) + 1
-
         return self._circle_cache
 
-    def bulk_resolve_headquarters(self, names: List[str]) -> Dict[str, int]:
+    def bulk_resolve_headquarters(self, names: List[str]) -> Dict[str, Any]:
         client = get_supabase()
         missing = {}
         for name in names:
@@ -1054,7 +1043,8 @@ class MasterService:
                     k = self._clean(row.get("name"))
                     if k:
                         self._headquarter_cache[k] = row.get("headquarters_id") or row.get("id")
-            except Exception:
+            except Exception as e_hq:
+                logger.warning(f"bulk_resolve_headquarters insert notice: {e_hq}")
                 try:
                     res = client.table("headquarters").select("headquarters_id, name").execute()
                     for row in res.data or []:
@@ -1064,13 +1054,9 @@ class MasterService:
                 except Exception:
                     pass
 
-        for key in missing.keys():
-            if key not in self._headquarter_cache:
-                self._headquarter_cache[key] = len(self._headquarter_cache) + 1
-
         return self._headquarter_cache
 
-    def bulk_resolve_companies(self, names: List[str]) -> Dict[str, int]:
+    def bulk_resolve_companies(self, names: List[str]) -> Dict[str, Any]:
         client = get_supabase()
         missing = {}
         for name in names:
@@ -1095,7 +1081,8 @@ class MasterService:
                         k = self._clean(row.get("name") or row.get("company_name"))
                         if k:
                             self._company_cache[k] = row.get("company_id") or row.get("id")
-                except Exception:
+                except Exception as e_comp:
+                    logger.warning(f"bulk_resolve_companies insert notice: {e_comp}")
                     try:
                         res = client.table("companies").select("company_id, company_name, name").execute()
                         for row in res.data or []:
@@ -1105,13 +1092,9 @@ class MasterService:
                     except Exception:
                         pass
 
-        for key in missing.keys():
-            if key not in self._company_cache:
-                self._company_cache[key] = len(self._company_cache) + 1
-
         return self._company_cache
 
-    def bulk_resolve_depots(self, depot_items: List[Dict[str, Any]]) -> Dict[str, int]:
+    def bulk_resolve_depots(self, depot_items: List[Dict[str, Any]]) -> Dict[str, Any]:
         client = get_supabase()
         missing = {}
         for item in depot_items:
@@ -1135,7 +1118,8 @@ class MasterService:
                     k = self._clean(row.get("name"))
                     if k:
                         self._depot_cache[k] = row["depot_id"]
-            except Exception:
+            except Exception as e_dep:
+                logger.warning(f"bulk_resolve_depots insert notice: {e_dep}")
                 try:
                     res = client.table("depots").select("depot_id,name").execute()
                     for row in res.data or []:
@@ -1145,13 +1129,9 @@ class MasterService:
                 except Exception:
                     pass
 
-        for key in missing.keys():
-            if key not in self._depot_cache:
-                self._depot_cache[key] = len(self._depot_cache) + 1
-
         return self._depot_cache
 
-    def bulk_resolve_licensees(self, licensee_items: List[Dict[str, Any]]) -> Dict[str, int]:
+    def bulk_resolve_licensees(self, licensee_items: List[Dict[str, Any]]) -> Dict[str, Any]:
         client = get_supabase()
         missing = {}
         for item in licensee_items:
@@ -1167,11 +1147,9 @@ class MasterService:
                 else:
                     trade = "Off"
 
-                group_disp = self._display(item.get("group_name")) or "Default Group"
                 missing[key] = {
                     "licensee_name": display,
-                    "trade_type": trade,
-                    "group_name": group_disp,
+                    "trade": trade,
                     "group_id": item.get("group_id"),
                     "headquarters_id": item.get("headquarters_id"),
                     "office_id": item.get("office_id"),
@@ -1187,7 +1165,8 @@ class MasterService:
                     k = self._clean(row.get("licensee_name"))
                     if k:
                         self._licensee_cache[k] = row["licensee_id"]
-            except Exception:
+            except Exception as e_lic:
+                logger.warning(f"bulk_resolve_licensees insert notice: {e_lic}")
                 try:
                     res = client.table("licensees").select("licensee_id,licensee_name").execute()
                     for row in res.data or []:
@@ -1197,13 +1176,9 @@ class MasterService:
                 except Exception:
                     pass
 
-        for key in missing.keys():
-            if key not in self._licensee_cache:
-                self._licensee_cache[key] = len(self._licensee_cache) + 1
-
         return self._licensee_cache
 
-    def bulk_resolve_brands(self, brand_items: List[Dict[str, Any]]) -> Dict[str, int]:
+    def bulk_resolve_brands(self, brand_items: List[Dict[str, Any]]) -> Dict[str, Any]:
         client = get_supabase()
         missing = {}
         for item in brand_items:
@@ -1225,7 +1200,8 @@ class MasterService:
                     k = self._clean(row.get("brand_name"))
                     if k:
                         self._brand_cache[k] = row["brand_id"]
-            except Exception:
+            except Exception as e_brd:
+                logger.warning(f"bulk_resolve_brands insert notice: {e_brd}")
                 try:
                     res = client.table("brands").select("brand_id,brand_name").execute()
                     for row in res.data or []:
@@ -1235,13 +1211,9 @@ class MasterService:
                 except Exception:
                     pass
 
-        for key in missing.keys():
-            if key not in self._brand_cache:
-                self._brand_cache[key] = len(self._brand_cache) + 1
-
         return self._brand_cache
 
-    def bulk_resolve_packagings(self, packing_raws: List[str]) -> Dict[str, int]:
+    def bulk_resolve_packagings(self, packing_raws: List[str]) -> Dict[str, Any]:
         client = get_supabase()
         missing = {}
         for raw in packing_raws:
@@ -1265,7 +1237,8 @@ class MasterService:
                     k = self._clean(row.get("packing_raw"))
                     if k:
                         self._packaging_cache[k] = row["packaging_id"]
-            except Exception:
+            except Exception as e_pkg:
+                logger.warning(f"bulk_resolve_packagings insert notice: {e_pkg}")
                 try:
                     res = client.table("packagings").select("packaging_id,packing_raw").execute()
                     for row in res.data or []:
@@ -1274,10 +1247,6 @@ class MasterService:
                             self._packaging_cache[k] = row["packaging_id"]
                 except Exception:
                     pass
-
-        for key in missing.keys():
-            if key not in self._packaging_cache:
-                self._packaging_cache[key] = len(self._packaging_cache) + 1
 
         return self._packaging_cache
 
@@ -1546,8 +1515,7 @@ class MasterService:
 
         payload = {
             "licensee_name": display_name,
-            "trade_type": trade,
-            "group_name": group_display,
+            "trade": trade,
             "group_id": group_id,
             "headquarters_id": headquarters_id,
             "office_id": office_id,

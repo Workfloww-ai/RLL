@@ -19,163 +19,160 @@ class UserService:
 
     def list_users(self) -> List[Dict[str, Any]]:
         """
-        Fetch users from public.raw_sales_upload table (ase_raw, asm_tsm_raw),
-        leaving phone number and email blank as specified.
-        Fallback to public.users table if raw_sales_upload is empty.
+        Fetch users from public.users table, resolving their roles from public.user_roles 
+        and reporting managers from public.ase_tsm_mapping / manager_id.
+        If users table is empty, fallback to reading raw_sales_upload.
         """
         client = get_supabase()
         if not client:
             return self.in_memory_users
 
         try:
-            # 1. Fetch personnel from public.raw_sales_upload
-            try:
-                raw_res = client.table("raw_sales_upload").select("raw_id, ase_raw, asm_tsm_raw, is_active").execute()
-                raw_data = raw_res.data or []
-
-                if raw_data:
-                    users_map: Dict[str, Dict[str, Any]] = {}
-                    user_counter = 1
-
-                    for row in raw_data:
-                        ase_raw = row.get("ase_raw") or ""
-                        tsm_raw = row.get("asm_tsm_raw") or ""
-                        is_active = row.get("is_active", True)
-
-                        ase_names = [p.strip() for p in ase_raw.replace(",", "/").split("/") if p.strip()]
-                        tsm_names = [p.strip() for p in tsm_raw.replace(",", "/").split("/") if p.strip()]
-
-                        first_tsm = tsm_names[0] if tsm_names else "Unassigned"
-
-                        for ase in ase_names:
-                            if ase and ase.lower() not in ["unassigned", "none", "null"] and ase not in users_map:
-                                users_map[ase] = {
-                                    "user_id": f"u_{user_counter}",
-                                    "id": f"u_{user_counter}",
-                                    "name": ase,
-                                    "first_name": ase.split()[0] if ase.split() else ase,
-                                    "last_name": " ".join(ase.split()[1:]) if len(ase.split()) > 1 else "",
-                                    "phone": "",
-                                    "phoneNumber": "",
-                                    "email": "",
-                                    "role": "ASE",
-                                    "depotName": "Unassigned",
-                                    "circleName": "Unassigned",
-                                    "headquarters": "Unassigned",
-                                    "reportingManager": first_tsm,
-                                    "is_active": is_active,
-                                    "isActive": is_active
-                                }
-                                user_counter += 1
-
-                        for tsm in tsm_names:
-                            if tsm and tsm.lower() not in ["unassigned", "none", "null"] and tsm not in users_map:
-                                users_map[tsm] = {
-                                    "user_id": f"u_{user_counter}",
-                                    "id": f"u_{user_counter}",
-                                    "name": tsm,
-                                    "first_name": tsm.split()[0] if tsm.split() else tsm,
-                                    "last_name": " ".join(tsm.split()[1:]) if len(tsm.split()) > 1 else "",
-                                    "phone": "",
-                                    "phoneNumber": "",
-                                    "email": "",
-                                    "role": "TSM",
-                                    "depotName": "Unassigned",
-                                    "circleName": "Unassigned",
-                                    "headquarters": "Unassigned",
-                                    "reportingManager": "Unassigned",
-                                    "is_active": is_active,
-                                    "isActive": is_active
-                                }
-                                user_counter += 1
-
-                    if users_map:
-                        return list(users_map.values())
-            except Exception as raw_err:
-                logger.warning(f"Could not fetch users from raw_sales_upload: {raw_err}")
-
-            # Fallback to public.users table
+            # 1. Fetch users from public.users table
             users_res = client.table("users").select("user_id, email, first_name, last_name, phone, manager_id, is_active, created_at").execute()
             raw_users = users_res.data if users_res.data is not None else []
 
-            if not raw_users:
-                return self.in_memory_users
+            if raw_users:
+                user_roles_res = client.table("user_roles").select("user_role_id, user_id, role_id, is_active, roles(role_id, role_name)").execute()
+                user_roles_data = user_roles_res.data or []
 
-            user_roles_res = client.table("user_roles").select("user_role_id, user_id, role_id, is_active, roles(role_id, role_name)").execute()
-            user_roles_data = user_roles_res.data or []
+                role_by_user_id: Dict[str, str] = {}
+                for ur in user_roles_data:
+                    u_id = str(ur.get("user_id"))
+                    role_obj = ur.get("roles") or {}
+                    role_name = role_obj.get("role_name") or "ASE"
+                    if ur.get("is_active", True):
+                        role_by_user_id[u_id] = role_name
 
-            role_by_user_id: Dict[str, str] = {}
-            for ur in user_roles_data:
-                u_id = str(ur.get("user_id"))
-                role_obj = ur.get("roles") or {}
-                role_name = role_obj.get("role_name") or "Territory Executive"
-                if ur.get("is_active", True):
-                    role_by_user_id[u_id] = role_name
+                mapping_res = client.table("ase_tsm_mapping").select("hierarchy_id, ase_user_id, tsm_user_id, is_active").execute()
+                mapping_data = mapping_res.data or []
 
-            mapping_res = client.table("ase_tsm_mapping").select("mapping_id, ase_user_id, tsm_user_id, is_active").execute()
-            mapping_data = mapping_res.data or []
+                ase_to_tsm: Dict[str, str] = {}
+                for m in mapping_data:
+                    ase_id = str(m.get("ase_user_id"))
+                    tsm_id = str(m.get("tsm_user_id"))
+                    ase_to_tsm[ase_id] = tsm_id
 
-            ase_to_tsm: Dict[str, str] = {}
-            for m in mapping_data:
-                ase_id = str(m.get("ase_user_id"))
-                tsm_id = str(m.get("tsm_user_id"))
-                ase_to_tsm[ase_id] = tsm_id
+                user_dict_by_id = {str(u["user_id"]): u for u in raw_users}
 
-            user_dict_by_id = {str(u["user_id"]): u for u in raw_users}
+                result = []
+                for u in raw_users:
+                    uid = str(u["user_id"])
+                    first_name = u.get("first_name") or ""
+                    last_name = u.get("last_name") or ""
+                    full_name = f"{first_name} {last_name}".strip() or "Unnamed User"
 
-            result = []
-            for u in raw_users:
-                uid = str(u["user_id"])
-                first_name = u.get("first_name") or ""
-                last_name = u.get("last_name") or ""
-                full_name = f"{first_name} {last_name}".strip() or "Unnamed User"
+                    manager_id = u.get("manager_id") or ase_to_tsm.get(uid)
+                    manager_name = "Unassigned"
+                    if manager_id and str(manager_id) in user_dict_by_id:
+                        mgr_obj = user_dict_by_id[str(manager_id)]
+                        mgr_fn = mgr_obj.get("first_name") or ""
+                        mgr_ln = mgr_obj.get("last_name") or ""
+                        manager_name = f"{mgr_fn} {mgr_ln}".strip() or "Unassigned"
 
-                manager_id = u.get("manager_id") or ase_to_tsm.get(uid)
-                manager_name = "Unassigned"
-                if manager_id and str(manager_id) in user_dict_by_id:
-                    mgr_obj = user_dict_by_id[str(manager_id)]
-                    mgr_fn = mgr_obj.get("first_name") or ""
-                    mgr_ln = mgr_obj.get("last_name") or ""
-                    manager_name = f"{mgr_fn} {mgr_ln}".strip() or "Unassigned"
+                    result.append({
+                        "id": uid,
+                        "user_id": uid,
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "name": full_name,
+                        "email": u.get("email") or "",
+                        "phone": u.get("phone") or "",
+                        "phoneNumber": u.get("phone") or "",
+                        "role": role_by_user_id.get(uid, "ASE"),
+                        "reportingManager": manager_name,
+                        "reporting_manager": manager_name,
+                        "manager_id": str(manager_id) if manager_id else None,
+                        "depotName": "Unassigned",
+                        "depot_name": "Unassigned",
+                        "headquarters": "Unassigned",
+                        "circleName": "Unassigned",
+                        "isActive": u.get("is_active", True),
+                        "is_active": u.get("is_active", True)
+                    })
 
-                result.append({
-                    "id": uid,
-                    "user_id": uid,
-                    "first_name": first_name,
-                    "last_name": last_name,
-                    "name": full_name,
-                    "email": "",
-                    "phone": "",
-                    "phoneNumber": "",
-                    "role": role_by_user_id.get(uid, "Territory Executive"),
-                    "reportingManager": manager_name,
-                    "reporting_manager": manager_name,
-                    "manager_id": str(manager_id) if manager_id else None,
-                    "depotName": "Unassigned",
-                    "depot_name": "Unassigned",
-                    "headquarters": "Unassigned",
-                    "circleName": "Unassigned",
-                    "isActive": u.get("is_active", True),
-                    "is_active": u.get("is_active", True)
-                })
+                return result
 
-            return result if result else self.in_memory_users
+            # 2. Fallback to raw_sales_upload if users table is empty
+            raw_res = client.table("raw_sales_upload").select("raw_id, ase_raw, asm_tsm_raw, is_active").execute()
+            raw_data = raw_res.data or []
+
+            if raw_data:
+                users_map: Dict[str, Dict[str, Any]] = {}
+                user_counter = 1
+
+                for row in raw_data:
+                    ase_raw = row.get("ase_raw") or ""
+                    tsm_raw = row.get("asm_tsm_raw") or ""
+                    is_active = row.get("is_active", True)
+
+                    ase_names = [p.strip() for p in ase_raw.replace(",", "/").split("/") if p.strip()]
+                    tsm_names = [p.strip() for p in tsm_raw.replace(",", "/").split("/") if p.strip()]
+
+                    first_tsm = tsm_names[0] if tsm_names else "Unassigned"
+
+                    for ase in ase_names:
+                        if ase and ase.lower() not in ["unassigned", "none", "null"] and ase not in users_map:
+                            users_map[ase] = {
+                                "user_id": f"u_{user_counter}",
+                                "id": f"u_{user_counter}",
+                                "name": ase,
+                                "first_name": ase.split()[0] if ase.split() else ase,
+                                "last_name": " ".join(ase.split()[1:]) if len(ase.split()) > 1 else "",
+                                "phone": "",
+                                "phoneNumber": "",
+                                "email": "",
+                                "role": "ASE",
+                                "depotName": "Unassigned",
+                                "circleName": "Unassigned",
+                                "headquarters": "Unassigned",
+                                "reportingManager": first_tsm,
+                                "is_active": is_active,
+                                "isActive": is_active
+                            }
+                            user_counter += 1
+
+                    for tsm in tsm_names:
+                        if tsm and tsm.lower() not in ["unassigned", "none", "null"] and tsm not in users_map:
+                            users_map[tsm] = {
+                                "user_id": f"u_{user_counter}",
+                                "id": f"u_{user_counter}",
+                                "name": tsm,
+                                "first_name": tsm.split()[0] if tsm.split() else tsm,
+                                "last_name": " ".join(tsm.split()[1:]) if len(tsm.split()) > 1 else "",
+                                "phone": "",
+                                "phoneNumber": "",
+                                "email": "",
+                                "role": "TSM",
+                                "depotName": "Unassigned",
+                                "circleName": "Unassigned",
+                                "headquarters": "Unassigned",
+                                "reportingManager": "Unassigned",
+                                "is_active": is_active,
+                                "isActive": is_active
+                            }
+                            user_counter += 1
+
+                if users_map:
+                    return list(users_map.values())
+
+            return self.in_memory_users
         except Exception as e:
             logger.error(f"Error fetching users from Supabase: {e}")
             return self.in_memory_users
 
-    def _resolve_role_id(self, client: Any, role_name: str) -> int:
-        """Resolve role_id from public.roles, inserting if absent."""
+    def _resolve_role_id(self, client: Any, role_name: str) -> Optional[str]:
+        """Resolve role_id (UUID) from public.roles, inserting if absent."""
         try:
             res = client.table("roles").select("role_id").ilike("role_name", role_name.strip()).limit(1).execute()
             if res.data and len(res.data) > 0:
-                return res.data[0]["role_id"]
-            ins = client.table("roles").insert({"role_name": role_name.strip(), "is_active": True}).execute()
+                return str(res.data[0]["role_id"])
+            ins = client.table("roles").insert({"role_name": role_name.strip(), "description": f"{role_name.strip()} Role", "is_active": True}).execute()
             if ins.data:
-                return ins.data[0]["role_id"]
+                return str(ins.data[0]["role_id"])
         except Exception as e:
             logger.warning(f"Failed to resolve role_id for '{role_name}': {e}")
-        return 1
+        return None
 
     def _resolve_auth_user_id(self, client: Any, email: str, first_name: str, last_name: str) -> Optional[str]:
         """Find or create user in Supabase auth.users to ensure users_user_id_fkey is satisfied."""
@@ -201,21 +198,8 @@ class UserService:
                 return str(auth_user.user.id)
             elif isinstance(auth_user, dict) and "id" in auth_user:
                 return str(auth_user["id"])
-        except Exception as create_err:
-            logger.info(f"Auth admin create_user notice for '{email_clean}': {create_err}")
-
-        # 3. If user is already registered in auth.users, search auth.users list
-        try:
-            users_list = client.auth.admin.list_users()
-            user_items = getattr(users_list, 'users', users_list if isinstance(users_list, list) else [])
-            for u in user_items:
-                u_email = getattr(u, 'email', None) or (u.get('email') if isinstance(u, dict) else '')
-                if u_email and u_email.strip().lower() == email_clean:
-                    uid = getattr(u, 'id', None) or (u.get('id') if isinstance(u, dict) else None)
-                    if uid:
-                        return str(uid)
-        except Exception as list_err:
-            logger.warning(f"Could not list auth.users to find id for '{email_clean}': {list_err}")
+        except Exception:
+            pass
 
         return None
 
@@ -675,6 +659,169 @@ class UserService:
             "updated_count": 0,
             "message": f"Successfully processed headcount roster file '{filename}'. Imported {imported_count} employee records mapped across users, user_roles, and ase_tsm_mapping tables."
         }
+
+    def populate_users_and_hierarchy_from_raw(self, batch_id: int) -> Dict[str, int]:
+        """
+        Extract unique TSM and ASE personnel from raw_sales_upload for batch_id,
+        populate public.users, public.user_roles, and public.ase_tsm_mapping.
+        Returns statistics of created records.
+        """
+        client = get_supabase()
+        if not client:
+            return {"users": 0, "mappings": 0}
+
+        try:
+            # 1. Query distinct raw personnel & depot mappings
+            res = client.table("raw_sales_upload").select("ase_raw, asm_tsm_raw, depot_raw").eq("batch_id", batch_id).execute()
+            raw_rows = res.data or []
+            if not raw_rows:
+                return {"users": 0, "mappings": 0}
+
+            tsm_role_id = self._resolve_role_id(client, "TSM")
+            ase_role_id = self._resolve_role_id(client, "ASE")
+
+            # Resolve all depots in DB for matching
+            depot_cache: Dict[str, str] = {}
+            try:
+                dep_res = client.table("depots").select("depot_id, name").execute()
+                for d in dep_res.data or []:
+                    dep_name_clean = str(d.get("name") or "").strip().lower()
+                    if dep_name_clean:
+                        depot_cache[dep_name_clean] = str(d.get("depot_id"))
+            except Exception as e_dep:
+                logger.warning(f"Could not prefetch depots for user_depot mapping: {e_dep}")
+
+            # Extract distinct TSMs, ASE-TSM pairs, and user-depot relationships
+            tsm_set = set()
+            ase_tsm_pairs = set()
+            user_depots: Dict[str, set] = {} # user_name -> set of depot_ids
+
+            for row in raw_rows:
+                ase_raw = row.get("ase_raw") or ""
+                tsm_raw = row.get("asm_tsm_raw") or ""
+                depot_raw = str(row.get("depot_raw") or "").strip()
+                depot_id = depot_cache.get(depot_raw.lower())
+
+                ase_names = [p.strip() for p in ase_raw.replace(",", "/").split("/") if p.strip()]
+                tsm_names = [p.strip() for p in tsm_raw.replace(",", "/").split("/") if p.strip()]
+
+                for tsm in tsm_names:
+                    if tsm and tsm.lower() not in ["unassigned", "none", "null", "nan"]:
+                        tsm_set.add(tsm)
+                        if depot_id:
+                            user_depots.setdefault(tsm, set()).add(depot_id)
+
+                first_tsm = tsm_names[0] if tsm_names and tsm_names[0].lower() not in ["unassigned", "none", "null", "nan"] else None
+                for ase in ase_names:
+                    if ase and ase.lower() not in ["unassigned", "none", "null", "nan"]:
+                        ase_tsm_pairs.add((ase, first_tsm))
+                        if depot_id:
+                            user_depots.setdefault(ase, set()).add(depot_id)
+
+            user_cache: Dict[str, str] = {} # name -> user_id
+            user_role_cache: Dict[str, str] = {} # name -> user_role_id
+
+            import random
+
+            def _generate_phone(name: str) -> str:
+                # Deterministic random phone starting with 9829 or 9414 (Rajasthan prefixes)
+                seed = sum(ord(c) for c in name)
+                digits = str(abs(seed * 1234567))[:6].zfill(6)
+                return f"+919829{digits}"
+
+            # 2. Upsert TSM users & roles
+            for tsm_name in tsm_set:
+                parts = tsm_name.split(" ", 1)
+                fn = parts[0]
+                ln = parts[1] if len(parts) > 1 else ""
+                email = f"{fn.lower().replace(' ', '')}.{ln.lower().replace(' ', '')}@rll.com"
+                phone = _generate_phone(tsm_name)
+
+                u_id = self._resolve_auth_user_id(client, email, fn, ln) or str(uuid.uuid4())
+                client.table("users").upsert({
+                    "user_id": u_id,
+                    "first_name": fn,
+                    "last_name": ln,
+                    "email": email,
+                    "phone": phone,
+                    "is_active": True
+                }).execute()
+                user_cache[tsm_name] = u_id
+
+                if tsm_role_id:
+                    ur_res = client.table("user_roles").upsert({
+                        "user_id": u_id,
+                        "role_id": tsm_role_id,
+                        "is_active": True
+                    }, on_conflict="user_id,role_id").execute()
+                    if ur_res.data:
+                        user_role_cache[tsm_name] = str(ur_res.data[0]["user_role_id"])
+
+                # Insert user_depot records
+                for d_id in user_depots.get(tsm_name, set()):
+                    try:
+                        client.table("user_depot").upsert({"user_id": u_id, "depot_id": d_id}, on_conflict="user_id,depot_id").execute()
+                    except Exception as ud_err:
+                        logger.warning(f"user_depot mapping error for TSM {tsm_name}: {ud_err}")
+
+            # 3. Upsert ASE users, roles, hierarchy mappings & depot assignments
+            mappings_count = 0
+            for ase_name, tsm_name in ase_tsm_pairs:
+                parts = ase_name.split(" ", 1)
+                fn = parts[0]
+                ln = parts[1] if len(parts) > 1 else ""
+                email = f"{fn.lower().replace(' ', '')}.{ln.lower().replace(' ', '')}@rll.com"
+                phone = _generate_phone(ase_name)
+
+                mgr_id = user_cache.get(tsm_name) if tsm_name else None
+                u_id = self._resolve_auth_user_id(client, email, fn, ln) or str(uuid.uuid4())
+
+                user_row = {
+                    "user_id": u_id,
+                    "first_name": fn,
+                    "last_name": ln,
+                    "email": email,
+                    "phone": phone,
+                    "is_active": True
+                }
+                if mgr_id:
+                    user_row["manager_id"] = mgr_id
+
+                client.table("users").upsert(user_row).execute()
+                user_cache[ase_name] = u_id
+
+                ase_ur_id = None
+                if ase_role_id:
+                    ur_res = client.table("user_roles").upsert({
+                        "user_id": u_id,
+                        "role_id": ase_role_id,
+                        "is_active": True
+                    }, on_conflict="user_id,role_id").execute()
+                    if ur_res.data:
+                        ase_ur_id = str(ur_res.data[0]["user_role_id"])
+                        user_role_cache[ase_name] = ase_ur_id
+
+                tsm_ur_id = user_role_cache.get(tsm_name) if tsm_name else None
+                if mgr_id:
+                    client.table("ase_tsm_mapping").insert({
+                        "ase_user_id": u_id,
+                        "tsm_user_id": mgr_id,
+                        "ase_user_role_id": ase_ur_id,
+                        "tsm_user_role_id": tsm_ur_id
+                    }).execute()
+                    mappings_count += 1
+
+                # Insert user_depot records
+                for d_id in user_depots.get(ase_name, set()):
+                    try:
+                        client.table("user_depot").upsert({"user_id": u_id, "depot_id": d_id}, on_conflict="user_id,depot_id").execute()
+                    except Exception as ud_err:
+                        logger.warning(f"user_depot mapping error for ASE {ase_name}: {ud_err}")
+
+            return {"users": len(user_cache), "mappings": mappings_count}
+        except Exception as e:
+            logger.error(f"Error populating users and hierarchy from raw: {e}")
+            return {"users": 0, "mappings": 0}
 
 
 user_service = UserService()

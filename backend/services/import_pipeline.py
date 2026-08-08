@@ -648,6 +648,14 @@ class ImportPipelineEngine:
                     batch_id=batch_id,
                 )
 
+            # Populate users, roles and reporting hierarchy from raw staging data
+            try:
+                from backend.services.user_service import user_service
+                u_stats = user_service.populate_users_and_hierarchy_from_raw(batch_id)
+                logger.info(f"Batch {batch_id}: Populated {u_stats.get('users', 0)} users & {u_stats.get('mappings', 0)} hierarchy mappings.")
+            except Exception as u_err:
+                logger.warning(f"Batch {batch_id}: User population notice: {u_err}")
+
             # Step 8 - Validation Status
             if fact_records:
                 self._update_batch(batch_id=batch_id, status="validated")
@@ -675,6 +683,15 @@ class ImportPipelineEngine:
                 refresh_ok = analytics_refresh_service.refresh_sales_analytics_for_dates(distinct_dates)
                 if not refresh_ok:
                     logger.warning(f"Analytics summary refresh encountered minor issues for batch {batch_id}.")
+
+            # Clean up temporary raw staging records once fully processed
+            client = get_supabase()
+            if client:
+                try:
+                    client.table("raw_sales_upload").delete().eq("batch_id", batch_id).execute()
+                    logger.info(f"Batch {batch_id}: Cleaned up temporary raw_sales_upload data.")
+                except Exception as clean_err:
+                    logger.warning(f"Batch {batch_id}: Raw cleanup notice: {clean_err}")
 
             final_status = "loaded" if imported_rows > 0 else "failed"
             self._update_batch(batch_id=batch_id, row_count=total_rows, status=final_status)
@@ -1656,28 +1673,7 @@ class ImportPipelineEngine:
                             err_msg = f"{exc} | Upsert error: {e_up}"
                             logger.warning(f"Error upserting chunk {idx} into {table}: {err_msg}")
                     elif table == "sales_fact":
-                        try:
-                            first_d = chunk[0].get("sale_date")
-                            if first_d and len(str(first_d)) >= 7:
-                                yr, mo = int(str(first_d)[:4]), int(str(first_d)[5:7])
-                                next_yr = yr if mo < 12 else yr + 1
-                                next_mo = mo + 1 if mo < 12 else 1
-                                s_d = f"{yr:04d}-{mo:02d}-01"
-                                e_d = f"{next_yr:04d}-{next_mo:02d}-01"
-                                part_tbl = f"sales_fact_{yr:04d}_{mo:02d}"
-                                part_sql = f"CREATE TABLE IF NOT EXISTS public.{part_tbl} PARTITION OF public.sales_fact FOR VALUES FROM ('{s_d}') TO ('{e_d}');"
-                                try:
-                                    client.rpc("exec_sql", {"sql_query": part_sql}).execute()
-                                except Exception:
-                                    try:
-                                        client.rpc("execute_sql", {"query": part_sql}).execute()
-                                    except Exception:
-                                        pass
-                                client.table(table).insert(chunk).execute()
-                                success = True
-                        except Exception as e2:
-                            err_msg = f"{exc} | Partition retry error: {e2}"
-                            logger.warning(f"Error inserting chunk {idx} into {table}: {err_msg}")
+                        logger.warning(f"Error inserting chunk {idx} into {table}: {exc}")
                     else:
                         logger.warning(f"Error inserting chunk {idx} into {table}: {err_msg}")
             else:

@@ -1,9 +1,12 @@
+import logging
 from typing import List
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks, status
 from backend.services.import_pipeline import import_pipeline, upload_batches_db, upload_logs_db
 from backend.core.security import RoleChecker
 from backend.db.client import get_supabase
 from backend.schemas.transactional import UploadBatchResponse, UploadLogResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/uploads", tags=["Excel Upload & Import Pipeline"])
 
@@ -52,7 +55,7 @@ async def list_upload_batches():
     return list(upload_batches_db.values())
 
 @router.get("/batches/{batch_id}", response_model=UploadBatchResponse)
-async def get_upload_batch(batch_id: int):
+async def get_upload_batch(batch_id: str):
     if batch_id in upload_batches_db:
         return upload_batches_db[batch_id]
         
@@ -72,8 +75,8 @@ async def get_upload_batch(batch_id: int):
     })
 
 @router.get("/batches/{batch_id}/logs", response_model=List[UploadLogResponse])
-async def get_batch_logs(batch_id: int):
-    logs = [log for log in upload_logs_db if log.get("upload_batch_id") == batch_id or log.get("batch_id") == batch_id]
+async def get_batch_logs(batch_id: str):
+    logs = [log for log in upload_logs_db if str(log.get("upload_batch_id")) == str(batch_id) or str(log.get("batch_id")) == str(batch_id)]
     client = get_supabase()
     if client:
         try:
