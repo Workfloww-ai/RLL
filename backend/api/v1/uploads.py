@@ -54,6 +54,37 @@ async def upload_excel(
 async def list_upload_batches():
     return list(upload_batches_db.values())
 
+@router.get("/latest")
+async def get_latest_upload_batch():
+    """
+    Returns details of the latest upload batch from Supabase DB or memory.
+    """
+    client = get_supabase()
+    if client:
+        try:
+            res = client.table("upload_batches").select("batch_id, source_file, file_name, storage_path, load_type, covers_start, covers_end, row_count, total_rows, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, upload_status, remarks, uploaded_by, created_at, updated_at").order("created_at", desc=True).limit(1).execute()
+            if res.data:
+                batch = res.data[0]
+                # If imported_rows is 0, verify count from sales_fact
+                if not batch.get("imported_rows") or batch.get("imported_rows") == 0:
+                    fact_res = client.table("sales_fact").select("fact_id", count="exact").eq("batch_id", batch["batch_id"]).limit(1).execute()
+                    if fact_res.count and fact_res.count > 0:
+                        batch["imported_rows"] = fact_res.count
+                        batch["status"] = "success"
+                        batch["upload_status"] = "success"
+                return batch
+        except Exception as e:
+            logger.warning(f"Failed to fetch latest batch from Supabase: {e}")
+            
+    batches = list(upload_batches_db.values())
+    if batches:
+        return sorted(batches, key=lambda x: x.get("created_at", ""), reverse=True)[0]
+        
+    return {
+        "status": "none",
+        "message": "No upload history found."
+    }
+
 @router.get("/batches/{batch_id}", response_model=UploadBatchResponse)
 async def get_upload_batch(batch_id: str):
     if batch_id in upload_batches_db:

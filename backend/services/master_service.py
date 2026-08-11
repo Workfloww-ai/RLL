@@ -646,7 +646,7 @@ class MasterService:
                 if payload:
                     res = client.table("depots").update(payload).eq("depot_id", depot_id).execute()
                 else:
-                    res = client.table("depots").select("*").eq("depot_id", depot_id).execute()
+                    res = client.table("depots").select("depot_id, name, headquarters_id, office_id, circle_id, is_active").eq("depot_id", depot_id).execute()
 
                 if assigned_user_id != "NO_CHANGE":
                     # Update user_depot mapping

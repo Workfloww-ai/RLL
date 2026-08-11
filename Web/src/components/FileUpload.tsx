@@ -103,7 +103,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
             failedRows: batchInfo.failed_rows ?? 0,
             duplicateRows: batchInfo.duplicate_rows ?? 0,
             processingTimeSeconds: batchInfo.processing_time_seconds ?? 0,
-            statusMessage: batchInfo.remarks || 'All records successfully verified and saved into database!'
+            statusMessage: batchInfo.remarks || 'All Records Successfully Verified & Saved!'
           });
           if (onUploadComplete) onUploadComplete(fileName);
         } else if (isFailed) {
