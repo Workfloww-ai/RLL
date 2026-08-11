@@ -33,8 +33,12 @@ coverage/
 
 # Logs
 *.log
+
+
 backend/.venv_fresh/
 backend/venv_sys/
 
 .DS_Store
 
+.agents/*
+/Users/khwaish/Desktop/RLL/RLL/backend/test_folder

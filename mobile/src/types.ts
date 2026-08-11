@@ -52,7 +52,7 @@ export interface TSM {
   brands: TsmBrandSales[];
 }
 
-export type ViewMode = 'companies' | 'depots' | 'tsm';
+export type ViewMode = 'companies' | 'depots' | 'tsm' | 'profile';
 
 export interface DateRange {
   from: string;

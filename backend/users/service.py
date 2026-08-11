@@ -5,7 +5,6 @@ from typing import List, Dict, Any, Optional
 import pandas as pd
 from backend.db.client import get_supabase
 
-from backend.core.security import MOCK_USERS
 
 logger = logging.getLogger(__name__)
 

@@ -3,8 +3,11 @@ import os
 import tempfile
 
 import pandas as pd
+# pyrefly: ignore [missing-import]
 from fastapi import UploadFile
+# pyrefly: ignore [missing-import]
 from numbers_parser import Document
+# pyrefly: ignore [missing-import]
 from backend.uploads.constants import REQUIRED_HEADERS
 
 

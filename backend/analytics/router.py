@@ -2,11 +2,12 @@ import csv
 import io
 from typing import Optional
 from fastapi import APIRouter, Depends, Query, HTTPException, Response, status
-from backend.services.analytics_service import analytics_service
-from backend.schemas.analytics import DashboardResponse
+from backend.analytics.service import analytics_service
+from backend.analytics.schemas import DashboardResponse
 from backend.core.security import get_current_user
 
 router = APIRouter(prefix="/analytics", tags=["Sales Analytics Engine"])
+
 
 @router.get("/dashboard", response_model=DashboardResponse)
 async def get_dashboard_analytics(
@@ -29,6 +30,7 @@ async def get_dashboard_analytics(
         brand_id=brand_id,
         current_user=current_user
     )
+
 
 @router.get("/export")
 async def export_dashboard_data(
@@ -53,11 +55,9 @@ async def export_dashboard_data(
 
     output = io.StringIO()
     writer = csv.writer(output)
-    
-    # Header
+
     writer.writerow(["Period", "From Date", "To Date", "Brand ID", "Brand Name", "Total Cases", "Total Bottles", "Total Bulk Liters (BL)"])
-    
-    # Rows
+
     for b in data.get("brands", []):
         writer.writerow([
             data.get("period"),
@@ -72,7 +72,7 @@ async def export_dashboard_data(
 
     csv_content = output.getvalue()
     filename = f"sales_analytics_{period}_{data.get('to_date')}.csv"
-    
+
     return Response(
         content=csv_content,
         media_type="text/csv",

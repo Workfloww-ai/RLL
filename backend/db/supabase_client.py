@@ -1,5 +1,6 @@
 import logging
 from typing import Any, Dict, List, Optional
+# pyrefly: ignore [missing-import]
 from supabase import create_client, Client
 from backend.core.config import settings
 logger = logging.getLogger("supabase_client")

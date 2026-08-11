@@ -305,7 +305,7 @@ export default function HeadcountManagement() {
                 type="text" 
                 value={newUser.phoneNumber}
                 onChange={(e) => setNewUser({...newUser, phoneNumber: e.target.value})}
-                placeholder="e.g. +91 9876543210"
+                placeholder="e.g. +919876543210"
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
               />
             </div>

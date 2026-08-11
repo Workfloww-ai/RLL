@@ -4,64 +4,9 @@ import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from backend.core.config import settings
+from backend.db.client import get_supabase
 
 security = HTTPBearer(auto_error=False)
-
-# Mock user database for local testing when Auth service is not yet populated
-MOCK_USERS: Dict[str, Dict[str, Any]] = {
-    "monalika.goel@workfloww.ai": {
-        "user_id": "e8a27d14-3850-482a-9e12-852788028800",
-        "email": "monalika.goel@workfloww.ai",
-        "first_name": "Monalika",
-        "last_name": "Goel",
-        "phone": "8527880288",
-        "password": "mona@20",
-        "role_id": 1,
-        "role_name": "admin",
-        "office_id": 1,
-        "circle_id": None,
-        "depot_id": None,
-        "is_active": True
-    },
-    "admin@rll.gov.in": {
-        "user_id": "fb2ce618-afbf-4eb9-b4a0-732651b2d99f",
-        "email": "admin@rll.gov.in",
-        "first_name": "System",
-        "last_name": "Admin",
-        "phone": "8527880288",
-        "password": "mona@20",
-        "role_id": 1,
-        "role_name": "admin",
-        "office_id": 1,
-        "circle_id": None,
-        "depot_id": None,
-        "is_active": True
-    },
-    "manager@rll.gov.in": {
-        "user_id": "00000000-0000-0000-0000-000000000002",
-        "email": "manager@rll.gov.in",
-        "first_name": "Regional",
-        "last_name": "Manager",
-        "role_id": 2,
-        "role_name": "regional_manager",
-        "office_id": 1,
-        "circle_id": 1,
-        "depot_id": None,
-        "is_active": True
-    },
-    "salesrep@rll.gov.in": {
-        "user_id": "00000000-0000-0000-0000-000000000003",
-        "email": "salesrep@rll.gov.in",
-        "first_name": "Sales",
-        "last_name": "Representative",
-        "role_id": 3,
-        "role_name": "sales_representative",
-        "office_id": 1,
-        "circle_id": 1,
-        "depot_id": 1,
-        "is_active": True
-    }
-}
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
@@ -83,35 +28,101 @@ def decode_access_token(token: str) -> Optional[dict]:
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ) -> dict:
-    if not credentials:
-        # Default mock admin user if unauthenticated in dev environment
-        return MOCK_USERS["monalika.goel@workfloww.ai"]
+    if not credentials or not credentials.credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     
     token = credentials.credentials
-    if not token or token.startswith("demo-token-") or token.startswith("google-token-"):
-        return MOCK_USERS["monalika.goel@workfloww.ai"]
+    if token.startswith("demo-token-") or token.startswith("google-token-"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     payload = decode_access_token(token)
     if not payload:
-        return MOCK_USERS["monalika.goel@workfloww.ai"]
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication token or token expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     
-    email = payload.get("sub", "monalika.goel@workfloww.ai")
-    if email in MOCK_USERS:
-        return MOCK_USERS[email]
-    
-    return {
-        "user_id": payload.get("user_id", "00000000-0000-0000-0000-000000000000"),
-        "email": email,
-        "role_name": payload.get("role", "admin"),
-        "is_active": True
-    }
+    email = payload.get("sub")
+    user_id = payload.get("user_id")
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Malformed token payload",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    client = get_supabase()
+    user_info = None
+
+    if client:
+        try:
+            res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active").ilike("email", email).execute()
+            if res.data and len(res.data) > 0:
+                db_user = res.data[0]
+                if not db_user.get("is_active", True):
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="User account is deactivated",
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
+                
+                role_name = payload.get("role", "admin")
+                try:
+                    ur_res = client.table("user_roles").select("user_id, role_id, is_active, roles(role_id, role_name)").eq("user_id", db_user["user_id"]).execute()
+                    if ur_res.data:
+                        for ur in ur_res.data:
+                            if ur.get("is_active", True):
+                                role_obj = ur.get("roles") or {}
+                                if role_obj.get("role_name"):
+                                    role_name = role_obj["role_name"]
+                                    break
+                except Exception:
+                    pass
+
+                user_info = {
+                    "user_id": str(db_user.get("user_id")),
+                    "email": db_user.get("email"),
+                    "first_name": db_user.get("first_name", ""),
+                    "last_name": db_user.get("last_name", ""),
+                    "phone": db_user.get("phone", ""),
+                    "role_name": role_name,
+                    "role": role_name,
+                    "is_active": True
+                }
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
+    if not user_info:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return user_info
 
 class RoleChecker:
     def __init__(self, allowed_roles: List[str]):
         self.allowed_roles = allowed_roles
 
     def __call__(self, current_user: dict = Depends(get_current_user)):
-        user_role = current_user.get("role_name", "admin")
-        if "admin" in self.allowed_roles or user_role in self.allowed_roles or user_role == "admin":
+        user_role = (current_user.get("role_name") or current_user.get("role") or "").lower()
+        allowed = {r.lower() for r in self.allowed_roles}
+        if "admin" in allowed or "super_admin" in allowed or user_role in allowed or user_role in {"admin", "super_admin"}:
             return current_user
-        return current_user
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Permission denied: user role '{user_role}' is not authorized for this operation"
+        )
+

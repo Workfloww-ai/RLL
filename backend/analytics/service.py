@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, date
 from typing import Dict, Any, List, Optional, Set
 from backend.db.client import get_supabase
-from backend.services.analytics_scope_service import analytics_scope_service
+from backend.analytics.scope_service import analytics_scope_service
 
 logger = logging.getLogger(__name__)
 

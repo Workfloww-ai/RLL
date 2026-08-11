@@ -1,16 +1,17 @@
 import logging
 from typing import List
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks, status
-from backend.services.import_pipeline import import_pipeline, upload_batches_db, upload_logs_db
+from backend.uploads.service import import_pipeline, upload_batches_db, upload_logs_db
 from backend.core.security import RoleChecker
 from backend.db.client import get_supabase
-from backend.schemas.transactional import UploadBatchResponse, UploadLogResponse
+from backend.uploads.schemas import UploadBatchResponse, UploadLogResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/uploads", tags=["Excel Upload & Import Pipeline"])
 
 admin_only = RoleChecker(["admin"])
+
 
 @router.post("/", response_model=UploadBatchResponse, status_code=status.HTTP_202_ACCEPTED)
 async def upload_excel(
@@ -26,15 +27,12 @@ async def upload_excel(
     """
     try:
         user_id = current_user.get("user_id", "00000000-0000-0000-0000-000000000001")
-        
-        # Read contents immediately into memory
+
         contents = await file.read()
         filename = file.filename or "uploaded_file.xlsx"
 
-        # Initialize batch record immediately for instant client response
         batch_record = import_pipeline.create_initial_batch(filename, user_id)
-        
-        # Dispatch heavy 100k row processing to background worker
+
         background_tasks.add_task(
             import_pipeline.process_file_upload_async,
             filename,
@@ -54,11 +52,12 @@ async def upload_excel(
 async def list_upload_batches():
     return list(upload_batches_db.values())
 
+
 @router.get("/batches/{batch_id}", response_model=UploadBatchResponse)
 async def get_upload_batch(batch_id: str):
     if batch_id in upload_batches_db:
         return upload_batches_db[batch_id]
-        
+
     client = get_supabase()
     if client:
         try:
@@ -67,12 +66,13 @@ async def get_upload_batch(batch_id: str):
                 return res.data[0]
         except Exception as e:
             logger.warning(f"Failed to fetch batch {batch_id} status from Supabase: {e}")
-            
+
     return upload_batches_db.get(batch_id, {
         "batch_id": batch_id,
         "status": "not_found",
         "remarks": "Batch record not found."
     })
+
 
 @router.get("/batches/{batch_id}/logs", response_model=List[UploadLogResponse])
 async def get_batch_logs(batch_id: str):

@@ -1,9 +1,8 @@
-from typing import Optional, List, Any, Dict
+from typing import Optional, List, Any, Dict, Union
 from datetime import datetime, date
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
-from typing import Optional, List, Any, Dict, Union
 
 # Upload Batches
 class UploadBatchBase(BaseModel):
@@ -27,8 +26,10 @@ class UploadBatchBase(BaseModel):
     duplicate_rows: Optional[int] = 0
     processing_time_seconds: Optional[float] = 0.0
 
+
 class UploadBatchCreate(UploadBatchBase):
     pass
+
 
 class UploadBatchResponse(UploadBatchBase):
     batch_id: Optional[Union[str, UUID, int]] = None
@@ -47,8 +48,10 @@ class UploadLogBase(BaseModel):
     error_message: Optional[str] = None
     raw_data: Optional[Dict[str, Any]] = None
 
+
 class UploadLogCreate(UploadLogBase):
     pass
+
 
 class UploadLogResponse(UploadLogBase):
     upload_log_id: Union[str, UUID, int]
@@ -69,8 +72,10 @@ class SaleBase(BaseModel):
     sale_value: float = 0.0
     upload_batch_id: Optional[Union[str, UUID, int]] = None
 
+
 class SaleCreate(SaleBase):
     pass
+
 
 class SaleResponse(SaleBase):
     sale_id: Union[str, UUID, int]
@@ -90,6 +95,7 @@ class DashboardSummaryDailyBase(BaseModel):
     top_brand_id: Optional[Union[str, UUID, int]] = None
     top_depot_id: Optional[Union[str, UUID, int]] = None
 
+
 class DashboardSummaryDailyResponse(DashboardSummaryDailyBase):
     dashboard_summary_id: Union[str, UUID, int]
     updated_at: datetime
@@ -108,6 +114,7 @@ class AuditLogCreate(BaseModel):
     user_agent: Optional[str] = None
     request_path: Optional[str] = None
     request_method: Optional[str] = None
+
 
 class AuditLogResponse(AuditLogCreate):
     audit_log_id: Union[str, UUID, int]

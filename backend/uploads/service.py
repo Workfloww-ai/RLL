@@ -6,12 +6,14 @@ import tempfile
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
+# pyrefly: ignore [missing-import]
 from fastapi import UploadFile
 import pandas as pd
+# pyrefly: ignore [missing-import]
 from numbers_parser import Document
 
 from backend.db.client import get_supabase
-from backend.services.master_service import master_service
+from backend.master_data.service import master_service
 
 
 logger = logging.getLogger(__name__)
@@ -650,7 +652,7 @@ class ImportPipelineEngine:
 
             # Populate users, roles and reporting hierarchy from raw staging data
             try:
-                from backend.services.user_service import user_service
+                from backend.users.service import user_service
                 u_stats = user_service.populate_users_and_hierarchy_from_raw(batch_id)
                 logger.info(f"Batch {batch_id}: Populated {u_stats.get('users', 0)} users & {u_stats.get('mappings', 0)} hierarchy mappings.")
             except Exception as u_err:
@@ -679,7 +681,7 @@ class ImportPipelineEngine:
             # Step 10 - Trigger Analytics Summaries Refresh (Daily + Monthly) ONLY after complete sales_fact ingestion
             if fact_records and imported_rows > 0:
                 distinct_dates = list({r.get("sale_date") for r in fact_records if r.get("sale_date")})
-                from backend.services.analytics_refresh_service import analytics_refresh_service
+                from backend.analytics.refresh_service import analytics_refresh_service
                 refresh_ok = analytics_refresh_service.refresh_sales_analytics_for_dates(distinct_dates)
                 if not refresh_ok:
                     logger.warning(f"Analytics summary refresh encountered minor issues for batch {batch_id}.")
@@ -1129,6 +1131,7 @@ class ImportPipelineEngine:
         # Dedicated pyxlsb engine parser for binary files (.xlsb)
         if (raw_dataframe is None or raw_dataframe.empty) and filename_lower.endswith(".xlsb"):
             try:
+                # pyrefly: ignore [missing-import]
                 import pyxlsb
                 rows = []
                 with pyxlsb.open_workbook(io.BytesIO(contents)) as wb:

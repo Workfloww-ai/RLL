@@ -26,12 +26,12 @@ export const Header: React.FC<HeaderProps> = ({
   headquartersList,
 }) => {
   const periods: Period[] = ['Daily', 'MTD', 'YTD'];
-  const TODAY = '2026-04-30';
+  const TODAY = '2026-05-31';
 
   const handlePeriodChange = (p: Period) => {
     setPeriod(p);
     if (p === 'MTD') {
-      setDateFrom('2026-04-01');
+      setDateFrom('2026-05-01');
       setDateTo(TODAY);
     } else if (p === 'YTD') {
       setDateFrom('2026-04-01');
@@ -111,7 +111,7 @@ export const Header: React.FC<HeaderProps> = ({
                 value={dateFrom}
                 max={TODAY}
                 onChange={(e) => {
-                  const val = e.target.value > TODAY ? TODAY : e.target.value;
+                  const val = e.target.value;
                   setDateFrom(val);
                   setDateTo(val);
                 }}
@@ -128,18 +128,11 @@ export const Header: React.FC<HeaderProps> = ({
                 type="date"
                 value={dateFrom}
                 max={TODAY}
-                disabled={period === 'YTD'}
                 onChange={(e) => {
-                  if (period !== 'YTD') {
-                    const val = e.target.value > TODAY ? TODAY : e.target.value;
-                    setDateFrom(val);
-                  }
+                  setDateFrom(e.target.value);
                 }}
                 id="header-date-from"
-                className={`bg-transparent text-white font-bold w-[78px] focus:outline-none text-[10px] ${
-                  period === 'YTD' ? 'opacity-75 cursor-not-allowed' : 'cursor-pointer'
-                }`}
-                title={period === 'YTD' ? 'Start date is fixed for YTD' : undefined}
+                className="bg-transparent text-white font-bold w-[78px] focus:outline-none cursor-pointer text-[10px]"
               />
             </div>
             <span className="text-slate-400 font-bold">-</span>
@@ -149,8 +142,7 @@ export const Header: React.FC<HeaderProps> = ({
                 value={dateTo}
                 max={TODAY}
                 onChange={(e) => {
-                  const val = e.target.value > TODAY ? TODAY : e.target.value;
-                  setDateTo(val);
+                  setDateTo(e.target.value);
                 }}
                 id="header-date-to"
                 className="bg-transparent text-white font-bold w-[78px] focus:outline-none cursor-pointer text-[10px]"

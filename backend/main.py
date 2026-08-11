@@ -9,14 +9,14 @@ if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
 from backend.core.config import settings
-from backend.api.v1.auth import router as auth_router
-from backend.api.v1.users import router as users_router
-from backend.api.v1.master_data import router as master_data_router
-from backend.api.v1.uploads import router as uploads_router
-from backend.api.v1.dashboard import router as dashboard_router
-from backend.api.v1.analytics import router as analytics_router
-from backend.api.v1.reports import router as reports_router
-from backend.api.v1.mobile import router as mobile_router
+from backend.auth.router import router as auth_router
+from backend.users.router import router as users_router
+from backend.master_data.router import router as master_data_router
+from backend.uploads.router import router as uploads_router
+from backend.dashboard.router import router as dashboard_router
+from backend.analytics.router import router as analytics_router
+from backend.reports.router import router as reports_router
+from backend.mobile.router import router as mobile_router
 
 app = FastAPI(
     title=settings.PROJECT_NAME,

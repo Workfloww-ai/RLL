@@ -14,7 +14,8 @@ import { DepotsView } from './components/DepotsView';
 import { TsmView } from './components/TsmView';
 import { BrandModal } from './components/BrandModal';
 import { LoginScreen } from './components/LoginScreen';
-import { fetchMobileSales } from './lib/api';
+import { ProfileScreen } from './features/profile/ProfileScreen';
+import { fetchMobileSales, fetchUserProfile } from './lib/api';
 import {
   Search,
   Wifi,
@@ -32,15 +33,15 @@ export default function App() {
   });
 
   const [period, setPeriod] = useState<Period>('Daily');
-  const [dateFrom, setDateFrom] = useState<string>('2026-04-30');
-  const [dateTo, setDateTo] = useState<string>('2026-04-30');
+  const [dateFrom, setDateFrom] = useState<string>('2026-05-31');
+  const [dateTo, setDateTo] = useState<string>('2026-05-31');
   const [viewMode, setViewMode] = useState<ViewMode>('companies');
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedHq, setSelectedHq] = useState<string>('All Headquarters');
   const [apiData, setApiData] = useState<any>(null);
 
-  // Fetch backend aggregated sales when user, dates, or HQ selection change
+  // Fetch backend aggregated sales and profile when user, dates, or HQ selection change
   useEffect(() => {
     if (!user) return;
     fetchMobileSales(dateFrom, dateTo, period, selectedHq).then((res) => {
@@ -48,12 +49,18 @@ export default function App() {
         setApiData(res);
       }
     });
-  }, [user, dateFrom, dateTo, period, selectedHq]);
+    fetchUserProfile().then((profile) => {
+      if (profile && profile.email) {
+        setUser(profile);
+      }
+    });
+  }, [dateFrom, dateTo, period, selectedHq]);
 
   const handleLogout = () => {
     localStorage.removeItem('rll_mobile_token');
     localStorage.removeItem('rll_mobile_user');
     setUser(null);
+    setViewMode('companies');
   };
 
   // Dynamic date multiplier (Only scale mock data; live API returns pre-aggregated exact metrics)
@@ -163,41 +170,50 @@ export default function App() {
         </div>
 
         {!user ? (
-          <LoginScreen onLoginSuccess={(u) => setUser(u)} />
+          <LoginScreen
+            onLoginSuccess={(u) => {
+              setUser(u);
+              setViewMode('companies');
+            }}
+          />
         ) : (
           <>
 
-        {/* Minimal Streamlined Dashboard Header Component */}
-        <Header
-          period={period}
-          setPeriod={setPeriod}
-          dateFrom={dateFrom}
-          setDateFrom={setDateFrom}
-          dateTo={dateTo}
-          setDateTo={setDateTo}
-          selectedHq={selectedHq}
-          setSelectedHq={setSelectedHq}
-          headquartersList={HEADQUARTERS_LIST}
-        />
+        {/* Minimal Streamlined Dashboard Header & Quick Metrics Banner (Hidden on Profile view) */}
+        {viewMode !== 'profile' && (
+          <>
+            <Header
+              period={period}
+              setPeriod={setPeriod}
+              dateFrom={dateFrom}
+              setDateFrom={setDateFrom}
+              dateTo={dateTo}
+              setDateTo={setDateTo}
+              selectedHq={selectedHq}
+              setSelectedHq={setSelectedHq}
+              headquartersList={HEADQUARTERS_LIST}
+            />
 
-        {/* Sleek Aggregate Quick Metrics Banner */}
-        <div className="bg-white border-b border-slate-200 px-4 py-2 flex items-center justify-between shrink-0 shadow-2xs">
-          <div className="flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-blue-600" />
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-              {period} Total
-            </span>
-          </div>
-          <div className="flex items-center gap-2 text-xs font-semibold">
-            <span className="text-[#0F2042] font-black">
-              {formatNumber(totalSummary.cases)} <span className="font-normal text-slate-400 text-[10px]">cases</span>
-            </span>
-            <span className="text-slate-300">•</span>
-            <span className="text-slate-700 font-bold">
-              {formatNumber(totalSummary.bottles)} <span className="font-normal text-slate-400 text-[10px]">btl</span>
-            </span>
-          </div>
-        </div>
+            {/* Sleek Aggregate Quick Metrics Banner */}
+            <div className="bg-white border-b border-slate-200 px-4 py-2 flex items-center justify-between shrink-0 shadow-2xs">
+              <div className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-blue-600" />
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                  {period} Total
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-xs font-semibold">
+                <span className="text-[#0F2042] font-black">
+                  {formatNumber(totalSummary.cases)} <span className="font-normal text-slate-400 text-[10px]">cases</span>
+                </span>
+                <span className="text-slate-300">•</span>
+                <span className="text-slate-700 font-bold">
+                  {formatNumber(totalSummary.bottles)} <span className="font-normal text-slate-400 text-[10px]">btl</span>
+                </span>
+              </div>
+            </div>
+          </>
+        )}
 
         {/* Scrollable Main Content Area */}
         <div className="flex-1 p-3 overflow-y-auto space-y-3">
@@ -305,6 +321,11 @@ export default function App() {
               scaleFactor={scaleFactor}
               selectedHq={selectedHq}
             />
+          )}
+
+          {/* VIEW 4: PROFILE TAB */}
+          {viewMode === 'profile' && (
+            <ProfileScreen user={user} onLogout={handleLogout} />
           )}
         </div>
 

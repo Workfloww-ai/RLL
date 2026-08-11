@@ -1,41 +1,64 @@
 const BASE_URL = 'http://localhost:8000/api/v1';
 
-export async function loginMobileUser(email: string, password: string) {
-  try {
-    const res = await fetch(`${BASE_URL}/mobile/login`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ email, password }),
-    });
+export async function sendMobileOTP(phone: string, email: string = '') {
+  const res = await fetch(`${BASE_URL}/mobile/send-otp`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ phone, email }),
+  });
 
-    if (!res.ok) {
-      throw new Error('Authentication failed');
-    }
-
-    const data = await res.json();
-    if (data.access_token) {
-      localStorage.setItem('rll_mobile_token', data.access_token);
-      localStorage.setItem('rll_mobile_user', JSON.stringify(data.user));
-    }
-    return data;
-  } catch (error) {
-    console.warn('Backend login fallback:', error);
-    // Offline/Local Fallback
-    const mockUser = {
-      user_id: 'e8a27d14-3850-482a-9e12-852788028800',
-      email: email || 'monalika.goel@workfloww.ai',
-      first_name: email ? email.split('@')[0] : 'Monalika',
-      last_name: 'Goel',
-      role_name: 'admin',
-      hq_location: 'All Headquarters',
-    };
-    const mockToken = 'demo-token-' + Date.now();
-    localStorage.setItem('rll_mobile_token', mockToken);
-    localStorage.setItem('rll_mobile_user', JSON.stringify(mockUser));
-    return { access_token: mockToken, user: mockUser };
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Failed to send OTP verification code.');
   }
+
+  return await res.json();
+}
+
+export async function verifyMobileOTP(phone: string, otp: string, email: string = '') {
+  const res = await fetch(`${BASE_URL}/mobile/verify-otp`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ phone, otp, email }),
+  });
+
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Invalid or expired 4-digit OTP code.');
+  }
+
+  const data = await res.json();
+  if (data.access_token) {
+    localStorage.setItem('rll_mobile_token', data.access_token);
+    localStorage.setItem('rll_mobile_user', JSON.stringify(data.user));
+  }
+  return data;
+}
+
+export async function loginMobileUser(email: string, password: string) {
+  const res = await fetch(`${BASE_URL}/mobile/login`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ email, password }),
+  });
+
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Authentication failed. Invalid email or password.');
+  }
+
+  const data = await res.json();
+  if (data.access_token) {
+    localStorage.setItem('rll_mobile_token', data.access_token);
+    localStorage.setItem('rll_mobile_user', JSON.stringify(data.user));
+  }
+  return data;
 }
 
 export async function fetchMobileSales(
@@ -66,6 +89,27 @@ export async function fetchMobileSales(
     return await res.json();
   } catch (error) {
     console.warn('Backend sales fetch fallback to mock data:', error);
+    return null;
+  }
+}
+
+export async function fetchUserProfile() {
+  const token = localStorage.getItem('rll_mobile_token');
+  if (!token) return null;
+  try {
+    const res = await fetch(`${BASE_URL}/mobile/me`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data && data.email) {
+      localStorage.setItem('rll_mobile_user', JSON.stringify(data));
+    }
+    return data;
+  } catch (error) {
+    console.warn('Backend user profile fetch failed:', error);
     return null;
   }
 }

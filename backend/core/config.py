@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 # 24 hours
     
+    # Dovesoft SMS Gateway Credentials (loaded strictly from .env)
+    DOVESOFT_API_KEY: str = ""
+    DOVESOFT_SENDER_ID: str = ""
+    DOVESOFT_API_URL: str = ""
+    DOVESOFT_ENTITY_ID: str = ""
+    DOVESOFT_TEMP_ID: str = ""
+    DOVESOFT_MESSAGE_TEMPLATE: str = ""
+    
     model_config = SettingsConfigDict(
         env_file=str(BASE_DIR / ".env"),
         env_file_encoding="utf-8",

@@ -1,9 +1,10 @@
 from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
-from backend.services.analytics_service import analytics_service
+from backend.analytics.service import analytics_service
 
 router = APIRouter(prefix="/reports", tags=["Reporting Service"])
+
 
 @router.get("/summary")
 async def get_summary_report(
@@ -19,6 +20,7 @@ async def get_summary_report(
         "top_depots": overview["top_depots"]
     }
 
+
 @router.get("/export")
 async def export_sales_report(
     format: str = Query("csv", pattern="^(csv|json|excel)$")
@@ -26,7 +28,6 @@ async def export_sales_report(
     overview = analytics_service.get_dashboard_overview()
     if format == "json":
         return JSONResponse(content=overview)
-    # Default CSV/Excel structure metadata
     return {
         "message": f"Export format '{format}' generated successfully.",
         "download_url": "/api/v1/reports/summary",

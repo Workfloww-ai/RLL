@@ -3,14 +3,16 @@ from datetime import datetime, date
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
-# Roles Schema
+
 class RoleBase(BaseModel):
     role_name: str
     description: Optional[str] = None
     is_active: bool = True
 
+
 class RoleCreate(RoleBase):
     pass
+
 
 class RoleResponse(RoleBase):
     role_id: Union[str, UUID, int]
@@ -18,15 +20,16 @@ class RoleResponse(RoleBase):
     model_config = ConfigDict(from_attributes=True)
 
 
-# Office Schema
 class OfficeBase(BaseModel):
     office_code: Optional[str] = None
     office_name: Optional[str] = None
     name: Optional[str] = None
     state: Optional[str] = "Rajasthan"
 
+
 class OfficeCreate(OfficeBase):
     pass
+
 
 class OfficeResponse(OfficeBase):
     office_id: Union[str, UUID, int]
@@ -34,13 +37,14 @@ class OfficeResponse(OfficeBase):
     model_config = ConfigDict(from_attributes=True)
 
 
-# Headquarters Schema
 class HeadquartersBase(BaseModel):
     name: str
     is_active: bool = True
 
+
 class HeadquartersCreate(HeadquartersBase):
     pass
+
 
 class HeadquartersResponse(HeadquartersBase):
     headquarters_id: Union[str, UUID, int]
@@ -48,7 +52,6 @@ class HeadquartersResponse(HeadquartersBase):
     model_config = ConfigDict(from_attributes=True)
 
 
-# Circle Schema
 class CircleBase(BaseModel):
     circle_code: Optional[str] = None
     circle_name: Optional[str] = None
@@ -56,8 +59,10 @@ class CircleBase(BaseModel):
     office_id: Optional[Union[str, UUID, int]] = None
     headquarters_id: Optional[Union[str, UUID, int]] = None
 
+
 class CircleCreate(CircleBase):
     pass
+
 
 class CircleResponse(CircleBase):
     circle_id: Union[str, UUID, int]
@@ -65,7 +70,6 @@ class CircleResponse(CircleBase):
     model_config = ConfigDict(from_attributes=True)
 
 
-# Depot Schema
 class DepotBase(BaseModel):
     name: str
     headquarters_id: Optional[Union[str, UUID, int]] = None
@@ -73,14 +77,17 @@ class DepotBase(BaseModel):
     circle_id: Optional[Union[str, UUID, int]] = None
     is_active: bool = True
 
+
 class DepotCreate(DepotBase):
     pass
+
 
 class DepotUpdate(BaseModel):
     name: Optional[str] = None
     headquarters_id: Optional[Union[str, UUID, int]] = None
     is_active: Optional[bool] = None
     assigned_user_id: Optional[str] = None
+
 
 class DepotResponse(DepotBase):
     depot_id: Union[str, UUID, int]
@@ -94,15 +101,16 @@ class DepotResponse(DepotBase):
     model_config = ConfigDict(from_attributes=True)
 
 
-# Licensee Schema
 class LicenseeBase(BaseModel):
     license_number: Optional[str] = None
     licensee_name: str
     depot_id: Optional[Union[str, UUID, int]] = None
     status: str = "active"
 
+
 class LicenseeCreate(LicenseeBase):
     pass
+
 
 class LicenseeResponse(LicenseeBase):
     licensee_id: Union[str, UUID, int]
@@ -110,13 +118,14 @@ class LicenseeResponse(LicenseeBase):
     model_config = ConfigDict(from_attributes=True)
 
 
-# Packaging Category Schema
 class PackagingCategoryBase(BaseModel):
     category_name: str
     description: Optional[str] = None
 
+
 class PackagingCategoryCreate(PackagingCategoryBase):
     pass
+
 
 class PackagingCategoryResponse(PackagingCategoryBase):
     packaging_category_id: Union[str, UUID, int]
@@ -124,7 +133,6 @@ class PackagingCategoryResponse(PackagingCategoryBase):
     model_config = ConfigDict(from_attributes=True)
 
 
-# Brand Schema
 class BrandBase(BaseModel):
     brand_code: Optional[str] = None
     brand_name: str
@@ -135,8 +143,10 @@ class BrandBase(BaseModel):
     headquarters_id: Optional[Union[str, UUID, int]] = None
     is_active: bool = True
 
+
 class BrandCreate(BrandBase):
     pass
+
 
 class BrandResponse(BrandBase):
     brand_id: Union[str, UUID, int]
@@ -144,7 +154,6 @@ class BrandResponse(BrandBase):
     model_config = ConfigDict(from_attributes=True)
 
 
-# Packing Size Schema
 class PackingSizeBase(BaseModel):
     packing_name: str
     volume_ml: Optional[int] = 0
@@ -152,8 +161,10 @@ class PackingSizeBase(BaseModel):
     packaging_category_id: Optional[Union[str, UUID, int]] = None
     qpn: Optional[float] = None
 
+
 class PackingSizeCreate(PackingSizeBase):
     pass
+
 
 class PackingSizeResponse(PackingSizeBase):
     packing_size_id: Union[str, UUID, int]
@@ -161,7 +172,6 @@ class PackingSizeResponse(PackingSizeBase):
     model_config = ConfigDict(from_attributes=True)
 
 
-# User Schema
 class UserBase(BaseModel):
     email: str
     first_name: str
@@ -174,8 +184,10 @@ class UserBase(BaseModel):
     manager_id: Optional[Union[str, UUID, int]] = None
     is_active: bool = True
 
+
 class UserCreate(UserBase):
     user_id: Union[str, UUID]
+
 
 class UserResponse(UserBase):
     user_id: Union[str, UUID]
@@ -184,7 +196,6 @@ class UserResponse(UserBase):
     model_config = ConfigDict(from_attributes=True)
 
 
-# Representative Assignment Schema
 class RepresentativeAssignmentBase(BaseModel):
     representative_user_id: Union[str, UUID]
     depot_id: Union[str, UUID, int]
@@ -192,8 +203,10 @@ class RepresentativeAssignmentBase(BaseModel):
     assigned_to: Optional[date] = None
     is_active: bool = True
 
+
 class RepresentativeAssignmentCreate(RepresentativeAssignmentBase):
     pass
+
 
 class RepresentativeAssignmentResponse(RepresentativeAssignmentBase):
     assignment_id: Union[str, UUID, int]
