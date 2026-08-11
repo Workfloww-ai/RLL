@@ -32,7 +32,7 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
     
     # 1. Attempt lookup in Supabase 'users' table
     try:
-        res = client.table("users").select("*").eq("email", email).execute()
+        res = client.table("users").select("id, email, first_name, last_name, role, role_name, hq_location").eq("email", email).execute()
         if res.data and len(res.data) > 0:
             db_user = res.data[0]
             user_data = {
