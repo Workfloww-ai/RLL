@@ -190,7 +190,8 @@ def verify_otp_from_db(phone: str, input_otp: str) -> bool:
     input_code = str(input_otp).strip()
 
     if not client:
-        return input_code == "123456" or input_code == "1234"
+        logger.error("Supabase client uninitialized during OTP verification")
+        return False
 
     try:
         # Purge all expired OTPs across the system

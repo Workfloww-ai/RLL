@@ -172,7 +172,7 @@ export default function HeadcountManagement() {
   };
 
   const handleAdd = async () => {
-    if ((newUser.firstName || newUser.email) && (newUser.id || newUser.firstName)) {
+    if (newUser.firstName.trim() || newUser.email.trim() || newUser.phoneNumber.trim()) {
       const fullName = `${newUser.firstName} ${newUser.lastName}`.trim();
       const userPayload = {
         ...newUser,
@@ -206,7 +206,7 @@ export default function HeadcountManagement() {
       }
 
       setIsAdding(false);
-      setNewUser({ firstName: '', lastName: '', phoneNumber: '', email: '', role: 'Territory Executive', id: '', headquarters: 'Unassigned', depotName: 'Unassigned', reportingManager: 'Unassigned', isActive: true });
+      setNewUser({ firstName: '', lastName: '', phoneNumber: '', email: '', role: 'ASE', id: '', headquarters: 'Unassigned', depotName: 'Unassigned', reportingManager: 'Unassigned', isActive: true });
     }
   };
 

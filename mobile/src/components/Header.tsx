@@ -12,6 +12,7 @@ interface HeaderProps {
   selectedHq: string;
   setSelectedHq: (hq: string) => void;
   headquartersList: string[];
+  latestSaleDate?: string;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -24,21 +25,28 @@ export const Header: React.FC<HeaderProps> = ({
   selectedHq,
   setSelectedHq,
   headquartersList,
+  latestSaleDate,
 }) => {
   const periods: Period[] = ['Daily', 'MTD', 'YTD'];
-  const TODAY = '2026-05-31';
 
   const handlePeriodChange = (p: Period) => {
     setPeriod(p);
+    const activeDate = dateTo || dateFrom || latestSaleDate || new Date().toISOString().split('T')[0];
+    const year = activeDate.substring(0, 4);
+    const month = activeDate.substring(5, 7);
+
     if (p === 'MTD') {
-      setDateFrom('2026-05-01');
-      setDateTo(TODAY);
+      setDateFrom(`${year}-${month}-01`);
+      setDateTo(activeDate);
     } else if (p === 'YTD') {
-      setDateFrom('2026-04-01');
-      setDateTo(TODAY);
+      const m = parseInt(month, 10);
+      const y = parseInt(year, 10);
+      const fyStartYear = m >= 4 ? y : y - 1;
+      setDateFrom(`${fyStartYear}-04-01`);
+      setDateTo(activeDate);
     } else if (p === 'Daily') {
-      setDateFrom(TODAY);
-      setDateTo(TODAY);
+      setDateFrom(activeDate);
+      setDateTo(activeDate);
     }
   };
 
@@ -109,7 +117,6 @@ export const Header: React.FC<HeaderProps> = ({
               <input
                 type="date"
                 value={dateFrom}
-                max={TODAY}
                 onChange={(e) => {
                   const val = e.target.value;
                   setDateFrom(val);
@@ -127,7 +134,6 @@ export const Header: React.FC<HeaderProps> = ({
               <input
                 type="date"
                 value={dateFrom}
-                max={TODAY}
                 onChange={(e) => {
                   setDateFrom(e.target.value);
                 }}
@@ -140,7 +146,6 @@ export const Header: React.FC<HeaderProps> = ({
               <input
                 type="date"
                 value={dateTo}
-                max={TODAY}
                 onChange={(e) => {
                   setDateTo(e.target.value);
                 }}

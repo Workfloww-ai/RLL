@@ -1,10 +1,7 @@
 import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Depends, Query, Request
-from pydantic import BaseModel
-from backend.core.security import create_access_token, get_current_user, MOCK_USERS
-from backend.db.client import get_supabase
+from backend.core.security import create_access_token, get_current_user
 
 logger = logging.getLogger(__name__)
 
@@ -46,19 +43,12 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
     except Exception as e:
         logger.warning(f"Supabase users lookup error: {e}")
 
-    # Fallback to MOCK_USERS if not found in DB
+    # If user is not found in database, reject authentication
     if not user_data:
-        if email in MOCK_USERS:
-            user_data = MOCK_USERS[email]
-        else:
-            user_data = {
-                "user_id": "e8a27d14-3850-482a-9e12-852788028800",
-                "email": email,
-                "first_name": email.split("@")[0].capitalize(),
-                "last_name": "Executive",
-                "role_name": "admin",
-                "hq_location": "All Headquarters"
-            }
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication failed. Invalid email or user not found in database."
+        )
 
     # 2. Log login entry into 'user_auth_logs' in Supabase
     try:
@@ -134,9 +124,7 @@ async def get_mobile_companies(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/headquarters")
-async def get_mobile_headquarters(
-    current_user: dict = Depends(get_current_user)
-):
+async def get_mobile_headquarters():
     """
     Fetches active headquarters from public.headquarters table in Supabase.
     """
@@ -151,14 +139,8 @@ async def get_mobile_headquarters(
             "headquarters": hq_names
         }
     except Exception as e:
-        logger.error(f"Error fetching headquarters: {e}")
-        return {
-            "status": "success",
-            "count": 10,
-            "headquarters": [
-                "All Headquarters", "Ajmer", "Alwar", "Bikaner", "Jaipur", "Jodhpur", "Kota", "Sikar", "Sriganganagar", "Udaipur"
-            ]
-        }
+        logger.error(f"Error fetching headquarters from database: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch headquarters from database.")
 
 @router.get("/companies/{company_id}/brands")
 async def get_company_brands(
@@ -317,11 +299,9 @@ def _get_target_date(client, date_to: Any, date_from: Any) -> str:
             logger.warning(f"Error fetching max sale_date: {e}")
 
     if not cached_latest:
-        cached_latest = "2026-05-31"
+        cached_latest = datetime.utcnow().strftime("%Y-%m-%d")
 
-    # If param_date is provided and falls within available database dates (>= earliest date '2026-05-01'), use param_date.
-    # Otherwise (if param_date is empty or stale like '2026-04-30'), use cached_latest.
-    if param_date and param_date >= "2026-05-01":
+    if param_date:
         return param_date
 
     return cached_latest

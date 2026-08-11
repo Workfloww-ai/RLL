@@ -112,168 +112,100 @@ class MasterService:
 
     def get_depots_with_hq(self) -> List[Dict[str, Any]]:
         client = get_supabase()
-        if client:
-            try:
-                # 1. Fetch territory data from public.raw_sales_upload table
-                try:
-                    raw_res = client.table("raw_sales_upload").select("raw_id, depot_raw, hq_raw, ase_raw, asm_tsm_raw, is_active").execute()
-                    raw_data = raw_res.data or []
+        if not client:
+            return []
 
-                    if raw_data:
-                        unique_map: Dict[str, Dict[str, Any]] = {}
-                        item_counter = 1
+        try:
+            # 1. Fetch depots
+            dep_res = client.table("depots").select("depot_id, name, headquarters_id, office_id, circle_id, is_active").execute()
+            depots_data = dep_res.data or []
 
-                        for row in raw_data:
-                            depot_name = (row.get("depot_raw") or "Unassigned").strip()
-                            hq_name = (row.get("hq_raw") or "Unassigned").strip()
-                            ase_raw = row.get("ase_raw") or ""
-                            tsm_raw = row.get("asm_tsm_raw") or ""
-                            is_active = row.get("is_active", True)
+            # 2. Fetch headquarters map
+            hq_res = client.table("headquarters").select("headquarters_id, name, is_active").execute()
+            hq_map = {str(h["headquarters_id"]): h.get("name", "Unassigned") for h in (hq_res.data or []) if h.get("headquarters_id")}
 
-                            # Split names separated by slashes or commas ("Sharad/Deepak/CP Tak")
-                            ase_names = [p.strip() for p in ase_raw.replace(",", "/").split("/") if p.strip()]
-                            tsm_names = [p.strip() for p in tsm_raw.replace(",", "/").split("/") if p.strip()]
-                            first_tsm = tsm_names[0] if tsm_names else "Unassigned"
+            # 3. Fetch users map
+            users_res = client.table("users").select("user_id, first_name, last_name, email, is_active").execute()
+            users_map = {}
+            for u in (users_res.data or []):
+                uid = str(u["user_id"])
+                fn = u.get("first_name") or ""
+                ln = u.get("last_name") or ""
+                full_name = f"{fn} {ln}".strip() or u.get("email") or "Unnamed User"
+                users_map[uid] = {
+                    "user_id": uid,
+                    "name": full_name,
+                    "email": u.get("email") or ""
+                }
 
-                            # 1. Add ASE records
-                            for ase_name in ase_names:
-                                if ase_name.lower() in ["none", "null"]:
-                                    ase_name = "Unassigned"
+            # 4. Fetch user roles map
+            roles_res = client.table("roles").select("role_id, role_name").execute()
+            roles_map = {str(r["role_id"]): r.get("role_name", "ASE") for r in (roles_res.data or []) if r.get("role_id")}
 
-                                key = f"ASE::{depot_name}::{hq_name}::{ase_name}".lower()
-                                if key not in unique_map:
-                                    unique_map[key] = {
-                                        "depot_id": item_counter,
-                                        "name": depot_name,
-                                        "headquarters_id": item_counter,
-                                        "headquarters_name": hq_name,
-                                        "is_active": is_active,
-                                        "assigned_user_id": f"usr_{item_counter}",
-                                        "depot_user": ase_name,
-                                        "depot_user_role": "ASE",
-                                        "depot_user_email": "",
-                                        "hq_user": first_tsm,
-                                        "hq_user_email": ""
-                                    }
-                                    item_counter += 1
+            user_roles_res = client.table("user_roles").select("user_id, role_id, is_active").execute()
+            user_role_map = {}
+            for ur in (user_roles_res.data or []):
+                if ur.get("is_active", True):
+                    uid = str(ur["user_id"])
+                    rid = str(ur.get("role_id") or "")
+                    user_role_map[uid] = roles_map.get(rid, "ASE")
 
-                            # 2. Add TSM records
-                            for tsm_name in tsm_names:
-                                if tsm_name and tsm_name.lower() not in ["unassigned", "none", "null"]:
-                                    key = f"TSM::{depot_name}::{hq_name}::{tsm_name}".lower()
-                                    if key not in unique_map:
-                                        unique_map[key] = {
-                                            "depot_id": item_counter,
-                                            "name": depot_name,
-                                            "headquarters_id": item_counter,
-                                            "headquarters_name": hq_name,
-                                            "is_active": is_active,
-                                            "assigned_user_id": f"usr_{item_counter}",
-                                            "depot_user": tsm_name,
-                                            "depot_user_role": "TSM",
-                                            "depot_user_email": "",
-                                            "hq_user": tsm_name,
-                                            "hq_user_email": ""
-                                        }
-                                        item_counter += 1
+            # 5. Fetch user_depot mapping
+            user_depot_res = client.table("user_depot").select("user_id, depot_id").execute()
+            depot_user_map: Dict[str, List[Dict[str, Any]]] = {}
 
-                        return list(unique_map.values())
-                except Exception as raw_err:
-                    logger.warning(f"Could not fetch from raw_sales_upload: {raw_err}")
+            for ud in (user_depot_res.data or []):
+                did = str(ud.get("depot_id") or "")
+                uid = str(ud.get("user_id") or "")
+                if did and uid in users_map:
+                    u_info = dict(users_map[uid])
+                    u_info["role"] = user_role_map.get(uid, "ASE")
+                    if did not in depot_user_map:
+                        depot_user_map[did] = []
+                    depot_user_map[did].append(u_info)
 
-                # Fallback: Fetch depots and headquarters from depots table
-                dep_res = client.table("depots").select("depot_id, name, headquarters_id, office_id, circle_id, is_active, headquarters(name)").execute()
-                depots_data = dep_res.data or []
+            # Build result list
+            result = []
+            for d in depots_data:
+                did = str(d["depot_id"])
+                hq_id = str(d.get("headquarters_id") or "")
+                hq_name = hq_map.get(hq_id, "Unassigned")
 
-                if not depots_data:
-                    dep_res2 = client.table("depots").select("depot_id, name, headquarters_id, office_id, circle_id, is_active").execute()
-                    depots_data = dep_res2.data or []
+                assigned_users = depot_user_map.get(did, [])
+                if assigned_users:
+                    for u_info in assigned_users:
+                        result.append({
+                            "depot_id": did,
+                            "name": d.get("name", "Unassigned"),
+                            "headquarters_id": hq_id,
+                            "headquarters_name": hq_name,
+                            "is_active": d.get("is_active", True),
+                            "assigned_user_id": u_info["user_id"],
+                            "depot_user": u_info["name"],
+                            "depot_user_role": u_info["role"],
+                            "depot_user_email": u_info["email"],
+                            "hq_user": "Unassigned",
+                            "hq_user_email": ""
+                        })
+                else:
+                    result.append({
+                        "depot_id": did,
+                        "name": d.get("name", "Unassigned"),
+                        "headquarters_id": hq_id,
+                        "headquarters_name": hq_name,
+                        "is_active": d.get("is_active", True),
+                        "assigned_user_id": None,
+                        "depot_user": "Unassigned",
+                        "depot_user_role": "ASE",
+                        "depot_user_email": None,
+                        "hq_user": "Unassigned",
+                        "hq_user_email": None
+                    })
 
-                hq_res = client.table("headquarters").select("headquarters_id, name, is_active").execute()
-                hq_map = {h["headquarters_id"]: h["name"] for h in (hq_res.data or []) if "headquarters_id" in h}
-
-                # 2. Fetch user mappings from user_depot and public.users
-                user_depot_data = []
-                try:
-                    ud_res = client.table("user_depot").select("user_id, depot_id").execute()
-                    user_depot_data = ud_res.data or []
-                except Exception as ud_err:
-                    logger.warning(f"Could not fetch user_depot mappings: {ud_err}")
-
-                users_data = []
-                try:
-                    u_res = client.table("users").select("user_id, first_name, last_name, email, is_active").execute()
-                    users_data = u_res.data or []
-                except Exception as u_err:
-                    logger.warning(f"Could not fetch users: {u_err}")
-
-                users_map: Dict[str, Dict[str, Any]] = {}
-                for u in users_data:
-                    uid = str(u["user_id"])
-                    fn = u.get("first_name") or ""
-                    ln = u.get("last_name") or ""
-                    full_name = f"{fn} {ln}".strip() or u.get("email") or "Unnamed User"
-                    users_map[uid] = {
-                        "user_id": uid,
-                        "name": full_name,
-                        "email": u.get("email", "")
-                    }
-
-                # Build depot -> user mapping
-                depot_user_map: Dict[int, List[Dict[str, Any]]] = {}
-                for ud in user_depot_data:
-                    d_id = ud.get("depot_id")
-                    u_id = str(ud.get("user_id"))
-                    if d_id and u_id in users_map:
-                        if d_id not in depot_user_map:
-                            depot_user_map[d_id] = []
-                        depot_user_map[d_id].append(users_map[u_id])
-
-                # Build hq -> user mapping
-                hq_user_map: Dict[int, List[Dict[str, Any]]] = {}
-                for d in depots_data:
-                    d_id = d.get("depot_id")
-                    hq_id = d.get("headquarters_id")
-                    if hq_id and d_id in depot_user_map:
-                        if hq_id not in hq_user_map:
-                            hq_user_map[hq_id] = []
-                        for u_info in depot_user_map[d_id]:
-                            if not any(x["user_id"] == u_info["user_id"] for x in hq_user_map[hq_id]):
-                                hq_user_map[hq_id].append(u_info)
-
-                result = []
-                for d in depots_data:
-                    hq_obj = d.get("headquarters") or {}
-                    hq_name = hq_obj.get("name") if isinstance(hq_obj, dict) else hq_map.get(d.get("headquarters_id"), "Unassigned")
-                    
-                    item = dict(d)
-                    item["headquarters_name"] = hq_name or "Unassigned"
-
-                    d_id = d.get("depot_id")
-                    assigned_users = depot_user_map.get(d_id, [])
-                    if assigned_users:
-                        item["assigned_user_id"] = assigned_users[0]["user_id"]
-                        item["depot_user"] = ", ".join([u["name"] for u in assigned_users])
-                        item["depot_user_email"] = assigned_users[0]["email"]
-                    else:
-                        item["assigned_user_id"] = None
-                        item["depot_user"] = "Unassigned"
-                        item["depot_user_email"] = None
-
-                    hq_id = d.get("headquarters_id")
-                    assigned_hq_users = hq_user_map.get(hq_id, [])
-                    if assigned_hq_users:
-                        item["hq_user"] = ", ".join([u["name"] for u in assigned_hq_users])
-                        item["hq_user_email"] = assigned_hq_users[0]["email"]
-                    else:
-                        item["hq_user"] = "Unassigned"
-                        item["hq_user_email"] = None
-
-                    result.append(item)
-                return result
-
-            except Exception as e:
-                logger.warning(f"Failed to fetch depots with HQ and users from Supabase: {e}")
+            return result
+        except Exception as e:
+            logger.error(f"Error fetching depots with HQ in master_service: {e}")
+            return []
 
         raw_depots = self.get_depots()
         for d in raw_depots:

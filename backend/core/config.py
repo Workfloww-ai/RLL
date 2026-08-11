@@ -40,5 +40,7 @@ class Settings(BaseSettings):
             self.SUPABASE_KEY = self.SUPABASE_SECRET_KEY or self.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
         if not self.SUPABASE_SERVICE_ROLE_KEY:
             self.SUPABASE_SERVICE_ROLE_KEY = self.SUPABASE_SECRET_KEY or self.SUPABASE_KEY
+        if not self.JWT_SECRET:
+            self.JWT_SECRET = self.SUPABASE_SECRET_KEY or self.SUPABASE_KEY or "rll-sales-platform-secret-key-2026-production"
 
 settings = Settings()

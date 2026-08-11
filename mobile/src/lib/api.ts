@@ -68,6 +68,8 @@ export async function fetchMobileSales(
   selectedHq: string
 ) {
   const token = localStorage.getItem('rll_mobile_token');
+  if (!token) return null;
+
   try {
     const query = new URLSearchParams({
       date_from: dateFrom,
@@ -82,13 +84,19 @@ export async function fetchMobileSales(
       },
     });
 
+    if (res.status === 401) {
+      localStorage.removeItem('rll_mobile_token');
+      localStorage.removeItem('rll_mobile_user');
+      return null;
+    }
+
     if (!res.ok) {
       throw new Error('Sales fetch failed');
     }
 
     return await res.json();
   } catch (error) {
-    console.warn('Backend sales fetch fallback to mock data:', error);
+    console.error('Backend sales fetch error:', error);
     return null;
   }
 }
@@ -102,6 +110,11 @@ export async function fetchUserProfile() {
         Authorization: `Bearer ${token}`,
       },
     });
+    if (res.status === 401) {
+      localStorage.removeItem('rll_mobile_token');
+      localStorage.removeItem('rll_mobile_user');
+      return null;
+    }
     if (!res.ok) return null;
     const data = await res.json();
     if (data && data.email) {
@@ -114,75 +127,24 @@ export async function fetchUserProfile() {
   }
 }
 
-export async function fetchMobileCompanies() {
-  const token = localStorage.getItem('rll_mobile_token');
-  try {
-    const res = await fetch(`${BASE_URL}/mobile/companies`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
-
-    if (!res.ok) {
-      throw new Error('Companies fetch failed');
-    }
-
-    return await res.json();
-  } catch (error) {
-    console.warn('Backend companies fetch fallback:', error);
-    return null;
-  }
-}
-
-export async function fetchBrandsByCompany(companyId: string) {
-  const token = localStorage.getItem('rll_mobile_token');
-  try {
-    const res = await fetch(`${BASE_URL}/mobile/companies/${encodeURIComponent(companyId)}/brands`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
-
-    if (!res.ok) {
-      throw new Error('Brands fetch failed');
-    }
-
-    return await res.json();
-  } catch (error) {
-    console.warn('Backend company brands fetch fallback:', error);
-    return null;
-  }
-}
-
 export async function fetchMobileHeadquarters() {
   const token = localStorage.getItem('rll_mobile_token');
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
   try {
-    const res = await fetch(`${BASE_URL}/mobile/headquarters`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
+    const res = await fetch(`${BASE_URL}/mobile/headquarters`, { headers });
 
     if (!res.ok) {
-      throw new Error('Headquarters fetch failed');
+      throw new Error(`Headquarters fetch failed with status ${res.status}`);
     }
 
     const data = await res.json();
     return data.headquarters || [];
   } catch (error) {
-    console.warn('Backend headquarters fetch fallback:', error);
-    return [
-      'All Headquarters',
-      'Ajmer',
-      'Alwar',
-      'Bikaner',
-      'Jaipur',
-      'Jodhpur',
-      'Kota',
-      'Sikar',
-      'Sriganganagar',
-      'Udaipur',
-    ];
+    console.error('Backend headquarters fetch error:', error);
+    return ['All Headquarters'];
   }
 }
-

@@ -17,107 +17,105 @@ class UserService:
         self.in_memory_users = list(FALLBACK_USERS)
 
     def list_users(self) -> List[Dict[str, Any]]:
-        """
-        Fetch users from public.users table, resolving their roles from public.user_roles 
-        and reporting managers from public.ase_tsm_mapping / manager_id,
-        as well as assigned depots from public.user_depot.
-        If users table is empty, fallback to reading raw_sales_upload.
-        """
         client = get_supabase()
         if not client:
             return self.in_memory_users
 
         try:
-            # 1. Fetch users from public.users table
+            # 1. Fetch users
             users_res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, created_at").execute()
             raw_users = users_res.data if users_res.data is not None else []
 
-            if raw_users:
-                user_roles_res = client.table("user_roles").select("user_role_id, user_id, role_id, is_active, roles(role_id, role_name)").execute()
-                user_roles_data = user_roles_res.data or []
+            if not raw_users:
+                return self.in_memory_users
 
-                role_by_user_id: Dict[str, str] = {}
-                for ur in user_roles_data:
-                    u_id = str(ur.get("user_id"))
-                    role_obj = ur.get("roles") or {}
-                    role_name = role_obj.get("role_name") or "ASE"
-                    if ur.get("is_active", True):
-                        role_by_user_id[u_id] = role_name
+            # 2. Fetch roles map
+            roles_res = client.table("roles").select("role_id, role_name").execute()
+            roles_map = {str(r["role_id"]): r.get("role_name", "ASE") for r in (roles_res.data or []) if r.get("role_id")}
 
-                mapping_res = client.table("ase_tsm_mapping").select("hierarchy_id, ase_user_id, tsm_user_id, is_active").execute()
-                mapping_data = mapping_res.data or []
+            # 3. Fetch user_roles
+            user_roles_res = client.table("user_roles").select("user_id, role_id, is_active").execute()
+            role_by_user_id: Dict[str, str] = {}
+            for ur in (user_roles_res.data or []):
+                if ur.get("is_active", True):
+                    uid = str(ur["user_id"])
+                    rid = str(ur.get("role_id") or "")
+                    role_by_user_id[uid] = roles_map.get(rid, "ASE")
 
-                ase_to_tsm: Dict[str, str] = {}
-                for m in mapping_data:
-                    if m.get("is_active", True):
-                        ase_id = str(m.get("ase_user_id"))
-                        tsm_id = str(m.get("tsm_user_id"))
-                        ase_to_tsm[ase_id] = tsm_id
+            # 4. Fetch depots & headquarters map
+            depots_res = client.table("depots").select("depot_id, name, headquarters_id").execute()
+            depots_map = {str(d["depot_id"]): d for d in (depots_res.data or []) if d.get("depot_id")}
 
-                user_depot_info: Dict[str, Dict[str, str]] = {}
-                try:
-                    ud_res = client.table("user_depot").select("user_id, depot_id, depots(name, headquarters(name), circles(name))").execute()
-                    for ud in (ud_res.data or []):
-                        uid = str(ud.get("user_id"))
-                        dep_obj = ud.get("depots") or {}
-                        dep_name = dep_obj.get("name") or "Unassigned"
-                        hq_obj = dep_obj.get("headquarters") or {}
-                        hq_name = hq_obj.get("name") or "Unassigned"
-                        circle_obj = dep_obj.get("circles") or {}
-                        circle_name = circle_obj.get("name") or "Unassigned"
+            hq_res = client.table("headquarters").select("headquarters_id, name").execute()
+            hq_map = {str(h["headquarters_id"]): h.get("name", "Unassigned") for h in (hq_res.data or []) if h.get("headquarters_id")}
 
+            # 5. Fetch user_depot mapping
+            user_depot_info: Dict[str, Dict[str, str]] = {}
+            try:
+                ud_res = client.table("user_depot").select("user_id, depot_id").execute()
+                for ud in (ud_res.data or []):
+                    uid = str(ud.get("user_id") or "")
+                    did = str(ud.get("depot_id") or "")
+                    if uid and did in depots_map:
+                        d_obj = depots_map[did]
+                        dep_name = d_obj.get("name") or "Unassigned"
+                        hq_id = str(d_obj.get("headquarters_id") or "")
+                        hq_name = hq_map.get(hq_id, "Unassigned")
                         user_depot_info[uid] = {
                             "depot_name": dep_name,
                             "headquarters": hq_name,
-                            "circle_name": circle_name
+                            "circle_name": "Unassigned"
                         }
-                except Exception as e_ud:
-                    logger.warning(f"Could not fetch user_depot mappings: {e_ud}")
+            except Exception as e_ud:
+                logger.warning(f"Error fetching user_depot: {e_ud}")
 
-                user_dict_by_id = {str(u["user_id"]): u for u in raw_users}
+            # 6. Build final list
+            user_dict_by_id = {str(u["user_id"]): u for u in raw_users}
+            result = []
+            for u in raw_users:
+                uid = str(u["user_id"])
+                first_name = u.get("first_name") or ""
+                last_name = u.get("last_name") or ""
+                full_name = f"{first_name} {last_name}".strip() or u.get("email") or "Unnamed User"
 
-                result = []
-                for u in raw_users:
-                    uid = str(u["user_id"])
-                    first_name = u.get("first_name") or ""
-                    last_name = u.get("last_name") or ""
-                    full_name = f"{first_name} {last_name}".strip() or "Unnamed User"
+                manager_id = u.get("manager_id")
+                manager_name = "Unassigned"
+                if manager_id and str(manager_id) in user_dict_by_id:
+                    mgr_obj = user_dict_by_id[str(manager_id)]
+                    mgr_fn = mgr_obj.get("first_name") or ""
+                    mgr_ln = mgr_obj.get("last_name") or ""
+                    manager_name = f"{mgr_fn} {mgr_ln}".strip() or "Unassigned"
 
-                    manager_id = u.get("manager_id") or ase_to_tsm.get(uid)
-                    manager_name = "Unassigned"
-                    if manager_id and str(manager_id) in user_dict_by_id:
-                        mgr_obj = user_dict_by_id[str(manager_id)]
-                        mgr_fn = mgr_obj.get("first_name") or ""
-                        mgr_ln = mgr_obj.get("last_name") or ""
-                        manager_name = f"{mgr_fn} {mgr_ln}".strip() or "Unassigned"
+                ud_data = user_depot_info.get(uid, {})
+                depot_name = ud_data.get("depot_name", "Unassigned")
+                headquarters = ud_data.get("headquarters", "Unassigned")
+                circle_name = ud_data.get("circle_name", "Unassigned")
 
-                    ud_data = user_depot_info.get(uid, {})
-                    depot_name = ud_data.get("depot_name", "Unassigned")
-                    headquarters = ud_data.get("headquarters", "Unassigned")
-                    circle_name = ud_data.get("circle_name", "Unassigned")
+                result.append({
+                    "id": uid,
+                    "user_id": uid,
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "name": full_name,
+                    "email": u.get("email") or "",
+                    "phone": u.get("phone") or "",
+                    "phoneNumber": u.get("phone") or "",
+                    "role": role_by_user_id.get(uid, "ASE"),
+                    "reportingManager": manager_name,
+                    "reporting_manager": manager_name,
+                    "manager_id": str(manager_id) if manager_id else None,
+                    "depotName": depot_name,
+                    "depot_name": depot_name,
+                    "headquarters": headquarters,
+                    "circleName": circle_name,
+                    "isActive": u.get("is_active", True),
+                    "is_active": u.get("is_active", True)
+                })
 
-                    result.append({
-                        "id": uid,
-                        "user_id": uid,
-                        "first_name": first_name,
-                        "last_name": last_name,
-                        "name": full_name,
-                        "email": u.get("email") or "",
-                        "phone": u.get("phone") or "",
-                        "phoneNumber": u.get("phone") or "",
-                        "role": role_by_user_id.get(uid, "ASE"),
-                        "reportingManager": manager_name,
-                        "reporting_manager": manager_name,
-                        "manager_id": str(manager_id) if manager_id else None,
-                        "depotName": depot_name,
-                        "depot_name": depot_name,
-                        "headquarters": headquarters,
-                        "circleName": circle_name,
-                        "isActive": u.get("is_active", True),
-                        "is_active": u.get("is_active", True)
-                    })
-
-                return result
+            return result
+        except Exception as e:
+            logger.error(f"Error fetching users from Supabase: {e}")
+            return self.in_memory_users
 
             # 2. Fallback to raw_sales_upload if users table is empty
             raw_res = client.table("raw_sales_upload").select("raw_id, ase_raw, asm_tsm_raw, is_active").execute()
@@ -201,7 +199,7 @@ class UserService:
         return None
 
     def _resolve_auth_user_id(self, client: Any, email: str, first_name: str, last_name: str) -> Optional[str]:
-        """Find or create user in Supabase auth.users to ensure users_user_id_fkey is satisfied."""
+        """Find or create user in Supabase auth.users to satisfy fk_users_auth_id constraint."""
         email_clean = email.strip().lower()
 
         # 1. Check if user already exists in public.users
@@ -212,7 +210,19 @@ class UserService:
         except Exception as e:
             logger.warning(f"Error checking existing user in public.users: {e}")
 
-        # 2. Try creating user via Supabase Auth Admin API
+        # 2. Try creating user via Supabase RPC function (bypasses Auth API key format issues)
+        try:
+            rpc_res = client.rpc("create_auth_user_if_not_exists", {
+                "p_email": email_clean,
+                "p_first_name": first_name,
+                "p_last_name": last_name
+            }).execute()
+            if rpc_res.data:
+                return str(rpc_res.data)
+        except Exception as rpc_err:
+            logger.warning(f"RPC create_auth_user_if_not_exists error: {rpc_err}")
+
+        # 3. Fallback to Supabase Auth Admin API
         try:
             auth_user = client.auth.admin.create_user({
                 "email": email_clean,
@@ -343,12 +353,17 @@ class UserService:
             # 2. Insert/Update public.user_roles
             role_id = self._resolve_role_id(client, role_name)
             user_role_id = None
-            try:
-                ur_res = client.table("user_roles").upsert({"user_id": user_id, "role_id": role_id, "is_active": True}, on_conflict="user_id,role_id").execute()
-                user_role_id = ur_res.data[0]["user_role_id"] if ur_res.data else None
-            except Exception:
-                ur_res = client.table("user_roles").select("user_role_id").eq("user_id", user_id).eq("role_id", role_id).limit(1).execute()
-                user_role_id = ur_res.data[0]["user_role_id"] if ur_res.data else None
+            if role_id:
+                try:
+                    client.table("user_roles").update({"is_active": False}).eq("user_id", user_id).execute()
+                except Exception:
+                    pass
+                try:
+                    ur_res = client.table("user_roles").upsert({"user_id": user_id, "role_id": role_id, "is_active": True}, on_conflict="user_id,role_id").execute()
+                    user_role_id = ur_res.data[0]["user_role_id"] if ur_res.data else None
+                except Exception:
+                    ur_res = client.table("user_roles").select("user_role_id").eq("user_id", user_id).eq("role_id", role_id).limit(1).execute()
+                    user_role_id = ur_res.data[0]["user_role_id"] if ur_res.data else None
 
             # 3. If manager exists and is not self, insert/update public.ase_tsm_mapping
             if manager_user_id and str(manager_user_id) != str(user_id):
@@ -456,8 +471,14 @@ class UserService:
             user_role_id = None
             if role_name:
                 role_id = self._resolve_role_id(client, role_name)
-                ur_res = client.table("user_roles").upsert({"user_id": user_id, "role_id": role_id, "is_active": True}, on_conflict="user_id,role_id").execute()
-                user_role_id = ur_res.data[0]["user_role_id"] if ur_res.data else None
+                if role_id:
+                    try:
+                        client.table("user_roles").update({"is_active": False}).eq("user_id", user_id).execute()
+                    except Exception as e_role_deact:
+                        logger.warning(f"Could not deactivate old roles for {user_id}: {e_role_deact}")
+                    
+                    ur_res = client.table("user_roles").upsert({"user_id": user_id, "role_id": role_id, "is_active": True}, on_conflict="user_id,role_id").execute()
+                    user_role_id = ur_res.data[0]["user_role_id"] if ur_res.data else None
 
             # Upsert into public.ase_tsm_mapping if manager resolved
             if manager_user_id and str(manager_user_id) != str(user_id):

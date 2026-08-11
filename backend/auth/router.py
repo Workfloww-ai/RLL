@@ -69,11 +69,11 @@ async def login(credentials: LoginRequest):
                 except Exception:
                     pass
 
-                # 3. Guardrail: Enforce Web-only roles
-                if role_name.lower() != "admin":
+                # 3. Guardrail: Enforce Web-only roles (Admins only)
+                if role_name.lower() not in ["admin", "super_admin", "super admin"]:
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Access Denied: Web Dashboard is restricted to Admins only. Please use the mobile app."
+                        detail="Access Denied: Web Dashboard is restricted to Administrators only."
                     )
 
                 user_data = {
