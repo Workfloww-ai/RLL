@@ -1,11 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Period, ViewMode, Company } from './types';
-import {
-  INITIAL_COMPANIES,
-  INITIAL_DEPOTS,
-  INITIAL_TSMS,
-  HEADQUARTERS_LIST,
-} from './data/mockData';
 import { calculateDateFactor, formatNumber } from './lib/utils';
 import { Header } from './components/Header';
 import { FooterNav } from './components/FooterNav';
@@ -15,7 +9,7 @@ import { TsmView } from './components/TsmView';
 import { BrandModal } from './components/BrandModal';
 import { LoginScreen } from './components/LoginScreen';
 import { ProfileScreen } from './features/profile/ProfileScreen';
-import { fetchMobileSales, fetchUserProfile } from './lib/api';
+import { fetchMobileSales, fetchUserProfile, fetchMobileHeadquarters } from './lib/api';
 import {
   Search,
   Wifi,
@@ -39,9 +33,30 @@ export default function App() {
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedHq, setSelectedHq] = useState<string>('All Headquarters');
+  const [headquartersList, setHeadquartersList] = useState<string[]>([
+    'All Headquarters',
+    'Ajmer',
+    'Alwar',
+    'Bikaner',
+    'Jaipur',
+    'Jodhpur',
+    'Kota',
+    'Sikar',
+    'Sriganganagar',
+    'Udaipur',
+  ]);
   const [apiData, setApiData] = useState<any>(null);
 
-  // Fetch backend aggregated sales and profile when user, dates, or HQ selection change
+  // Fetch headquarters from backend API
+  useEffect(() => {
+    fetchMobileHeadquarters().then((hqs) => {
+      if (hqs && hqs.length > 0) {
+        setHeadquartersList(hqs);
+      }
+    });
+  }, []);
+
+  // Fetch backend aggregated sales when user, dates, or HQ selection change
   useEffect(() => {
     if (!user) return;
     fetchMobileSales(dateFrom, dateTo, period, selectedHq).then((res) => {
@@ -63,19 +78,12 @@ export default function App() {
     setViewMode('companies');
   };
 
-  // Dynamic date multiplier (Only scale mock data; live API returns pre-aggregated exact metrics)
-  const scaleFactor = useMemo(() => {
-    if (apiData && apiData.companies && apiData.companies.length > 0) {
-      return 1;
-    }
-    return calculateDateFactor(dateFrom, dateTo, period);
-  }, [dateFrom, dateTo, period, apiData]);
+  // Scale factor: 1 for exact real backend database metrics
+  const scaleFactor = 1;
 
-  // Filter companies: Use live API fetched companies if available, else fallback to INITIAL_COMPANIES
+  // Filter companies strictly fetched from live API backend
   const filteredCompanies = useMemo(() => {
-    const rawCompanies: Company[] = (apiData && apiData.companies && apiData.companies.length > 0) 
-      ? apiData.companies 
-      : INITIAL_COMPANIES;
+    const rawCompanies: Company[] = (apiData && apiData.companies) ? apiData.companies : [];
 
     return rawCompanies.filter((c) => {
       // Headquarter Filter
@@ -191,7 +199,7 @@ export default function App() {
               setDateTo={setDateTo}
               selectedHq={selectedHq}
               setSelectedHq={setSelectedHq}
-              headquartersList={HEADQUARTERS_LIST}
+              headquartersList={headquartersList}
             />
 
             {/* Sleek Aggregate Quick Metrics Banner */}
@@ -306,7 +314,7 @@ export default function App() {
           {/* VIEW 2: DEPOTS TAB */}
           {viewMode === 'depots' && (
             <DepotsView
-              depots={(apiData && apiData.depots && apiData.depots.length > 0) ? apiData.depots : INITIAL_DEPOTS}
+              depots={(apiData && apiData.depots) ? apiData.depots : []}
               period={period}
               scaleFactor={scaleFactor}
               selectedHq={selectedHq}
@@ -316,7 +324,7 @@ export default function App() {
           {/* VIEW 3: TSM TAB */}
           {viewMode === 'tsm' && (
             <TsmView
-              tsms={(apiData && apiData.tsms && apiData.tsms.length > 0) ? apiData.tsms : INITIAL_TSMS}
+              tsms={(apiData && apiData.tsms) ? apiData.tsms : []}
               period={period}
               scaleFactor={scaleFactor}
               selectedHq={selectedHq}

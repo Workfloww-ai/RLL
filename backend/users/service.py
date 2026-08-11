@@ -19,7 +19,8 @@ class UserService:
     def list_users(self) -> List[Dict[str, Any]]:
         """
         Fetch users from public.users table, resolving their roles from public.user_roles 
-        and reporting managers from public.ase_tsm_mapping / manager_id.
+        and reporting managers from public.ase_tsm_mapping / manager_id,
+        as well as assigned depots from public.user_depot.
         If users table is empty, fallback to reading raw_sales_upload.
         """
         client = get_supabase()
@@ -28,7 +29,7 @@ class UserService:
 
         try:
             # 1. Fetch users from public.users table
-            users_res = client.table("users").select("user_id, email, first_name, last_name, phone, manager_id, is_active, created_at").execute()
+            users_res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, created_at").execute()
             raw_users = users_res.data if users_res.data is not None else []
 
             if raw_users:
@@ -48,9 +49,30 @@ class UserService:
 
                 ase_to_tsm: Dict[str, str] = {}
                 for m in mapping_data:
-                    ase_id = str(m.get("ase_user_id"))
-                    tsm_id = str(m.get("tsm_user_id"))
-                    ase_to_tsm[ase_id] = tsm_id
+                    if m.get("is_active", True):
+                        ase_id = str(m.get("ase_user_id"))
+                        tsm_id = str(m.get("tsm_user_id"))
+                        ase_to_tsm[ase_id] = tsm_id
+
+                user_depot_info: Dict[str, Dict[str, str]] = {}
+                try:
+                    ud_res = client.table("user_depot").select("user_id, depot_id, depots(name, headquarters(name), circles(name))").execute()
+                    for ud in (ud_res.data or []):
+                        uid = str(ud.get("user_id"))
+                        dep_obj = ud.get("depots") or {}
+                        dep_name = dep_obj.get("name") or "Unassigned"
+                        hq_obj = dep_obj.get("headquarters") or {}
+                        hq_name = hq_obj.get("name") or "Unassigned"
+                        circle_obj = dep_obj.get("circles") or {}
+                        circle_name = circle_obj.get("name") or "Unassigned"
+
+                        user_depot_info[uid] = {
+                            "depot_name": dep_name,
+                            "headquarters": hq_name,
+                            "circle_name": circle_name
+                        }
+                except Exception as e_ud:
+                    logger.warning(f"Could not fetch user_depot mappings: {e_ud}")
 
                 user_dict_by_id = {str(u["user_id"]): u for u in raw_users}
 
@@ -69,6 +91,11 @@ class UserService:
                         mgr_ln = mgr_obj.get("last_name") or ""
                         manager_name = f"{mgr_fn} {mgr_ln}".strip() or "Unassigned"
 
+                    ud_data = user_depot_info.get(uid, {})
+                    depot_name = ud_data.get("depot_name", "Unassigned")
+                    headquarters = ud_data.get("headquarters", "Unassigned")
+                    circle_name = ud_data.get("circle_name", "Unassigned")
+
                     result.append({
                         "id": uid,
                         "user_id": uid,
@@ -82,10 +109,10 @@ class UserService:
                         "reportingManager": manager_name,
                         "reporting_manager": manager_name,
                         "manager_id": str(manager_id) if manager_id else None,
-                        "depotName": "Unassigned",
-                        "depot_name": "Unassigned",
-                        "headquarters": "Unassigned",
-                        "circleName": "Unassigned",
+                        "depotName": depot_name,
+                        "depot_name": depot_name,
+                        "headquarters": headquarters,
+                        "circleName": circle_name,
                         "isActive": u.get("is_active", True),
                         "is_active": u.get("is_active", True)
                     })
@@ -202,6 +229,47 @@ class UserService:
 
         return None
 
+    def _resolve_manager_user_id(self, client: Any, mgr_str: str) -> Optional[str]:
+        """Resolve manager user_id (UUID) from public.users by UUID, email, full name, or first name."""
+        if not mgr_str or str(mgr_str).strip().lower() in ("unassigned", "none", "null", ""):
+            return None
+        mgr_clean = str(mgr_str).strip()
+
+        # 1. Check if UUID
+        try:
+            uuid.UUID(mgr_clean)
+            res = client.table("users").select("user_id").eq("user_id", mgr_clean).limit(1).execute()
+            if res.data:
+                return str(res.data[0]["user_id"])
+        except ValueError:
+            pass
+
+        # 2. Check by email
+        try:
+            res = client.table("users").select("user_id").ilike("email", mgr_clean).limit(1).execute()
+            if res.data:
+                return str(res.data[0]["user_id"])
+        except Exception:
+            pass
+
+        # 3. Check by name (First/Last or First name)
+        try:
+            parts = mgr_clean.split()
+            first = parts[0]
+            if len(parts) > 1:
+                last = parts[1]
+                res = client.table("users").select("user_id").ilike("first_name", first).ilike("last_name", last).limit(1).execute()
+                if res.data:
+                    return str(res.data[0]["user_id"])
+
+            res = client.table("users").select("user_id").ilike("first_name", first).limit(1).execute()
+            if res.data:
+                return str(res.data[0]["user_id"])
+        except Exception as e:
+            logger.warning(f"Failed to resolve manager '{mgr_clean}': {e}")
+
+        return None
+
     def create_user(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         client = get_supabase()
 
@@ -264,16 +332,9 @@ class UserService:
         }
 
         # Resolve manager user_id if reporting_manager provided
-        manager_user_id = None
-        if reporting_manager and reporting_manager != "Unassigned":
-            try:
-                mgr_first = reporting_manager.split()[0]
-                mgr_res = client.table("users").select("user_id").or_(f"email.ilike.{reporting_manager},first_name.ilike.{mgr_first}").limit(1).execute()
-                if mgr_res.data:
-                    manager_user_id = mgr_res.data[0]["user_id"]
-                    user_row["manager_id"] = manager_user_id
-            except Exception as e:
-                logger.warning(f"Could not resolve manager '{reporting_manager}': {e}")
+        manager_user_id = self._resolve_manager_user_id(client, reporting_manager)
+        if manager_user_id:
+            user_row["manager_id"] = manager_user_id
 
         try:
             # 1. Upsert into public.users
@@ -301,14 +362,16 @@ class UserService:
                         client.table("ase_tsm_mapping").update({
                             "tsm_user_id": manager_user_id,
                             "ase_user_role_id": user_role_id,
-                            "tsm_user_role_id": mgr_role_id
+                            "tsm_user_role_id": mgr_role_id,
+                            "is_active": True
                         }).eq("hierarchy_id", h_id).execute()
                     else:
                         client.table("ase_tsm_mapping").insert({
                             "ase_user_id": user_id,
                             "tsm_user_id": manager_user_id,
                             "ase_user_role_id": user_role_id,
-                            "tsm_user_role_id": mgr_role_id
+                            "tsm_user_role_id": mgr_role_id,
+                            "is_active": True
                         }).execute()
                 except Exception as mgr_err:
                     logger.warning(f"Could not update ase_tsm_mapping: {mgr_err}")
@@ -377,15 +440,13 @@ class UserService:
 
         reporting_manager = payload.get("reportingManager") or payload.get("reporting_manager")
         manager_user_id = None
-        if reporting_manager and reporting_manager != "Unassigned":
-            try:
-                mgr_first = reporting_manager.split()[0]
-                mgr_res = client.table("users").select("user_id").or_(f"email.ilike.{reporting_manager},first_name.ilike.{mgr_first}").limit(1).execute()
-                if mgr_res.data:
-                    manager_user_id = mgr_res.data[0]["user_id"]
+        if reporting_manager:
+            if str(reporting_manager).strip().lower() in ("unassigned", "none", "null", ""):
+                user_update["manager_id"] = None
+            else:
+                manager_user_id = self._resolve_manager_user_id(client, reporting_manager)
+                if manager_user_id:
                     user_update["manager_id"] = manager_user_id
-            except Exception as e:
-                logger.warning(f"Could not resolve manager '{reporting_manager}': {e}")
 
         try:
             if user_update:
@@ -783,8 +844,6 @@ class UserService:
                     "phone": phone,
                     "is_active": True
                 }
-                if mgr_id:
-                    user_row["manager_id"] = mgr_id
 
                 client.table("users").upsert(user_row).execute()
                 user_cache[ase_name] = u_id
@@ -821,6 +880,73 @@ class UserService:
         except Exception as e:
             logger.error(f"Error populating users and hierarchy from raw: {e}")
             return {"users": 0, "mappings": 0}
+
+    def list_roles(self) -> List[Dict[str, Any]]:
+        """
+        Fetch available roles from public.roles table.
+        Fallback to standard hierarchy roles if database is empty or offline.
+        """
+        client = get_supabase()
+        if client:
+            try:
+                res = client.table("roles").select("role_id, role_name, description, is_active").eq("is_active", True).execute()
+                if res.data and len(res.data) > 0:
+                    return [
+                        {
+                            "role_id": str(r["role_id"]),
+                            "role_name": r["role_name"],
+                            "description": r.get("description") or f"{r['role_name']} Role",
+                            "is_active": r.get("is_active", True)
+                        }
+                        for r in res.data
+                    ]
+            except Exception as e:
+                logger.warning(f"Error fetching roles from Supabase: {e}")
+
+        return [
+            {"role_id": "1", "role_name": "ASE", "description": "Area Sales Executive / Depot Field Sales Executive"},
+            {"role_id": "2", "role_name": "TSM", "description": "Territory Sales Manager / Circle Supervisor"},
+            {"role_id": "3", "role_name": "Regional Supervisor", "description": "Regional Sales Supervisor"},
+            {"role_id": "4", "role_name": "Admin", "description": "System Administrator with full access"}
+        ]
+
+    def get_hierarchy(self) -> List[Dict[str, Any]]:
+        """
+        Fetch all active personnel hierarchy mappings from public.ase_tsm_mapping
+        joined with public.users and public.user_roles.
+        """
+        client = get_supabase()
+        if not client:
+            return []
+
+        try:
+            res = client.table("ase_tsm_mapping").select("hierarchy_id, ase_user_id, tsm_user_id, is_active").execute()
+            mappings = res.data or []
+            all_users = {u["id"]: u for u in self.list_users()}
+            output = []
+            for m in mappings:
+                if not m.get("is_active", True):
+                    continue
+                ase_id = str(m.get("ase_user_id"))
+                tsm_id = str(m.get("tsm_user_id"))
+                ase_user = all_users.get(ase_id, {})
+                tsm_user = all_users.get(tsm_id, {})
+                output.append({
+                    "hierarchy_id": str(m.get("hierarchy_id")),
+                    "ase_user_id": ase_id,
+                    "ase_name": ase_user.get("name") or "ASE User",
+                    "ase_role": ase_user.get("role") or "ASE",
+                    "ase_email": ase_user.get("email") or "",
+                    "tsm_user_id": tsm_id,
+                    "tsm_name": tsm_user.get("name") or "TSM User",
+                    "tsm_role": tsm_user.get("role") or "TSM",
+                    "tsm_email": tsm_user.get("email") or "",
+                    "is_active": m.get("is_active", True)
+                })
+            return output
+        except Exception as ex:
+            logger.error(f"Error querying ase_tsm_mapping hierarchy: {ex}")
+            return []
 
 
 user_service = UserService()
