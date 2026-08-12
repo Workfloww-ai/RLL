@@ -582,6 +582,8 @@ class ImportPipelineEngine:
             ]
             brand_cache = master_service.bulk_resolve_brands(brand_items)
             packaging_cache = master_service.bulk_resolve_packagings(unique_packagings)
+            self._sync_user_hierarchy(s_ase, s_asm, s_depot, depot_cache)
+            self._populate_user_sales_fact(batch_id, s_date, s_company, s_ase, s_brand, s_cases, s_btl, s_bl, company_cache, brand_cache)
 
             # Vectorized ID Resolution
             clean_fn = master_service._clean
@@ -2069,6 +2071,180 @@ class ImportPipelineEngine:
                     batch_id,
                     exc,
                 )
+
+    def _sync_user_hierarchy(self, s_ase: pd.Series, s_asm: pd.Series, s_depot: pd.Series, depot_cache: Dict[str, str]):
+        """
+        Extracts ASE, ASM/TSM, and DEPOT relationships from uploaded DataFrame 
+        and updates public.users, public.user_roles, public.ase_tsm_mapping, and public.user_depot.
+        """
+        client = get_supabase()
+        if not client:
+            return
+
+        try:
+            from backend.users.service import UserService
+            user_service = UserService()
+
+            u_res = client.table("users").select("user_id, first_name, last_name, email").execute()
+            user_lookup = {}
+            for u in (u_res.data or []):
+                fn = u.get("first_name") or ""
+                ln = u.get("last_name") or ""
+                full_name = f"{fn} {ln}".strip().lower()
+                if full_name:
+                    user_lookup[full_name] = str(u["user_id"])
+                if fn:
+                    user_lookup[fn.lower()] = str(u["user_id"])
+
+            roles_map = {
+                'ADMIN': 'f4df9401-fe76-4a27-934d-20a78fb15b8f',
+                'TSM': '10b28dc0-6fc6-4b99-be09-1fb6e0b35b5f',
+                'ASE': '44abfc51-8fb9-4b9b-8e1e-041d4930a5a5',
+                'LEADER': '196372d0-d03f-4834-ab55-8674a81811d4'
+            }
+
+            tsm_ase_pairs = set()
+            user_depot_pairs = set()
+            clean_fn = master_service._clean
+
+            for ase_raw, tsm_raw, depot_raw in zip(s_ase, s_asm, s_depot):
+                ase_str = str(ase_raw or "").strip()
+                tsm_str = str(tsm_raw or "").strip()
+                depot_str = str(depot_raw or "").strip()
+
+                if not ase_str or ase_str.lower() in ("unassigned", "none", "null"):
+                    continue
+                if not tsm_str or tsm_str.lower() in ("unassigned", "none", "null"):
+                    continue
+
+                ase_list = [p.strip() for p in ase_str.replace(",", "/").split("/") if p.strip()]
+                tsm_list = [p.strip() for p in tsm_str.replace(",", "/").split("/") if p.strip()]
+                depot_id = depot_cache.get(clean_fn(depot_str))
+
+                for tsm_name in tsm_list:
+                    tsm_key = tsm_name.lower()
+                    if tsm_key not in user_lookup:
+                        t_parts = tsm_name.split(" ", 1)
+                        fn = t_parts[0]
+                        ln = t_parts[1] if len(t_parts) > 1 else ""
+                        res = user_service.create_user({"first_name": fn, "last_name": ln, "role": "TSM", "is_active": True})
+                        user_lookup[tsm_key] = res["user_id"]
+
+                    tsm_uid = user_lookup[tsm_key]
+
+                    for ase_name in ase_list:
+                        ase_key = ase_name.lower()
+                        if ase_key not in user_lookup:
+                            a_parts = ase_name.split(" ", 1)
+                            fn = a_parts[0]
+                            ln = a_parts[1] if len(a_parts) > 1 else ""
+                            res = user_service.create_user({"first_name": fn, "last_name": ln, "role": "ASE", "is_active": True})
+                            user_lookup[ase_key] = res["user_id"]
+
+                        ase_uid = user_lookup[ase_key]
+                        tsm_ase_pairs.add((tsm_uid, ase_uid))
+
+                        if depot_id:
+                            user_depot_pairs.add((ase_uid, depot_id))
+                            user_depot_pairs.add((tsm_uid, depot_id))
+
+            for t_uid, a_uid in tsm_ase_pairs:
+                try:
+                    client.table("ase_tsm_mapping").upsert(
+                        {"tsm_user_id": t_uid, "ase_user_id": a_uid},
+                        on_conflict="tsm_user_id, ase_user_id"
+                    ).execute()
+                except Exception:
+                    pass
+
+            for u_uid, d_uid in user_depot_pairs:
+                try:
+                    client.table("user_depot").upsert(
+                        {"user_id": u_uid, "depot_id": d_uid},
+                        on_conflict="user_id, depot_id"
+                    ).execute()
+                except Exception:
+                    pass
+        except Exception as e_sync:
+            logger.warning(f"_sync_user_hierarchy error: {e_sync}")
+
+    def _populate_user_sales_fact(
+        self,
+        batch_id: int,
+        s_date: pd.Series,
+        s_company: pd.Series,
+        s_ase: pd.Series,
+        s_brand: pd.Series,
+        s_cases: pd.Series,
+        s_btl: pd.Series,
+        s_bl: pd.Series,
+        company_cache: Dict[str, str],
+        brand_cache: Dict[str, str]
+    ):
+        """
+        Inserts normalized non-Others sales facts into public.user_sales_fact at the ASE/User level.
+        """
+        client = get_supabase()
+        if not client:
+            return
+
+        try:
+            u_res = client.table("users").select("user_id, first_name, last_name").execute()
+            user_lookup = {}
+            for u in (u_res.data or []):
+                fn = u.get("first_name") or ""
+                ln = u.get("last_name") or ""
+                full_name = f"{fn} {ln}".strip().lower()
+                if full_name:
+                    user_lookup[full_name] = str(u["user_id"])
+                if fn:
+                    user_lookup[fn.lower()] = str(u["user_id"])
+
+            clean_fn = master_service._clean
+
+            fact_records = []
+            for dt, comp_raw, ase_raw, brand_raw, cases, btl, bl in zip(
+                s_date, s_company, s_ase, s_brand, s_cases, s_btl, s_bl
+            ):
+                comp_clean = str(comp_raw or "").strip()
+                if not comp_clean or comp_clean.lower() == "others":
+                    continue
+
+                ase_clean = str(ase_raw or "").strip()
+                if not ase_clean or ase_clean.lower() in ("unassigned", "none", "null"):
+                    continue
+
+                first_ase = ase_clean.replace(",", "/").split("/")[0].strip()
+                user_id = user_lookup.get(ase_clean.lower()) or user_lookup.get(first_ase.lower())
+                if not user_id:
+                    continue
+
+                company_id = company_cache.get(clean_fn(comp_clean))
+                brand_id = brand_cache.get(clean_fn(brand_raw))
+                if not company_id or not brand_id:
+                    continue
+
+                sale_dt_str = self._parse_date(dt)
+
+                fact_records.append({
+                    "user_id": user_id,
+                    "company_id": company_id,
+                    "brand_id": brand_id,
+                    "sale_date": sale_dt_str,
+                    "cases": float(cases or 0.0),
+                    "bottles": float(btl or 0.0),
+                    "bl": float(bl or 0.0),
+                    "batch_id": str(batch_id)
+                })
+
+            if fact_records:
+                self._bulk_insert(
+                    table="user_sales_fact",
+                    records=fact_records,
+                    chunk_size=1000
+                )
+        except Exception as e_usf:
+            logger.warning(f"_populate_user_sales_fact error: {e_usf}")
 
 
 # ============================================================
