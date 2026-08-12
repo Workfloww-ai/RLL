@@ -588,8 +588,8 @@ async def get_mobile_sales(
                 tsm_role_id = str(r["role_id"])
 
         if tsm_role_id:
-            ur_res = client.table("user_roles").select("user_id").eq("role_id", tsm_role_id).eq("is_active", True).execute()
-            tsm_user_ids = [str(ur["user_id"]) for ur in (ur_res.data or [])]
+            ur_res = client.table("user_roles").select("user_id").eq("role_id", tsm_role_id).execute()
+            tsm_user_ids = [str(ur["user_id"]) for ur in (ur_res.data or []) if ur.get("user_id")]
             if tsm_user_ids:
                 u_res = client.table("users").select("user_id, first_name, last_name, email").in_("user_id", tsm_user_ids).execute()
                 for u in (u_res.data or []):
@@ -694,43 +694,27 @@ async def get_mobile_sales(
     query_start = min(daily_start, mtd_start, ytd_start)
     query_end = end_date
 
-    def fetch_page(p: int):
-        try:
-            q = client.table("dashboard_summary_daily").select(
-                "sale_date, total_case, total_btl, total_bl, company_id, brand_id, depot_id, headquarters_id"
-            ).gte("sale_date", query_start).lte("sale_date", query_end)
-
-            if target_hq_id:
-                q = q.eq("headquarters_id", target_hq_id)
-
-            res = q.range(p * 1000, (p + 1) * 1000 - 1).execute()
-            return res.data or []
-        except Exception as e_p:
-            logger.warning(f"Error fetching page {p}: {e_p}")
-            return []
-
-    loop = asyncio.get_event_loop()
+    page = 0
+    page_size = 1000
+    max_pages = 100
     all_records = []
-    batch_size = 10
-    max_batches = 10
-    stop_fetching = False
 
-    for batch_idx in range(max_batches):
-        if stop_fetching:
+    while page < max_pages:
+        q = client.table("dashboard_summary_daily").select(
+            "sale_date, total_case, total_btl, total_bl, company_id, brand_id, depot_id, headquarters_id"
+        ).gte("sale_date", query_start).lte("sale_date", query_end)
+
+        if target_hq_id:
+            q = q.eq("headquarters_id", target_hq_id)
+
+        res = q.range(page * page_size, (page + 1) * page_size - 1).execute()
+        chunk = res.data or []
+        if not chunk:
             break
-        futures = [
-            loop.run_in_executor(None, fetch_page, batch_idx * batch_size + i)
-            for i in range(batch_size)
-        ]
-        chunks = await asyncio.gather(*futures)
-        for chunk in chunks:
-            if not chunk:
-                stop_fetching = True
-                break
-            all_records.extend(chunk)
-            if len(chunk) < 1000:
-                stop_fetching = True
-                break
+        all_records.extend(chunk)
+        if len(chunk) < page_size:
+            break
+        page += 1
 
     total_records_processed = len(all_records)
 
@@ -849,11 +833,79 @@ async def get_mobile_sales(
             db_map[brand_id]["data"][period_key]["bottles"] += bottles
             db_map[brand_id]["data"][period_key]["bl"] += bl
 
-            # C. TSM Aggregation
-            target_tsm_uids = tsm_depot_lookup.get(raw_depot_id, set())
-            for tsm_user_id in target_tsm_uids:
-                if tsm_user_id in master_tsms:
-                    t_obj = master_tsms[tsm_user_id]
+            # C. TSM Aggregation (handled separately from user_sales_fact below)
+            pass
+
+    # Dedicated TSM Derived Aggregation from user_sales_fact
+    # Build member -> TSM(s) map. TSM includes themselves + all ASEs under them.
+    # Exclude self-mapping rows (ase_id == tsm_id) to prevent double counting.
+    member_to_tsms = {}
+    for tid in master_tsms.keys():
+        if tid not in member_to_tsms:
+            member_to_tsms[tid] = set()
+        member_to_tsms[tid].add(tid)  # TSM counts their own sales
+        for aid in tsm_ase_lookup.get(tid, set()):
+            if aid == tid:
+                continue  # Skip self-mapping; TSM already counted above
+            if aid not in member_to_tsms:
+                member_to_tsms[aid] = set()
+            member_to_tsms[aid].add(tid)
+
+    usf_page = 0
+    usf_page_size = 1000
+    usf_max_pages = 100
+    all_usf_records = []
+
+    while usf_page < usf_max_pages:
+        q_usf = client.table("user_sales_fact").select(
+            "sale_date, cases, bottles, bl, user_id, brand_id, company_id"
+        ).gte("sale_date", query_start).lte("sale_date", query_end).order("id")
+
+        res_usf = q_usf.range(usf_page * usf_page_size, (usf_page + 1) * usf_page_size - 1).execute()
+        chunk_usf = res_usf.data or []
+        if not chunk_usf:
+            break
+        all_usf_records.extend(chunk_usf)
+        if len(chunk_usf) < usf_page_size:
+            break
+        usf_page += 1
+
+    for row in all_usf_records:
+        s_date = str(row.get("sale_date") or "")
+        active_periods = []
+        if daily_start <= s_date <= end_date:
+            active_periods.append("Daily")
+        if mtd_start <= s_date <= end_date:
+            active_periods.append("MTD")
+        if ytd_start <= s_date <= end_date:
+            active_periods.append("YTD")
+
+        if not active_periods:
+            continue
+
+        c_id_raw = str(row.get("company_id") or "")
+        comp_name = companies_lookup.get(c_id_raw)
+        if not comp_name or comp_name.strip().lower() == "others":
+            continue
+
+        uid = str(row.get("user_id") or "")
+        target_tsm_ids = member_to_tsms.get(uid, set())
+        if not target_tsm_ids:
+            continue
+
+        b_id_raw = str(row.get("brand_id") or "")
+        b_info = brands_lookup.get(b_id_raw, {})
+        brand_name = b_info.get("name") or "Generic Brand"
+        brand_id = b_id_raw or brand_name.lower().replace(" ", "-")
+
+        cases = int(row.get("cases") or 0)
+        bottles = int(row.get("bottles") or 0)
+        bl = float(row.get("bl") or 0.0)
+
+        for period_key in active_periods:
+            for tid in target_tsm_ids:
+                if tid in master_tsms:
+                    t_obj = master_tsms[tid]
                     t_obj["data"][period_key]["cases"] += cases
                     t_obj["data"][period_key]["bottles"] += bottles
                     t_obj["data"][period_key]["bl"] += bl
@@ -894,13 +946,22 @@ async def get_mobile_sales(
     for t_id, t_data in master_tsms.items():
         t_data["brands"] = list(t_data.pop("brands_map").values())
         depot_ids_list = list(t_data.pop("depot_ids", set()))
-        if depot_ids_list:
-            first_depot = master_depots.get(depot_ids_list[0])
-            if first_depot:
-                t_data["hqLocation"] = first_depot["hqName"]
-        if selected_hq != "All Headquarters" and t_data.get("hqLocation") and t_data["hqLocation"] != "All Headquarters":
-            if t_data["hqLocation"].lower() != selected_hq.lower():
+        assigned_hq_names = []
+        for did in depot_ids_list:
+            d_obj = master_depots.get(did)
+            if d_obj and d_obj.get("hqName"):
+                assigned_hq_names.append(d_obj["hqName"])
+
+        if assigned_hq_names:
+            t_data["hqLocation"] = assigned_hq_names[0]
+        else:
+            t_data["hqLocation"] = "All Headquarters"
+
+        if selected_hq != "All Headquarters":
+            matches_hq = any(hq.lower() == selected_hq.lower() for hq in assigned_hq_names)
+            if not matches_hq:
                 continue
+
         formatted_tsms.append(t_data)
 
     return {

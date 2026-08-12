@@ -62,15 +62,16 @@ export default function App() {
     });
   }, []);
 
-  // 3. Fetch sales data when filters or user presence change
+  // 3. On first load, fetch with no dates to discover latest_sale_date, then set it once
   useEffect(() => {
     const token = localStorage.getItem('rll_mobile_token');
     if (!token) return;
+    if (dateFrom || dateTo) return; // already initialized — don't reset
 
-    fetchMobileSales(dateFrom, dateTo, period, selectedHq).then((res) => {
+    fetchMobileSales('', '', period, selectedHq).then((res) => {
       if (res) {
         setApiData(res);
-        if (res.latest_sale_date && (!dateFrom || !dateTo)) {
+        if (res.latest_sale_date) {
           setDateFrom(res.latest_sale_date);
           setDateTo(res.latest_sale_date);
         }
@@ -78,7 +79,23 @@ export default function App() {
         setUser(null);
       }
     });
-  }, [dateFrom, dateTo, period, selectedHq, Boolean(user)]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [Boolean(localStorage.getItem('rll_mobile_token'))]);
+
+  // 4. Fetch sales data whenever filters change (after dates are initialized)
+  useEffect(() => {
+    const token = localStorage.getItem('rll_mobile_token');
+    if (!token) return;
+    if (!dateFrom || !dateTo) return; // wait for initialization
+
+    fetchMobileSales(dateFrom, dateTo, period, selectedHq).then((res) => {
+      if (res) {
+        setApiData(res);
+      } else if (!localStorage.getItem('rll_mobile_token')) {
+        setUser(null);
+      }
+    });
+  }, [dateFrom, dateTo, period, selectedHq]);
 
   const handleLogout = () => {
     localStorage.removeItem('rll_mobile_token');
