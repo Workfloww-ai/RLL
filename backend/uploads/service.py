@@ -575,7 +575,7 @@ class ImportPipelineEngine:
             brand_items = [
                 {
                     "brand_name": b,
-                    "company_id": company_cache.get(master_service._clean(c)),
+                    "company_id": company_cache.get(master_service._clean_company(c)) or company_cache.get(master_service._clean(c)),
                 }
                 for b, c in zip(s_brand, s_company)
                 if b
@@ -2219,7 +2219,7 @@ class ImportPipelineEngine:
                 if not user_id:
                     continue
 
-                company_id = company_cache.get(clean_fn(comp_clean))
+                company_id = company_cache.get(master_service._clean_company(comp_clean)) or company_cache.get(clean_fn(comp_clean))
                 brand_id = brand_cache.get(clean_fn(brand_raw))
                 if not company_id or not brand_id:
                     continue
