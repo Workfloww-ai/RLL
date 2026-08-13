@@ -9,6 +9,7 @@ import { TsmView } from './components/TsmView';
 import { BrandModal } from './components/BrandModal';
 import { LoginScreen } from './components/LoginScreen';
 import { ProfileScreen } from './features/profile/ProfileScreen';
+import { GroupCascadingSalesScreen } from './features/sales/GroupCascadingSalesScreen';
 import { fetchMobileSales, fetchUserProfile, fetchMobileHeadquarters } from './lib/api';
 import {
   Search,
@@ -351,7 +352,16 @@ export default function App() {
                 />
               )}
 
-              {/* VIEW 4: PROFILE TAB */}
+              {/* VIEW 4: GROUPS TAB (CASCADING GROUP -> LICENSEE -> BRAND SALES) */}
+              {viewMode === 'groups' && (
+                <GroupCascadingSalesScreen
+                  dateFrom={dateFrom}
+                  dateTo={dateTo}
+                  period={period}
+                />
+              )}
+
+              {/* VIEW 5: PROFILE TAB */}
               {viewMode === 'profile' && (
                 <ProfileScreen user={user} onLogout={handleLogout} />
               )}

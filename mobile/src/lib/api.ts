@@ -148,3 +148,79 @@ export async function fetchMobileHeadquarters() {
     return ['All Headquarters'];
   }
 }
+
+export async function fetchCascadingGroups(dateFrom?: string, dateTo?: string, period?: string) {
+  const token = localStorage.getItem('rll_mobile_token');
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  try {
+    const params = new URLSearchParams();
+    if (dateFrom) params.append('date_from', dateFrom);
+    if (dateTo) params.append('date_to', dateTo);
+    if (period) params.append('period', period);
+
+    const res = await fetch(`${BASE_URL}/mobile/cascading/groups?${params.toString()}`, { headers });
+    if (!res.ok) return [];
+    return await res.json();
+  } catch (error) {
+    console.error('fetchCascadingGroups error:', error);
+    return [];
+  }
+}
+
+export async function fetchGroupLicensees(
+  groupId: string,
+  dateFrom?: string,
+  dateTo?: string,
+  period?: string,
+  depotName?: string
+) {
+  const token = localStorage.getItem('rll_mobile_token');
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  try {
+    const params = new URLSearchParams();
+    if (dateFrom) params.append('date_from', dateFrom);
+    if (dateTo) params.append('date_to', dateTo);
+    if (period) params.append('period', period);
+    if (depotName) params.append('depot_name', depotName);
+
+    const res = await fetch(`${BASE_URL}/mobile/cascading/groups/${groupId}/licensees?${params.toString()}`, { headers });
+    if (!res.ok) return [];
+    return await res.json();
+  } catch (error) {
+    console.error('fetchGroupLicensees error:', error);
+    return [];
+  }
+}
+
+export async function fetchLicenseeBrandSales(
+  licenseeId: string,
+  dateFrom?: string,
+  dateTo?: string,
+  period?: string,
+  depotName?: string
+) {
+  const token = localStorage.getItem('rll_mobile_token');
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  try {
+    const params = new URLSearchParams();
+    if (dateFrom) params.append('date_from', dateFrom);
+    if (dateTo) params.append('date_to', dateTo);
+    if (period) params.append('period', period);
+    if (depotName) params.append('depot_name', depotName);
+
+    const res = await fetch(`${BASE_URL}/mobile/cascading/licensees/${licenseeId}/brand-sales?${params.toString()}`, { headers });
+    if (!res.ok) return [];
+    return await res.json();
+  } catch (error) {
+    console.error('fetchLicenseeBrandSales error:', error);
+    return [];
+  }
+}
+
+

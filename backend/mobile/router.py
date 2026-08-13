@@ -580,6 +580,8 @@ async def get_mobile_sales(
     master_tsms = {}
     tsm_depot_lookup = {}  # depot_id -> set of tsm_user_ids
     user_depots_map = {}
+    tsm_ase_lookup = {}
+    ase_names_lookup = {}
     try:
         roles_res = client.table("roles").select("role_id, role_name").execute()
         tsm_role_id = None
@@ -625,9 +627,25 @@ async def get_mobile_sales(
                 tsm_ase_lookup[tid] = set()
             tsm_ase_lookup[tid].add(aid)
 
+        # Fetch ASE names for display in the TSM accordion
+        all_ase_ids = list({aid for aids in tsm_ase_lookup.values() for aid in aids})
+        ase_names_lookup = {}  # ase_user_id -> full_name
+        if all_ase_ids:
+            try:
+                ase_u_res = client.table("users").select("user_id, first_name, last_name").in_("user_id", all_ase_ids).execute()
+                for au in (ase_u_res.data or []):
+                    a_uid = str(au["user_id"])
+                    a_name = f"{au.get('first_name', '')} {au.get('last_name', '')}".strip() or "ASE"
+                    ase_names_lookup[a_uid] = a_name
+            except Exception as e:
+                logger.warning(f"Error fetching ASE names: {e}")
+
         for tid, t_obj in master_tsms.items():
             t_obj["depot_ids"].update(user_depots_map.get(tid, set()))
-            for aid in tsm_ase_lookup.get(tid, set()):
+            ase_ids_for_tsm = tsm_ase_lookup.get(tid, set())
+            # Store resolved ASE list on the TSM object
+            t_obj["ase_ids"] = list(ase_ids_for_tsm)
+            for aid in ase_ids_for_tsm:
                 t_obj["depot_ids"].update(user_depots_map.get(aid, set()))
             for did in t_obj["depot_ids"]:
                 if did not in tsm_depot_lookup:
@@ -851,6 +869,17 @@ async def get_mobile_sales(
                 member_to_tsms[aid] = set()
             member_to_tsms[aid].add(tid)
 
+    # Build per-ASE sales aggregation (initialise zero buckets for all known ASEs)
+    all_known_ase_ids = {aid for aids in tsm_ase_lookup.values() for aid in aids}
+    ase_sales = {
+        aid: {
+            "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+            "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+            "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+        }
+        for aid in all_known_ase_ids
+    }
+
     usf_page = 0
     usf_page_size = 1000
     usf_max_pages = 100
@@ -903,6 +932,12 @@ async def get_mobile_sales(
         bl = float(row.get("bl") or 0.0)
 
         for period_key in active_periods:
+            # ASE-level aggregation — accumulate sales for the individual ASE
+            if uid in ase_sales:
+                ase_sales[uid][period_key]["cases"] += cases
+                ase_sales[uid][period_key]["bottles"] += bottles
+                ase_sales[uid][period_key]["bl"] += bl
+
             for tid in target_tsm_ids:
                 if tid in master_tsms:
                     t_obj = master_tsms[tid]
@@ -957,6 +992,21 @@ async def get_mobile_sales(
         else:
             t_data["hqLocation"] = "All Headquarters"
 
+        # Resolve ASE IDs to name + sales data objects
+        raw_ase_ids = t_data.pop("ase_ids", [])
+        t_data["ases"] = [
+            {
+                "id": aid,
+                "name": ase_names_lookup.get(aid, "ASE"),
+                "data": ase_sales.get(aid, {
+                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                    "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                    "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                })
+            }
+            for aid in raw_ase_ids
+        ]
+
         if selected_hq != "All Headquarters":
             matches_hq = any(hq.lower() == selected_hq.lower() for hq in assigned_hq_names)
             if not matches_hq:
@@ -973,3 +1023,48 @@ async def get_mobile_sales(
         "depots": formatted_depots,
         "tsms": formatted_tsms
     }
+
+
+@router.get("/cascading/groups")
+async def get_cascading_groups_endpoint(
+    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    period: Optional[str] = Query(None, description="Period filter (Daily/MTD/YTD)")
+):
+    """
+    Mobile endpoint: Fetch active groups with total licensees, linked depots, and sales summaries.
+    """
+    from backend.services.mobile_cascading_service import get_cascading_groups
+    return get_cascading_groups(date_from=date_from, date_to=date_to, period=period)
+
+
+@router.get("/cascading/groups/{group_id}/licensees")
+async def get_group_licensees_endpoint(
+    group_id: str,
+    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    period: Optional[str] = Query(None, description="Period filter (Daily/MTD/YTD)"),
+    depot_name: Optional[str] = Query(None, description="Filter by depot name")
+):
+    """
+    Mobile endpoint: Fetch licensees for a group with specific depot breakdown and sales stats.
+    """
+    from backend.services.mobile_cascading_service import get_group_licensees
+    return get_group_licensees(group_id=group_id, date_from=date_from, date_to=date_to, period=period, depot_name=depot_name)
+
+
+@router.get("/cascading/licensees/{licensee_id}/brand-sales")
+async def get_licensee_brand_sales_endpoint(
+    licensee_id: str,
+    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    period: Optional[str] = Query(None, description="Period filter (Daily/MTD/YTD)"),
+    depot_name: Optional[str] = Query(None, description="Filter by depot name")
+):
+    """
+    Mobile endpoint: Fetch brand-wise sales breakdown for a licensee.
+    """
+    from backend.services.mobile_cascading_service import get_licensee_brand_sales
+    return get_licensee_brand_sales(licensee_id=licensee_id, date_from=date_from, date_to=date_to, period=period, depot_name=depot_name)
+
+

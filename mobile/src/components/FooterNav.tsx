@@ -1,6 +1,6 @@
 import React from 'react';
 import { ViewMode } from '../types';
-import { Building2, Store, Users, User } from 'lucide-react';
+import { Building2, Layers, Users, User } from 'lucide-react';
 
 interface FooterNavProps {
   viewMode: ViewMode;
@@ -25,17 +25,17 @@ export const FooterNav: React.FC<FooterNavProps> = ({ viewMode, setViewMode }) =
       </button>
 
       <button
-        onClick={() => setViewMode('depots')}
-        id="footer-nav-depots"
+        onClick={() => setViewMode('groups')}
+        id="footer-nav-groups"
         type="button"
         className={`flex flex-col items-center gap-0.5 py-1 px-3 rounded-xl transition-all ${
-          viewMode === 'depots'
+          viewMode === 'groups' || viewMode === 'depots'
             ? 'bg-white text-[#0F2042] font-extrabold shadow-md scale-105'
             : 'text-slate-300 hover:text-white font-semibold'
         }`}
       >
-        <Store className="w-4 h-4" />
-        <span className="text-[10px] tracking-tight">Depot</span>
+        <Layers className="w-4 h-4" />
+        <span className="text-[10px] tracking-tight">Groups</span>
       </button>
 
       <button

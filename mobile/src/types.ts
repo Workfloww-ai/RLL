@@ -53,17 +53,52 @@ export interface TsmBrandSales {
   data: Record<Period, Metrics>;
 }
 
+export interface ASEInfo {
+  id: string;
+  name: string;
+  data: Record<Period, Metrics>;
+}
+
 export interface TSM {
   id: string;
   name: string;
   hqLocation?: string;
+  ases?: ASEInfo[];
   data: Record<Period, Metrics>;
   brands: TsmBrandSales[];
 }
 
-export type ViewMode = 'companies' | 'depots' | 'tsm' | 'profile';
+export type ViewMode = 'companies' | 'depots' | 'tsm' | 'groups' | 'profile';
+
+export interface GroupCascading {
+  group_id: string;
+  group_name: string;
+  total_licensees: number;
+  linked_depots: string[];
+  total_cases: number;
+  total_bottles: number;
+}
+
+export interface LicenseeCascading {
+  licensee_id: string;
+  licensee_name: string;
+  trade: string;
+  licensee_depots: string[];
+  total_cases: number;
+  total_bottles: number;
+}
+
+export interface BrandSaleCascading {
+  brand_id: string;
+  brand_name: string;
+  company_name: string;
+  total_cases: number;
+  total_bottles: number;
+  sales_depots: string[];
+}
 
 export interface DateRange {
   from: string;
   to: string;
 }
+
