@@ -401,3 +401,285 @@ def get_batch_details(batch_id: Any) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"get_batch_details error: {e}")
         return {"batch_id": batch_id, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Cascading Sales Database Queries (Groups, Licensees, Brand Sales)
+# ---------------------------------------------------------------------------
+
+def fetch_cascading_groups_db(date_from: str, date_to: str) -> List[Dict[str, Any]]:
+    """
+    Fetches aggregated cascading groups with total licensees, linked depots, cases, and bottles.
+    Attempts RPC first; falls back to optimized query if RPC is not present.
+    """
+    client = get_supabase_client()
+    if not client:
+        return []
+
+    # 1. Try RPC execution
+    try:
+        res = client.rpc("get_cascading_groups_summary", {
+            "p_date_from": date_from,
+            "p_date_to": date_to
+        }).execute()
+        if res.data is not None:
+            return [
+                {
+                    "group_id": str(r["group_id"]),
+                    "group_name": r["group_name"],
+                    "total_licensees": int(r.get("total_licensees") or 0),
+                    "linked_depots": r.get("linked_depots") or [],
+                    "total_cases": float(r.get("total_cases") or 0.0),
+                    "total_bottles": float(r.get("total_bottles") or 0.0),
+                }
+                for r in res.data
+            ]
+    except Exception as rpc_err:
+        logger.info(f"RPC get_cascading_groups_summary unavailable, using fallback query: {rpc_err}")
+
+    # 2. Fallback query implementation
+    try:
+        g_res = client.table("groups").select("group_id, group_name").eq("is_active", True).execute()
+        all_groups = {str(g["group_id"]): g["group_name"] for g in (g_res.data or [])}
+
+        l_res = client.table("licensees").select("licensee_id, group_id, depot_id, depots(name)").eq("is_active", True).execute()
+        group_lics: Dict[str, set] = {}
+        group_depots: Dict[str, set] = {}
+        lic_to_group: Dict[str, str] = {}
+        for lic in (l_res.data or []):
+            gid = str(lic.get("group_id")) if lic.get("group_id") else None
+            lid = str(lic.get("licensee_id")) if lic.get("licensee_id") else None
+            depot_obj = lic.get("depots") or {}
+            dname = depot_obj.get("name") if isinstance(depot_obj, dict) else None
+
+            if gid and lid:
+                lic_to_group[lid] = gid
+                if gid not in group_lics:
+                    group_lics[gid] = set()
+                    group_depots[gid] = set()
+                group_lics[gid].add(lid)
+                if dname:
+                    group_depots[gid].add(dname)
+
+        sf_res = client.table("sales_fact").select(
+            "licensee_id, total_case, total_btl, brands!inner(company_id, companies!inner(company_name))"
+        ).gte("sale_date", date_from).lte("sale_date", date_to).execute()
+
+        group_metrics: Dict[str, Dict[str, Any]] = {}
+        for sf in (sf_res.data or []):
+            brand_obj = sf.get("brands") or {}
+            comp_obj = brand_obj.get("companies") if isinstance(brand_obj, dict) else {}
+            cname = comp_obj.get("company_name", "") if isinstance(comp_obj, dict) else ""
+            if cname and cname.lower().strip() == "others":
+                continue
+
+            lid = str(sf.get("licensee_id")) if sf.get("licensee_id") else None
+            gid = lic_to_group.get(lid)
+            if not gid or gid not in all_groups:
+                continue
+
+            if gid not in group_metrics:
+                group_metrics[gid] = {"cases": 0.0, "bottles": 0.0}
+
+            group_metrics[gid]["cases"] += float(sf.get("total_case") or 0)
+            group_metrics[gid]["bottles"] += float(sf.get("total_btl") or 0)
+
+        results = []
+        for gid, gname in all_groups.items():
+            lic_count = len(group_lics.get(gid, set()))
+            m = group_metrics.get(gid, {"cases": 0.0, "bottles": 0.0})
+            depots_list = sorted(list(group_depots.get(gid, set())))
+            if lic_count > 0 or m["cases"] > 0:
+                results.append({
+                    "group_id": gid,
+                    "group_name": gname,
+                    "total_licensees": lic_count,
+                    "linked_depots": depots_list,
+                    "total_cases": round(m["cases"], 2),
+                    "total_bottles": round(m["bottles"], 2),
+                })
+        results.sort(key=lambda x: (x["total_cases"], x["total_licensees"]), reverse=True)
+        return results
+    except Exception as e:
+        logger.error(f"Fallback fetch_cascading_groups_db error: {e}")
+        return []
+
+
+def fetch_group_licensees_db(
+    group_id: str,
+    date_from: str,
+    date_to: str,
+    depot_name: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Fetches licensees and their sales breakdown for a specified group.
+    Attempts RPC first; falls back to optimized query if RPC is unavailable.
+    """
+    client = get_supabase_client()
+    if not client:
+        return []
+
+    # 1. Try RPC execution
+    try:
+        res = client.rpc("get_group_licensees_summary", {
+            "p_group_id": group_id,
+            "p_date_from": date_from,
+            "p_date_to": date_to,
+            "p_depot_name": depot_name or ""
+        }).execute()
+        if res.data is not None:
+            return [
+                {
+                    "licensee_id": str(r["licensee_id"]),
+                    "licensee_name": r["licensee_name"],
+                    "trade": r.get("trade") or "Off",
+                    "licensee_depots": r.get("licensee_depots") or [],
+                    "total_cases": float(r.get("total_cases") or 0.0),
+                    "total_bottles": float(r.get("total_bottles") or 0.0),
+                }
+                for r in res.data
+            ]
+    except Exception as rpc_err:
+        logger.info(f"RPC get_group_licensees_summary unavailable, using fallback query: {rpc_err}")
+
+    # 2. Fallback query implementation
+    try:
+        res = client.table("licensees").select("licensee_id, licensee_name, trade, depot_id, depots(name)").eq("group_id", group_id).eq("is_active", True).execute()
+        lic_map = {}
+        for l in (res.data or []):
+            depot_obj = l.get("depots") or {}
+            dname = depot_obj.get("name") if isinstance(depot_obj, dict) else None
+            lid = str(l["licensee_id"])
+            lic_map[lid] = {
+                "licensee_id": lid,
+                "licensee_name": l["licensee_name"],
+                "trade": l.get("trade") or "Off",
+                "licensee_depots": [dname] if dname else [],
+                "total_cases": 0.0,
+                "total_bottles": 0.0,
+            }
+
+        sf_res = client.table("sales_fact").select(
+            "licensee_id, total_case, total_btl, brands!inner(company_id, companies!inner(company_name)), licensees!inner(group_id)"
+        ).eq("licensees.group_id", group_id).gte("sale_date", date_from).lte("sale_date", date_to).execute()
+
+        for sf in (sf_res.data or []):
+            brand_obj = sf.get("brands") or {}
+            comp_obj = brand_obj.get("companies") if isinstance(brand_obj, dict) else {}
+            cname = comp_obj.get("company_name", "") if isinstance(comp_obj, dict) else ""
+            if cname and cname.lower().strip() == "others":
+                continue
+
+            lid = str(sf.get("licensee_id")) if sf.get("licensee_id") else None
+            if lid in lic_map:
+                lic_map[lid]["total_cases"] += float(sf.get("total_case") or 0)
+                lic_map[lid]["total_bottles"] += float(sf.get("total_btl") or 0)
+
+        results = []
+        for lid, item in lic_map.items():
+            if depot_name and item["licensee_depots"] and item["licensee_depots"][0].lower() != depot_name.lower():
+                continue
+            results.append({
+                "licensee_id": item["licensee_id"],
+                "licensee_name": item["licensee_name"],
+                "trade": item["trade"],
+                "licensee_depots": item["licensee_depots"],
+                "total_cases": round(item["total_cases"], 2),
+                "total_bottles": round(item["total_bottles"], 2),
+            })
+        results.sort(key=lambda x: x["total_cases"], reverse=True)
+        return results
+    except Exception as e:
+        logger.error(f"Fallback fetch_group_licensees_db error: {e}")
+        return []
+
+
+def fetch_licensee_brand_sales_db(
+    licensee_id: str,
+    date_from: str,
+    date_to: str,
+    depot_name: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Fetches brand-wise sales breakdown for a specific licensee.
+    Attempts RPC first; falls back to optimized query if RPC is unavailable.
+    """
+    client = get_supabase_client()
+    if not client:
+        return []
+
+    # 1. Try RPC execution
+    try:
+        res = client.rpc("get_licensee_brand_sales_summary", {
+            "p_licensee_id": licensee_id,
+            "p_date_from": date_from,
+            "p_date_to": date_to,
+            "p_depot_name": depot_name or ""
+        }).execute()
+        if res.data is not None:
+            return [
+                {
+                    "brand_id": str(r["brand_id"]),
+                    "brand_name": r["brand_name"],
+                    "company_name": r["company_name"],
+                    "total_cases": float(r.get("total_cases") or 0.0),
+                    "total_bottles": float(r.get("total_bottles") or 0.0),
+                    "sales_depots": r.get("sales_depots") or [],
+                }
+                for r in res.data
+            ]
+    except Exception as rpc_err:
+        logger.info(f"RPC get_licensee_brand_sales_summary unavailable, using fallback query: {rpc_err}")
+
+    # 2. Fallback query implementation
+    try:
+        lic_res = client.table("licensees").select("licensee_id, depot_id, depots(name)").eq("licensee_id", licensee_id).limit(1).execute()
+        dname = None
+        if lic_res.data:
+            depot_obj = lic_res.data[0].get("depots") or {}
+            dname = depot_obj.get("name") if isinstance(depot_obj, dict) else None
+
+        sf_res = client.table("sales_fact").select(
+            "licensee_id, brand_id, total_case, total_btl, brands!inner(brand_id, brand_name, company_id, companies!inner(company_name))"
+        ).eq("licensee_id", licensee_id).gte("sale_date", date_from).lte("sale_date", date_to).execute()
+
+        brand_map: Dict[str, Dict[str, Any]] = {}
+        for sf in (sf_res.data or []):
+            brand_obj = sf.get("brands") or {}
+            comp_obj = brand_obj.get("companies") if isinstance(brand_obj, dict) else {}
+            cname = comp_obj.get("company_name", "") if isinstance(comp_obj, dict) else ""
+            if cname and cname.lower().strip() == "others":
+                continue
+
+            bid = str(brand_obj.get("brand_id") or sf.get("brand_id"))
+            bname = brand_obj.get("brand_name") or "Unknown Brand"
+            if not bid:
+                continue
+
+            if bid not in brand_map:
+                brand_map[bid] = {
+                    "brand_id": bid,
+                    "brand_name": bname,
+                    "company_name": cname or "Other",
+                    "total_cases": 0.0,
+                    "total_bottles": 0.0,
+                    "sales_depots": [dname] if dname else [],
+                }
+            brand_map[bid]["total_cases"] += float(sf.get("total_case") or 0)
+            brand_map[bid]["total_bottles"] += float(sf.get("total_btl") or 0)
+
+        results = []
+        for bid, item in brand_map.items():
+            results.append({
+                "brand_id": item["brand_id"],
+                "brand_name": item["brand_name"],
+                "company_name": item["company_name"],
+                "total_cases": round(item["total_cases"], 2),
+                "total_bottles": round(item["total_bottles"], 2),
+                "sales_depots": item["sales_depots"],
+            })
+        results.sort(key=lambda x: x["total_cases"], reverse=True)
+        return results
+    except Exception as e:
+        logger.error(f"Fallback fetch_licensee_brand_sales_db error: {e}")
+        return []

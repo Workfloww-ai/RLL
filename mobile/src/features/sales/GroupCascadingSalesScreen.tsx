@@ -193,8 +193,8 @@ export const GroupCascadingSalesScreen: React.FC<GroupCascadingSalesScreenProps>
             !selectedGroup
               ? "Search group or depot..."
               : !selectedLicensee
-              ? "Search licensee..."
-              : "Search brand or company..."
+                ? "Search licensee..."
+                : "Search brand or company..."
           }
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
@@ -265,7 +265,7 @@ export const GroupCascadingSalesScreen: React.FC<GroupCascadingSalesScreenProps>
                     </div>
 
                     {/* Linked Depots Pills */}
-                    {group.linked_depots && group.linked_depots.length > 0 && (
+                    {/* {group.linked_depots && group.linked_depots.length > 0 && (
                       <div className="pt-1.5 border-t border-slate-100 flex flex-wrap gap-1">
                         {group.linked_depots.map((depot, dIdx) => {
                           const isActive = activeDepotFilter === depot;
@@ -285,7 +285,7 @@ export const GroupCascadingSalesScreen: React.FC<GroupCascadingSalesScreenProps>
                           );
                         })}
                       </div>
-                    )}
+                    )} */}
                   </motion.div>
                 ))
               )}
@@ -300,9 +300,9 @@ export const GroupCascadingSalesScreen: React.FC<GroupCascadingSalesScreenProps>
                   <span className="text-[9px] font-bold text-slate-400 uppercase block">Group Selected</span>
                   <h3 className="text-sm font-bold text-[#0F2042]">{selectedGroup.group_name}</h3>
                 </div>
-                <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-xl">
+                {/* <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-xl">
                   {filteredLicensees.length} Licensee(s)
-                </span>
+                </span> */}
               </div>
 
               {filteredLicensees.length === 0 ? (
@@ -354,11 +354,10 @@ export const GroupCascadingSalesScreen: React.FC<GroupCascadingSalesScreenProps>
                             <button
                               key={dIdx}
                               onClick={(e) => handleDepotClick(e, depot)}
-                              className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-md font-semibold border transition-all ${
-                                isActive
-                                  ? 'bg-[#0F2042] text-white border-[#0F2042]'
-                                  : 'bg-sky-50 text-sky-800 border-sky-200/80 hover:bg-sky-100'
-                              }`}
+                              className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-md font-semibold border transition-all ${isActive
+                                ? 'bg-[#0F2042] text-white border-[#0F2042]'
+                                : 'bg-sky-50 text-sky-800 border-sky-200/80 hover:bg-sky-100'
+                                }`}
                             >
                               <MapPin className="w-2.5 h-2.5 text-sky-600" />
                               <span>{depot}</span>

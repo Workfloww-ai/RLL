@@ -775,6 +775,7 @@ class MasterService:
                     "licensee_name": display,
                     "trade": trade,
                     "group_id": item.get("group_id"),
+                    "depot_id": item.get("depot_id"),
                     "headquarters_id": item.get("headquarters_id"),
                     "office_id": item.get("office_id"),
                     "circle_id": item.get("circle_id"),

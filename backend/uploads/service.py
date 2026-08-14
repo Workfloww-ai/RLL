@@ -563,11 +563,12 @@ class ImportPipelineEngine:
                     "trade": t,
                     "group_name": g,
                     "group_id": group_cache.get(master_service._clean(g)),
+                    "depot_id": depot_cache.get(master_service._clean(d)),
                     "headquarters_id": hq_cache.get(master_service._clean(hq)),
                     "office_id": office_cache.get(master_service._clean(deo)),
                     "circle_id": circle_cache.get(master_service._clean(cir)),
                 }
-                for l, t, g, hq, deo, cir in zip(s_licensee, s_trade, s_group, s_hq, s_deo, s_circle)
+                for l, t, g, d, hq, deo, cir in zip(s_licensee, s_trade, s_group, s_depot, s_hq, s_deo, s_circle)
                 if l
             ]
             licensee_cache = master_service.bulk_resolve_licensees(lic_items)

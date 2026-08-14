@@ -27,9 +27,9 @@ export default function App() {
     return saved ? JSON.parse(saved) : null;
   });
 
-  const [period, setPeriod] = useState<Period>('Daily');
-  const [dateFrom, setDateFrom] = useState<string>('');
-  const [dateTo, setDateTo] = useState<string>('');
+  const [period, setPeriod] = useState<Period>('MTD');
+  const [dateFrom, setDateFrom] = useState<string>('2026-05-01');
+  const [dateTo, setDateTo] = useState<string>('2026-05-31');
   const [viewMode, setViewMode] = useState<ViewMode>('companies');
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
