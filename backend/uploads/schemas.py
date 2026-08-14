@@ -1,0 +1,122 @@
+from typing import Optional, List, Any, Dict, Union
+from datetime import datetime, date
+from uuid import UUID
+from pydantic import BaseModel, ConfigDict
+
+
+# Upload Batches
+class UploadBatchBase(BaseModel):
+    source_file: Optional[str] = None
+    file_name: Optional[str] = None
+    storage_path: Optional[str] = None
+    load_type: str = "daily"
+    covers_start: Optional[date] = None
+    covers_end: Optional[date] = None
+    row_count: Optional[int] = None
+    total_rows: Optional[int] = 0
+    status: str = "pending"
+    upload_status: Optional[str] = "pending"
+    uploaded_by: Optional[Any] = None
+    is_active: bool = True
+    created_by: Optional[Any] = None
+    updated_by: Optional[Any] = None
+    remarks: Optional[str] = None
+    imported_rows: Optional[int] = 0
+    failed_rows: Optional[int] = 0
+    duplicate_rows: Optional[int] = 0
+    processing_time_seconds: Optional[float] = 0.0
+
+
+class UploadBatchCreate(UploadBatchBase):
+    pass
+
+
+class UploadBatchResponse(UploadBatchBase):
+    batch_id: Optional[Union[str, UUID, int]] = None
+    upload_batch_id: Optional[Union[str, UUID, int]] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Upload Logs
+class UploadLogBase(BaseModel):
+    upload_batch_id: Union[str, UUID, int]
+    row_number: Optional[int] = None
+    column_name: Optional[str] = None
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None
+    raw_data: Optional[Dict[str, Any]] = None
+
+
+class UploadLogCreate(UploadLogBase):
+    pass
+
+
+class UploadLogResponse(UploadLogBase):
+    upload_log_id: Union[str, UUID, int]
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Sales Schema
+class SaleBase(BaseModel):
+    sales_date: date
+    depot_id: Union[str, UUID, int]
+    licensee_id: Union[str, UUID, int]
+    brand_id: Union[str, UUID, int]
+    packing_size_id: Union[str, UUID, int]
+    total_cases: float = 0.0
+    total_bottles: float = 0.0
+    total_bulk_liters: float = 0.0
+    sale_value: float = 0.0
+    upload_batch_id: Optional[Union[str, UUID, int]] = None
+
+
+class SaleCreate(SaleBase):
+    pass
+
+
+class SaleResponse(SaleBase):
+    sale_id: Union[str, UUID, int]
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Dashboard Summary Daily Schema
+class DashboardSummaryDailyBase(BaseModel):
+    summary_date: date
+    total_sales: float = 0.0
+    total_cases: float = 0.0
+    total_bottles: float = 0.0
+    total_bulk_liters: float = 0.0
+    total_brands: int = 0
+    total_licensees: int = 0
+    top_brand_id: Optional[Union[str, UUID, int]] = None
+    top_depot_id: Optional[Union[str, UUID, int]] = None
+
+
+class DashboardSummaryDailyResponse(DashboardSummaryDailyBase):
+    dashboard_summary_id: Union[str, UUID, int]
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Audit Logs Schema
+class AuditLogCreate(BaseModel):
+    user_id: Optional[UUID] = None
+    action: str
+    table_name: Optional[str] = None
+    record_id: Optional[str] = None
+    old_value: Optional[Dict[str, Any]] = None
+    new_value: Optional[Dict[str, Any]] = None
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    request_path: Optional[str] = None
+    request_method: Optional[str] = None
+
+
+class AuditLogResponse(AuditLogCreate):
+    audit_log_id: Union[str, UUID, int]
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)

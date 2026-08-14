@@ -1,0 +1,6 @@
+{
+  "name": "RLL Admin Dashboard",
+  "description": "Admin dashboard for stock uploads, territory management, and headcount updates.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
