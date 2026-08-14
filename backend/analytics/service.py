@@ -111,7 +111,7 @@ class AnalyticsService:
         try:
             rows = []
             offset = 0
-            limit_step = 1000
+            limit_step = 1000000
 
             while True:
                 query = (

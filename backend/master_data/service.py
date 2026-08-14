@@ -302,6 +302,33 @@ class MasterService:
         return value.lower()
 
     @staticmethod
+    def _clean_company(value) -> str:
+        """
+        Aggressive normalization specifically for company names.
+        Strips punctuation, special chars, common suffix noise words (ltd, pvt, inc, co, and, the, s),
+        and collapses whitespace into a single contiguous token.
+
+        Example:
+            "William Grant & Sons" -> "williamgrant"
+            "willam grants"       -> "williamgrant"
+        """
+        if value is None:
+            return ""
+
+        val_str = str(value).strip().lower()
+        if val_str in {"nan", "none", "null"}:
+            return ""
+
+        # Remove punctuation & special characters
+        val_str = re.sub(r"[^a-z0-9\s]", " ", val_str)
+
+        # Remove noise suffix words
+        val_str = re.sub(r"\b(pvt|ltd|inc|co|and|the|india|s)\b", " ", val_str)
+
+        # Collapse all whitespace into a single token
+        return "".join(val_str.split())
+
+    @staticmethod
     def _display(value) -> str:
         """Clean value while preserving original capitalization."""
         if value is None:
@@ -638,39 +665,56 @@ class MasterService:
 
     def bulk_resolve_companies(self, names: List[str]) -> Dict[str, Any]:
         client = get_supabase()
+        from backend.db.company_aliases import get_company_aliases, upsert_company_alias
+
+        # 1. Ensure master company cache and alias mappings are loaded
+        if client and not self._company_cache:
+            try:
+                res = client.table("companies").select("company_id, company_name").execute()
+                for row in (res.data or []):
+                    c_name = row.get("company_name")
+                    c_id = str(row.get("company_id"))
+                    if c_name and c_id:
+                        k_clean = self._clean(c_name)
+                        k_norm = self._clean_company(c_name)
+                        self._company_cache[k_clean] = c_id
+                        self._company_cache[k_norm] = c_id
+            except Exception as e:
+                logger.warning(f"Error fetching companies in bulk_resolve_companies: {e}")
+
+            alias_map = get_company_aliases()
+            for norm_key, c_id in alias_map.items():
+                self._company_cache[norm_key] = str(c_id)
+
         missing = {}
         for name in names:
             display = self._display(name)
-            key = self._clean(name)
-            if key and key not in self._company_cache:
-                missing[key] = display
+            k_clean = self._clean(name)
+            k_norm = self._clean_company(name)
+
+            if k_norm in self._company_cache:
+                resolved_id = self._company_cache[k_norm]
+                self._company_cache[k_clean] = resolved_id
+                continue
+            if k_clean in self._company_cache:
+                resolved_id = self._company_cache[k_clean]
+                self._company_cache[k_norm] = resolved_id
+                continue
+
+            missing[name] = (k_clean, k_norm, display)
 
         if missing and client:
-            payloads = [{"company_name": disp, "is_active": True} for disp in missing.values()]
-            try:
-                res = client.table("companies").insert(payloads).execute()
-                for row in res.data or []:
-                    k = self._clean(row.get("company_name") or row.get("name"))
-                    if k:
-                        self._company_cache[k] = row.get("company_id") or row.get("id")
-            except Exception:
+            for name, (k_clean, k_norm, disp) in missing.items():
                 try:
-                    payloads_alt = [{"name": disp, "is_active": True} for disp in missing.values()]
-                    res = client.table("companies").insert(payloads_alt).execute()
-                    for row in res.data or []:
-                        k = self._clean(row.get("name") or row.get("company_name"))
-                        if k:
-                            self._company_cache[k] = row.get("company_id") or row.get("id")
+                    payload = {"company_name": disp, "is_active": True}
+                    res = client.table("companies").insert(payload).execute()
+                    if res.data:
+                        c_id = str(res.data[0].get("company_id") or res.data[0].get("id"))
+                        self._company_cache[k_clean] = c_id
+                        self._company_cache[k_norm] = c_id
+                        upsert_company_alias(raw_name=name, norm_key=k_norm, company_id=c_id, source="auto")
                 except Exception as e_comp:
-                    logger.warning(f"bulk_resolve_companies insert notice: {e_comp}")
-                    try:
-                        res = client.table("companies").select("company_id, company_name, name").execute()
-                        for row in res.data or []:
-                            k = self._clean(row.get("name") or row.get("company_name"))
-                            if k:
-                                self._company_cache[k] = row.get("company_id") or row.get("id")
-                    except Exception:
-                        pass
+                    logger.warning(f"bulk_resolve_companies insert notice for {name}: {e_comp}")
 
         return self._company_cache
 
@@ -731,6 +775,7 @@ class MasterService:
                     "licensee_name": display,
                     "trade": trade,
                     "group_id": item.get("group_id"),
+                    "depot_id": item.get("depot_id"),
                     "headquarters_id": item.get("headquarters_id"),
                     "office_id": item.get("office_id"),
                     "circle_id": item.get("circle_id"),

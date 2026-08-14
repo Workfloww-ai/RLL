@@ -563,11 +563,12 @@ class ImportPipelineEngine:
                     "trade": t,
                     "group_name": g,
                     "group_id": group_cache.get(master_service._clean(g)),
+                    "depot_id": depot_cache.get(master_service._clean(d)),
                     "headquarters_id": hq_cache.get(master_service._clean(hq)),
                     "office_id": office_cache.get(master_service._clean(deo)),
                     "circle_id": circle_cache.get(master_service._clean(cir)),
                 }
-                for l, t, g, hq, deo, cir in zip(s_licensee, s_trade, s_group, s_hq, s_deo, s_circle)
+                for l, t, g, d, hq, deo, cir in zip(s_licensee, s_trade, s_group, s_depot, s_hq, s_deo, s_circle)
                 if l
             ]
             licensee_cache = master_service.bulk_resolve_licensees(lic_items)
@@ -575,7 +576,7 @@ class ImportPipelineEngine:
             brand_items = [
                 {
                     "brand_name": b,
-                    "company_id": company_cache.get(master_service._clean(c)),
+                    "company_id": company_cache.get(master_service._clean_company(c)) or company_cache.get(master_service._clean(c)),
                 }
                 for b, c in zip(s_brand, s_company)
                 if b
@@ -2219,7 +2220,7 @@ class ImportPipelineEngine:
                 if not user_id:
                     continue
 
-                company_id = company_cache.get(clean_fn(comp_clean))
+                company_id = company_cache.get(master_service._clean_company(comp_clean)) or company_cache.get(clean_fn(comp_clean))
                 brand_id = brand_cache.get(clean_fn(brand_raw))
                 if not company_id or not brand_id:
                     continue
