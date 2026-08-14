@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Depot, Period } from '../types';
 import { formatNumber } from '../lib/utils';
-import { MapPin, Search, ChevronRight, X } from 'lucide-react';
+import { MapPin, Search, ChevronRight, X, ArrowUpDown, ChevronLeft } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface DepotsViewProps {
@@ -11,6 +11,8 @@ interface DepotsViewProps {
   selectedHq: string;
 }
 
+type SortOption = 'alpha-asc' | 'alpha-desc' | 'cases-desc' | 'cases-asc';
+
 export const DepotsView: React.FC<DepotsViewProps> = ({
   depots,
   period,
@@ -19,40 +21,119 @@ export const DepotsView: React.FC<DepotsViewProps> = ({
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [activeDepot, setActiveDepot] = useState<Depot | null>(null);
+  const [sortOrder, setSortOrder] = useState<SortOption>('alpha-asc'); // Default: Alphabetical (A-Z)
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(15);
 
-  // Filter depots by HQ and Search Term
-  const filteredDepots = depots.filter((d) => {
-    const matchHq = selectedHq === 'All Headquarters' || d.hqName.toLowerCase() === selectedHq.toLowerCase();
-    const matchSearch =
-      d.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      d.hqName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (d.address && d.address.toLowerCase().includes(searchTerm.toLowerCase()));
-    return matchHq && matchSearch;
-  });
+  // Filter and Sort depots (Default: A-Z Alphabetical)
+  const sortedFilteredDepots = useMemo(() => {
+    const filtered = depots.filter((d) => {
+      const matchHq = selectedHq === 'All Headquarters' || d.hqName.toLowerCase() === selectedHq.toLowerCase();
+      const matchSearch =
+        d.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        d.hqName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (d.address && d.address.toLowerCase().includes(searchTerm.toLowerCase()));
+      return matchHq && matchSearch;
+    });
+
+    return filtered.sort((a, b) => {
+      if (sortOrder === 'alpha-asc') return a.name.localeCompare(b.name);
+      if (sortOrder === 'alpha-desc') return b.name.localeCompare(a.name);
+
+      const aCases = Math.round((a.data[period]?.cases || 0) * scaleFactor);
+      const bCases = Math.round((b.data[period]?.cases || 0) * scaleFactor);
+      if (sortOrder === 'cases-desc') return bCases - aCases;
+      if (sortOrder === 'cases-asc') return aCases - bCases;
+
+      return a.name.localeCompare(b.name);
+    });
+  }, [depots, selectedHq, searchTerm, sortOrder, period, scaleFactor]);
+
+  // Reset page when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, selectedHq, sortOrder, itemsPerPage]);
+
+  const totalItems = sortedFilteredDepots.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / itemsPerPage));
+  const validCurrentPage = Math.min(currentPage, totalPages);
+
+  const paginatedDepots = useMemo(() => {
+    const start = (validCurrentPage - 1) * itemsPerPage;
+    return sortedFilteredDepots.slice(start, start + itemsPerPage);
+  }, [sortedFilteredDepots, validCurrentPage, itemsPerPage]);
 
   return (
     <div className="space-y-3">
-      {/* Depot Search Input */}
-      <div className="relative">
-        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
-        <input
-          type="text"
-          placeholder="Search depots..."
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          id="depot-search-input"
-          className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-3 py-1.5 text-xs font-medium text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#0F2042]"
-        />
+      {/* Controls Bar: Search + Sorting Selector */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+            <input
+              type="text"
+              placeholder="Search depots..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              id="depot-search-input"
+              className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-8 py-1.5 text-xs font-medium text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#0F2042]"
+            />
+            {searchTerm && (
+              <button
+                onClick={() => setSearchTerm('')}
+                className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          <div className="relative flex items-center shrink-0">
+            <ArrowUpDown className="w-3 h-3 text-slate-500 absolute left-2.5 pointer-events-none" />
+            <select
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value as SortOption)}
+              className="bg-white border border-slate-200 rounded-xl pl-7 pr-2 py-1.5 text-[11px] font-bold text-[#0F2042] focus:outline-none focus:border-[#0F2042]"
+            >
+              <option value="alpha-asc">A-Z (Name)</option>
+              <option value="alpha-desc">Z-A (Name)</option>
+              <option value="cases-desc">Highest Cases</option>
+              <option value="cases-asc">Lowest Cases</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Count & Page Size Selector */}
+        <div className="flex items-center justify-between text-[11px] text-slate-500 font-medium px-1">
+          <span>
+            Showing {totalItems === 0 ? 0 : (validCurrentPage - 1) * itemsPerPage + 1}-
+            {Math.min(validCurrentPage * itemsPerPage, totalItems)} of {totalItems} depot(s)
+          </span>
+
+          <div className="flex items-center gap-1">
+            <span>Per page:</span>
+            <select
+              value={itemsPerPage}
+              onChange={(e) => setItemsPerPage(Number(e.target.value))}
+              className="bg-white border border-slate-200 rounded-lg px-1.5 py-0.5 text-[11px] font-bold text-slate-700 focus:outline-none"
+            >
+              <option value={10}>10</option>
+              <option value={15}>15</option>
+              <option value={25}>25</option>
+              <option value={50}>50</option>
+            </select>
+          </div>
+        </div>
       </div>
 
       {/* Depots Cards List */}
-      {filteredDepots.length === 0 ? (
+      {paginatedDepots.length === 0 ? (
         <div className="text-center py-8 bg-white rounded-2xl border border-slate-200 p-4">
           <p className="text-xs font-bold text-slate-700">No depots found</p>
         </div>
       ) : (
         <div className="space-y-2">
-          {filteredDepots.map((depot, idx) => {
+          {paginatedDepots.map((depot, idx) => {
             const raw = depot.data[period];
             const dMetrics = {
               cases: Math.round(raw.cases * scaleFactor),
@@ -102,6 +183,33 @@ export const DepotsView: React.FC<DepotsViewProps> = ({
         </div>
       )}
 
+      {/* Pagination Controls Bar */}
+      {totalItems > 0 && (
+        <div className="flex items-center justify-between bg-white p-3 rounded-2xl border border-slate-200 shadow-xs text-xs">
+          <button
+            disabled={validCurrentPage <= 1}
+            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-xl border border-slate-200 bg-slate-50 hover:bg-[#0F2042] hover:text-white text-[#0F2042] font-bold disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+          >
+            <ChevronLeft className="w-3.5 h-3.5" />
+            <span>Prev</span>
+          </button>
+
+          <span className="font-bold text-[#0F2042]">
+            Page {validCurrentPage} of {totalPages}
+          </span>
+
+          <button
+            disabled={validCurrentPage >= totalPages}
+            onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-xl border border-slate-200 bg-slate-50 hover:bg-[#0F2042] hover:text-white text-[#0F2042] font-bold disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+          >
+            <span>Next</span>
+            <ChevronRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* Depot Detail Modal */}
       <AnimatePresence>
         {activeDepot && (
@@ -134,7 +242,7 @@ export const DepotsView: React.FC<DepotsViewProps> = ({
                 </button>
               </div>
 
-              {/* Brands Breakdown List inside this Depot (No grey category badges) */}
+              {/* Brands Breakdown List inside this Depot */}
               <div className="p-4 overflow-y-auto space-y-2 flex-1">
                 <div className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
                   Depot Brand Sales ({period})

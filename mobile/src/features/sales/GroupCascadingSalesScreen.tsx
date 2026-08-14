@@ -1,8 +1,19 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { GroupCascading, LicenseeCascading, BrandSaleCascading } from '../../types';
 import { fetchCascadingGroups, fetchGroupLicensees, fetchLicenseeBrandSales } from '../../lib/api';
 import { formatNumber } from '../../lib/utils';
-import { Search, ChevronRight, MapPin, Users, Wine, X, Filter, ArrowLeft, Building2 } from 'lucide-react';
+import {
+  Search,
+  ChevronRight,
+  MapPin,
+  Users,
+  Wine,
+  X,
+  ArrowLeft,
+  Building2,
+  ArrowUpDown,
+  ChevronLeft,
+} from 'lucide-react';
 import { motion } from 'motion/react';
 
 interface GroupCascadingSalesScreenProps {
@@ -10,6 +21,8 @@ interface GroupCascadingSalesScreenProps {
   dateTo: string;
   period: string;
 }
+
+type SortOption = 'alpha-asc' | 'alpha-desc' | 'cases-desc' | 'cases-asc';
 
 export const GroupCascadingSalesScreen: React.FC<GroupCascadingSalesScreenProps> = ({
   dateFrom,
@@ -25,10 +38,13 @@ export const GroupCascadingSalesScreen: React.FC<GroupCascadingSalesScreenProps>
   const [licensees, setLicensees] = useState<LicenseeCascading[]>([]);
   const [brandSales, setBrandSales] = useState<BrandSaleCascading[]>([]);
 
-  // Filtering State
+  // Filtering & Pagination State
   const [loading, setLoading] = useState<boolean>(false);
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [activeDepotFilter, setActiveDepotFilter] = useState<string | null>(null);
+  const [sortOrder, setSortOrder] = useState<SortOption>('alpha-asc'); // Default: Alphabetical (A-Z)
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [itemsPerPage, setItemsPerPage] = useState<number>(15);
 
   // 1. Fetch Groups when date filter changes
   useEffect(() => {
@@ -85,6 +101,10 @@ export const GroupCascadingSalesScreen: React.FC<GroupCascadingSalesScreenProps>
     }
   };
 
+  // Reset page to 1 whenever filters or selection change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, sortOrder, selectedGroup, selectedLicensee, activeDepotFilter, itemsPerPage]);
 
   const handleGroupSelect = (group: GroupCascading) => {
     setSelectedGroup(group);
@@ -114,21 +134,66 @@ export const GroupCascadingSalesScreen: React.FC<GroupCascadingSalesScreenProps>
     setActiveDepotFilter(prev => (prev === depotName ? null : depotName));
   };
 
-  // Filter calculations
-  const filteredGroups = groups.filter(g =>
-    g.group_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    g.linked_depots.some(d => d.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+  // Sorted and Filtered Groups (Default: Alphabetical A-Z)
+  const sortedGroups = useMemo(() => {
+    const list = groups.filter(g =>
+      g.group_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      g.linked_depots.some(d => d.toLowerCase().includes(searchTerm.toLowerCase()))
+    );
+    return list.sort((a, b) => {
+      if (sortOrder === 'alpha-asc') return a.group_name.localeCompare(b.group_name);
+      if (sortOrder === 'alpha-desc') return b.group_name.localeCompare(a.group_name);
+      if (sortOrder === 'cases-desc') return b.total_cases - a.total_cases;
+      if (sortOrder === 'cases-asc') return a.total_cases - b.total_cases;
+      return a.group_name.localeCompare(b.group_name);
+    });
+  }, [groups, searchTerm, sortOrder]);
 
-  const filteredLicensees = licensees.filter(l =>
-    l.licensee_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    l.trade.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // Sorted and Filtered Licensees (Default: Alphabetical A-Z)
+  const sortedLicensees = useMemo(() => {
+    const list = licensees.filter(l =>
+      l.licensee_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      l.trade.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+    return list.sort((a, b) => {
+      if (sortOrder === 'alpha-asc') return a.licensee_name.localeCompare(b.licensee_name);
+      if (sortOrder === 'alpha-desc') return b.licensee_name.localeCompare(a.licensee_name);
+      if (sortOrder === 'cases-desc') return b.total_cases - a.total_cases;
+      if (sortOrder === 'cases-asc') return a.total_cases - b.total_cases;
+      return a.licensee_name.localeCompare(b.licensee_name);
+    });
+  }, [licensees, searchTerm, sortOrder]);
 
-  const filteredBrands = brandSales.filter(b =>
-    b.brand_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    b.company_name.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // Sorted and Filtered Brands (Default: Alphabetical A-Z)
+  const sortedBrands = useMemo(() => {
+    const list = brandSales.filter(b =>
+      b.brand_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      b.company_name.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+    return list.sort((a, b) => {
+      if (sortOrder === 'alpha-asc') return a.brand_name.localeCompare(b.brand_name);
+      if (sortOrder === 'alpha-desc') return b.brand_name.localeCompare(a.brand_name);
+      if (sortOrder === 'cases-desc') return b.total_cases - a.total_cases;
+      if (sortOrder === 'cases-asc') return a.total_cases - b.total_cases;
+      return a.brand_name.localeCompare(b.brand_name);
+    });
+  }, [brandSales, searchTerm, sortOrder]);
+
+  // Current active view list for pagination
+  const currentFullList = !selectedGroup
+    ? sortedGroups
+    : !selectedLicensee
+      ? sortedLicensees
+      : sortedBrands;
+
+  const totalItems = currentFullList.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / itemsPerPage));
+  const validCurrentPage = Math.min(currentPage, totalPages);
+
+  const paginatedList = useMemo(() => {
+    const start = (validCurrentPage - 1) * itemsPerPage;
+    return currentFullList.slice(start, start + itemsPerPage);
+  }, [currentFullList, validCurrentPage, itemsPerPage]);
 
   const totalCasesSum = brandSales.reduce((acc, b) => acc + (b.total_cases || 0), 0);
   const totalBottlesSum = brandSales.reduce((acc, b) => acc + (b.total_bottles || 0), 0);
@@ -184,31 +249,73 @@ export const GroupCascadingSalesScreen: React.FC<GroupCascadingSalesScreenProps>
         )}
       </div>
 
-      {/* Search Input Bar */}
-      <div className="relative">
-        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
-        <input
-          type="text"
-          placeholder={
-            !selectedGroup
-              ? "Search group or depot..."
-              : !selectedLicensee
-                ? "Search licensee..."
-                : "Search brand or company..."
-          }
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          id="groups-search-input"
-          className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-8 py-1.5 text-xs font-medium text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#0F2042] transition-all"
-        />
-        {searchTerm && (
-          <button
-            onClick={() => setSearchTerm('')}
-            className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
-        )}
+      {/* Controls Bar: Search + Sorting Dropdown + Items Per Page */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          {/* Search Input */}
+          <div className="relative flex-1">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+            <input
+              type="text"
+              placeholder={
+                !selectedGroup
+                  ? "Search group..."
+                  : !selectedLicensee
+                    ? "Search licensee..."
+                    : "Search brand..."
+              }
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              id="groups-search-input"
+              className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-8 py-1.5 text-xs font-medium text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#0F2042] transition-all"
+            />
+            {searchTerm && (
+              <button
+                onClick={() => setSearchTerm('')}
+                className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Sort Selector (Default: A-Z Alphabetical) */}
+          <div className="relative flex items-center shrink-0">
+            <ArrowUpDown className="w-3 h-3 text-slate-500 absolute left-2.5 pointer-events-none" />
+            <select
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value as SortOption)}
+              className="bg-white border border-slate-200 rounded-xl pl-7 pr-2 py-1.5 text-[11px] font-bold text-[#0F2042] focus:outline-none focus:border-[#0F2042]"
+            >
+              <option value="alpha-asc">A-Z (Name)</option>
+              <option value="alpha-desc">Z-A (Name)</option>
+              <option value="cases-desc">Highest Cases</option>
+              <option value="cases-asc">Lowest Cases</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Total Count & Page Size Selector */}
+        <div className="flex items-center justify-between text-[11px] text-slate-500 font-medium px-1">
+          <span>
+            Showing {totalItems === 0 ? 0 : (validCurrentPage - 1) * itemsPerPage + 1}-
+            {Math.min(validCurrentPage * itemsPerPage, totalItems)} of {totalItems} item(s)
+          </span>
+
+          <div className="flex items-center gap-1">
+            <span>Per page:</span>
+            <select
+              value={itemsPerPage}
+              onChange={(e) => setItemsPerPage(Number(e.target.value))}
+              className="bg-white border border-slate-200 rounded-lg px-1.5 py-0.5 text-[11px] font-bold text-slate-700 focus:outline-none"
+            >
+              <option value={10}>10</option>
+              <option value={15}>15</option>
+              <option value={25}>25</option>
+              <option value={50}>50</option>
+            </select>
+          </div>
+        </div>
       </div>
 
       {/* Loading Indicator */}
@@ -223,12 +330,12 @@ export const GroupCascadingSalesScreen: React.FC<GroupCascadingSalesScreenProps>
           {/* STEP 1: GROUPS DIRECTORY LIST */}
           {!selectedGroup && (
             <div className="space-y-2">
-              {filteredGroups.length === 0 ? (
+              {paginatedList.length === 0 ? (
                 <div className="text-center py-8 bg-white rounded-2xl border border-slate-200 p-4">
                   <p className="text-xs font-bold text-slate-700">No groups found</p>
                 </div>
               ) : (
-                filteredGroups.map((group, idx) => (
+                (paginatedList as GroupCascading[]).map((group, idx) => (
                   <motion.div
                     key={group.group_id}
                     initial={{ opacity: 0, y: 8 }}
@@ -263,29 +370,6 @@ export const GroupCascadingSalesScreen: React.FC<GroupCascadingSalesScreenProps>
                         <span className="text-xs font-bold text-slate-800">{formatNumber(group.total_bottles)}</span>
                       </div>
                     </div>
-
-                    {/* Linked Depots Pills */}
-                    {/* {group.linked_depots && group.linked_depots.length > 0 && (
-                      <div className="pt-1.5 border-t border-slate-100 flex flex-wrap gap-1">
-                        {group.linked_depots.map((depot, dIdx) => {
-                          const isActive = activeDepotFilter === depot;
-                          return (
-                            <button
-                              key={dIdx}
-                              onClick={(e) => handleDepotClick(e, depot)}
-                              className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-md font-semibold border transition-all ${
-                                isActive
-                                  ? 'bg-[#0F2042] text-white border-[#0F2042]'
-                                  : 'bg-sky-50 text-sky-800 border-sky-200/80 hover:bg-sky-100'
-                              }`}
-                            >
-                              <MapPin className="w-2.5 h-2.5 text-sky-600" />
-                              <span>{depot}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )} */}
                   </motion.div>
                 ))
               )}
@@ -300,17 +384,14 @@ export const GroupCascadingSalesScreen: React.FC<GroupCascadingSalesScreenProps>
                   <span className="text-[9px] font-bold text-slate-400 uppercase block">Group Selected</span>
                   <h3 className="text-sm font-bold text-[#0F2042]">{selectedGroup.group_name}</h3>
                 </div>
-                {/* <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-xl">
-                  {filteredLicensees.length} Licensee(s)
-                </span> */}
               </div>
 
-              {filteredLicensees.length === 0 ? (
+              {paginatedList.length === 0 ? (
                 <div className="text-center py-8 bg-white rounded-2xl border border-slate-200 p-4">
                   <p className="text-xs font-bold text-slate-700">No licensees found for this group</p>
                 </div>
               ) : (
-                filteredLicensees.map((lic, idx) => (
+                (paginatedList as LicenseeCascading[]).map((lic, idx) => (
                   <motion.div
                     key={lic.licensee_id}
                     initial={{ opacity: 0, y: 8 }}
@@ -393,12 +474,12 @@ export const GroupCascadingSalesScreen: React.FC<GroupCascadingSalesScreenProps>
               </div>
 
               {/* Brand List */}
-              {filteredBrands.length === 0 ? (
+              {paginatedList.length === 0 ? (
                 <div className="text-center py-8 bg-white rounded-2xl border border-slate-200 p-4">
                   <p className="text-xs font-bold text-slate-700">No brand sales found for this licensee</p>
                 </div>
               ) : (
-                filteredBrands.map((brand, idx) => (
+                (paginatedList as BrandSaleCascading[]).map((brand, idx) => (
                   <motion.div
                     key={brand.brand_id}
                     initial={{ opacity: 0, y: 8 }}
@@ -443,6 +524,33 @@ export const GroupCascadingSalesScreen: React.FC<GroupCascadingSalesScreenProps>
                   </motion.div>
                 ))
               )}
+            </div>
+          )}
+
+          {/* Pagination Controls Bar */}
+          {totalItems > 0 && (
+            <div className="flex items-center justify-between bg-white p-3 rounded-2xl border border-slate-200 shadow-xs text-xs">
+              <button
+                disabled={validCurrentPage <= 1}
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-xl border border-slate-200 bg-slate-50 hover:bg-[#0F2042] hover:text-white text-[#0F2042] font-bold disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+                <span>Prev</span>
+              </button>
+
+              <span className="font-bold text-[#0F2042]">
+                Page {validCurrentPage} of {totalPages}
+              </span>
+
+              <button
+                disabled={validCurrentPage >= totalPages}
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-xl border border-slate-200 bg-slate-50 hover:bg-[#0F2042] hover:text-white text-[#0F2042] font-bold disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+              >
+                <span>Next</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
             </div>
           )}
         </>
