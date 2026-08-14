@@ -1,64 +1,94 @@
-const BASE_URL = 'http://localhost:8000/api/v1';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { BASE_URL } from '@env';
+import { logger } from './logger';
 
 export async function sendMobileOTP(phone: string, email: string = '') {
-  const res = await fetch(`${BASE_URL}/mobile/send-otp`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ phone, email }),
-  });
+  logger.info(`sendMobileOTP: Requesting OTP for phone: ${phone}, email: ${email}`);
+  try {
+    const res = await fetch(`${BASE_URL}/mobile/send-otp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ phone, email }),
+    });
 
-  if (!res.ok) {
-    const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.detail || 'Failed to send OTP verification code.');
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      const errMsg = errorData.detail || 'Failed to send OTP verification code.';
+      logger.warn(`sendMobileOTP: API returned error status ${res.status}: ${errMsg}`);
+      throw new Error(errMsg);
+    }
+
+    const data = await res.json();
+    logger.info(`sendMobileOTP: Success for phone: ${phone}`);
+    return data;
+  } catch (error) {
+    logger.error(`sendMobileOTP: Exception while requesting OTP for phone: ${phone}`, error);
+    throw error;
   }
-
-  return await res.json();
 }
 
 export async function verifyMobileOTP(phone: string, otp: string, email: string = '') {
-  const res = await fetch(`${BASE_URL}/mobile/verify-otp`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ phone, otp, email }),
-  });
+  logger.info(`verifyMobileOTP: Verifying OTP code for phone: ${phone}`);
+  try {
+    const res = await fetch(`${BASE_URL}/mobile/verify-otp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ phone, otp, email }),
+    });
 
-  if (!res.ok) {
-    const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.detail || 'Invalid or expired 4-digit OTP code.');
-  }
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      const errMsg = errorData.detail || 'Invalid or expired 6-digit OTP code.';
+      logger.warn(`verifyMobileOTP: API returned error status ${res.status}: ${errMsg}`);
+      throw new Error(errMsg);
+    }
 
-  const data = await res.json();
-  if (data.access_token) {
-    localStorage.setItem('rll_mobile_token', data.access_token);
-    localStorage.setItem('rll_mobile_user', JSON.stringify(data.user));
+    const data = await res.json();
+    if (data.access_token) {
+      await AsyncStorage.setItem('rll_mobile_token', data.access_token);
+      await AsyncStorage.setItem('rll_mobile_user', JSON.stringify(data.user));
+    }
+    logger.info(`verifyMobileOTP: Success. Token acquired for phone: ${phone}`);
+    return data;
+  } catch (error) {
+    logger.error(`verifyMobileOTP: Exception while verifying OTP for phone: ${phone}`, error);
+    throw error;
   }
-  return data;
 }
 
 export async function loginMobileUser(email: string, password: string) {
-  const res = await fetch(`${BASE_URL}/mobile/login`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ email, password }),
-  });
+  logger.info(`loginMobileUser: Authenticating email: ${email}`);
+  try {
+    const res = await fetch(`${BASE_URL}/mobile/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ email, password }),
+    });
 
-  if (!res.ok) {
-    const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.detail || 'Authentication failed. Invalid email or password.');
-  }
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      const errMsg = errorData.detail || 'Authentication failed. Invalid email or password.';
+      logger.warn(`loginMobileUser: API returned error status ${res.status}: ${errMsg}`);
+      throw new Error(errMsg);
+    }
 
-  const data = await res.json();
-  if (data.access_token) {
-    localStorage.setItem('rll_mobile_token', data.access_token);
-    localStorage.setItem('rll_mobile_user', JSON.stringify(data.user));
+    const data = await res.json();
+    if (data.access_token) {
+      await AsyncStorage.setItem('rll_mobile_token', data.access_token);
+      await AsyncStorage.setItem('rll_mobile_user', JSON.stringify(data.user));
+    }
+    logger.info(`loginMobileUser: Success. Session loaded for email: ${email}`);
+    return data;
+  } catch (error) {
+    logger.error(`loginMobileUser: Exception while authenticating email: ${email}`, error);
+    throw error;
   }
-  return data;
 }
 
 export async function fetchMobileSales(
@@ -67,8 +97,12 @@ export async function fetchMobileSales(
   period: string,
   selectedHq: string
 ) {
-  const token = localStorage.getItem('rll_mobile_token');
-  if (!token) return null;
+  logger.info(`fetchMobileSales: Fetching sales data (period: ${period}, hq: ${selectedHq}, from: ${dateFrom}, to: ${dateTo})`);
+  const token = await AsyncStorage.getItem('rll_mobile_token');
+  if (!token) {
+    logger.warn('fetchMobileSales: Missing authentication token.');
+    return null;
+  }
 
   try {
     const query = new URLSearchParams({
@@ -85,25 +119,33 @@ export async function fetchMobileSales(
     });
 
     if (res.status === 401) {
-      localStorage.removeItem('rll_mobile_token');
-      localStorage.removeItem('rll_mobile_user');
+      logger.warn('fetchMobileSales: Unauthorized (401). Clearing session.');
+      await AsyncStorage.removeItem('rll_mobile_token');
+      await AsyncStorage.removeItem('rll_mobile_user');
       return null;
     }
 
     if (!res.ok) {
+      logger.warn(`fetchMobileSales: API error status ${res.status}`);
       throw new Error('Sales fetch failed');
     }
 
-    return await res.json();
+    const data = await res.json();
+    logger.info('fetchMobileSales: Successfully retrieved sales metrics.');
+    return data;
   } catch (error) {
-    console.error('Backend sales fetch error:', error);
+    logger.error('fetchMobileSales: Exception while retrieving sales data', error);
     return null;
   }
 }
 
 export async function fetchUserProfile() {
-  const token = localStorage.getItem('rll_mobile_token');
-  if (!token) return null;
+  logger.info('fetchUserProfile: Checking for active mobile session...');
+  const token = await AsyncStorage.getItem('rll_mobile_token');
+  if (!token) {
+    logger.info('fetchUserProfile: No token found in AsyncStorage.');
+    return null;
+  }
   try {
     const res = await fetch(`${BASE_URL}/mobile/me`, {
       headers: {
@@ -111,24 +153,30 @@ export async function fetchUserProfile() {
       },
     });
     if (res.status === 401) {
-      localStorage.removeItem('rll_mobile_token');
-      localStorage.removeItem('rll_mobile_user');
+      logger.warn('fetchUserProfile: Token has expired or is invalid (401). Clearing session.');
+      await AsyncStorage.removeItem('rll_mobile_token');
+      await AsyncStorage.removeItem('rll_mobile_user');
       return null;
     }
-    if (!res.ok) return null;
+    if (!res.ok) {
+      logger.warn(`fetchUserProfile: API returned error status ${res.status}`);
+      return null;
+    }
     const data = await res.json();
     if (data && data.email) {
-      localStorage.setItem('rll_mobile_user', JSON.stringify(data));
+      await AsyncStorage.setItem('rll_mobile_user', JSON.stringify(data));
     }
+    logger.info('fetchUserProfile: Successfully fetched current user profile.');
     return data;
   } catch (error) {
-    console.warn('Backend user profile fetch failed:', error);
+    logger.error('fetchUserProfile: Exception fetching user profile:', error);
     return null;
   }
 }
 
 export async function fetchMobileHeadquarters() {
-  const token = localStorage.getItem('rll_mobile_token');
+  logger.info('fetchMobileHeadquarters: Fetching registered headquarters...');
+  const token = await AsyncStorage.getItem('rll_mobile_token');
   const headers: Record<string, string> = {};
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
@@ -138,13 +186,22 @@ export async function fetchMobileHeadquarters() {
     const res = await fetch(`${BASE_URL}/mobile/headquarters`, { headers });
 
     if (!res.ok) {
+      logger.warn(`fetchMobileHeadquarters: API returned status ${res.status}`);
       throw new Error(`Headquarters fetch failed with status ${res.status}`);
     }
 
     const data = await res.json();
-    return data.headquarters || [];
+    const hqs = data.headquarters || [];
+    logger.info(`fetchMobileHeadquarters: Successfully retrieved ${hqs.length} headquarters.`);
+    return hqs;
   } catch (error) {
-    console.error('Backend headquarters fetch error:', error);
+    logger.error('fetchMobileHeadquarters: Exception fetching headquarters:', error);
     return ['All Headquarters'];
   }
+}
+
+export async function clearAuthSession() {
+  logger.info('clearAuthSession: Clearing user auth tokens and profiles from AsyncStorage.');
+  await AsyncStorage.removeItem('rll_mobile_token');
+  await AsyncStorage.removeItem('rll_mobile_user');
 }

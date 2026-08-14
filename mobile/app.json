@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "name": "mobile2",
+    "slug": "mobile2",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true
+    }
+  }
+}

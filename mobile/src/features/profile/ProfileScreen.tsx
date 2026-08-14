@@ -1,118 +1,224 @@
 import React from 'react';
-import { User, Phone, Mail, Shield, Store, LogOut, CheckCircle2 } from 'lucide-react';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import { LogOutIcon } from '../../components/Icons';
 
 interface ProfileScreenProps {
   user: any;
   onLogout: () => void;
 }
 
-export const ProfileScreen: React.FC<ProfileScreenProps> = ({ user, onLogout }) => {
+export function ProfileScreen({ user, onLogout }: ProfileScreenProps) {
   const firstName = user?.first_name || user?.name?.split(' ')[0] || 'Executive';
   const lastName = user?.last_name || user?.name?.split(' ').slice(1).join(' ') || '';
   const fullName = `${firstName} ${lastName}`.trim() || user?.name || 'Account Holder';
   const email = user?.email || 'N/A';
-  const phone = user?.phone;
+  const phone = user?.phone || 'N/A';
   const designation = user?.role_name || user?.role || 'Territory Sales Manager (TSM)';
   const depotName = user?.depot_name || user?.depotName || user?.depot || user?.hq_location || 'Jaipur Central Depot';
 
   const initials = `${firstName.charAt(0)}${lastName ? lastName.charAt(0) : ''}`.toUpperCase() || 'U';
 
   return (
-    <div className="flex-1 overflow-y-auto bg-slate-50 p-4 space-y-4">
+    <ScrollView style={styles.container} contentContainerStyle={styles.scrollContent}>
       {/* Top Profile Header Card */}
-      <div className="bg-gradient-to-br from-[#0F2042] to-[#1E3A70] text-white rounded-2xl p-5 shadow-lg border border-slate-700/50 relative overflow-hidden">
-        <div className="absolute -right-6 -bottom-6 w-28 h-28 bg-white/5 rounded-full blur-xl pointer-events-none" />
-        
-        <div className="flex items-center gap-4 relative z-10">
-          <div className="w-16 h-16 rounded-2xl bg-amber-500 text-slate-950 font-black text-xl flex items-center justify-center shadow-md border-2 border-amber-300 shrink-0">
-            {initials}
-          </div>
-
-          <div className="min-w-0 flex-1">
-            <h2 className="text-lg font-extrabold text-white truncate tracking-tight">
-              {fullName}
-            </h2>
-          </div>
-        </div>
-      </div>
+      <View style={styles.profileHeaderCard}>
+        <View style={styles.avatar}>
+          <Text style={styles.avatarText}>{initials}</Text>
+        </View>
+        <View style={styles.headerInfo}>
+          <Text style={styles.fullNameText}>{fullName}</Text>
+          <Text style={styles.roleSubtext}>{designation}</Text>
+        </View>
+      </View>
 
       {/* Account Info Details Card */}
-      <div className="bg-white rounded-2xl p-4 shadow-xs border border-slate-200 space-y-3">
-        <h3 className="text-xs font-black uppercase tracking-wider text-slate-400 px-1">
-          Account Details
-        </h3>
+      <View style={styles.detailsCard}>
+        <Text style={styles.detailsCardTitle}>Account Details</Text>
 
-        <div className="space-y-2.5 text-xs">
-          {/* Phone Number */}
-          <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-100">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0">
-                <Phone className="w-4 h-4" />
-              </div>
-              <div>
-                <span className="text-[10px] text-slate-400 font-semibold block">Phone Number</span>
-                <span className="font-bold text-slate-800">{phone}</span>
-              </div>
-            </div>
-          </div>
+        {/* Phone Number */}
+        <View style={styles.detailItem}>
+          <View style={[styles.detailIconCircle, { backgroundColor: '#ECFDF5' }]}>
+            <Text style={{ fontSize: 16 }}>📞</Text>
+          </View>
+          <View style={styles.detailTextWrapper}>
+            <Text style={styles.detailLabel}>Phone Number</Text>
+            <Text style={styles.detailValue}>{phone}</Text>
+          </View>
+        </View>
 
-          {/* Email Address */}
-          <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-100">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg bg-purple-50 text-purple-700 flex items-center justify-center shrink-0">
-                <Mail className="w-4 h-4" />
-              </div>
-              <div className="min-w-0">
-                <span className="text-[10px] text-slate-400 font-semibold block">Email Address</span>
-                <span className="font-bold text-slate-800 truncate block max-w-[200px]">{email}</span>
-              </div>
-            </div>
-          </div>
+        {/* Email Address */}
+        <View style={styles.detailItem}>
+          <View style={[styles.detailIconCircle, { backgroundColor: '#F5F3FF' }]}>
+            <Text style={{ fontSize: 16 }}>✉️</Text>
+          </View>
+          <View style={styles.detailTextWrapper}>
+            <Text style={styles.detailLabel}>Email Address</Text>
+            <Text style={styles.detailValue}>{email}</Text>
+          </View>
+        </View>
 
-          {/* Designation */}
-          <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-100">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-700 flex items-center justify-center shrink-0">
-                <Shield className="w-4 h-4" />
-              </div>
-              <div>
-                <span className="text-[10px] text-slate-400 font-semibold block">Designation</span>
-                <span className="font-bold text-slate-800">{designation}</span>
-              </div>
-            </div>
-          </div>
+        {/* Designation */}
+        <View style={styles.detailItem}>
+          <View style={[styles.detailIconCircle, { backgroundColor: '#FEF3C7' }]}>
+            <Text style={{ fontSize: 16 }}>🛡️</Text>
+          </View>
+          <View style={styles.detailTextWrapper}>
+            <Text style={styles.detailLabel}>Designation</Text>
+            <Text style={styles.detailValue}>{designation}</Text>
+          </View>
+        </View>
 
-          {/* Depot Assigned */}
-          <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-100">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-700 flex items-center justify-center shrink-0">
-                <Store className="w-4 h-4" />
-              </div>
-              <div>
-                <span className="text-[10px] text-slate-400 font-semibold block">Belongs to Depot</span>
-                <span className="font-bold text-slate-800">{depotName}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+        {/* Depot Assigned */}
+        <View style={styles.detailItem}>
+          <View style={[styles.detailIconCircle, { backgroundColor: '#EEF2F6' }]}>
+            <Text style={{ fontSize: 16 }}>🏢</Text>
+          </View>
+          <View style={styles.detailTextWrapper}>
+            <Text style={styles.detailLabel}>Belongs to Depot</Text>
+            <Text style={styles.detailValue}>{depotName}</Text>
+          </View>
+        </View>
+      </View>
 
       {/* Sign Out Action Button */}
-      <div className="pt-1">
-        <button
-          onClick={onLogout}
-          type="button"
-          id="profile-sign-out-btn"
-          className="w-full bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 font-bold py-3 rounded-2xl text-xs flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer active:scale-98"
-        >
-          <LogOut className="w-4 h-4 text-red-600" />
-          <span>Sign Out of Account</span>
-        </button>
-      </div>
+      <TouchableOpacity
+        style={styles.signOutButton}
+        onPress={onLogout}
+      >
+        <LogOutIcon color="#EF4444" size={16} />
+        <Text style={styles.signOutButtonText}>Sign Out of Account</Text>
+      </TouchableOpacity>
 
-      <div className="text-center text-[10px] text-slate-400 py-1">
-        Rajasthan Liquor Limited • Mobile Portal v1.0
-      </div>
-    </div>
+      <View style={styles.footer}>
+        <Text style={styles.footerText}>Rajasthan Liquor Limited • Mobile Portal v1.0</Text>
+      </View>
+    </ScrollView>
   );
-};
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+  },
+  scrollContent: {
+    padding: 16,
+    paddingBottom: 40,
+  },
+  profileHeaderCard: {
+    backgroundColor: '#0F2042',
+    borderRadius: 20,
+    padding: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 20,
+    shadowColor: '#0F2042',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+    elevation: 4,
+  },
+  avatar: {
+    width: 60,
+    height: 60,
+    borderRadius: 16,
+    backgroundColor: '#F59E0B',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#FCD34D',
+  },
+  avatarText: {
+    fontSize: 22,
+    fontWeight: '900',
+    color: '#0F2042',
+  },
+  headerInfo: {
+    marginLeft: 16,
+    flex: 1,
+  },
+  fullNameText: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: -0.5,
+  },
+  roleSubtext: {
+    fontSize: 12,
+    color: '#94A3B8',
+    marginTop: 2,
+  },
+  detailsCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 20,
+  },
+  detailsCardTitle: {
+    fontSize: 11,
+    fontWeight: '900',
+    color: '#94A3B8',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 16,
+    paddingLeft: 4,
+  },
+  detailItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
+    padding: 12,
+    marginBottom: 12,
+  },
+  detailIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  detailTextWrapper: {
+    marginLeft: 12,
+    flex: 1,
+  },
+  detailLabel: {
+    fontSize: 10,
+    color: '#64748B',
+    fontWeight: '600',
+  },
+  detailValue: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: '#334155',
+    marginTop: 2,
+  },
+  signOutButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FEE2E2',
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingVertical: 14,
+  },
+  signOutButtonText: {
+    color: '#EF4444',
+    fontSize: 13,
+    fontWeight: 'bold',
+    marginLeft: 8,
+  },
+  footer: {
+    alignItems: 'center',
+    marginTop: 20,
+  },
+  footerText: {
+    fontSize: 10,
+    color: '#94A3B8',
+  },
+});
