@@ -25,11 +25,11 @@ async def upload_excel(
     Executes heavy Excel parsing (100,000+ rows), column validation, master resolution,
     and bulk Supabase inserts in a non-blocking background thread.
     """
+    user_id = current_user.get("user_id")
+    filename = file.filename
+    logger.info(f"Excel upload request initiated by user: {user_id} for file: {filename}")
     try:
-        user_id = current_user.get("user_id", "00000000-0000-0000-0000-000000000001")
-
         contents = await file.read()
-        filename = file.filename or "uploaded_file.xlsx"
 
         batch_record = import_pipeline.create_initial_batch(filename, user_id)
 
@@ -41,10 +41,13 @@ async def upload_excel(
             batch_record["upload_batch_id"]
         )
 
+        logger.info(f"Excel file {filename} queued successfully for asynchronous processing (Batch ID: {batch_record['upload_batch_id']})")
         return batch_record
     except ValueError as ve:
+        logger.warning(f"Excel upload failed validation for file {filename} by user {user_id}: {str(ve)}")
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
+        logger.error(f"Excel upload initialization failed for file {filename} by user {user_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"File upload initialization error: {str(e)}")
 
 

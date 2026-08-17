@@ -47,6 +47,7 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
     Verifies user from Supabase 'users' table, logs session to 'user_auth_logs'.
     """
     email = credentials.email.lower().strip()
+    logger.info(f"Mobile login attempt initiated for user: {email}")
     client = get_supabase()
     
     user_data = None
@@ -57,6 +58,7 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
             temp_client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
             auth_response = temp_client.auth.sign_in_with_password({"email": email, "password": credentials.password})
             if not auth_response or not auth_response.user:
+                logger.warning(f"Mobile login failed for user {email} (invalid credentials / empty response)")
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
 
             # 2. Get user profile and role
@@ -64,6 +66,7 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
             if res.data and len(res.data) > 0:
                 db_user = res.data[0]
                 if not db_user.get("is_active", True):
+                    logger.warning(f"Mobile login failed for user {email} (deactivated account)")
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,
                         detail="User account is deactivated"
@@ -84,6 +87,7 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
 
                 # 3. Guardrail: Enforce Mobile roles
                 if role_name.lower() not in ["tsm", "ase", "leader", "admin", "territory executive"]:
+                    logger.warning(f"Mobile login access denied for user {email} (role '{role_name}' lacks Mobile permissions)")
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="Access Denied: Mobile app is restricted to field personnel and administrators."
@@ -110,9 +114,11 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
                     "depot_name": depot_name,
                     "hq_location": "All Headquarters"
                 }
+                logger.info(f"Mobile login successful for user: {email} with role: {role_name}")
         except HTTPException:
             raise
         except Exception as e:
+            logger.error(f"Error during mobile login for user {email}: {e}")
             if "Invalid login credentials" in str(e):
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
             logger.warning(f"Supabase users lookup error: {e}")
@@ -156,6 +162,7 @@ async def send_mobile_otp(req: SendOTPRequest):
     """
     email = (req.email or "").lower().strip()
     phone = (req.phone or "").strip()
+    logger.info(f"Mobile OTP request initiated for phone: {phone}, email: {email}")
 
     if not email and not phone:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email address or phone number is required")
@@ -188,12 +195,14 @@ async def send_mobile_otp(req: SendOTPRequest):
 
     # Enforce registered user requirement
     if not db_user:
+        logger.warning(f"Mobile OTP request failed: Phone/Email not registered (Phone: {phone}, Email: {email})")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This mobile number is not registered."
         )
 
     if not db_user.get("is_active", True):
+        logger.warning(f"Mobile OTP request failed: Account is deactivated (Phone: {phone}, Email: {email})")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="This user account is deactivated."
@@ -211,6 +220,7 @@ async def send_mobile_otp(req: SendOTPRequest):
 
     # Directly await SMS dispatch via Dovesoft API
     sms_sent = await send_otp_sms(target_phone, otp_code)
+    logger.info(f"Mobile OTP successfully generated and sent via SMS to {target_phone} (SMS sent status: {sms_sent})")
 
     return {
         "success": True,
@@ -228,6 +238,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
     email = (req.email or "").lower().strip()
     phone = (req.phone or "").strip()
     otp_code = (req.otp or "").strip()
+    logger.info(f"Mobile OTP verification attempt initiated for phone: {phone}")
 
     if not phone or not otp_code:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Phone number and 6-digit OTP code are required")
@@ -235,6 +246,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
     # Verify 6-digit OTP from DB
     is_valid = verify_otp_from_db(phone, otp_code)
     if not is_valid:
+        logger.warning(f"Mobile OTP verification failed for phone: {phone} - Invalid or expired OTP code")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired 6-digit OTP code")
 
     client = get_supabase()
@@ -260,6 +272,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
 
             if db_user:
                 if not db_user.get("is_active", True):
+                    logger.warning(f"Mobile OTP verification failed for phone: {phone} - Account deactivated")
                     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User account is deactivated")
 
                 role_name = "TSM"
@@ -299,20 +312,22 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
         except HTTPException:
             raise
         except Exception as e:
+            logger.error(f"Error resolving user profile on OTP verify: {e}")
             logger.warning(f"Error resolving user profile on OTP verify: {e}")
 
     if not user_data:
+        logger.warning(f"Mobile OTP verification failed for phone: {phone} - User profile not registered")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This mobile number is not registered."
         )
 
     # Generate Access Token valid for 30 days for mobile application
-    sub_identity = user_data.get("email") or user_data.get("phone") or user_data.get("user_id")
     token = create_access_token(
-        data={"sub": sub_identity, "role": user_data["role_name"], "user_id": user_data["user_id"]},
+        data={"sub": user_data["email"], "role": user_data["role_name"], "user_id": user_data["user_id"]},
         expires_delta=timedelta(days=30)
     )
+    logger.info(f"Mobile OTP verification successful for phone: {phone} (User: {user_data['email']}, Role: {user_data['role_name']})")
 
     return {
         "access_token": token,

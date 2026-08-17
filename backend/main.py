@@ -8,6 +8,14 @@ root_dir = Path(__file__).resolve().parent.parent
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
+from backend.core.logging_config import setup_logging
+
+# Setup application logging
+setup_logging()
+
+import logging
+logger = logging.getLogger("main")
+
 from backend.core.config import settings
 from backend.auth.router import router as auth_router
 from backend.users.router import router as users_router
@@ -41,6 +49,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+import time
+from fastapi import Request
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    duration = time.time() - start_time
+    logger.info(
+        f"API Call - Method: {request.method} | Path: {request.url.path} | "
+        f"Status: {response.status_code} | Duration: {duration:.4f}s"
+    )
+    return response
 
 # Register v1 API Routers
 app.include_router(auth_router, prefix=settings.API_V1_STR)
