@@ -254,7 +254,7 @@ export default function App() {
                     <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
                     <input
                       type="text"
-                      placeholder="Search brand"
+                      placeholder="Search company"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       id="dashboard-search-input"

@@ -10,7 +10,6 @@ import {
   Wine,
   X,
   ArrowLeft,
-  Building2,
   ArrowUpDown,
   ChevronLeft,
 } from 'lucide-react';
@@ -200,54 +199,51 @@ export const GroupCascadingSalesScreen: React.FC<GroupCascadingSalesScreenProps>
 
   return (
     <div className="space-y-3">
-      {/* Top Navigation Bar with Back Button & Breadcrumbs */}
-      <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-xs flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          {(selectedGroup || selectedLicensee) ? (
-            <button
-              onClick={handleBack}
-              id="groups-back-btn"
-              type="button"
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-100 hover:bg-[#0F2042] hover:text-white text-[#0F2042] text-xs font-bold transition-all shrink-0"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              <span>Back</span>
-            </button>
-          ) : (
-            <div className="flex items-center gap-1.5 text-xs font-bold text-[#0F2042]">
-              <Building2 className="w-4 h-4" />
-              <span>Sales by Groups</span>
+      {/* Top Navigation Bar with Back Button & Breadcrumbs (Only rendered during drill-down or filter) */}
+      {(selectedGroup || selectedLicensee || activeDepotFilter) && (
+        <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-xs flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {(selectedGroup || selectedLicensee) && (
+              <button
+                onClick={handleBack}
+                id="groups-back-btn"
+                type="button"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-100 hover:bg-[#0F2042] hover:text-white text-[#0F2042] text-xs font-bold transition-all shrink-0"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span>Back</span>
+              </button>
+            )}
+
+            {/* Breadcrumb path */}
+            <div className="flex items-center gap-1 text-[11px] font-medium text-slate-500 truncate">
+              {selectedGroup && (
+                <>
+                  <ChevronRight className="w-3.5 h-3.5 text-slate-700 shrink-0" />
+                  <span className="font-bold text-slate-800 truncate">{selectedGroup.group_name}</span>
+                </>
+              )}
+              {selectedLicensee && (
+                <>
+                  <ChevronRight className="w-3.5 h-3.5 text-slate-700 shrink-0" />
+                  <span className="font-bold text-[#0F2042] truncate">{selectedLicensee.licensee_name}</span>
+                </>
+              )}
             </div>
-          )}
-
-          {/* Breadcrumb path */}
-          <div className="flex items-center gap-1 text-[11px] font-medium text-slate-500 truncate">
-            {selectedGroup && (
-              <>
-                <ChevronRight className="w-3 h-3 text-slate-300 shrink-0" />
-                <span className="font-bold text-slate-800 truncate">{selectedGroup.group_name}</span>
-              </>
-            )}
-            {selectedLicensee && (
-              <>
-                <ChevronRight className="w-3 h-3 text-slate-300 shrink-0" />
-                <span className="font-bold text-[#0F2042] truncate">{selectedLicensee.licensee_name}</span>
-              </>
-            )}
           </div>
-        </div>
 
-        {/* Active Depot Filter Chip Clear Button */}
-        {activeDepotFilter && (
-          <button
-            onClick={() => setActiveDepotFilter(null)}
-            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-sky-50 text-sky-700 border border-sky-200 text-[10px] font-bold shrink-0"
-          >
-            <span>Depot: {activeDepotFilter}</span>
-            <X className="w-3 h-3 text-sky-500 hover:text-sky-800" />
-          </button>
-        )}
-      </div>
+          {/* Active Depot Filter Chip Clear Button */}
+          {activeDepotFilter && (
+            <button
+              onClick={() => setActiveDepotFilter(null)}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-sky-50 text-sky-700 border border-sky-200 text-[10px] font-bold shrink-0"
+            >
+              <span>Depot: {activeDepotFilter}</span>
+              <X className="w-3 h-3 text-sky-500 hover:text-sky-800" />
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Controls Bar: Search + Sorting Dropdown + Items Per Page */}
       <div className="space-y-2">
@@ -378,11 +374,27 @@ export const GroupCascadingSalesScreen: React.FC<GroupCascadingSalesScreenProps>
 
           {/* STEP 2: LICENSEES LIST UNDER SELECTED GROUP */}
           {selectedGroup && !selectedLicensee && (
-            <div className="space-y-2">
-              <div className="p-3 bg-white rounded-2xl border border-slate-200 shadow-xs flex items-center justify-between">
-                <div>
-                  <span className="text-[9px] font-bold text-slate-400 uppercase block">Group Selected</span>
-                  <h3 className="text-sm font-bold text-[#0F2042]">{selectedGroup.group_name}</h3>
+            <div className="space-y-2.5">
+              {/* Highlighted Group Summary Card (Compact Layout) */}
+              <div className="px-3 py-2 bg-gradient-to-r from-[#0F2042] to-[#1E3A8A] rounded-xl text-white shadow-xs">
+                <div className="flex items-center justify-between gap-2.5">
+                  {/* Name & Tag on left */}
+                  <div className="min-w-0 flex-1">
+                    <span className="text-[8px] font-bold text-slate-300 uppercase tracking-wider block leading-none mb-0.5">GROUP SELECTED</span>
+                    <h3 className="text-xs font-bold text-white leading-snug break-words">{selectedGroup.group_name}</h3>
+                  </div>
+
+                  {/* Parallel Stat Badges on right */}
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <div className="bg-white/10 px-2 py-1 rounded-lg border border-white/10 text-center min-w-[56px]">
+                      <span className="text-[7.5px] font-semibold text-slate-300 uppercase block leading-none mb-0.5">CASES</span>
+                      <span className="text-xs font-bold text-amber-300 leading-none">{formatNumber(selectedGroup.total_cases)}</span>
+                    </div>
+                    <div className="bg-white/10 px-2 py-1 rounded-lg border border-white/10 text-center min-w-[56px]">
+                      <span className="text-[7.5px] font-semibold text-slate-300 uppercase block leading-none mb-0.5">BOTTLES</span>
+                      <span className="text-xs font-bold text-emerald-300 leading-none">{formatNumber(selectedGroup.total_bottles)}</span>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -456,19 +468,25 @@ export const GroupCascadingSalesScreen: React.FC<GroupCascadingSalesScreenProps>
           {/* STEP 3: BRAND WISE SALES BREAKDOWN */}
           {selectedLicensee && (
             <div className="space-y-2.5">
-              {/* Summary Card */}
-              <div className="p-3.5 bg-gradient-to-br from-[#0F2042] to-[#1E3A8A] rounded-2xl text-white shadow-md space-y-2">
-                <span className="text-[9px] font-semibold text-slate-300 uppercase block tracking-wider">Licensee Brand Sales Summary</span>
-                <h3 className="text-sm font-bold text-white truncate">{selectedLicensee.licensee_name}</h3>
-
-                <div className="grid grid-cols-2 gap-2 bg-white/10 p-2.5 rounded-xl border border-white/10 text-center">
-                  <div>
-                    <span className="text-[9px] font-semibold text-slate-200 uppercase block">TOTAL CASES</span>
-                    <span className="text-sm font-extrabold text-amber-300">{formatNumber(totalCasesSum)}</span>
+              {/* Licensee Summary Card (Compact Layout) */}
+              <div className="px-3 py-2 bg-gradient-to-r from-[#0F2042] to-[#1E3A8A] rounded-xl text-white shadow-xs">
+                <div className="flex items-center justify-between gap-2.5">
+                  {/* Name & Tag on left */}
+                  <div className="min-w-0 flex-1">
+                    <span className="text-[8px] font-bold text-slate-300 uppercase tracking-wider block leading-none mb-0.5">LICENSEE SELECTED</span>
+                    <h3 className="text-xs font-bold text-white leading-snug break-words">{selectedLicensee.licensee_name}</h3>
                   </div>
-                  <div>
-                    <span className="text-[9px] font-semibold text-slate-200 uppercase block">TOTAL BOTTLES</span>
-                    <span className="text-sm font-extrabold text-emerald-300">{formatNumber(totalBottlesSum)}</span>
+
+                  {/* Parallel Stat Badges on right */}
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <div className="bg-white/10 px-2 py-1 rounded-lg border border-white/10 text-center min-w-[56px]">
+                      <span className="text-[7.5px] font-semibold text-slate-300 uppercase block leading-none mb-0.5">CASES</span>
+                      <span className="text-xs font-bold text-amber-300 leading-none">{formatNumber(totalCasesSum)}</span>
+                    </div>
+                    <div className="bg-white/10 px-2 py-1 rounded-lg border border-white/10 text-center min-w-[56px]">
+                      <span className="text-[7.5px] font-semibold text-slate-300 uppercase block leading-none mb-0.5">BOTTLES</span>
+                      <span className="text-xs font-bold text-emerald-300 leading-none">{formatNumber(totalBottlesSum)}</span>
+                    </div>
                   </div>
                 </div>
               </div>

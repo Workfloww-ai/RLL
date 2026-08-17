@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { Period } from '../types';
 import { Calendar, MapPin } from 'lucide-react';
 
@@ -28,6 +28,23 @@ export const Header: React.FC<HeaderProps> = ({
   latestSaleDate,
 }) => {
   const periods: Period[] = ['Daily', 'MTD', 'YTD'];
+  const singleDateRef = useRef<HTMLInputElement>(null);
+  const dateFromRef = useRef<HTMLInputElement>(null);
+  const dateToRef = useRef<HTMLInputElement>(null);
+
+  const openPicker = (ref: React.RefObject<HTMLInputElement | null>) => {
+    if (ref.current) {
+      try {
+        if ('showPicker' in ref.current) {
+          ref.current.showPicker();
+        } else {
+          ref.current.focus();
+        }
+      } catch {
+        ref.current.focus();
+      }
+    }
+  };
 
   const handlePeriodChange = (p: Period) => {
     setPeriod(p);
@@ -111,16 +128,27 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Date Selector: Single Date for Daily (col-span-5), Range for MTD/YTD (col-span-7) */}
         {period === 'Daily' ? (
-          <div className="col-span-5 flex items-center justify-center bg-white/10 rounded-lg px-2 py-1 border border-white/15 text-[10px]">
-            <div className="flex items-center gap-1.5 min-w-0 justify-center w-full">
-              <Calendar className="w-3 h-3 text-slate-300 shrink-0" />
+          <div
+            onClick={() => openPicker(singleDateRef)}
+            className="col-span-5 flex items-center justify-center bg-white/10 hover:bg-white/15 active:bg-white/20 transition-all rounded-lg px-2 py-1 border border-white/15 text-[10px] cursor-pointer"
+          >
+            <div className="flex items-center gap-1.5 min-w-0 justify-center w-full cursor-pointer">
+              <Calendar className="w-3 h-3 text-slate-300 shrink-0 pointer-events-none" />
               <input
+                ref={singleDateRef}
                 type="date"
                 value={dateFrom}
+                onKeyDown={(e) => e.preventDefault()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openPicker(singleDateRef);
+                }}
                 onChange={(e) => {
                   const val = e.target.value;
-                  setDateFrom(val);
-                  setDateTo(val);
+                  if (val) {
+                    setDateFrom(val);
+                    setDateTo(val);
+                  }
                 }}
                 id="header-date-single"
                 className="bg-transparent text-white font-bold focus:outline-none cursor-pointer text-[10px] text-center w-full"
@@ -129,25 +157,48 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         ) : (
           <div className="col-span-7 flex items-center justify-between gap-1 bg-white/10 rounded-lg px-2 py-1 border border-white/15 text-[10px]">
-            <div className="flex items-center gap-1 min-w-0">
-              <Calendar className="w-3 h-3 text-slate-300 shrink-0" />
+            {/* From Date Box */}
+            <div
+              onClick={() => openPicker(dateFromRef)}
+              className="flex items-center gap-1 min-w-0 cursor-pointer hover:bg-white/10 px-1 py-0.5 rounded transition-all"
+            >
+              <Calendar className="w-3 h-3 text-slate-300 shrink-0 pointer-events-none" />
               <input
+                ref={dateFromRef}
                 type="date"
                 value={dateFrom}
+                onKeyDown={(e) => e.preventDefault()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openPicker(dateFromRef);
+                }}
                 onChange={(e) => {
-                  setDateFrom(e.target.value);
+                  if (e.target.value) setDateFrom(e.target.value);
                 }}
                 id="header-date-from"
                 className="bg-transparent text-white font-bold w-[78px] focus:outline-none cursor-pointer text-[10px]"
               />
             </div>
-            <span className="text-slate-400 font-bold">-</span>
-            <div className="flex items-center min-w-0">
+
+            <span className="text-slate-400 font-bold select-none">-</span>
+
+            {/* To Date Box */}
+            <div
+              onClick={() => openPicker(dateToRef)}
+              className="flex items-center gap-1 min-w-0 cursor-pointer hover:bg-white/10 px-1 py-0.5 rounded transition-all"
+            >
+              <Calendar className="w-3 h-3 text-slate-300 shrink-0 pointer-events-none" />
               <input
+                ref={dateToRef}
                 type="date"
                 value={dateTo}
+                onKeyDown={(e) => e.preventDefault()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openPicker(dateToRef);
+                }}
                 onChange={(e) => {
-                  setDateTo(e.target.value);
+                  if (e.target.value) setDateTo(e.target.value);
                 }}
                 id="header-date-to"
                 className="bg-transparent text-white font-bold w-[78px] focus:outline-none cursor-pointer text-[10px]"

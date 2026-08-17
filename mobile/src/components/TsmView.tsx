@@ -73,7 +73,7 @@ export const TsmView: React.FC<TsmViewProps> = ({
             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
             <input
               type="text"
-              placeholder="Search TSM name..."
+              placeholder="Search TSM name"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               id="tsm-search-input"
