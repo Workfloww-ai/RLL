@@ -1,5 +1,7 @@
 import logging
 import asyncio
+import time
+import copy
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, Depends, Query, Request, status
@@ -18,6 +20,187 @@ from backend.services.otp_service import (
 from supabase import create_client
 
 logger = logging.getLogger(__name__)
+
+# Master lookups in-memory cache with 5-minute TTL
+_MASTER_CACHE = {
+    "timestamp": 0,
+    "data": None
+}
+_MASTER_CACHE_TTL = 300  # 300 seconds (5 mins)
+
+# Sales endpoint response cache with 60-second TTL
+_SALES_RESPONSE_CACHE: Dict[str, Dict[str, Any]] = {}
+_SALES_RESPONSE_TTL = 60
+
+def _fetch_fresh_master_lookups():
+    client = get_supabase()
+    companies_lookup: Dict[str, str] = {}
+    try:
+        c_res = client.table("companies").select("company_id, company_name").execute()
+        for c in (c_res.data or []):
+            if c.get("company_id") and c.get("company_name"):
+                companies_lookup[str(c["company_id"])] = c["company_name"]
+    except Exception as e_c:
+        logger.warning(f"Error fetching companies_lookup: {e_c}")
+
+    brands_lookup: Dict[str, Dict[str, Any]] = {}
+    try:
+        b_res = client.table("brands").select("brand_id, brand_name, company_id").execute()
+        for b in (b_res.data or []):
+            if b.get("brand_id") and b.get("brand_name"):
+                brands_lookup[str(b["brand_id"])] = {
+                    "name": b["brand_name"],
+                    "company_id": str(b["company_id"]) if b.get("company_id") else None
+                }
+    except Exception as e_b:
+        logger.warning(f"Error fetching brands_lookup: {e_b}")
+
+    hq_lookup: Dict[str, str] = {}
+    try:
+        h_res = client.table("headquarters").select("headquarters_id, name").execute()
+        for h in (h_res.data or []):
+            if h.get("headquarters_id") and h.get("name"):
+                hq_lookup[str(h["headquarters_id"])] = h["name"]
+    except Exception as e_h:
+        logger.warning(f"Error fetching hq_lookup: {e_h}")
+
+    master_companies = {}
+    for c_id_raw, c_name in companies_lookup.items():
+        if not c_name or c_name == "Others":
+            continue
+        c_key = c_name.lower().replace(" ", "-").replace("/", "-")
+        master_companies[c_key] = {
+            "id": c_key,
+            "name": c_name,
+            "isPinned": c_key in ["rll", "diageo-inbrew"] or c_name.upper() == "RLL",
+            "hqLocation": "All Headquarters",
+            "data": {
+                "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+            },
+            "brands_map": {}
+        }
+
+    master_depots = {}
+    hq_name_lookup = {}
+    try:
+        d_res = client.table("depots").select("depot_id, name, headquarters_id").execute()
+        for d in (d_res.data or []):
+            d_id = str(d.get("depot_id"))
+            d_name = d.get("name")
+            hq_id = str(d.get("headquarters_id") or "")
+            hq_name = hq_lookup.get(hq_id, "Unassigned")
+            hq_name_lookup[d_id] = hq_name
+            master_depots[d_id] = {
+                "id": d_id,
+                "name": d_name,
+                "hqName": hq_name,
+                "data": {
+                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                    "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                    "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                },
+                "brands_map": {}
+            }
+    except Exception as e:
+        logger.warning(f"Error fetching master depots: {e}")
+
+    master_tsms = {}
+    tsm_depot_lookup = {}
+    user_depots_map = {}
+    tsm_ase_lookup = {}
+    ase_names_lookup = {}
+    try:
+        roles_res = client.table("roles").select("role_id, role_name").execute()
+        tsm_role_id = None
+        for r in (roles_res.data or []):
+            if str(r.get("role_name", "")).upper() == "TSM":
+                tsm_role_id = str(r["role_id"])
+
+        if tsm_role_id:
+            ur_res = client.table("user_roles").select("user_id").eq("role_id", tsm_role_id).execute()
+            tsm_user_ids = [str(ur["user_id"]) for ur in (ur_res.data or []) if ur.get("user_id")]
+            if tsm_user_ids:
+                u_res = client.table("users").select("user_id, first_name, last_name, email").in_("user_id", tsm_user_ids).execute()
+                for u in (u_res.data or []):
+                    u_id = str(u["user_id"])
+                    full_name = f"{u.get('first_name', '')} {u.get('last_name', '')}".strip() or "TSM Manager"
+                    master_tsms[u_id] = {
+                        "id": u_id,
+                        "name": full_name,
+                        "hqLocation": "All Headquarters",
+                        "depot_ids": set(),
+                        "data": {
+                            "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                            "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                            "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                        },
+                        "brands_map": {}
+                    }
+
+        ud_res = client.table("user_depot").select("user_id, depot_id").execute()
+        for ud in (ud_res.data or []):
+            uid = str(ud.get("user_id"))
+            did = str(ud.get("depot_id"))
+            if uid not in user_depots_map:
+                user_depots_map[uid] = set()
+            user_depots_map[uid].add(did)
+
+        atm_res = client.table("ase_tsm_mapping").select("tsm_user_id, ase_user_id").execute()
+        for atm in (atm_res.data or []):
+            tid = str(atm.get("tsm_user_id"))
+            aid = str(atm.get("ase_user_id"))
+            if tid not in tsm_ase_lookup:
+                tsm_ase_lookup[tid] = set()
+            tsm_ase_lookup[tid].add(aid)
+
+        all_ase_ids = list({aid for aids in tsm_ase_lookup.values() for aid in aids})
+        if all_ase_ids:
+            try:
+                ase_u_res = client.table("users").select("user_id, first_name, last_name").in_("user_id", all_ase_ids).execute()
+                for au in (ase_u_res.data or []):
+                    a_uid = str(au["user_id"])
+                    a_name = f"{au.get('first_name', '')} {au.get('last_name', '')}".strip() or "ASE"
+                    ase_names_lookup[a_uid] = a_name
+            except Exception as e:
+                logger.warning(f"Error fetching ASE names: {e}")
+
+        for tid, t_obj in master_tsms.items():
+            t_obj["depot_ids"].update(user_depots_map.get(tid, set()))
+            ase_ids_for_tsm = tsm_ase_lookup.get(tid, set())
+            t_obj["ase_ids"] = list(ase_ids_for_tsm)
+            for aid in ase_ids_for_tsm:
+                t_obj["depot_ids"].update(user_depots_map.get(aid, set()))
+            for did in t_obj["depot_ids"]:
+                if did not in tsm_depot_lookup:
+                    tsm_depot_lookup[did] = set()
+                tsm_depot_lookup[did].add(tid)
+    except Exception as e:
+        logger.warning(f"Error fetching master TSMs: {e}")
+
+    return {
+        "companies_lookup": companies_lookup,
+        "brands_lookup": brands_lookup,
+        "hq_lookup": hq_lookup,
+        "master_companies": master_companies,
+        "master_depots": master_depots,
+        "master_tsms": master_tsms,
+        "tsm_depot_lookup": tsm_depot_lookup,
+        "user_depots_map": user_depots_map,
+        "tsm_ase_lookup": tsm_ase_lookup,
+        "ase_names_lookup": ase_names_lookup
+    }
+
+def get_cached_master_lookups():
+    now = time.time()
+    if _MASTER_CACHE["data"] is not None and (now - _MASTER_CACHE["timestamp"]) < _MASTER_CACHE_TTL:
+        return copy.deepcopy(_MASTER_CACHE["data"])
+    data = _fetch_fresh_master_lookups()
+    _MASTER_CACHE["data"] = data
+    _MASTER_CACHE["timestamp"] = now
+    return copy.deepcopy(data)
+
 
 router = APIRouter(prefix="/mobile", tags=["Mobile App API"])
 
@@ -512,166 +695,40 @@ async def get_mobile_sales(
     Computes distinct, dynamic metrics for Daily, MTD, and YTD with database-level HQ filtering.
     """
     client = get_supabase()
-    selected_period = period.strip().capitalize() if period else "Daily"
-    if selected_period not in ["Daily", "MTD", "YTD"]:
+    raw_period = (period or "Daily").strip().upper()
+    if raw_period == "DAILY":
+        selected_period = "Daily"
+    elif raw_period in ["MTD", "MONTHLY"]:
+        selected_period = "MTD"
+    elif raw_period in ["YTD", "YEARLY"]:
+        selected_period = "YTD"
+    else:
         selected_period = "Daily"
 
-    # Pre-fetch lookup maps to avoid socket leaks and PostgREST embedded join errors
-    companies_lookup: Dict[str, str] = {}
-    try:
-        c_res = client.table("companies").select("company_id, company_name").execute()
-        for c in (c_res.data or []):
-            if c.get("company_id") and c.get("company_name"):
-                companies_lookup[str(c["company_id"])] = c["company_name"]
-    except Exception as e_c:
-        logger.warning(f"Error fetching companies_lookup: {e_c}")
-
-    brands_lookup: Dict[str, Dict[str, Any]] = {}
-    try:
-        b_res = client.table("brands").select("brand_id, brand_name, company_id").execute()
-        for b in (b_res.data or []):
-            if b.get("brand_id") and b.get("brand_name"):
-                brands_lookup[str(b["brand_id"])] = {
-                    "name": b["brand_name"],
-                    "company_id": str(b["company_id"]) if b.get("company_id") else None
-                }
-    except Exception as e_b:
-        logger.warning(f"Error fetching brands_lookup: {e_b}")
-
-    hq_lookup: Dict[str, str] = {}
-    try:
-        h_res = client.table("headquarters").select("headquarters_id, name").execute()
-        for h in (h_res.data or []):
-            if h.get("headquarters_id") and h.get("name"):
-                hq_lookup[str(h["headquarters_id"])] = h["name"]
-    except Exception as e_h:
-        logger.warning(f"Error fetching hq_lookup: {e_h}")
-
-    # 1. Fetch Master Companies
-    master_companies = {}
-    for c_id_raw, c_name in companies_lookup.items():
-        if not c_name or c_name == "Others":
-            continue
-        c_key = c_name.lower().replace(" ", "-").replace("/", "-")
-        master_companies[c_key] = {
-            "id": c_key,
-            "name": c_name,
-            "isPinned": c_key in ["rll", "diageo-inbrew"] or c_name.upper() == "RLL",
-            "hqLocation": "All Headquarters",
-            "data": {
-                "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-            },
-            "brands_map": {}
-        }
-
-    # 2. Fetch Master Depots & Headquarters lookup
-    master_depots = {}
-    hq_name_lookup = {}
-    try:
-        d_res = client.table("depots").select("depot_id, name, headquarters_id").execute()
-        for d in (d_res.data or []):
-            d_id = str(d.get("depot_id"))
-            d_name = d.get("name")
-            hq_id = str(d.get("headquarters_id") or "")
-            hq_name = hq_lookup.get(hq_id, "Unassigned")
-            hq_name_lookup[d_id] = hq_name
-            master_depots[d_id] = {
-                "id": d_id,
-                "name": d_name,
-                "hqName": hq_name,
-                "data": {
-                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                },
-                "brands_map": {}
-            }
-    except Exception as e:
-        logger.warning(f"Error fetching master depots: {e}")
-
-    # 3. Fetch Master TSM Managers
-    master_tsms = {}
-    tsm_depot_lookup = {}  # depot_id -> set of tsm_user_ids
-    user_depots_map = {}
-    tsm_ase_lookup = {}
-    ase_names_lookup = {}
-    try:
-        roles_res = client.table("roles").select("role_id, role_name").execute()
-        tsm_role_id = None
-        for r in (roles_res.data or []):
-            if str(r.get("role_name", "")).upper() == "TSM":
-                tsm_role_id = str(r["role_id"])
-
-        if tsm_role_id:
-            ur_res = client.table("user_roles").select("user_id").eq("role_id", tsm_role_id).execute()
-            tsm_user_ids = [str(ur["user_id"]) for ur in (ur_res.data or []) if ur.get("user_id")]
-            if tsm_user_ids:
-                u_res = client.table("users").select("user_id, first_name, last_name, email").in_("user_id", tsm_user_ids).execute()
-                for u in (u_res.data or []):
-                    u_id = str(u["user_id"])
-                    full_name = f"{u.get('first_name', '')} {u.get('last_name', '')}".strip() or "TSM Manager"
-                    master_tsms[u_id] = {
-                        "id": u_id,
-                        "name": full_name,
-                        "hqLocation": "All Headquarters",
-                        "depot_ids": set(),
-                        "data": {
-                            "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                            "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                            "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                        },
-                        "brands_map": {}
-                    }
-
-        ud_res = client.table("user_depot").select("user_id, depot_id").execute()
-        for ud in (ud_res.data or []):
-            uid = str(ud.get("user_id"))
-            did = str(ud.get("depot_id"))
-            if uid not in user_depots_map:
-                user_depots_map[uid] = set()
-            user_depots_map[uid].add(did)
-
-        atm_res = client.table("ase_tsm_mapping").select("tsm_user_id, ase_user_id").execute()
-        tsm_ase_lookup = {}
-        for atm in (atm_res.data or []):
-            tid = str(atm.get("tsm_user_id"))
-            aid = str(atm.get("ase_user_id"))
-            if tid not in tsm_ase_lookup:
-                tsm_ase_lookup[tid] = set()
-            tsm_ase_lookup[tid].add(aid)
-
-        # Fetch ASE names for display in the TSM accordion
-        all_ase_ids = list({aid for aids in tsm_ase_lookup.values() for aid in aids})
-        ase_names_lookup = {}  # ase_user_id -> full_name
-        if all_ase_ids:
-            try:
-                ase_u_res = client.table("users").select("user_id, first_name, last_name").in_("user_id", all_ase_ids).execute()
-                for au in (ase_u_res.data or []):
-                    a_uid = str(au["user_id"])
-                    a_name = f"{au.get('first_name', '')} {au.get('last_name', '')}".strip() or "ASE"
-                    ase_names_lookup[a_uid] = a_name
-            except Exception as e:
-                logger.warning(f"Error fetching ASE names: {e}")
-
-        for tid, t_obj in master_tsms.items():
-            t_obj["depot_ids"].update(user_depots_map.get(tid, set()))
-            ase_ids_for_tsm = tsm_ase_lookup.get(tid, set())
-            # Store resolved ASE list on the TSM object
-            t_obj["ase_ids"] = list(ase_ids_for_tsm)
-            for aid in ase_ids_for_tsm:
-                t_obj["depot_ids"].update(user_depots_map.get(aid, set()))
-            for did in t_obj["depot_ids"]:
-                if did not in tsm_depot_lookup:
-                    tsm_depot_lookup[did] = set()
-                tsm_depot_lookup[did].add(tid)
-    except Exception as e:
-        logger.warning(f"Error fetching master TSMs: {e}")
+    # Use cached master lookups to eliminate 9 sequential DB queries per request
+    master_cache = get_cached_master_lookups()
+    companies_lookup = master_cache["companies_lookup"]
+    brands_lookup = master_cache["brands_lookup"]
+    hq_lookup = master_cache["hq_lookup"]
+    master_companies = master_cache["master_companies"]
+    master_depots = master_cache["master_depots"]
+    master_tsms = master_cache["master_tsms"]
+    tsm_depot_lookup = master_cache["tsm_depot_lookup"]
+    user_depots_map = master_cache["user_depots_map"]
+    tsm_ase_lookup = master_cache["tsm_ase_lookup"]
+    ase_names_lookup = master_cache["ase_names_lookup"]
 
     # RBAC Data Filtering
     user_role = (current_user.get("role_name") or current_user.get("role") or "").lower()
     user_id = current_user.get("user_id")
+
+    cache_key = f"{selected_period}:{selected_hq}:{date_from}:{date_to}:{user_role}:{user_id}"
+    now_ts = time.time()
+    if cache_key in _SALES_RESPONSE_CACHE:
+        entry = _SALES_RESPONSE_CACHE[cache_key]
+        if now_ts - entry["timestamp"] < _SALES_RESPONSE_TTL:
+            logger.info(f"⚡ [CACHE HIT 0ms] Serving sales payload for {cache_key}")
+            return entry["data"]
 
     allowed_depots = set()
     if user_role == "tsm":
@@ -699,8 +756,6 @@ async def get_mobile_sales(
     end_date = latest_sale_date
     if date_to and date_to <= latest_sale_date:
         end_date = date_to
-    elif date_from and date_from <= latest_sale_date:
-        end_date = date_from
 
     try:
         end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
@@ -708,7 +763,7 @@ async def get_mobile_sales(
         end_dt = datetime.utcnow().date()
         end_date = end_dt.strftime("%Y-%m-%d")
 
-    daily_start = date_from if (date_from and date_from <= latest_sale_date) else end_date
+    daily_start = end_date
     mtd_start = end_dt.replace(day=1).strftime("%Y-%m-%d")
     fy_year = end_dt.year if end_dt.month >= 4 else end_dt.year - 1
     ytd_start = f"{fy_year}-04-01"
@@ -723,10 +778,14 @@ async def get_mobile_sales(
         except Exception as e:
             logger.warning(f"HQ lookup error for {selected_hq}: {e}")
 
-    # Single pass fetch from earliest required date (ytd_start) up to end_date
-    query_start = min(daily_start, mtd_start, ytd_start)
+    # Determine query start date to populate all 3 period objects (Daily, MTD, YTD)
+    if selected_period in ["Daily", "MTD"]:
+        query_start = mtd_start
+    else:
+        query_start = ytd_start
     query_end = end_date
 
+    start_time = time.time()
     page = 0
     page_size = 1000
     max_pages = 100
@@ -735,7 +794,7 @@ async def get_mobile_sales(
     while page < max_pages:
         q = client.table("dashboard_summary_daily").select(
             "sale_date, total_case, total_btl, total_bl, company_id, brand_id, depot_id, headquarters_id"
-        ).gte("sale_date", query_start).lte("sale_date", query_end)
+        ).gte("sale_date", query_start).lte("sale_date", query_end).order("summary_id")
 
         if target_hq_id:
             q = q.eq("headquarters_id", target_hq_id)
@@ -756,7 +815,7 @@ async def get_mobile_sales(
         s_date = str(row.get("sale_date") or "")
 
         active_periods = []
-        if daily_start <= s_date <= end_date:
+        if s_date == end_date:
             active_periods.append("Daily")
         if mtd_start <= s_date <= end_date:
             active_periods.append("MTD")
@@ -1029,15 +1088,42 @@ async def get_mobile_sales(
 
         formatted_tsms.append(t_data)
 
-    return {
+    total_cases = 0
+    total_bottles = 0
+    company_summaries = []
+    for comp in formatted_companies:
+        p_data = comp.get("data", {}).get(selected_period, {})
+        c_cases = p_data.get("cases", 0)
+        c_btl = p_data.get("bottles", 0)
+        total_cases += c_cases
+        total_bottles += c_btl
+        if c_cases > 0 or c_btl > 0:
+            company_summaries.append(f"{comp['name']}: {c_cases:,} cases, {c_btl:,} btl")
+
+    summary_str = " | ".join(company_summaries) if company_summaries else "No sales recorded for period"
+
+    process_time_ms = round((time.time() - start_time) * 1000, 2)
+    logger.info(f"📊 [SALES DATA] Period={selected_period} | HQ={selected_hq} | DateRange={daily_start} to {end_date} | Total Cases={total_cases:,} | Total Bottles={total_bottles:,} | Records={total_records_processed:,}")
+    logger.info(f"🏢 [COMPANIES FETCHED] {summary_str}")
+    logger.info(f"⚡ [TIMING] get_mobile_sales finished in {process_time_ms}ms")
+
+    payload = {
         "status": "success",
         "latest_sale_date": latest_sale_date,
         "record_count": total_records_processed,
+        "process_time_ms": process_time_ms,
         "period": selected_period,
         "companies": formatted_companies,
         "depots": formatted_depots,
         "tsms": formatted_tsms
     }
+
+    _SALES_RESPONSE_CACHE[cache_key] = {
+        "timestamp": time.time(),
+        "data": payload
+    }
+
+    return payload
 
 
 @router.get("/cascading/groups")
@@ -1081,5 +1167,21 @@ async def get_licensee_brand_sales_endpoint(
     """
     from backend.services.mobile_cascading_service import get_licensee_brand_sales
     return get_licensee_brand_sales(licensee_id=licensee_id, date_from=date_from, date_to=date_to, period=period, depot_name=depot_name)
+
+
+@router.api_route("/cache/clear", methods=["GET", "POST"])
+async def clear_mobile_cache_endpoint():
+    """
+    Clear all in-memory backend caches (master lookups, sales payload cache).
+    """
+    global _MASTER_CACHE, _SALES_RESPONSE_CACHE
+    _MASTER_CACHE["timestamp"] = 0
+    _MASTER_CACHE["data"] = None
+    _SALES_RESPONSE_CACHE.clear()
+    logger.info("🧹 All in-memory backend sales & master caches cleared successfully.")
+    return {
+        "status": "success",
+        "message": "All backend caches flushed."
+    }
 
 

@@ -7,6 +7,12 @@
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true
+    },
+    "plugins": [
+      "@react-native-community/datetimepicker"
+    ],
+    "android": {
+      "package": "com.anonymous.mobile2"
     }
   }
 }

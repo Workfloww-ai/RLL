@@ -8,8 +8,16 @@ import {
   Modal,
   FlatList,
   Platform,
+  Image,
 } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { Period } from '../../types';
+import {
+  LocationIcon,
+  CalendarIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+} from '../../components/Icons';
 
 interface HeaderProps {
   period: Period;
@@ -22,6 +30,17 @@ interface HeaderProps {
   setSelectedHq: (hq: string) => void;
   headquartersList: string[];
   latestSaleDate?: string;
+  fetchTimeMs?: number;
+  processTimeMs?: number;
+}
+
+function formatDateDisplay(dateStr: string): string {
+  if (!dateStr) return '';
+  const parts = dateStr.split('-');
+  if (parts.length === 3) {
+    return `${parts[2]}/${parts[1]}/${parts[0]}`;
+  }
+  return dateStr;
 }
 
 export function Header({
@@ -35,35 +54,70 @@ export function Header({
   setSelectedHq,
   headquartersList,
   latestSaleDate,
+  fetchTimeMs,
+  processTimeMs,
 }: HeaderProps) {
   const periods: Period[] = ['Daily', 'MTD', 'YTD'];
   const [showHqModal, setShowHqModal] = useState(false);
+  const [pickerTarget, setPickerTarget] = useState<'from' | 'to' | null>(null);
+  const [showDatePicker, setShowDatePicker] = useState<boolean>(false);
+
+  const openDatePicker = (target: 'from' | 'to') => {
+    setPickerTarget(target);
+    setShowDatePicker(true);
+  };
+
+  const handleDateChange = (event: any, selectedDate?: Date) => {
+    setShowDatePicker(Platform.OS === 'ios');
+    if (selectedDate) {
+      const year = selectedDate.getFullYear();
+      const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
+      const day = String(selectedDate.getDate()).padStart(2, '0');
+      const formatted = `${year}-${month}-${day}`;
+
+      if (pickerTarget === 'from') {
+        setDateFrom(formatted);
+        if (period === 'Daily') {
+          setDateTo(formatted);
+        }
+      } else if (pickerTarget === 'to') {
+        setDateTo(formatted);
+      }
+    }
+  };
 
   const handlePeriodChange = (p: Period) => {
     setPeriod(p);
-    const activeDate = dateTo || dateFrom || latestSaleDate || new Date().toISOString().split('T')[0];
-    const year = activeDate.substring(0, 4);
-    const month = activeDate.substring(5, 7);
+    const targetDate = latestSaleDate || '2026-05-31';
 
-    if (p === 'MTD') {
+    if (p === 'Daily') {
+      setDateFrom(targetDate);
+      setDateTo(targetDate);
+    } else if (p === 'MTD') {
+      const year = targetDate.substring(0, 4);
+      const month = targetDate.substring(5, 7);
       setDateFrom(`${year}-${month}-01`);
-      setDateTo(activeDate);
+      setDateTo(targetDate);
     } else if (p === 'YTD') {
-      const m = parseInt(month, 10);
-      const y = parseInt(year, 10);
-      const fyStartYear = m >= 4 ? y : y - 1;
+      const year = parseInt(targetDate.substring(0, 4), 10);
+      const month = parseInt(targetDate.substring(5, 7), 10);
+      const fyStartYear = month >= 4 ? year : year - 1;
       setDateFrom(`${fyStartYear}-04-01`);
-      setDateTo(activeDate);
-    } else if (p === 'Daily') {
-      setDateFrom(activeDate);
-      setDateTo(activeDate);
+      setDateTo(targetDate);
     }
   };
 
   const adjustDate = (days: number) => {
-    const currentDate = new Date(dateFrom || latestSaleDate || new Date());
+    const baseDateStr = dateFrom || latestSaleDate || new Date().toISOString().split('T')[0];
+    const parts = baseDateStr.split('-');
+    const currentDate = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
     currentDate.setDate(currentDate.getDate() + days);
-    const dateStr = currentDate.toISOString().split('T')[0];
+
+    const y = currentDate.getFullYear();
+    const m = String(currentDate.getMonth() + 1).padStart(2, '0');
+    const d = String(currentDate.getDate()).padStart(2, '0');
+    const dateStr = `${y}-${m}-${d}`;
+
     if (period === 'Daily') {
       setDateFrom(dateStr);
       setDateTo(dateStr);
@@ -72,13 +126,27 @@ export function Header({
     }
   };
 
+  const activePickerValue = () => {
+    const rawStr = pickerTarget === 'to' ? dateTo : dateFrom;
+    if (!rawStr) return new Date();
+    const parts = rawStr.split('-');
+    if (parts.length === 3) {
+      return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+    }
+    return new Date();
+  };
+
   return (
     <View style={styles.header}>
-      {/* Row 1: Logo & Title + Period Switcher */}
+      {/* Row 1: Branding Logo & Title + Period Switcher */}
       <View style={styles.topRow}>
         <View style={styles.branding}>
           <View style={styles.logoCircle}>
-            <Text style={styles.logoText}>🍷</Text>
+            <Image
+              source={require('../../assets/rll.png')}
+              style={styles.logoImage}
+              resizeMode="contain"
+            />
           </View>
           <View style={styles.brandingText}>
             <Text style={styles.title}>Sales Dashboard</Text>
@@ -96,6 +164,7 @@ export function Header({
                 period === p ? styles.periodBtnActive : null,
               ]}
               onPress={() => handlePeriodChange(p)}
+              activeOpacity={0.8}
             >
               <Text
                 style={[
@@ -112,61 +181,91 @@ export function Header({
 
       {/* Row 2: Controls Bar */}
       <View style={styles.controlsRow}>
-        {/* Headquarters Selector */}
+        {/* Headquarters Selector Pill */}
         <TouchableOpacity
-          style={[
-            styles.hqSelector,
-            period === 'Daily' ? styles.hqSelectorWide : styles.hqSelectorNarrow,
-          ]}
+          style={styles.hqSelectorPill}
           onPress={() => setShowHqModal(true)}
+          activeOpacity={0.7}
         >
-          <Text style={styles.controlIcon}>📍</Text>
-          <Text style={styles.hqText} numberOfLines={1}>
+          <View style={styles.iconBox}>
+            <LocationIcon size={14} color="#FFFFFF" />
+          </View>
+          <Text
+            style={styles.hqText}
+            numberOfLines={1}
+            adjustsFontSizeToFit={true}
+            minimumFontScale={0.7}
+          >
             {selectedHq}
           </Text>
-          <Text style={styles.dropdownArrow}>▼</Text>
         </TouchableOpacity>
 
-        {/* Date Controls (Increment/Decrement button + Date Input) */}
+        {/* Date Controls Range Pill */}
         {period === 'Daily' ? (
-          <View style={styles.dateControlsDaily}>
+          <View style={styles.dateControlsPill}>
             <TouchableOpacity onPress={() => adjustDate(-1)} style={styles.dateAdjustBtn}>
-              <Text style={styles.adjustText}>◀</Text>
+              <ChevronLeftIcon size={14} color="#94A3B8" />
             </TouchableOpacity>
-            <TextInput
-              style={styles.dateInputText}
-              value={dateFrom}
-              onChangeText={(val) => {
-                setDateFrom(val);
-                setDateTo(val);
-              }}
-              placeholder="YYYY-MM-DD"
-              placeholderTextColor="#94A3B8"
-            />
+
+            <TouchableOpacity
+              style={styles.dateDisplayInline}
+              onPress={() => openDatePicker('from')}
+              activeOpacity={0.7}
+            >
+              <View style={styles.iconBox}>
+                <CalendarIcon size={14} color="#FFFFFF" />
+              </View>
+              <Text style={styles.dateInputText} numberOfLines={1}>
+                {formatDateDisplay(dateFrom || latestSaleDate || '') || 'Select Date'}
+              </Text>
+            </TouchableOpacity>
+
             <TouchableOpacity onPress={() => adjustDate(1)} style={styles.dateAdjustBtn}>
-              <Text style={styles.adjustText}>▶</Text>
+              <ChevronRightIcon size={14} color="#94A3B8" />
             </TouchableOpacity>
           </View>
         ) : (
-          <View style={styles.dateControlsRange}>
-            <TextInput
-              style={styles.rangeInputText}
-              value={dateFrom}
-              onChangeText={setDateFrom}
-              placeholder="Start"
-              placeholderTextColor="#94A3B8"
-            />
-            <Text style={styles.rangeSeparator}>-</Text>
-            <TextInput
-              style={styles.rangeInputText}
-              value={dateTo}
-              onChangeText={setDateTo}
-              placeholder="End"
-              placeholderTextColor="#94A3B8"
-            />
+          <View style={styles.dateControlsPill}>
+            <View style={styles.rangeInlineContainer}>
+              <TouchableOpacity
+                style={styles.dateFieldPair}
+                onPress={() => openDatePicker('from')}
+                activeOpacity={0.7}
+              >
+                <View style={styles.iconBox}>
+                  <CalendarIcon size={14} color="#FFFFFF" />
+                </View>
+                <Text style={styles.rangeInputText} numberOfLines={1}>
+                  {formatDateDisplay(dateFrom) || 'Start Date'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.dateFieldPair}
+                onPress={() => openDatePicker('to')}
+                activeOpacity={0.7}
+              >
+                <View style={styles.iconBox}>
+                  <CalendarIcon size={14} color="#FFFFFF" />
+                </View>
+                <Text style={styles.rangeInputText} numberOfLines={1}>
+                  {formatDateDisplay(dateTo) || 'End Date'}
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
         )}
       </View>
+
+      {/* DatePicker Component */}
+      {showDatePicker && (
+        <DateTimePicker
+          value={activePickerValue()}
+          mode="date"
+          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+          onChange={handleDateChange}
+        />
+      )}
 
       {/* Headquarters Selector Modal */}
       <Modal
@@ -216,172 +315,176 @@ export function Header({
 
 const styles = StyleSheet.create({
   header: {
-    backgroundColor: '#0F2042',
-    borderBottomLeftRadius: 20,
-    borderBottomRightRadius: 20,
-    paddingHorizontal: 14,
-    paddingTop: Platform.OS === 'ios' ? 12 : 16,
-    paddingBottom: 14,
+    backgroundColor: '#0A1128',
+    borderBottomLeftRadius: 22,
+    borderBottomRightRadius: 22,
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 14 : 18,
+    paddingBottom: 16,
     shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 6,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.18,
+    shadowRadius: 10,
+    elevation: 5,
   },
   topRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 14,
   },
   branding: {
     flexDirection: 'row',
     alignItems: 'center',
   },
   logoCircle: {
-    width: 28,
-    height: 28,
+    width: 40,
+    height: 40,
     backgroundColor: '#FFFFFF',
-    borderRadius: 8,
+    borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 1,
+    overflow: 'hidden',
   },
-  logoText: {
-    fontSize: 16,
+  logoImage: {
+    width: 28,
+    height: 28,
   },
   brandingText: {
-    marginLeft: 8,
+    marginLeft: 10,
   },
   title: {
     color: '#FFFFFF',
-    fontSize: 13,
+    fontSize: 17,
     fontWeight: '800',
+    letterSpacing: -0.2,
   },
   subtitle: {
     color: '#94A3B8',
-    fontSize: 9,
+    fontSize: 11.5,
     fontWeight: '500',
     marginTop: 1,
   },
   periodSwitcher: {
     flexDirection: 'row',
-    backgroundColor: 'rgba(0, 0, 0, 0.25)',
-    borderRadius: 8,
-    padding: 2,
+    backgroundColor: '#131F37',
+    borderRadius: 12,
+    padding: 3,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: 'rgba(255, 255, 255, 0.12)',
   },
   periodBtn: {
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 9,
   },
   periodBtnActive: {
     backgroundColor: '#FFFFFF',
   },
   periodBtnText: {
-    fontSize: 10,
+    fontSize: 11.5,
     color: '#94A3B8',
-    fontWeight: 'bold',
+    fontWeight: '700',
   },
   periodBtnTextActive: {
-    color: '#0F2042',
+    color: '#0F172A',
+    fontWeight: '900',
   },
   controlsRow: {
     flexDirection: 'row',
-    backgroundColor: 'rgba(0, 0, 0, 0.2)',
-    borderRadius: 12,
-    padding: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    justifyContent: 'space-between',
     alignItems: 'center',
+    gap: 8,
   },
-  hqSelector: {
+  hqSelectorPill: {
+    flex: 1,
     flexDirection: 'row',
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
+    backgroundColor: '#131F37',
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.15)',
     alignItems: 'center',
-  },
-  hqSelectorWide: {
-    flex: 1.2,
-    marginRight: 6,
-  },
-  hqSelectorNarrow: {
-    flex: 0.9,
-    marginRight: 6,
+    overflow: 'hidden',
   },
   controlIcon: {
-    fontSize: 11,
-    marginRight: 4,
+    fontSize: 13,
+    marginRight: 5,
+  },
+  iconBox: {
+    marginRight: 5,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   hqText: {
     color: '#FFFFFF',
-    fontSize: 10,
-    fontWeight: 'bold',
+    fontSize: 12,
+    fontWeight: '700',
     flex: 1,
   },
-  dropdownArrow: {
-    color: '#94A3B8',
-    fontSize: 8,
-    marginLeft: 4,
-  },
-  dateControlsDaily: {
-    flex: 1,
+  dateControlsPill: {
+    flex: 1.45,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
-    paddingHorizontal: 4,
-  },
-  dateAdjustBtn: {
-    padding: 6,
-  },
-  adjustText: {
-    color: '#94A3B8',
-    fontSize: 9,
-  },
-  dateInputText: {
-    flex: 1,
-    color: '#FFFFFF',
-    fontSize: 10,
-    fontWeight: 'bold',
-    textAlign: 'center',
-    paddingVertical: Platform.OS === 'ios' ? 6 : 2,
-  },
-  dateControlsRange: {
-    flex: 1.1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
-    paddingHorizontal: 6,
     justifyContent: 'space-between',
+    backgroundColor: '#131F37',
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    overflow: 'hidden',
+  },
+  rangeInlineContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  dateFieldPair: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    justifyContent: 'center',
+  },
+  calendarIcon: {
+    fontSize: 11,
+    marginRight: 2,
   },
   rangeInputText: {
     color: '#FFFFFF',
-    fontSize: 9,
-    fontWeight: 'bold',
-    width: 62,
+    fontSize: 11,
+    fontWeight: '700',
     textAlign: 'center',
-    paddingVertical: Platform.OS === 'ios' ? 6 : 2,
+    paddingVertical: 0,
+    paddingHorizontal: 0,
+    flex: 1,
   },
-  rangeSeparator: {
+  dateControlsDaily: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  dateDisplayInline: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: 1,
+    paddingHorizontal: 2,
+  },
+  dateAdjustBtn: {
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+  },
+  adjustText: {
     color: '#94A3B8',
-    fontSize: 9,
-    fontWeight: 'bold',
+    fontSize: 10,
+  },
+  dateInputText: {
+    color: '#FFFFFF',
+    fontSize: 11.5,
+    fontWeight: '700',
+    textAlign: 'center',
+    paddingVertical: 0,
   },
   modalOverlay: {
     flex: 1,
@@ -424,3 +527,4 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
 });
+

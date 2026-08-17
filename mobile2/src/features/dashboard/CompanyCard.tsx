@@ -2,20 +2,22 @@ import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Company, Period } from '../../types';
 import { formatNumber } from '../../lib/utils';
-import { PinIcon } from '../../components/Icons';
+import { PinIcon, ChevronRightIcon } from '../../components/Icons';
 
 interface CompanyCardProps {
   company: Company;
   period: Period;
   scaleFactor: number;
   onClick: () => void;
+  cardStyle?: object;
 }
 
-export function CompanyCard({
+export const CompanyCard = React.memo(function CompanyCard({
   company,
   period,
   scaleFactor,
   onClick,
+  cardStyle,
 }: CompanyCardProps) {
   const rawData = company.data[period];
   const cases = Math.round(rawData.cases * scaleFactor);
@@ -26,9 +28,10 @@ export function CompanyCard({
       style={[
         styles.card,
         company.isPinned ? styles.cardPinned : null,
+        cardStyle,
       ]}
       onPress={onClick}
-      activeOpacity={0.7}
+      activeOpacity={0.75}
     >
       <View style={styles.cardHeader}>
         <View style={styles.titleWrapper}>
@@ -38,7 +41,7 @@ export function CompanyCard({
             </Text>
             {company.isPinned ? (
               <View style={styles.pinnedBadge}>
-                <PinIcon color="#FFFFFF" size={8} />
+                <PinIcon color="#FFFFFF" size={10} />
                 <Text style={styles.pinnedBadgeText}>Pinned</Text>
               </View>
             ) : null}
@@ -47,24 +50,24 @@ export function CompanyCard({
             {company.brands.length} {company.brands.length === 1 ? 'Brand' : 'Brands'}
           </Text>
         </View>
-        <Text style={styles.arrowIcon}>➔</Text>
+        <ChevronRightIcon size={20} color="#94A3B8" />
       </View>
 
-      {/* Primary Metrics grid */}
+      {/* Primary Metrics Inset Box */}
       <View style={styles.metricsGrid}>
         <View style={styles.metricCell}>
           <Text style={styles.metricLabel}>CASES</Text>
-          <Text style={styles.metricValuePrimary}>{formatNumber(cases)}</Text>
+          <Text style={styles.metricValue}>{formatNumber(cases)}</Text>
         </View>
 
         <View style={styles.metricCell}>
           <Text style={styles.metricLabel}>BOTTLES</Text>
-          <Text style={styles.metricValueSecondary}>{formatNumber(bottles)}</Text>
+          <Text style={styles.metricValue}>{formatNumber(bottles)}</Text>
         </View>
       </View>
     </TouchableOpacity>
   );
-}
+});
 
 const styles = StyleSheet.create({
   card: {
@@ -72,25 +75,23 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    padding: 14,
-    marginBottom: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    marginBottom: 12,
     shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 1,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 2,
   },
   cardPinned: {
-    borderColor: '#0F2042',
-    backgroundColor: '#F8FAFC',
-    borderLeftWidth: 4,
-    borderLeftColor: '#F59E0B',
+    borderColor: '#E2E8F0',
   },
   cardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: 10,
   },
   titleWrapper: {
     flex: 1,
@@ -101,43 +102,45 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   companyName: {
-    fontSize: 13,
+    fontSize: 16,
     fontWeight: '800',
-    color: '#1E293B',
+    color: '#0F172A',
     flexShrink: 1,
+    letterSpacing: -0.2,
   },
   pinnedBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#0F2042',
-    borderRadius: 4,
-    paddingHorizontal: 4,
-    paddingVertical: 1,
-    marginLeft: 6,
+    backgroundColor: '#0F172A',
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginLeft: 8,
+    gap: 3,
   },
   pinnedBadgeText: {
     color: '#FFFFFF',
-    fontSize: 8,
-    fontWeight: 'bold',
-    marginLeft: 2,
+    fontSize: 10,
+    fontWeight: '700',
   },
   brandCount: {
-    fontSize: 10,
-    color: '#94A3B8',
+    fontSize: 12,
+    color: '#64748B',
     fontWeight: '500',
     marginTop: 2,
   },
   arrowIcon: {
-    fontSize: 12,
-    color: '#CBD5E1',
+    fontSize: 20,
+    color: '#94A3B8',
+    fontWeight: '400',
+    lineHeight: 22,
   },
   metricsGrid: {
     flexDirection: 'row',
     backgroundColor: '#F8FAFC',
-    borderRadius: 10,
-    paddingVertical: 8,
-    borderWidth: 1,
-    borderColor: '#F1F5F9',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
   },
   metricCell: {
     flex: 1,
@@ -145,21 +148,17 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   metricLabel: {
-    fontSize: 8,
+    fontSize: 10,
     fontWeight: '700',
-    color: '#94A3B8',
-    letterSpacing: 0.5,
+    color: '#64748B',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
   },
-  metricValuePrimary: {
-    fontSize: 11,
+  metricValue: {
+    fontSize: 18,
     fontWeight: '900',
-    color: '#0F2042',
-    marginTop: 2,
-  },
-  metricValueSecondary: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#334155',
-    marginTop: 2,
+    color: '#0F172A',
+    marginTop: 4,
   },
 });
+

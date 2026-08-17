@@ -8,3 +8,8 @@ declare module "*.svg" {
   const content: React.FC<SvgProps>;
   export default content;
 }
+
+declare const process: {
+  env: Record<string, string | undefined>;
+};
+

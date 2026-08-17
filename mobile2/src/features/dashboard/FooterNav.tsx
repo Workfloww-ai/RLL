@@ -22,10 +22,11 @@ export function FooterNav({ viewMode, setViewMode }: FooterNavProps) {
           viewMode === 'companies' ? styles.navBtnActive : null,
         ]}
         onPress={() => setViewMode('companies')}
+        activeOpacity={0.8}
       >
         <BuildingIcon
-          color={viewMode === 'companies' ? '#0F2042' : '#94A3B8'}
-          size={16}
+          color={viewMode === 'companies' ? '#0F172A' : '#94A3B8'}
+          size={18}
         />
         <Text
           style={[
@@ -43,10 +44,11 @@ export function FooterNav({ viewMode, setViewMode }: FooterNavProps) {
           viewMode === 'depots' ? styles.navBtnActive : null,
         ]}
         onPress={() => setViewMode('depots')}
+        activeOpacity={0.8}
       >
         <StoreIcon
-          color={viewMode === 'depots' ? '#0F2042' : '#94A3B8'}
-          size={16}
+          color={viewMode === 'depots' ? '#0F172A' : '#94A3B8'}
+          size={18}
         />
         <Text
           style={[
@@ -54,7 +56,7 @@ export function FooterNav({ viewMode, setViewMode }: FooterNavProps) {
             viewMode === 'depots' ? styles.navTextActive : null,
           ]}
         >
-          Depots
+          Groups
         </Text>
       </TouchableOpacity>
 
@@ -64,10 +66,11 @@ export function FooterNav({ viewMode, setViewMode }: FooterNavProps) {
           viewMode === 'tsm' ? styles.navBtnActive : null,
         ]}
         onPress={() => setViewMode('tsm')}
+        activeOpacity={0.8}
       >
         <UsersIcon
-          color={viewMode === 'tsm' ? '#0F2042' : '#94A3B8'}
-          size={16}
+          color={viewMode === 'tsm' ? '#0F172A' : '#94A3B8'}
+          size={18}
         />
         <Text
           style={[
@@ -85,10 +88,11 @@ export function FooterNav({ viewMode, setViewMode }: FooterNavProps) {
           viewMode === 'profile' ? styles.navBtnActive : null,
         ]}
         onPress={() => setViewMode('profile')}
+        activeOpacity={0.8}
       >
         <UserIcon
-          color={viewMode === 'profile' ? '#0F2042' : '#94A3B8'}
-          size={16}
+          color={viewMode === 'profile' ? '#0F172A' : '#94A3B8'}
+          size={18}
         />
         <Text
           style={[
@@ -105,32 +109,37 @@ export function FooterNav({ viewMode, setViewMode }: FooterNavProps) {
 
 const styles = StyleSheet.create({
   container: {
-    backgroundColor: '#0A1428',
+    backgroundColor: '#0A1128',
     borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.1)',
+    borderTopColor: 'rgba(255, 255, 255, 0.08)',
     paddingVertical: 10,
+    paddingHorizontal: 12,
     flexDirection: 'row',
     justifyContent: 'space-around',
     alignItems: 'center',
   },
   navBtn: {
     alignItems: 'center',
+    justifyContent: 'center',
     paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    minWidth: 70,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    minWidth: 80,
   },
   navBtnActive: {
     backgroundColor: '#FFFFFF',
+    borderWidth: 2,
+    borderColor: '#38BDF8',
   },
   navText: {
-    fontSize: 9,
+    fontSize: 11,
     fontWeight: '600',
     color: '#94A3B8',
-    marginTop: 4,
+    marginTop: 3,
   },
   navTextActive: {
-    color: '#0F2042',
-    fontWeight: '800',
+    color: '#0F172A',
+    fontWeight: '900',
   },
 });
+

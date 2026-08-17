@@ -1,14 +1,16 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   StatusBar,
   StyleSheet,
   View,
   Text,
   ScrollView,
+  FlatList,
   TextInput,
   TouchableOpacity,
   RefreshControl,
   Platform,
+  useWindowDimensions,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -16,6 +18,7 @@ import { logger } from './src/lib/logger';
 
 import { Company, Depot, TSM, Period, ViewMode } from './src/types';
 import { formatNumber } from './src/lib/utils';
+import { getDynamicCardDimensions } from './src/lib/responsive';
 import {
   fetchMobileSales,
   fetchUserProfile,
@@ -26,19 +29,21 @@ import {
 import { Header } from './src/features/dashboard/Header';
 import { FooterNav } from './src/features/dashboard/FooterNav';
 import { CompanyCard } from './src/features/dashboard/CompanyCard';
+import { CompanyListSkeletonList } from './src/features/dashboard/CompanyCardSkeleton';
 import { DepotsView } from './src/features/dashboard/DepotsView';
+import { GroupsCascadingView } from './src/features/dashboard/GroupsCascadingView';
 import { TsmView } from './src/features/dashboard/TsmView';
 import { BrandModal } from './src/features/dashboard/BrandModal';
 import { LoginScreen } from './src/features/auth/LoginScreen';
 import { ProfileScreen } from './src/features/profile/ProfileScreen';
-import { XIcon } from './src/components/Icons';
+import { XIcon, SearchIcon } from './src/components/Icons';
 
 export default function App() {
   const [user, setUser] = useState<any>(null);
   const [loadingSession, setLoadingSession] = useState(true);
   const [period, setPeriod] = useState<Period>('Daily');
-  const [dateFrom, setDateFrom] = useState<string>('');
-  const [dateTo, setDateTo] = useState<string>('');
+  const [dateFrom, setDateFrom] = useState<string>('2026-05-31');
+  const [dateTo, setDateTo] = useState<string>('2026-05-31');
   const [viewMode, setViewMode] = useState<ViewMode>('companies');
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -46,6 +51,10 @@ export default function App() {
   const [headquartersList, setHeadquartersList] = useState<string[]>(['All Headquarters']);
   const [apiData, setApiData] = useState<any>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingSalesData, setLoadingSalesData] = useState(true);
+
+  const { height: windowHeight } = useWindowDimensions();
+  const cardDimensions = useMemo(() => getDynamicCardDimensions(windowHeight), [windowHeight]);
 
   const scaleFactor = 1;
 
@@ -96,56 +105,130 @@ export default function App() {
     });
   }, [Boolean(user)]);
 
-  // 4. Discover latest_sale_date on initial load (with empty dates)
+  // 4. Initial sales data load, period/filter changes, and auto-date discovery
   useEffect(() => {
     if (!user) return;
-    if (dateFrom || dateTo) return; // already initialized
 
-    fetchMobileSales('', '', period, selectedHq).then((res) => {
-      if (res) {
-        setApiData(res);
-        if (res.latest_sale_date) {
-          setDateFrom(res.latest_sale_date);
-          setDateTo(res.latest_sale_date);
+    let isMounted = true;
+    const fetchSalesData = async () => {
+      setLoadingSalesData(true);
+      try {
+        const res = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq);
+        if (res && isMounted) {
+          setApiData(res);
+          if (res.latest_sale_date && !dateFrom && !dateTo) {
+            setDateFrom(res.latest_sale_date);
+            setDateTo(res.latest_sale_date);
+          }
         }
+      } finally {
+        if (isMounted) setLoadingSalesData(false);
       }
-    });
-  }, [user]);
+    };
+    fetchSalesData();
 
-  // 5. Fetch sales data when filters or dates change (after initialization)
-  const loadSalesData = async (showRefreshIndicator = false) => {
-    if (!user) return;
-    if (!dateFrom || !dateTo) return; // wait for initialization
+    // Live real-time background sync every 60 seconds
+    const intervalId = setInterval(() => {
+      if (user) {
+        fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq).then((res) => {
+          if (res && isMounted) {
+            setApiData(res);
+          }
+        });
+      }
+    }, 60000);
 
-    if (showRefreshIndicator) setRefreshing(true);
-    logger.info(`App: Loading sales data. Period=${period}, HQ=${selectedHq}, DateRange=${dateFrom} to ${dateTo}`);
+    return () => {
+      isMounted = false;
+      clearInterval(intervalId);
+    };
+  }, [user, dateFrom, dateTo, selectedHq]);
 
+  const renderCompanyItem = useCallback(
+    ({ item }: { item: Company }) => (
+      <CompanyCard
+        company={item}
+        period={period}
+        scaleFactor={scaleFactor}
+        onClick={() => setSelectedCompany(item)}
+        cardStyle={{
+          paddingVertical: cardDimensions.cardPaddingVertical,
+        }}
+      />
+    ),
+    [period, scaleFactor, cardDimensions.cardPaddingVertical]
+  );
+
+  const renderCompanyHeader = useCallback(
+    () => (
+      <>
+        {/* Search box for companies list */}
+        <View style={styles.searchWrapper}>
+          <View style={{ marginRight: 8 }}>
+            <SearchIcon size={18} color="#94A3B8" />
+          </View>
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search company"
+            placeholderTextColor="#94A3B8"
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+          />
+          {searchQuery ? (
+            <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.clearBtn}>
+              <XIcon size={12} color="#94A3B8" />
+            </TouchableOpacity>
+          ) : null}
+        </View>
+
+        {/* Active filters display */}
+        {(selectedHq !== 'All Headquarters' || searchQuery) && (
+          <View style={styles.activeFiltersPillRow}>
+            {selectedHq !== 'All Headquarters' && (
+              <View style={styles.filterPill}>
+                <Text style={styles.filterPillText}>HQ: {selectedHq}</Text>
+                <TouchableOpacity onPress={() => setSelectedHq('All Headquarters')}>
+                  <Text style={styles.filterPillClose}>✕</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+            {searchQuery && (
+              <View style={styles.filterPill}>
+                <Text style={styles.filterPillText}>"{searchQuery}"</Text>
+                <TouchableOpacity onPress={() => setSearchQuery('')}>
+                  <Text style={styles.filterPillClose}>✕</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        )}
+      </>
+    ),
+    [searchQuery, selectedHq]
+  );
+
+  const renderCompanyEmpty = useCallback(
+    () => {
+      if (loadingSalesData || !apiData) {
+        return <CompanyListSkeletonList count={5} />;
+      }
+      return (
+        <View style={styles.emptyCard}>
+          <Text style={styles.emptyText}>No companies match your filters</Text>
+        </View>
+      );
+    },
+    [loadingSalesData, apiData]
+  );
+
+  const onRefresh = async () => {
+    setRefreshing(true);
     try {
-      const res = await fetchMobileSales(dateFrom, dateTo, period, selectedHq);
-      if (res) {
-        setApiData(res);
-      } else {
-        // Token might have expired
-        logger.warn('App: Sales fetch returned null. Checking auth token...');
-        const checkToken = await AsyncStorage.getItem('rll_mobile_token');
-        if (!checkToken) {
-          logger.warn('App: Token missing. Redirecting to LoginScreen.');
-          setUser(null);
-        }
-      }
-    } catch (e) {
-      logger.error('App: Error fetching sales:', e);
+      const res = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq);
+      if (res) setApiData(res);
     } finally {
-      if (showRefreshIndicator) setRefreshing(false);
+      setRefreshing(false);
     }
-  };
-
-  useEffect(() => {
-    loadSalesData();
-  }, [dateFrom, dateTo, period, selectedHq, Boolean(user)]);
-
-  const onRefresh = () => {
-    loadSalesData(true);
   };
 
   const handleLogout = async () => {
@@ -240,6 +323,8 @@ export default function App() {
                 setSelectedHq={setSelectedHq}
                 headquartersList={headquartersList}
                 latestSaleDate={apiData?.latest_sale_date}
+                fetchTimeMs={apiData?._fetchTimeMs}
+                processTimeMs={apiData?.process_time_ms}
               />
             )}
 
@@ -248,7 +333,7 @@ export default function App() {
               <View style={styles.metricsBanner}>
                 <View style={styles.indicatorRow}>
                   <View style={styles.indicatorDot} />
-                  <Text style={styles.indicatorLabel}>{period} Total</Text>
+                  <Text style={styles.indicatorLabel}>{period} TOTAL</Text>
                 </View>
                 <Text style={styles.metricsSummaryText}>
                   <Text style={styles.boldText}>{formatNumber(totalSummary.cases)}</Text>{' '}
@@ -262,81 +347,32 @@ export default function App() {
             {/* Scrollable layout contents */}
             <View style={styles.mainContent}>
               {viewMode === 'companies' && (
-                <ScrollView
+                <FlatList
+                  data={loadingSalesData ? [] : sortedCompanies}
+                  renderItem={renderCompanyItem}
+                  keyExtractor={(item) => item.id}
+                  ListHeaderComponent={renderCompanyHeader}
+                  ListEmptyComponent={renderCompanyEmpty}
                   style={styles.scrollList}
                   contentContainerStyle={styles.scrollContent}
                   refreshControl={
-                    <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#0F2042']} />
+                    <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#0F172A']} />
                   }
-                >
-                  {/* Search box for companies list */}
-                  <View style={styles.searchWrapper}>
-                    <Text style={styles.searchIcon}>🔍</Text>
-                    <TextInput
-                      style={styles.searchInput}
-                      placeholder="Search company or brand name..."
-                      placeholderTextColor="#94A3B8"
-                      value={searchQuery}
-                      onChangeText={setSearchQuery}
-                    />
-                    {searchQuery ? (
-                      <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.clearBtn}>
-                        <XIcon size={12} color="#94A3B8" />
-                      </TouchableOpacity>
-                    ) : null}
-                  </View>
-
-                  {/* Active filters display */}
-                  {(selectedHq !== 'All Headquarters' || searchQuery) && (
-                    <View style={styles.activeFiltersPillRow}>
-                      {selectedHq !== 'All Headquarters' && (
-                        <View style={styles.filterPill}>
-                          <Text style={styles.filterPillText}>HQ: {selectedHq}</Text>
-                          <TouchableOpacity onPress={() => setSelectedHq('All Headquarters')}>
-                            <Text style={styles.filterPillClose}>✕</Text>
-                          </TouchableOpacity>
-                        </View>
-                      )}
-                      {searchQuery && (
-                        <View style={styles.filterPill}>
-                          <Text style={styles.filterPillText}>"{searchQuery}"</Text>
-                          <TouchableOpacity onPress={() => setSearchQuery('')}>
-                            <Text style={styles.filterPillClose}>✕</Text>
-                          </TouchableOpacity>
-                        </View>
-                      )}
-                    </View>
-                  )}
-
-                  {/* List Cards */}
-                  {sortedCompanies.length === 0 ? (
-                    <View style={styles.emptyCard}>
-                      <Text style={styles.emptyText}>
-                        {apiData ? 'No companies match your filters' : 'Loading sales data...'}
-                      </Text>
-                    </View>
-                  ) : (
-                    sortedCompanies.map((c) => (
-                      <CompanyCard
-                        key={c.id}
-                        company={c}
-                        period={period}
-                        scaleFactor={scaleFactor}
-                        onClick={() => setSelectedCompany(c)}
-                      />
-                    ))
-                  )}
-                </ScrollView>
+                  initialNumToRender={10}
+                  maxToRenderPerBatch={10}
+                  windowSize={5}
+                  removeClippedSubviews={Platform.OS === 'android'}
+                />
               )}
 
-              {/* View Mode: DEPOTS */}
+              {/* View Mode: GROUPS */}
               {viewMode === 'depots' && (
                 <View style={styles.tabViewWrapper}>
-                  <DepotsView
-                    depots={(apiData && apiData.depots) ? apiData.depots : []}
+                  <GroupsCascadingView
                     period={period}
+                    dateFrom={dateFrom}
+                    dateTo={dateTo}
                     scaleFactor={scaleFactor}
-                    selectedHq={selectedHq}
                   />
                 </View>
               )}
@@ -379,7 +415,7 @@ export default function App() {
 const styles = StyleSheet.create({
   appContainer: {
     flex: 1,
-    backgroundColor: '#0F2042',
+    backgroundColor: '#0A1128',
   },
   center: {
     justifyContent: 'center',
@@ -399,43 +435,41 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#E2E8F0',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.02,
-    shadowRadius: 2,
-    elevation: 1,
   },
   indicatorRow: {
     flexDirection: 'row',
     alignItems: 'center',
   },
   indicatorDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: 7,
+    height: 7,
+    borderRadius: 4,
     backgroundColor: '#2563EB',
-    marginRight: 6,
+    marginRight: 8,
   },
   indicatorLabel: {
-    fontSize: 9,
-    fontWeight: 'bold',
-    color: '#64748B',
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#475569',
     textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
   metricsSummaryText: {
-    fontSize: 12,
+    fontSize: 13,
   },
   boldText: {
     fontWeight: '900',
-    color: '#0F2042',
+    color: '#0F172A',
+    fontSize: 14,
   },
   lightText: {
-    color: '#94A3B8',
-    fontSize: 9,
+    color: '#64748B',
+    fontSize: 11,
+    fontWeight: '500',
   },
   mainContent: {
     flex: 1,
@@ -449,9 +483,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    padding: 16,
-    paddingTop: 12,
-    paddingBottom: 30,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 24,
   },
   searchWrapper: {
     flexDirection: 'row',
@@ -459,24 +493,22 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    marginBottom: 12,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    marginBottom: 14,
+    height: 44,
   },
   searchIcon: {
-    fontSize: 14,
-    marginRight: 8,
+    fontSize: 15,
+    marginRight: 10,
+    color: '#94A3B8',
   },
   searchInput: {
     flex: 1,
-    fontSize: 12,
-    color: '#334155',
-    paddingVertical: 10,
+    fontSize: 14,
+    color: '#0F172A',
+    fontWeight: '500',
+    paddingVertical: 0,
   },
   clearBtn: {
     padding: 6,
@@ -524,3 +556,4 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
   },
 });
+

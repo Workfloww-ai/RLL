@@ -422,7 +422,7 @@ def fetch_cascading_groups_db(date_from: str, date_to: str) -> List[Dict[str, An
             "p_date_from": date_from,
             "p_date_to": date_to
         }).execute()
-        if res.data is not None:
+        if res.data and len(res.data) > 0:
             return [
                 {
                     "group_id": str(r["group_id"]),
@@ -437,16 +437,27 @@ def fetch_cascading_groups_db(date_from: str, date_to: str) -> List[Dict[str, An
     except Exception as rpc_err:
         logger.info(f"RPC get_cascading_groups_summary unavailable, using fallback query: {rpc_err}")
 
-    # 2. Fallback query implementation
+    # 2. Optimized & Paginated Database Implementation
     try:
         g_res = client.table("groups").select("group_id, group_name").eq("is_active", True).execute()
         all_groups = {str(g["group_id"]): g["group_name"] for g in (g_res.data or [])}
 
-        l_res = client.table("licensees").select("licensee_id, group_id, depot_id, depots(name)").eq("is_active", True).execute()
+        # Paginate all licensees to avoid 1000 row cap
+        licensees_rows = []
+        l_offset = 0
+        l_limit = 1000
+        while True:
+            l_res = client.table("licensees").select("licensee_id, group_id, depot_id, depots(name)").range(l_offset, l_offset + l_limit - 1).execute()
+            batch = l_res.data or []
+            licensees_rows.extend(batch)
+            if len(batch) < l_limit:
+                break
+            l_offset += l_limit
+
         group_lics: Dict[str, set] = {}
         group_depots: Dict[str, set] = {}
         lic_to_group: Dict[str, str] = {}
-        for lic in (l_res.data or []):
+        for lic in licensees_rows:
             gid = str(lic.get("group_id")) if lic.get("group_id") else None
             lid = str(lic.get("licensee_id")) if lic.get("licensee_id") else None
             depot_obj = lic.get("depots") or {}
@@ -461,28 +472,31 @@ def fetch_cascading_groups_db(date_from: str, date_to: str) -> List[Dict[str, An
                 if dname:
                     group_depots[gid].add(dname)
 
-        sf_res = client.table("sales_fact").select(
-            "licensee_id, total_case, total_btl, brands!inner(company_id, companies!inner(company_name))"
-        ).gte("sale_date", date_from).lte("sale_date", date_to).execute()
-
+        # Paginate sales_fact to avoid 1000 row cap
         group_metrics: Dict[str, Dict[str, Any]] = {}
-        for sf in (sf_res.data or []):
-            brand_obj = sf.get("brands") or {}
-            comp_obj = brand_obj.get("companies") if isinstance(brand_obj, dict) else {}
-            cname = comp_obj.get("company_name", "") if isinstance(comp_obj, dict) else ""
-            if cname and cname.lower().strip() == "others":
-                continue
+        sf_offset = 0
+        sf_limit = 1000
+        while True:
+            sf_res = client.table("sales_fact").select(
+                "licensee_id, total_case, total_btl"
+            ).gte("sale_date", date_from).lte("sale_date", date_to).range(sf_offset, sf_offset + sf_limit - 1).execute()
+            
+            batch = sf_res.data or []
+            for sf in batch:
+                lid = str(sf.get("licensee_id")) if sf.get("licensee_id") else None
+                gid = lic_to_group.get(lid)
+                if not gid or gid not in all_groups:
+                    continue
 
-            lid = str(sf.get("licensee_id")) if sf.get("licensee_id") else None
-            gid = lic_to_group.get(lid)
-            if not gid or gid not in all_groups:
-                continue
+                if gid not in group_metrics:
+                    group_metrics[gid] = {"cases": 0.0, "bottles": 0.0}
 
-            if gid not in group_metrics:
-                group_metrics[gid] = {"cases": 0.0, "bottles": 0.0}
+                group_metrics[gid]["cases"] += float(sf.get("total_case") or 0)
+                group_metrics[gid]["bottles"] += float(sf.get("total_btl") or 0)
 
-            group_metrics[gid]["cases"] += float(sf.get("total_case") or 0)
-            group_metrics[gid]["bottles"] += float(sf.get("total_btl") or 0)
+            if len(batch) < sf_limit:
+                break
+            sf_offset += sf_limit
 
         results = []
         for gid, gname in all_groups.items():
