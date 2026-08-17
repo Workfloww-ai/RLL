@@ -9,6 +9,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Image,
 } from 'react-native';
 import {
   KeyIcon,
@@ -17,6 +18,8 @@ import {
   CheckCircleIcon,
   ArrowRightIcon,
 } from '../../components/Icons';
+
+import LogoSvg from '../../assets/rll logo.svg';
 
 import { sendMobileOTP, verifyMobileOTP } from '../../lib/api';
 import { logger } from '../../lib/logger';
@@ -138,19 +141,21 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         <View style={styles.container}>
           {/* Top Branding Header */}
           <View style={styles.brandingHeader}>
-            <View style={styles.logoBadge}>
-              <Text style={styles.logoText}>🛡️</Text>
-            </View>
-            <Text style={styles.titleText}>RLL Mobile Analytics</Text>
-            <Text style={styles.subtitleText}>Rajasthan Liquor Limited Executive Portal</Text>
+            <LogoSvg
+              width={80}
+              height={80}
+              style={styles.logoImage}
+            />
+            <Text style={styles.titleText}>RLL Sales Dashboard</Text>
+            <Text style={styles.subtitleText}>Rajasthan Liquor Limited</Text>
           </View>
 
           {/* STEP 1: Phone Input Form */}
           {step === 'credentials' && (
             <View style={styles.formCard}>
               <View style={styles.formHeader}>
-                <Text style={styles.formTitle}>Executive Sign In</Text>
-                <Text style={styles.formBadge}>SMS OTP Auth</Text>
+                <Text style={styles.formTitle}>Sign In</Text>
+                {/* <Text style={styles.formBadge}>SMS OTP Auth</Text> */}
               </View>
 
               {error ? (
@@ -162,11 +167,10 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
               <View style={styles.inputGroup}>
                 <Text style={styles.label}>Mobile Phone Number</Text>
                 <View style={styles.inputWrapper}>
-                  <Text style={styles.inputIcon}>📞</Text>
                   <TextInput
                     style={styles.textInput}
-                    placeholder="+91 98291 41481"
-                    placeholderTextColor="#64748B"
+                    placeholder="Enter Mobile Number"
+                    placeholderTextColor="#94A3B8"
                     keyboardType="phone-pad"
                     value={phone}
                     onChangeText={setPhone}
@@ -180,11 +184,11 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                 disabled={loading}
               >
                 {loading ? (
-                  <ActivityIndicator color="#0F2042" size="small" />
+                  <ActivityIndicator color="#FFFFFF" size="small" />
                 ) : (
                   <View style={styles.buttonInner}>
-                    <Text style={styles.buttonText}>Send 6-Digit OTP Code</Text>
-                    <ArrowRightIcon color="#0F2042" size={14} />
+                    <Text style={styles.buttonText}>Get OTP</Text>
+                    <ArrowRightIcon color="#FFFFFF" size={14} />
                   </View>
                 )}
               </TouchableOpacity>
@@ -195,15 +199,15 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
           {step === 'otp' && (
             <View style={styles.formCard}>
               <View style={styles.otpHeader}>
-                <View style={styles.otpIconCircle}>
+                {/* <View style={styles.otpIconCircle}>
                   <KeyIcon color="#F59E0B" size={24} />
-                </View>
+                </View> */}
                 <Text style={styles.otpTitle}>Enter Verification Code</Text>
                 <Text style={styles.otpSubtitle}>
                   OTP sent to <Text style={styles.highlightPhone}>{phone}</Text>
                 </Text>
                 <View style={styles.validBadge}>
-                  <CheckCircleIcon color="#10B981" size={12} />
+                  {/* <CheckCircleIcon color="#10B981" size={12} /> */}
                   <Text style={styles.validText}>Valid for 5 minutes</Text>
                 </View>
               </View>
@@ -245,11 +249,11 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                 disabled={loading || otpDigits.join('').length !== 6}
               >
                 {loading ? (
-                  <ActivityIndicator color="#0F2042" size="small" />
+                  <ActivityIndicator color="#FFFFFF" size="small" />
                 ) : (
                   <View style={styles.buttonInner}>
                     <Text style={styles.buttonText}>Verify OTP & Sign In</Text>
-                    <ArrowRightIcon color="#0F2042" size={14} />
+                    <ArrowRightIcon color="#FFFFFF" size={14} />
                   </View>
                 )}
               </TouchableOpacity>
@@ -259,7 +263,7 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                   onPress={handleSendOTP}
                   style={styles.actionBtn}
                 >
-                  <RefreshIcon color="#F59E0B" size={12} />
+                  <RefreshIcon color="#0F2042" size={12} />
                   <Text style={styles.actionText}>Resend OTP</Text>
                 </TouchableOpacity>
 
@@ -272,7 +276,7 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                   }}
                   style={styles.actionBtn}
                 >
-                  <EditIcon color="#F59E0B" size={12} />
+                  {/* <EditIcon color="#0F2042" size={12} /> */}
                   <Text style={styles.actionText}>Edit Phone</Text>
                 </TouchableOpacity>
               </View>
@@ -281,8 +285,8 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
 
           {/* Footer Info */}
           <View style={styles.footer}>
-            <Text style={styles.footerText}>Secured with Dovesoft SMS Gateway</Text>
-            <Text style={styles.footerVersion}>v1.0 Enterprise Mobile Release</Text>
+            <Text style={styles.footerText}>Powered by Workfloww.ai</Text>
+            {/* <Text style={styles.footerVersion}>v1.0 Enterprise Mobile Release</Text> */}
           </View>
         </View>
       </ScrollView>
@@ -293,7 +297,7 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
 const styles = StyleSheet.create({
   keyboardContainer: {
     flex: 1,
-    backgroundColor: '#0F2042',
+    backgroundColor: '#F8FAFC',
   },
   scrollContent: {
     flexGrow: 1,
@@ -310,53 +314,49 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 20,
   },
-  logoBadge: {
-    width: 60,
-    height: 60,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
+  logoImage: {
+    width: 80,
+    height: 80,
     marginBottom: 12,
-  },
-  logoText: {
-    fontSize: 28,
   },
   titleText: {
     fontSize: 20,
     fontWeight: '900',
-    color: '#FFFFFF',
+    color: '#0F2042',
     letterSpacing: -0.5,
   },
   subtitleText: {
     fontSize: 12,
-    color: '#94A3B8',
+    color: '#64748B',
     marginTop: 4,
     textAlign: 'center',
   },
   formCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: '#FFFFFF',
     borderRadius: 24,
+    padding: 24,
+    marginVertical: 24,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    padding: 20,
-    marginVertical: 40,
+    borderColor: '#F1F5F9',
+    shadowColor: '#0F2042',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.03,
+    shadowRadius: 16,
+    elevation: 2,
   },
   formHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+    borderBottomColor: '#F1F5F9',
     paddingBottom: 12,
     marginBottom: 20,
   },
   formTitle: {
     fontSize: 13,
     fontWeight: 'bold',
-    color: '#FFFFFF',
+    color: '#0F2042',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
@@ -366,29 +366,29 @@ const styles = StyleSheet.create({
     color: '#F59E0B',
   },
   errorBanner: {
-    backgroundColor: 'rgba(239, 68, 68, 0.2)',
-    borderColor: 'rgba(239, 68, 68, 0.4)',
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FCA5A5',
     borderWidth: 1,
     borderRadius: 12,
     padding: 10,
     marginBottom: 16,
   },
   errorText: {
-    color: '#FECACA',
+    color: '#991B1B',
     fontSize: 12,
     textAlign: 'center',
     fontWeight: '500',
   },
   successBanner: {
-    backgroundColor: 'rgba(16, 185, 129, 0.2)',
-    borderColor: 'rgba(16, 185, 129, 0.4)',
+    backgroundColor: '#ECFDF5',
+    borderColor: '#A7F3D0',
     borderWidth: 1,
     borderRadius: 12,
     padding: 10,
     marginBottom: 16,
   },
   successText: {
-    color: '#D1FAE5',
+    color: '#065F46',
     fontSize: 12,
     textAlign: 'center',
     fontWeight: '500',
@@ -399,7 +399,7 @@ const styles = StyleSheet.create({
   label: {
     fontSize: 11,
     fontWeight: 'bold',
-    color: '#94A3B8',
+    color: '#64748B',
     textTransform: 'uppercase',
     marginBottom: 6,
     letterSpacing: 0.5,
@@ -407,29 +407,27 @@ const styles = StyleSheet.create({
   inputWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(15, 20, 40, 0.6)',
+    backgroundColor: '#FFFFFF',
     borderWidth: 1,
-    borderColor: '#334155',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-  },
-  inputIcon: {
-    marginRight: 10,
-    fontSize: 16,
+    borderColor: '#E2E8F0',
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    height: 52,
   },
   textInput: {
     flex: 1,
-    color: '#FFFFFF',
-    fontSize: 14,
-    paddingVertical: Platform.OS === 'ios' ? 12 : 8,
+    color: '#0F2042',
+    fontSize: 15,
+    fontWeight: '500',
+    height: '100%',
   },
   button: {
-    backgroundColor: '#F59E0B',
-    borderRadius: 12,
-    paddingVertical: 14,
+    backgroundColor: '#0F2042',
+    borderRadius: 14,
+    height: 52,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 8,
+    marginTop: 12,
   },
   buttonDisabled: {
     opacity: 0.5,
@@ -440,7 +438,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   buttonText: {
-    color: '#0F2042',
+    color: '#FFFFFF',
     fontSize: 13,
     fontWeight: 'bold',
     marginRight: 6,
@@ -453,9 +451,9 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    backgroundColor: '#FEF3C7',
     borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.3)',
+    borderColor: '#FDE68A',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 10,
@@ -463,22 +461,22 @@ const styles = StyleSheet.create({
   otpTitle: {
     fontSize: 15,
     fontWeight: 'bold',
-    color: '#FFFFFF',
+    color: '#0F2042',
   },
   otpSubtitle: {
     fontSize: 12,
-    color: '#94A3B8',
+    color: '#64748B',
     marginTop: 4,
   },
   highlightPhone: {
     fontWeight: 'bold',
-    color: '#F59E0B',
+    color: '#0F2042',
   },
   validBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-    borderColor: 'rgba(16, 185, 129, 0.2)',
+    backgroundColor: '#ECFDF5',
+    borderColor: '#A7F3D0',
     borderWidth: 1,
     borderRadius: 8,
     paddingHorizontal: 8,
@@ -486,7 +484,7 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   validText: {
-    color: '#34D399',
+    color: '#059669',
     fontSize: 10,
     fontWeight: '600',
     marginLeft: 4,
@@ -497,22 +495,27 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   otpInput: {
-    width: 42,
-    height: 48,
-    borderWidth: 1.5,
-    borderColor: '#475569',
+    width: 44,
+    height: 52,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
     borderRadius: 12,
-    backgroundColor: 'rgba(15, 20, 40, 0.8)',
-    color: '#F59E0B',
+    backgroundColor: '#FFFFFF',
+    color: '#0F2042',
     fontSize: 18,
-    fontWeight: '900',
+    fontWeight: '600',
     textAlign: 'center',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.02,
+    shadowRadius: 4,
+    elevation: 1,
   },
   otpActions: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.1)',
+    borderTopColor: '#F1F5F9',
     paddingTop: 16,
     marginTop: 16,
   },
@@ -521,7 +524,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   actionText: {
-    color: '#94A3B8',
+    color: '#0F2042',
     fontSize: 11,
     fontWeight: '600',
     marginLeft: 4,
@@ -530,11 +533,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   footerText: {
-    color: '#64748B',
+    color: '#94A3B8',
     fontSize: 10,
   },
   footerVersion: {
-    color: '#475569',
+    color: '#CBD5E1',
     fontSize: 9,
     marginTop: 2,
   },
