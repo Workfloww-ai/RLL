@@ -1,7 +1,3 @@
-declare module '@env' {
-  export const BASE_URL: string;
-}
-
 declare module "*.svg" {
   import React from 'react';
   import { SvgProps } from "react-native-svg";
@@ -12,4 +8,3 @@ declare module "*.svg" {
 declare const process: {
   env: Record<string, string | undefined>;
 };
-

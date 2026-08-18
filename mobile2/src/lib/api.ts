@@ -3,15 +3,6 @@ import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { logger } from './logger';
 
-let envBaseUrl: string | undefined;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const dotenv = require('@env');
-  envBaseUrl = dotenv.BASE_URL;
-} catch {
-  envBaseUrl = undefined;
-}
-
 function formatBaseUrl(url: string): string {
   let formatted = url.trim();
   if (!formatted.startsWith('http://') && !formatted.startsWith('https://')) {
@@ -25,8 +16,8 @@ function formatBaseUrl(url: string): string {
 }
 
 export function getApiBaseUrl(): string {
-  // 1. Explicit env override if set
-  const envUrl = envBaseUrl || process.env.EXPO_PUBLIC_API_URL || process.env.REACT_NATIVE_API_URL;
+  // 1. Native Expo public environment variable
+  const envUrl = process.env.EXPO_PUBLIC_API_URL;
   if (envUrl && envUrl !== 'undefined' && envUrl.trim() !== '') {
     return formatBaseUrl(envUrl);
   }
