@@ -41,7 +41,7 @@ export const CompanyCard = React.memo(function CompanyCard({
             </Text>
             {company.isPinned ? (
               <View style={styles.pinnedBadge}>
-                <PinIcon color="#FFFFFF" size={10} />
+                <PinIcon color="#FFFFFF" size={9} />
                 <Text style={styles.pinnedBadgeText}>Pinned</Text>
               </View>
             ) : null}
@@ -50,7 +50,7 @@ export const CompanyCard = React.memo(function CompanyCard({
             {company.brands.length} {company.brands.length === 1 ? 'Brand' : 'Brands'}
           </Text>
         </View>
-        <ChevronRightIcon size={20} color="#94A3B8" />
+        <ChevronRightIcon size={16} color="#94A3B8" />
       </View>
 
       {/* Primary Metrics Inset Box */}
@@ -75,14 +75,13 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    marginBottom: 12,
+    padding: 14,
+    marginBottom: 10,
     shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.03,
+    shadowRadius: 3,
+    elevation: 1,
   },
   cardPinned: {
     borderColor: '#E2E8F0',
@@ -91,7 +90,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: 8,
   },
   titleWrapper: {
     flex: 1,
@@ -102,7 +101,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   companyName: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '800',
     color: '#0F172A',
     flexShrink: 1,
@@ -120,27 +119,23 @@ const styles = StyleSheet.create({
   },
   pinnedBadgeText: {
     color: '#FFFFFF',
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '700',
   },
   brandCount: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#64748B',
-    fontWeight: '500',
+    fontWeight: '600',
     marginTop: 2,
-  },
-  arrowIcon: {
-    fontSize: 20,
-    color: '#94A3B8',
-    fontWeight: '400',
-    lineHeight: 22,
   },
   metricsGrid: {
     flexDirection: 'row',
     backgroundColor: '#F8FAFC',
-    borderRadius: 12,
-    paddingVertical: 12,
+    borderRadius: 10,
+    paddingVertical: 8,
     paddingHorizontal: 8,
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
   },
   metricCell: {
     flex: 1,
@@ -148,17 +143,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   metricLabel: {
-    fontSize: 10,
+    fontSize: 8,
     fontWeight: '700',
-    color: '#64748B',
-    letterSpacing: 0.6,
+    color: '#94A3B8',
+    letterSpacing: 0.5,
     textTransform: 'uppercase',
   },
   metricValue: {
-    fontSize: 18,
+    fontSize: 14,
     fontWeight: '900',
     color: '#0F172A',
-    marginTop: 4,
+    marginTop: 2,
   },
 });
-

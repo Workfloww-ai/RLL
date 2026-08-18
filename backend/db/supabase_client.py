@@ -404,8 +404,95 @@ def get_batch_details(batch_id: Any) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Cascading Sales Database Queries (Groups, Licensees, Brand Sales)
-# ---------------------------------------------------------------------------
+def fetch_cascading_groups_json_db(
+    target_date: str,
+    mtd_start: str,
+    ytd_start: str,
+    exclude_company: str = "Others"
+) -> List[Dict[str, Any]]:
+    """
+    Calls get_cascading_groups_summary_json PostgreSQL RPC.
+    Returns JSONB array of groups with single-pass Daily, MTD, and YTD metrics.
+    Guarantees 0 PostgREST row truncation.
+    """
+    client = get_supabase_client()
+    if not client:
+        return []
+
+    try:
+        res = client.rpc("get_cascading_groups_summary_json", {
+            "p_target_date": target_date,
+            "p_mtd_start": mtd_start,
+            "p_ytd_start": ytd_start,
+            "p_exclude_company": exclude_company,
+        }).execute()
+        return res.data or []
+    except Exception as e:
+        logger.error(f"fetch_cascading_groups_json_db error: {e}")
+        return fetch_cascading_groups_db(date_from=mtd_start, date_to=target_date)
+
+
+def fetch_group_licensees_json_db(
+    group_id: str,
+    target_date: str,
+    mtd_start: str,
+    ytd_start: str,
+    depot_name: Optional[str] = None,
+    exclude_company: str = "Others"
+) -> List[Dict[str, Any]]:
+    """
+    Calls get_group_licensees_summary_json PostgreSQL RPC.
+    Returns JSONB array of licensees under a group with Daily, MTD, and YTD metrics.
+    """
+    client = get_supabase_client()
+    if not client:
+        return []
+
+    try:
+        res = client.rpc("get_group_licensees_summary_json", {
+            "p_group_id": group_id,
+            "p_target_date": target_date,
+            "p_mtd_start": mtd_start,
+            "p_ytd_start": ytd_start,
+            "p_depot_name": depot_name or "",
+            "p_exclude_company": exclude_company,
+        }).execute()
+        return res.data or []
+    except Exception as e:
+        logger.error(f"fetch_group_licensees_json_db error: {e}")
+        return fetch_group_licensees_db(group_id=group_id, date_from=mtd_start, date_to=target_date, depot_name=depot_name)
+
+
+def fetch_licensee_brand_sales_json_db(
+    licensee_id: str,
+    target_date: str,
+    mtd_start: str,
+    ytd_start: str,
+    depot_name: Optional[str] = None,
+    exclude_company: str = "Others"
+) -> List[Dict[str, Any]]:
+    """
+    Calls get_licensee_brand_sales_summary_json PostgreSQL RPC.
+    Returns JSONB array of brand sales under a licensee with Daily, MTD, and YTD metrics.
+    """
+    client = get_supabase_client()
+    if not client:
+        return []
+
+    try:
+        res = client.rpc("get_licensee_brand_sales_summary_json", {
+            "p_licensee_id": licensee_id,
+            "p_target_date": target_date,
+            "p_mtd_start": mtd_start,
+            "p_ytd_start": ytd_start,
+            "p_depot_name": depot_name or "",
+            "p_exclude_company": exclude_company,
+        }).execute()
+        return res.data or []
+    except Exception as e:
+        logger.error(f"fetch_licensee_brand_sales_json_db error: {e}")
+        return fetch_licensee_brand_sales_db(licensee_id=licensee_id, date_from=mtd_start, date_to=target_date, depot_name=depot_name)
+
 
 def fetch_cascading_groups_db(date_from: str, date_to: str) -> List[Dict[str, Any]]:
     """
@@ -696,4 +783,118 @@ def fetch_licensee_brand_sales_db(
         return results
     except Exception as e:
         logger.error(f"Fallback fetch_licensee_brand_sales_db error: {e}")
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Mobile Sales RPC Helper
+# ---------------------------------------------------------------------------
+
+def call_mobile_sales_rpc(
+    start_date: str,
+    target_date: str,
+    hq_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Calls the get_mobile_sales_summary PostgreSQL RPC function.
+    Returns pre-aggregated rows: [{company_id, brand_id, depot_id,
+    headquarters_id, total_cases, total_bottles, total_bl}, ...]
+    Instead of fetching thousands of raw rows this returns ~50-200 aggregated rows.
+    """
+    client = get_supabase_client()
+    if not client:
+        logger.warning("call_mobile_sales_rpc: No Supabase client available.")
+        return []
+    try:
+        params: Dict[str, Any] = {
+            "p_start_date": start_date,
+            "p_target_date": target_date,
+        }
+        if hq_id:
+            params["p_hq_id"] = hq_id
+        res = client.rpc("get_mobile_sales_summary", params).execute()
+        return res.data or []
+    except Exception as e:
+        logger.error(f"call_mobile_sales_rpc error (start={start_date}, target={target_date}, hq={hq_id}): {e}")
+        return []
+
+
+def call_mobile_tsm_sales_rpc(
+    start_date: str,
+    end_date: str,
+) -> List[Dict[str, Any]]:
+    """
+    Calls the get_mobile_tsm_sales_summary PostgreSQL RPC function.
+    Returns pre-aggregated rows: [{user_id, company_id, brand_id, total_cases, total_bottles, total_bl}, ...]
+    Aggregates user_sales_fact in DB instead of paginating 30,000+ rows.
+    """
+    client = get_supabase_client()
+    if not client:
+        logger.warning("call_mobile_tsm_sales_rpc: No Supabase client available.")
+        return []
+    try:
+        params: Dict[str, Any] = {
+            "p_start_date": start_date,
+            "p_end_date": end_date,
+        }
+        res = client.rpc("get_mobile_tsm_sales_summary", params).execute()
+        return res.data or []
+    except Exception as e:
+        logger.error(f"call_mobile_tsm_sales_rpc error (start={start_date}, end={end_date}): {e}")
+        return []
+
+
+def call_mobile_sales_json_rpc(
+    target_date: str,
+    mtd_start: str,
+    ytd_start: str,
+    hq_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Calls get_mobile_sales_summary_json PostgreSQL RPC function.
+    Returns JSONB object {'companies': [...], 'depots': [...]} containing 100% complete
+    untruncated aggregated records for all companies and depots.
+    """
+    client = get_supabase_client()
+    if not client:
+        logger.warning("call_mobile_sales_json_rpc: No Supabase client available.")
+        return {"companies": [], "depots": []}
+    try:
+        params: Dict[str, Any] = {
+            "p_target_date": target_date,
+            "p_mtd_start": mtd_start,
+            "p_ytd_start": ytd_start,
+        }
+        if hq_id:
+            params["p_hq_id"] = hq_id
+        res = client.rpc("get_mobile_sales_summary_json", params).execute()
+        return res.data or {"companies": [], "depots": []}
+    except Exception as e:
+        logger.error(f"call_mobile_sales_json_rpc error (target={target_date}, mtd={mtd_start}, ytd={ytd_start}, hq={hq_id}): {e}")
+        return {"companies": [], "depots": []}
+
+
+def call_mobile_tsm_sales_json_rpc(
+    target_date: str,
+    mtd_start: str,
+    ytd_start: str,
+) -> List[Dict[str, Any]]:
+    """
+    Calls get_mobile_tsm_sales_summary_json PostgreSQL RPC function.
+    Returns JSONB list [...] of untruncated TSM/ASE sales fact aggregations.
+    """
+    client = get_supabase_client()
+    if not client:
+        logger.warning("call_mobile_tsm_sales_json_rpc: No Supabase client available.")
+        return []
+    try:
+        params: Dict[str, Any] = {
+            "p_target_date": target_date,
+            "p_mtd_start": mtd_start,
+            "p_ytd_start": ytd_start,
+        }
+        res = client.rpc("get_mobile_tsm_sales_summary_json", params).execute()
+        return res.data or []
+    except Exception as e:
+        logger.error(f"call_mobile_tsm_sales_json_rpc error (target={target_date}, mtd={mtd_start}, ytd={ytd_start}): {e}")
         return []

@@ -435,12 +435,7 @@ export default function TerritoryManagement() {
           >
             <Filter className="w-3.5 h-3.5" /> Filter Table
           </button>
-          <button 
-            onClick={fetchData} 
-            className="flex items-center gap-2 px-3 py-2 border border-slate-200 text-xs font-bold text-slate-600 rounded bg-white hover:bg-slate-50"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh
-          </button>
+          {/* Manual Refresh Button removed: Data syncs automatically */}
         </div>
       </div>
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,12 +7,13 @@ import {
   TextInput,
   TouchableOpacity,
   ActivityIndicator,
-  RefreshControl,
   Modal,
   FlatList,
+  BackHandler,
 } from 'react-native';
 import { Period } from '../../types';
 import { formatNumber } from '../../lib/utils';
+import { GroupListSkeletonList } from '../../components/SkeletonLoaders';
 import {
   fetchCascadingGroups,
   fetchGroupLicensees,
@@ -57,7 +58,6 @@ export function GroupsCascadingView({
 
   // Filtering & controls
   const [loading, setLoading] = useState<boolean>(false);
-  const [refreshing, setRefreshing] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [sortOption, setSortOption] = useState<'az' | 'za' | 'cases_desc' | 'cases_asc'>('az');
   const [showSortModal, setShowSortModal] = useState<boolean>(false);
@@ -105,7 +105,6 @@ export function GroupsCascadingView({
       setGroups([]);
     } finally {
       if (showIndicator) setLoading(false);
-      setRefreshing(false);
     }
   };
 
@@ -197,33 +196,41 @@ export function GroupsCascadingView({
   };
 
   // Sync Level 1 on mount or date/period changes
+  // Debounce ref — avoids firing multiple rapid fetches when date/period changes quickly
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
-    if (level === 1) {
-      loadGroups(true);
-    } else if (level === 2 && selectedGroup) {
-      loadGroupLicensees(selectedGroup.group_id);
-    } else if (level === 3 && selectedLicensee) {
-      loadLicenseeBrandSales(selectedLicensee.licensee_id);
-    }
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    debounceTimerRef.current = setTimeout(() => {
+      if (level === 1) {
+        loadGroups(true);
+      } else if (level === 2 && selectedGroup) {
+        loadGroupLicensees(selectedGroup.group_id);
+      } else if (level === 3 && selectedLicensee) {
+        loadLicenseeBrandSales(selectedLicensee.licensee_id);
+      }
+    }, 150);
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    };
   }, [dateFrom, dateTo, period]);
 
-  // Handle drill-down actions
-  const handleSelectGroup = (g: any) => {
+  const handleSelectGroup = useCallback((g: any) => {
     setSelectedGroup(g);
     setSelectedLicensee(null);
     setLevel(2);
     resetFiltersOnLevelChange();
     loadGroupLicensees(g.group_id);
-  };
+  }, []);
 
-  const handleSelectLicensee = (l: any) => {
+  const handleSelectLicensee = useCallback((l: any) => {
     setSelectedLicensee(l);
     setLevel(3);
     resetFiltersOnLevelChange();
     loadLicenseeBrandSales(l.licensee_id);
-  };
+  }, []);
 
-  const handleGoBack = () => {
+  const handleGoBack = useCallback(() => {
     if (level === 3) {
       setSelectedLicensee(null);
       setLevel(2);
@@ -233,18 +240,31 @@ export function GroupsCascadingView({
       setLevel(1);
       resetFiltersOnLevelChange();
     }
-  };
+  }, [level]);
 
-  const onRefresh = () => {
-    setRefreshing(true);
-    if (level === 1) {
-      loadGroups(false, true);
-    } else if (level === 2 && selectedGroup) {
-      loadGroupLicensees(selectedGroup.group_id, true);
-    } else if (level === 3 && selectedLicensee) {
-      loadLicenseeBrandSales(selectedLicensee.licensee_id, true);
-    }
-  };
+  // Hardware BackHandler for drill-down levels (Level 3 -> Level 2 -> Level 1) and dropdown modals
+  useEffect(() => {
+    if (level === 1 && !showSortModal && !showPerPageModal) return;
+    const onBackPress = () => {
+      if (showSortModal) {
+        setShowSortModal(false);
+        return true;
+      }
+      if (showPerPageModal) {
+        setShowPerPageModal(false);
+        return true;
+      }
+      if (level > 1) {
+        handleGoBack();
+        return true;
+      }
+      return false;
+    };
+    const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => subscription.remove();
+  }, [level, handleGoBack, showSortModal, showPerPageModal]);
+
+
 
   // Filter and sort active list
   const activeRawList = useMemo(() => {
@@ -451,13 +471,9 @@ export function GroupsCascadingView({
       <ScrollView
         style={styles.scrollList}
         contentContainerStyle={styles.scrollContent}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#0F172A']} />}
       >
         {loading ? (
-          <View style={styles.loadingBox}>
-            <ActivityIndicator size="small" color="#0F172A" />
-            <Text style={styles.loadingText}>Loading data...</Text>
-          </View>
+          <GroupListSkeletonList count={5} />
         ) : paginatedList.length === 0 ? (
           <View style={styles.emptyCard}>
             <Text style={styles.emptyText}>No items found matching criteria</Text>
@@ -481,13 +497,13 @@ export function GroupsCascadingView({
                         {item.group_name}
                       </Text>
                       <View style={styles.licenseeBadgeRow}>
-                        <UsersIcon size={12} color="#64748B" />
+                        <UsersIcon size={12} color="#94A3B8" />
                         <Text style={styles.brandCount}>
                           {item.total_licensees || 0} Licensee(s)
                         </Text>
                       </View>
                     </View>
-                    <ChevronRightIcon size={20} color="#CBD5E1" />
+                    <ChevronRightIcon size={20} color="#94A3B8" />
                   </View>
 
                   <View style={styles.metricsGrid}>
@@ -526,7 +542,7 @@ export function GroupsCascadingView({
                         <Text style={styles.tradeBadgeText}>Trade: {item.trade || 'Off'}</Text>
                       </View>
                     </View>
-                    <ChevronRightIcon size={20} color="#CBD5E1" />
+                    <ChevronRightIcon size={20} color="#94A3B8" />
                   </View>
 
                   <View style={styles.metricsGrid}>
@@ -542,7 +558,7 @@ export function GroupsCascadingView({
 
                   {depotName ? (
                     <View style={styles.depotLocationPill}>
-                      <LocationIcon size={12} color="#0284C7" />
+                      <LocationIcon size={12} color="#94A3B8" />
                       <Text style={styles.depotLocationText} numberOfLines={1}>
                         {depotName}
                       </Text>
@@ -564,7 +580,7 @@ export function GroupsCascadingView({
                     <View style={styles.titleWrapper}>
                       <View style={styles.brandTitleRow}>
                         <View style={{ marginRight: 6 }}>
-                          <WineIcon size={14} color="#0F172A" />
+                          <WineIcon size={14} color="#94A3B8" />
                         </View>
                         <Text style={styles.companyName} numberOfLines={1}>
                           {item.brand_name}
@@ -973,7 +989,7 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   companyName: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '800',
     color: '#0F172A',
     letterSpacing: -0.2,
@@ -1013,10 +1029,12 @@ const styles = StyleSheet.create({
   metricsGrid: {
     flexDirection: 'row',
     backgroundColor: '#F8FAFC',
-    borderRadius: 12,
-    paddingVertical: 10,
+    borderRadius: 10,
+    paddingVertical: 8,
     paddingHorizontal: 8,
     marginTop: 4,
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
   },
   metricCell: {
     flex: 1,
@@ -1024,13 +1042,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   metricLabel: {
-    fontSize: 9,
+    fontSize: 8,
     fontWeight: '700',
-    color: '#64748B',
-    letterSpacing: 0.6,
+    color: '#94A3B8',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
   metricValue: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '900',
     color: '#0F172A',
     marginTop: 2,

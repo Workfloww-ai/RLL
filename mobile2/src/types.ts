@@ -53,12 +53,19 @@ export interface TsmBrandSales {
   data: Record<Period, Metrics>;
 }
 
+export interface ASE {
+  id: string;
+  name: string;
+  data: Record<Period, Metrics>;
+}
+
 export interface TSM {
   id: string;
   name: string;
   hqLocation?: string;
   data: Record<Period, Metrics>;
   brands: TsmBrandSales[];
+  ases?: ASE[];
 }
 
 export type ViewMode = 'companies' | 'depots' | 'tsm' | 'profile';

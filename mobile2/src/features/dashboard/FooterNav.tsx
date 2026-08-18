@@ -129,7 +129,7 @@ const styles = StyleSheet.create({
   navBtnActive: {
     backgroundColor: '#FFFFFF',
     borderWidth: 2,
-    borderColor: '#38BDF8',
+    borderColor: '#fcfdfdff',
   },
   navText: {
     fontSize: 11,

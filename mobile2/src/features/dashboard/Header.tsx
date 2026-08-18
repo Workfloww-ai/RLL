@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   FlatList,
   Platform,
   Image,
+  BackHandler,
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Period } from '../../types';
@@ -61,6 +62,18 @@ export function Header({
   const [showHqModal, setShowHqModal] = useState(false);
   const [pickerTarget, setPickerTarget] = useState<'from' | 'to' | null>(null);
   const [showDatePicker, setShowDatePicker] = useState<boolean>(false);
+
+  // Hardware BackHandler for Header modals
+  useEffect(() => {
+    if (!showHqModal && !showDatePicker) return;
+    const onBackPress = () => {
+      if (showHqModal) setShowHqModal(false);
+      if (showDatePicker) setShowDatePicker(false);
+      return true;
+    };
+    const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => subscription.remove();
+  }, [showHqModal, showDatePicker]);
 
   const openDatePicker = (target: 'from' | 'to') => {
     setPickerTarget(target);

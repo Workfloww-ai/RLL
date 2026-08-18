@@ -31,12 +31,7 @@ export function getApiBaseUrl(): string {
     return formatBaseUrl(envUrl);
   }
 
-  // 2. Localhost via ADB reverse (fastest and most reliable for physical Android device & emulator)
-  if (Platform.OS === 'android') {
-    return 'http://localhost:8000/api/v1';
-  }
-
-  // 3. Automatically derive computer's Wi-Fi IP from Metro bundler hostUri for iOS / Metro
+  // 2. Automatically derive computer's host IP from Metro bundler hostUri (works for physical devices & emulators)
   const hostUri = Constants.expoConfig?.hostUri || Constants.manifest2?.extra?.expoGo?.developer?.tool;
   if (hostUri) {
     const hostIp = hostUri.split(':')[0];
@@ -45,7 +40,7 @@ export function getApiBaseUrl(): string {
     }
   }
 
-  // 4. Default to localhost
+  // 3. Fallback to localhost (for ADB reverse tcp:8000 tcp:8000 or iOS Simulator)
   return 'http://localhost:8000/api/v1';
 }
 
@@ -56,6 +51,61 @@ export async function apiFetch(endpointPath: string, init?: RequestInit): Promis
   const url = `${BASE_URL}${cleanPath}`;
   logger.info(`apiFetch: ${init?.method || 'GET'} ${url}`);
   return await fetch(url, init);
+}
+
+// ── Auth Token Cache ────────────────────────────────────────────────────────
+// Avoids repeated AsyncStorage disk reads on every API call after first load.
+let _cachedToken: string | null = null;
+
+export async function getAuthToken(): Promise<string | null> {
+  if (_cachedToken !== null) return _cachedToken;
+  _cachedToken = await AsyncStorage.getItem('rll_mobile_token');
+  return _cachedToken;
+}
+
+export function seedCachedToken(token: string): void {
+  _cachedToken = token;
+}
+
+export function clearCachedToken(): void {
+  _cachedToken = null;
+}
+
+// ── API Response Cache (lightweight Map-based, TTL per entry) ────────────────
+const _apiCache = new Map<string, { data: unknown; expiry: number }>();
+
+/**
+ * Like apiFetch but caches GET responses for ttlMs milliseconds.
+ * Subsequent calls with the same path + token return instantly from memory.
+ */
+export async function apiFetchCached(
+  endpointPath: string,
+  ttlMs: number = 60_000,
+  authToken?: string
+): Promise<unknown> {
+  const cacheKey = `${endpointPath}::${authToken ?? ''}`;
+  const cached = _apiCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiry) {
+    logger.info(`apiFetchCached: cache HIT — ${endpointPath}`);
+    return cached.data;
+  }
+  const headers: Record<string, string> = {};
+  if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+  const res = await apiFetch(endpointPath, { headers });
+  if (!res.ok) throw new Error(`apiFetchCached: ${res.status} for ${endpointPath}`);
+  const data = await res.json();
+  _apiCache.set(cacheKey, { data, expiry: Date.now() + ttlMs });
+  return data;
+}
+
+export function invalidateApiCache(pathPrefix?: string): void {
+  if (!pathPrefix) {
+    _apiCache.clear();
+    return;
+  }
+  for (const key of _apiCache.keys()) {
+    if (key.startsWith(pathPrefix)) _apiCache.delete(key);
+  }
 }
 
 export async function sendMobileOTP(phone: string, email: string = '') {
@@ -107,6 +157,7 @@ export async function verifyMobileOTP(phone: string, otp: string, email: string 
     if (data.access_token) {
       await AsyncStorage.setItem('rll_mobile_token', data.access_token);
       await AsyncStorage.setItem('rll_mobile_user', JSON.stringify(data.user));
+      seedCachedToken(data.access_token);
     }
     logger.info(`verifyMobileOTP: Success. Token acquired for phone: ${phone}`);
     return data;
@@ -138,6 +189,7 @@ export async function loginMobileUser(email: string, password: string) {
     if (data.access_token) {
       await AsyncStorage.setItem('rll_mobile_token', data.access_token);
       await AsyncStorage.setItem('rll_mobile_user', JSON.stringify(data.user));
+      seedCachedToken(data.access_token);
     }
     logger.info(`loginMobileUser: Success. Session loaded for email: ${email}`);
     return data;
@@ -154,7 +206,7 @@ export async function fetchMobileSales(
   selectedHq: string
 ) {
   logger.info(`fetchMobileSales: Fetching sales data (period: ${period}, hq: ${selectedHq}, from: ${dateFrom}, to: ${dateTo})`);
-  const token = await AsyncStorage.getItem('rll_mobile_token');
+  const token = await getAuthToken();
   if (!token) {
     logger.warn('fetchMobileSales: Missing authentication token.');
     return null;
@@ -169,27 +221,10 @@ export async function fetchMobileSales(
       selected_hq: selectedHq,
     });
 
-    const res = await apiFetch(`/mobile/sales?${query.toString()}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
-
-    if (res.status === 401) {
-      logger.warn('fetchMobileSales: Unauthorized (401). Clearing session.');
-      await AsyncStorage.removeItem('rll_mobile_token');
-      await AsyncStorage.removeItem('rll_mobile_user');
-      return null;
-    }
-
-    if (!res.ok) {
-      logger.warn(`fetchMobileSales: API error status ${res.status}`);
-      throw new Error('Sales fetch failed');
-    }
-
-    const data = await res.json();
+    const endpoint = `/mobile/sales?${query.toString()}`;
+    const data = await apiFetchCached(endpoint, 120_000, token) as any;
     const fetchDuration = Date.now() - startTime;
-    data._fetchTimeMs = fetchDuration;
+    if (data) data._fetchTimeMs = fetchDuration;
 
     let totCases = 0;
     let totBtl = 0;
@@ -212,7 +247,7 @@ export async function fetchMobileSales(
 
 export async function fetchUserProfile() {
   logger.info('fetchUserProfile: Checking for active mobile session...');
-  const token = await AsyncStorage.getItem('rll_mobile_token');
+  const token = await getAuthToken();
   if (!token) {
     logger.info('fetchUserProfile: No token found in AsyncStorage.');
     return null;
@@ -227,6 +262,7 @@ export async function fetchUserProfile() {
       logger.warn('fetchUserProfile: Token has expired or is invalid (401). Clearing session.');
       await AsyncStorage.removeItem('rll_mobile_token');
       await AsyncStorage.removeItem('rll_mobile_user');
+      clearCachedToken();
       return null;
     }
     if (!res.ok) {
@@ -247,22 +283,17 @@ export async function fetchUserProfile() {
 
 export async function fetchMobileHeadquarters() {
   logger.info('fetchMobileHeadquarters: Fetching registered headquarters...');
-  const token = await AsyncStorage.getItem('rll_mobile_token');
+  const token = await getAuthToken();
   const headers: Record<string, string> = {};
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
 
   try {
-    const res = await apiFetch('/mobile/headquarters', { headers });
-
-    if (!res.ok) {
-      logger.warn(`fetchMobileHeadquarters: API returned status ${res.status}`);
-      throw new Error(`Headquarters fetch failed with status ${res.status}`);
-    }
-
-    const data = await res.json();
-    const hqs = data.headquarters || [];
+    const data = await apiFetchCached('/mobile/headquarters', 600_000, token || undefined) as any;
+    const hqs = data?.headquarters || [];
+    logger.info(`fetchMobileHeadquarters: Successfully retrieved ${hqs.length} headquarters.`);
+    return hqs;
     logger.info(`fetchMobileHeadquarters: Successfully retrieved ${hqs.length} headquarters.`);
     return hqs;
   } catch (error) {
@@ -275,6 +306,8 @@ export async function clearAuthSession() {
   logger.info('clearAuthSession: Clearing user auth tokens and profiles from AsyncStorage.');
   await AsyncStorage.removeItem('rll_mobile_token');
   await AsyncStorage.removeItem('rll_mobile_user');
+  clearCachedToken();
+  invalidateApiCache();
 }
 
 export async function fetchCascadingGroups(dateFrom?: string, dateTo?: string, period?: string) {

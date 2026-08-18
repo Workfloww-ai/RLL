@@ -8,6 +8,12 @@ from fastapi import APIRouter, HTTPException, Depends, Query, Request, status
 from pydantic import BaseModel
 from backend.core.security import create_access_token, get_current_user, RoleChecker
 from backend.db.client import get_supabase
+from backend.db.supabase_client import (
+    call_mobile_sales_rpc,
+    call_mobile_tsm_sales_rpc,
+    call_mobile_sales_json_rpc,
+    call_mobile_tsm_sales_json_rpc,
+)
 from backend.core.config import settings
 from backend.services.otp_service import (
     generate_6digit_otp,
@@ -179,10 +185,13 @@ def _fetch_fresh_master_lookups():
     except Exception as e:
         logger.warning(f"Error fetching master TSMs: {e}")
 
+    hq_name_to_id = {v.lower(): k for k, v in hq_lookup.items() if v}
+
     return {
         "companies_lookup": companies_lookup,
         "brands_lookup": brands_lookup,
         "hq_lookup": hq_lookup,
+        "hq_name_to_id": hq_name_to_id,
         "master_companies": master_companies,
         "master_depots": master_depots,
         "master_tsms": master_tsms,
@@ -366,13 +375,9 @@ async def send_mobile_otp(req: SendOTPRequest):
 
             # 2. Lookup by phone if not found by email
             if not db_user and clean_phone_10:
-                res_all = client.table("users").select("user_id, email, phone, first_name, last_name, is_active").execute()
-                if res_all.data:
-                    for u in res_all.data:
-                        u_p = ''.join(c for c in (u.get("phone") or "") if c.isdigit())
-                        if u_p and (clean_phone_10 in u_p or u_p in clean_phone_10):
-                            db_user = u
-                            break
+                res_phone = client.table("users").select("user_id, email, phone, first_name, last_name, is_active").ilike("phone", f"%{clean_phone_10}%").limit(1).execute()
+                if res_phone.data:
+                    db_user = res_phone.data[0]
         except Exception as e:
             logger.warning(f"User lookup error in send_mobile_otp: {e}")
 
@@ -771,60 +776,25 @@ async def get_mobile_sales(
     # Headquarters Filter Resolution
     target_hq_id = None
     if selected_hq and selected_hq != "All Headquarters":
-        try:
-            hq_res = client.table("headquarters").select("headquarters_id").ilike("name", selected_hq.strip()).execute()
-            if hq_res.data:
-                target_hq_id = hq_res.data[0]["headquarters_id"]
-        except Exception as e:
-            logger.warning(f"HQ lookup error for {selected_hq}: {e}")
-
-    # Determine query start date to populate all 3 period objects (Daily, MTD, YTD)
-    if selected_period in ["Daily", "MTD"]:
-        query_start = mtd_start
-    else:
-        query_start = ytd_start
-    query_end = end_date
+        target_hq_id = master_cache.get("hq_name_to_id", {}).get(selected_hq.strip().lower())
+        if not target_hq_id:
+            try:
+                hq_res = client.table("headquarters").select("headquarters_id").ilike("name", selected_hq.strip()).execute()
+                if hq_res.data:
+                    target_hq_id = hq_res.data[0]["headquarters_id"]
+            except Exception as e:
+                logger.warning(f"HQ lookup error for {selected_hq}: {e}")
 
     start_time = time.time()
-    page = 0
-    page_size = 1000
-    max_pages = 100
-    all_records = []
+    start_time = time.time()
+    # Call JSON RPC which returns untruncated JSONB object containing companies and depots arrays
+    sales_payload = call_mobile_sales_json_rpc(end_date, mtd_start, ytd_start, target_hq_id)
+    company_records = sales_payload.get("companies") or []
+    depot_records = sales_payload.get("depots") or []
+    total_records_processed = len(company_records) + len(depot_records)
 
-    while page < max_pages:
-        q = client.table("dashboard_summary_daily").select(
-            "sale_date, total_case, total_btl, total_bl, company_id, brand_id, depot_id, headquarters_id"
-        ).gte("sale_date", query_start).lte("sale_date", query_end).order("summary_id")
-
-        if target_hq_id:
-            q = q.eq("headquarters_id", target_hq_id)
-
-        res = q.range(page * page_size, (page + 1) * page_size - 1).execute()
-        chunk = res.data or []
-        if not chunk:
-            break
-        all_records.extend(chunk)
-        if len(chunk) < page_size:
-            break
-        page += 1
-
-    total_records_processed = len(all_records)
-
-    # In-memory single-pass aggregation
-    for row in all_records:
-        s_date = str(row.get("sale_date") or "")
-
-        active_periods = []
-        if s_date == end_date:
-            active_periods.append("Daily")
-        if mtd_start <= s_date <= end_date:
-            active_periods.append("MTD")
-        if ytd_start <= s_date <= end_date:
-            active_periods.append("YTD")
-
-        if not active_periods:
-            continue
-
+    # 1. Company-level aggregation
+    for row in company_records:
         c_id_raw = str(row.get("company_id") or "")
         comp_name = companies_lookup.get(c_id_raw)
         if not comp_name or comp_name.strip().lower() == "others":
@@ -835,6 +805,61 @@ async def get_mobile_sales(
         brand_name = b_info.get("name") or "Generic Brand"
         brand_id = b_id_raw or brand_name.lower().replace(" ", "-")
 
+        comp_id = comp_name.lower().replace(" ", "-").replace("/", "-")
+        if comp_id not in master_companies:
+            master_companies[comp_id] = {
+                "id": comp_id,
+                "name": comp_name,
+                "isPinned": comp_id in ["rll", "diageo-inbrew"] or comp_name.upper() == "RLL",
+                "hqLocation": "All Headquarters",
+                "data": {
+                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                    "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                    "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                },
+                "brands_map": {}
+            }
+
+        row_metrics = {
+            "Daily": {
+                "cases": int(row.get("daily_cases") or 0),
+                "bottles": int(row.get("daily_bottles") or 0),
+                "bl": float(row.get("daily_bl") or 0.0),
+            },
+            "MTD": {
+                "cases": int(row.get("mtd_cases") or 0),
+                "bottles": int(row.get("mtd_bottles") or 0),
+                "bl": float(row.get("mtd_bl") or 0.0),
+            },
+            "YTD": {
+                "cases": int(row.get("ytd_cases") or 0),
+                "bottles": int(row.get("ytd_bottles") or 0),
+                "bl": float(row.get("ytd_bl") or 0.0),
+            },
+        }
+
+        for period_key, metrics in row_metrics.items():
+            master_companies[comp_id]["data"][period_key]["cases"] += metrics["cases"]
+            master_companies[comp_id]["data"][period_key]["bottles"] += metrics["bottles"]
+            master_companies[comp_id]["data"][period_key]["bl"] += metrics["bl"]
+
+            b_map = master_companies[comp_id]["brands_map"]
+            if brand_id not in b_map:
+                b_map[brand_id] = {
+                    "id": brand_id,
+                    "name": brand_name,
+                    "data": {
+                        "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                        "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                        "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                    }
+                }
+            b_map[brand_id]["data"][period_key]["cases"] += metrics["cases"]
+            b_map[brand_id]["data"][period_key]["bottles"] += metrics["bottles"]
+            b_map[brand_id]["data"][period_key]["bl"] += metrics["bl"]
+
+    # 2. Depot-level aggregation
+    for row in depot_records:
         raw_depot_id = str(row.get("depot_id") or "")
         depot_info = master_depots.get(raw_depot_id) or {}
         depot_name = depot_info.get("name") or "Central Depot"
@@ -843,72 +868,53 @@ async def get_mobile_sales(
         if user_role in ["tsm", "ase"] and target_depot_id not in allowed_depots:
             continue
 
+        b_id_raw = str(row.get("brand_id") or "")
+        b_info = brands_lookup.get(b_id_raw, {})
+        brand_name = b_info.get("name") or "Generic Brand"
+        brand_id = b_id_raw or brand_name.lower().replace(" ", "-")
+
         raw_hq_id = str(row.get("headquarters_id") or "")
         hq_name = hq_lookup.get(raw_hq_id) or depot_info.get("hq_name") or "All Headquarters"
 
-        cases = int(row.get("total_case") or 0)
-        bottles = int(row.get("total_btl") or 0)
-        bl = float(row.get("total_bl") or 0.0)
+        target_depot = master_depots.get(raw_depot_id)
+        if not target_depot:
+            target_depot_id = raw_depot_id or depot_name.lower().replace(" ", "-")
+            if target_depot_id not in master_depots:
+                master_depots[target_depot_id] = {
+                    "id": target_depot_id,
+                    "name": depot_name,
+                    "hqName": hq_name,
+                    "data": {
+                        "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                        "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                        "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                    },
+                    "brands_map": {}
+                }
+            target_depot = master_depots[target_depot_id]
 
-        for period_key in active_periods:
-            # A. Company Aggregation
-            if comp_name != "Others":
-                comp_id = comp_name.lower().replace(" ", "-").replace("/", "-")
-                if comp_id not in master_companies:
-                    master_companies[comp_id] = {
-                        "id": comp_id,
-                        "name": comp_name,
-                        "isPinned": comp_id in ["rll", "diageo-inbrew"] or comp_name.upper() == "RLL",
-                        "hqLocation": hq_name,
-                        "data": {
-                            "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                            "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                            "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                        },
-                        "brands_map": {}
-                    }
+        row_metrics = {
+            "Daily": {
+                "cases": int(row.get("daily_cases") or 0),
+                "bottles": int(row.get("daily_bottles") or 0),
+                "bl": float(row.get("daily_bl") or 0.0),
+            },
+            "MTD": {
+                "cases": int(row.get("mtd_cases") or 0),
+                "bottles": int(row.get("mtd_bottles") or 0),
+                "bl": float(row.get("mtd_bl") or 0.0),
+            },
+            "YTD": {
+                "cases": int(row.get("ytd_cases") or 0),
+                "bottles": int(row.get("ytd_bottles") or 0),
+                "bl": float(row.get("ytd_bl") or 0.0),
+            },
+        }
 
-                master_companies[comp_id]["hqLocation"] = hq_name
-                master_companies[comp_id]["data"][period_key]["cases"] += cases
-                master_companies[comp_id]["data"][period_key]["bottles"] += bottles
-                master_companies[comp_id]["data"][period_key]["bl"] += bl
-
-                b_map = master_companies[comp_id]["brands_map"]
-                if brand_id not in b_map:
-                    b_map[brand_id] = {
-                        "id": brand_id,
-                        "name": brand_name,
-                        "data": {
-                            "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                            "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                            "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                        }
-                    }
-                b_map[brand_id]["data"][period_key]["cases"] += cases
-                b_map[brand_id]["data"][period_key]["bottles"] += bottles
-                b_map[brand_id]["data"][period_key]["bl"] += bl
-
-            # B. Depot Aggregation
-            target_depot = master_depots.get(raw_depot_id)
-            if not target_depot:
-                target_depot_id = raw_depot_id or depot_name.lower().replace(" ", "-")
-                if target_depot_id not in master_depots:
-                    master_depots[target_depot_id] = {
-                        "id": target_depot_id,
-                        "name": depot_name,
-                        "hqName": hq_name,
-                        "data": {
-                            "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                            "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                            "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                        },
-                        "brands_map": {}
-                    }
-                target_depot = master_depots[target_depot_id]
-
-            target_depot["data"][period_key]["cases"] += cases
-            target_depot["data"][period_key]["bottles"] += bottles
-            target_depot["data"][period_key]["bl"] += bl
+        for period_key, metrics in row_metrics.items():
+            target_depot["data"][period_key]["cases"] += metrics["cases"]
+            target_depot["data"][period_key]["bottles"] += metrics["bottles"]
+            target_depot["data"][period_key]["bl"] += metrics["bl"]
 
             db_map = target_depot["brands_map"]
             if brand_id not in db_map:
@@ -921,16 +927,11 @@ async def get_mobile_sales(
                         "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
                     }
                 }
-            db_map[brand_id]["data"][period_key]["cases"] += cases
-            db_map[brand_id]["data"][period_key]["bottles"] += bottles
-            db_map[brand_id]["data"][period_key]["bl"] += bl
-
-            # C. TSM Aggregation (handled separately from user_sales_fact below)
-            pass
+            db_map[brand_id]["data"][period_key]["cases"] += metrics["cases"]
+            db_map[brand_id]["data"][period_key]["bottles"] += metrics["bottles"]
+            db_map[brand_id]["data"][period_key]["bl"] += metrics["bl"]
 
     # Dedicated TSM Derived Aggregation from user_sales_fact
-    # Build member -> TSM(s) map. TSM includes themselves + all ASEs under them.
-    # Exclude self-mapping rows (ase_id == tsm_id) to prevent double counting.
     member_to_tsms = {}
     for tid in master_tsms.keys():
         if tid not in member_to_tsms:
@@ -954,38 +955,9 @@ async def get_mobile_sales(
         for aid in all_known_ase_ids
     }
 
-    usf_page = 0
-    usf_page_size = 1000
-    usf_max_pages = 100
-    all_usf_records = []
-
-    while usf_page < usf_max_pages:
-        q_usf = client.table("user_sales_fact").select(
-            "sale_date, cases, bottles, bl, user_id, brand_id, company_id"
-        ).gte("sale_date", query_start).lte("sale_date", query_end).order("id")
-
-        res_usf = q_usf.range(usf_page * usf_page_size, (usf_page + 1) * usf_page_size - 1).execute()
-        chunk_usf = res_usf.data or []
-        if not chunk_usf:
-            break
-        all_usf_records.extend(chunk_usf)
-        if len(chunk_usf) < usf_page_size:
-            break
-        usf_page += 1
+    all_usf_records = call_mobile_tsm_sales_json_rpc(end_date, mtd_start, ytd_start)
 
     for row in all_usf_records:
-        s_date = str(row.get("sale_date") or "")
-        active_periods = []
-        if daily_start <= s_date <= end_date:
-            active_periods.append("Daily")
-        if mtd_start <= s_date <= end_date:
-            active_periods.append("MTD")
-        if ytd_start <= s_date <= end_date:
-            active_periods.append("YTD")
-
-        if not active_periods:
-            continue
-
         c_id_raw = str(row.get("company_id") or "")
         comp_name = companies_lookup.get(c_id_raw)
         if not comp_name or comp_name.strip().lower() == "others":
@@ -1001,23 +973,37 @@ async def get_mobile_sales(
         brand_name = b_info.get("name") or "Generic Brand"
         brand_id = b_id_raw or brand_name.lower().replace(" ", "-")
 
-        cases = int(row.get("cases") or 0)
-        bottles = int(row.get("bottles") or 0)
-        bl = float(row.get("bl") or 0.0)
+        usf_metrics = {
+            "Daily": {
+                "cases": int(row.get("daily_cases") or 0),
+                "bottles": int(row.get("daily_bottles") or 0),
+                "bl": float(row.get("daily_bl") or 0.0),
+            },
+            "MTD": {
+                "cases": int(row.get("mtd_cases") or 0),
+                "bottles": int(row.get("mtd_bottles") or 0),
+                "bl": float(row.get("mtd_bl") or 0.0),
+            },
+            "YTD": {
+                "cases": int(row.get("ytd_cases") or 0),
+                "bottles": int(row.get("ytd_bottles") or 0),
+                "bl": float(row.get("ytd_bl") or 0.0),
+            },
+        }
 
-        for period_key in active_periods:
+        for period_key, metrics in usf_metrics.items():
             # ASE-level aggregation — accumulate sales for the individual ASE
             if uid in ase_sales:
-                ase_sales[uid][period_key]["cases"] += cases
-                ase_sales[uid][period_key]["bottles"] += bottles
-                ase_sales[uid][period_key]["bl"] += bl
+                ase_sales[uid][period_key]["cases"] += metrics["cases"]
+                ase_sales[uid][period_key]["bottles"] += metrics["bottles"]
+                ase_sales[uid][period_key]["bl"] += metrics["bl"]
 
             for tid in target_tsm_ids:
                 if tid in master_tsms:
                     t_obj = master_tsms[tid]
-                    t_obj["data"][period_key]["cases"] += cases
-                    t_obj["data"][period_key]["bottles"] += bottles
-                    t_obj["data"][period_key]["bl"] += bl
+                    t_obj["data"][period_key]["cases"] += metrics["cases"]
+                    t_obj["data"][period_key]["bottles"] += metrics["bottles"]
+                    t_obj["data"][period_key]["bl"] += metrics["bl"]
 
                     tb_map = t_obj["brands_map"]
                     if brand_id not in tb_map:
@@ -1030,9 +1016,9 @@ async def get_mobile_sales(
                                 "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
                             }
                         }
-                    tb_map[brand_id]["data"][period_key]["cases"] += cases
-                    tb_map[brand_id]["data"][period_key]["bottles"] += bottles
-                    tb_map[brand_id]["data"][period_key]["bl"] += bl
+                    tb_map[brand_id]["data"][period_key]["cases"] += metrics["cases"]
+                    tb_map[brand_id]["data"][period_key]["bottles"] += metrics["bottles"]
+                    tb_map[brand_id]["data"][period_key]["bl"] += metrics["bl"]
 
     # Format lists & apply HQ filter if selected
     formatted_companies = []
@@ -1133,7 +1119,7 @@ async def get_cascading_groups_endpoint(
     period: Optional[str] = Query(None, description="Period filter (Daily/MTD/YTD)")
 ):
     """
-    Mobile endpoint: Fetch active groups with total licensees, linked depots, and sales summaries.
+    Mobile endpoint: Fetch active groups with total licensees, linked depots, and sales summaries using optimized JSON RPC.
     """
     from backend.services.mobile_cascading_service import get_cascading_groups
     return get_cascading_groups(date_from=date_from, date_to=date_to, period=period)

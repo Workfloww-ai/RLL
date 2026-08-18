@@ -8,9 +8,9 @@ import {
   FlatList,
   TextInput,
   TouchableOpacity,
-  RefreshControl,
   Platform,
   useWindowDimensions,
+  BackHandler,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -45,13 +45,48 @@ export default function App() {
   const [dateFrom, setDateFrom] = useState<string>('2026-05-31');
   const [dateTo, setDateTo] = useState<string>('2026-05-31');
   const [viewMode, setViewMode] = useState<ViewMode>('companies');
+  const [viewModeHistory, setViewModeHistory] = useState<ViewMode[]>(['companies']);
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedHq, setSelectedHq] = useState<string>('All Headquarters');
   const [headquartersList, setHeadquartersList] = useState<string[]>(['All Headquarters']);
   const [apiData, setApiData] = useState<any>(null);
-  const [refreshing, setRefreshing] = useState(false);
   const [loadingSalesData, setLoadingSalesData] = useState(true);
+
+  const handleTabChange = useCallback((newMode: ViewMode) => {
+    setViewMode((currentMode) => {
+      if (newMode !== currentMode) {
+        setViewModeHistory((prev) => [...prev, newMode]);
+        return newMode;
+      }
+      return currentMode;
+    });
+  }, []);
+
+  // Hardware BackHandler for tab history
+  useEffect(() => {
+    const onBackPress = () => {
+      // 1. If BrandModal is open in App.tsx, close it
+      if (selectedCompany !== null) {
+        setSelectedCompany(null);
+        return true;
+      }
+      // 2. If we have tab history, navigate back to previous tab
+      if (viewModeHistory.length > 1) {
+        setViewModeHistory((prev) => {
+          const updated = [...prev];
+          updated.pop();
+          const prevView = updated[updated.length - 1] || 'companies';
+          setViewMode(prevView);
+          return updated;
+        });
+        return true;
+      }
+      return false; // Exit app on root screen
+    };
+    const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => subscription.remove();
+  }, [selectedCompany, viewModeHistory]);
 
   const { height: windowHeight } = useWindowDimensions();
   const cardDimensions = useMemo(() => getDynamicCardDimensions(windowHeight), [windowHeight]);
@@ -221,15 +256,7 @@ export default function App() {
     [loadingSalesData, apiData]
   );
 
-  const onRefresh = async () => {
-    setRefreshing(true);
-    try {
-      const res = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq);
-      if (res) setApiData(res);
-    } finally {
-      setRefreshing(false);
-    }
-  };
+
 
   const handleLogout = async () => {
     logger.info('App: User initiated logout.');
@@ -355,9 +382,6 @@ export default function App() {
                   ListEmptyComponent={renderCompanyEmpty}
                   style={styles.scrollList}
                   contentContainerStyle={styles.scrollContent}
-                  refreshControl={
-                    <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#0F172A']} />
-                  }
                   initialNumToRender={10}
                   maxToRenderPerBatch={10}
                   windowSize={5}
@@ -385,13 +409,14 @@ export default function App() {
                     period={period}
                     scaleFactor={scaleFactor}
                     selectedHq={selectedHq}
+                    loading={loadingSalesData}
                   />
                 </View>
               )}
 
               {/* View Mode: PROFILE */}
               {viewMode === 'profile' && (
-                <ProfileScreen user={user} onLogout={handleLogout} />
+                <ProfileScreen user={user} onLogout={handleLogout} loading={loadingSession} />
               )}
             </View>
 
@@ -404,7 +429,7 @@ export default function App() {
             />
 
             {/* Bottom nav tabs */}
-            <FooterNav viewMode={viewMode} setViewMode={setViewMode} />
+            <FooterNav viewMode={viewMode} setViewMode={handleTabChange} />
           </SafeAreaView>
         )}
       </View>
