@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 # Fast In-Memory TTL Cache Store
 _CACHE_STORE: Dict[str, tuple[float, Any]] = {}
-CACHE_TTL_SECONDS = 300  # 5 minutes
+CACHE_TTL_SECONDS = 60  # 60 seconds
 
 
 def _get_from_cache(cache_key: str) -> Optional[Any]:
@@ -78,8 +78,27 @@ def _map_period_metrics(records: List[Dict[str, Any]], selected_period: Optional
         cases_key = f"{p_key}_cases"
         bottles_key = f"{p_key}_bottles"
 
-        cases_val = float(r.get(cases_key) if cases_key in r else r.get("total_cases", 0.0))
-        bottles_val = float(r.get(bottles_key) if bottles_key in r else r.get("total_bottles", 0.0))
+        c_raw = r.get(cases_key)
+        if c_raw is None or (isinstance(c_raw, (int, float)) and float(c_raw) == 0.0 and r.get("total_cases")):
+            c_raw = r.get("total_cases")
+        if c_raw is None or (isinstance(c_raw, (int, float)) and float(c_raw) == 0.0 and r.get("cases")):
+            c_raw = r.get("cases", 0.0)
+
+        b_raw = r.get(bottles_key)
+        if b_raw is None or (isinstance(b_raw, (int, float)) and float(b_raw) == 0.0 and r.get("total_bottles")):
+            b_raw = r.get("total_bottles")
+        if b_raw is None or (isinstance(b_raw, (int, float)) and float(b_raw) == 0.0 and r.get("bottles")):
+            b_raw = r.get("bottles", 0.0)
+
+        try:
+            cases_val = float(c_raw or 0.0)
+        except (ValueError, TypeError):
+            cases_val = 0.0
+
+        try:
+            bottles_val = float(b_raw or 0.0)
+        except (ValueError, TypeError):
+            bottles_val = 0.0
 
         r_copy = dict(r)
         r_copy["total_cases"] = round(cases_val, 2)

@@ -1,22 +1,22 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import {
   StatusBar,
   StyleSheet,
   View,
   Text,
-  ScrollView,
   FlatList,
   TextInput,
   TouchableOpacity,
   Platform,
   useWindowDimensions,
   BackHandler,
+  Modal,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { logger } from './src/lib/logger';
 
-import { Company, Depot, TSM, Period, ViewMode } from './src/types';
+import { Company, Period, ViewMode } from './src/types';
 import { formatNumber } from './src/lib/utils';
 import { getDynamicCardDimensions } from './src/lib/responsive';
 import {
@@ -30,13 +30,24 @@ import { Header } from './src/features/dashboard/Header';
 import { FooterNav } from './src/features/dashboard/FooterNav';
 import { CompanyCard } from './src/features/dashboard/CompanyCard';
 import { CompanyListSkeletonList } from './src/features/dashboard/CompanyCardSkeleton';
-import { DepotsView } from './src/features/dashboard/DepotsView';
 import { GroupsCascadingView } from './src/features/dashboard/GroupsCascadingView';
 import { TsmView } from './src/features/dashboard/TsmView';
 import { BrandModal } from './src/features/dashboard/BrandModal';
 import { LoginScreen } from './src/features/auth/LoginScreen';
 import { ProfileScreen } from './src/features/profile/ProfileScreen';
-import { XIcon, SearchIcon } from './src/components/Icons';
+import {
+  XIcon,
+  SearchIcon,
+  CheckCircleIcon,
+  PinIcon,
+  TrendingUpIcon,
+  TrendingDownIcon,
+  SortAlphabeticalIcon,
+  SwapVertIcon,
+  ChevronDownIcon,
+} from './src/components/Icons';
+
+export type CompanySortOption = 'default' | 'volume_desc' | 'volume_asc' | 'name_asc';
 
 export default function App() {
   const [user, setUser] = useState<any>(null);
@@ -53,6 +64,12 @@ export default function App() {
   const [apiData, setApiData] = useState<any>(null);
   const [loadingSalesData, setLoadingSalesData] = useState(true);
 
+  // Minimal Sort State & Floating Dropdown Position
+  const [sortBy, setSortBy] = useState<CompanySortOption>('default');
+  const [showSortDropdown, setShowSortDropdown] = useState<boolean>(false);
+  const [dropdownPos, setDropdownPos] = useState<{ top: number; right: number }>({ top: 190, right: 16 });
+  const sortBtnRef = useRef<View>(null);
+
   const handleTabChange = useCallback((newMode: ViewMode) => {
     setViewMode((currentMode) => {
       if (newMode !== currentMode) {
@@ -63,15 +80,17 @@ export default function App() {
     });
   }, []);
 
-  // Hardware BackHandler for tab history
+  // Hardware BackHandler for tab history & modals
   useEffect(() => {
     const onBackPress = () => {
-      // 1. If BrandModal is open in App.tsx, close it
+      if (showSortDropdown) {
+        setShowSortDropdown(false);
+        return true;
+      }
       if (selectedCompany !== null) {
         setSelectedCompany(null);
         return true;
       }
-      // 2. If we have tab history, navigate back to previous tab
       if (viewModeHistory.length > 1) {
         setViewModeHistory((prev) => {
           const updated = [...prev];
@@ -82,23 +101,21 @@ export default function App() {
         });
         return true;
       }
-      return false; // Exit app on root screen
+      return false;
     };
     const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => subscription.remove();
-  }, [selectedCompany, viewModeHistory]);
+  }, [showSortDropdown, selectedCompany, viewModeHistory]);
 
   const { height: windowHeight } = useWindowDimensions();
   const cardDimensions = useMemo(() => getDynamicCardDimensions(windowHeight), [windowHeight]);
-
   const scaleFactor = 1;
 
-  // Initialize status bar colors
   useEffect(() => {
     StatusBar.setBarStyle('light-content');
   }, []);
 
-  // 1. Load active session on mount
+  // Load active session on mount
   useEffect(() => {
     async function loadSession() {
       try {
@@ -120,7 +137,7 @@ export default function App() {
     loadSession();
   }, []);
 
-  // 2. Fetch headquarters list once when user session is active
+  // Fetch headquarters list
   useEffect(() => {
     if (!user) return;
     fetchMobileHeadquarters().then((hqs) => {
@@ -130,7 +147,7 @@ export default function App() {
     });
   }, [user]);
 
-  // 3. Sync user profile on mount / token load
+  // Sync user profile
   useEffect(() => {
     if (!user) return;
     fetchUserProfile().then((profile) => {
@@ -140,7 +157,7 @@ export default function App() {
     });
   }, [Boolean(user)]);
 
-  // 4. Initial sales data load, period/filter changes, and auto-date discovery
+  // Fetch sales data
   useEffect(() => {
     if (!user) return;
 
@@ -162,7 +179,6 @@ export default function App() {
     };
     fetchSalesData();
 
-    // Live real-time background sync every 60 seconds
     const intervalId = setInterval(() => {
       if (user) {
         fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq).then((res) => {
@@ -177,86 +193,7 @@ export default function App() {
       isMounted = false;
       clearInterval(intervalId);
     };
-  }, [user, dateFrom, dateTo, selectedHq]);
-
-  const renderCompanyItem = useCallback(
-    ({ item }: { item: Company }) => (
-      <CompanyCard
-        company={item}
-        period={period}
-        scaleFactor={scaleFactor}
-        onClick={() => setSelectedCompany(item)}
-        cardStyle={{
-          paddingVertical: cardDimensions.cardPaddingVertical,
-        }}
-      />
-    ),
-    [period, scaleFactor, cardDimensions.cardPaddingVertical]
-  );
-
-  const renderCompanyHeader = useCallback(
-    () => (
-      <>
-        {/* Search box for companies list */}
-        <View style={styles.searchWrapper}>
-          <View style={{ marginRight: 8 }}>
-            <SearchIcon size={18} color="#94A3B8" />
-          </View>
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search company"
-            placeholderTextColor="#94A3B8"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-          />
-          {searchQuery ? (
-            <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.clearBtn}>
-              <XIcon size={12} color="#94A3B8" />
-            </TouchableOpacity>
-          ) : null}
-        </View>
-
-        {/* Active filters display */}
-        {(selectedHq !== 'All Headquarters' || searchQuery) && (
-          <View style={styles.activeFiltersPillRow}>
-            {selectedHq !== 'All Headquarters' && (
-              <View style={styles.filterPill}>
-                <Text style={styles.filterPillText}>HQ: {selectedHq}</Text>
-                <TouchableOpacity onPress={() => setSelectedHq('All Headquarters')}>
-                  <Text style={styles.filterPillClose}>✕</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-            {searchQuery && (
-              <View style={styles.filterPill}>
-                <Text style={styles.filterPillText}>"{searchQuery}"</Text>
-                <TouchableOpacity onPress={() => setSearchQuery('')}>
-                  <Text style={styles.filterPillClose}>✕</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-          </View>
-        )}
-      </>
-    ),
-    [searchQuery, selectedHq]
-  );
-
-  const renderCompanyEmpty = useCallback(
-    () => {
-      if (loadingSalesData || !apiData) {
-        return <CompanyListSkeletonList count={5} />;
-      }
-      return (
-        <View style={styles.emptyCard}>
-          <Text style={styles.emptyText}>No companies match your filters</Text>
-        </View>
-      );
-    },
-    [loadingSalesData, apiData]
-  );
-
-
+  }, [user, dateFrom, dateTo, selectedHq, period]);
 
   const handleLogout = async () => {
     logger.info('App: User initiated logout.');
@@ -268,24 +205,43 @@ export default function App() {
     setViewMode('companies');
   };
 
-  // Filter and sort companies
+  // Filter companies by search query
   const filteredCompanies = useMemo(() => {
     const rawCompanies: Company[] = (apiData && apiData.companies) ? apiData.companies : [];
 
     return rawCompanies.filter((c) => {
       if (!searchQuery.trim()) return true;
-
       const q = searchQuery.toLowerCase();
       const matchCompany = c.name.toLowerCase().includes(q);
       const matchBrands = c.brands && c.brands.some((b) => (b.name || b.brand_name || '').toLowerCase().includes(q));
-
       return matchCompany || matchBrands;
     });
   }, [searchQuery, apiData]);
 
+  // Sort companies cleanly
   const sortedCompanies = useMemo(() => {
     const list = [...filteredCompanies];
+
     list.sort((a, b) => {
+      if (sortBy === 'volume_desc') {
+        const casesA = a.data[period]?.cases || 0;
+        const casesB = b.data[period]?.cases || 0;
+        if (casesB !== casesA) return casesB - casesA;
+        return a.name.localeCompare(b.name);
+      }
+
+      if (sortBy === 'volume_asc') {
+        const casesA = a.data[period]?.cases || 0;
+        const casesB = b.data[period]?.cases || 0;
+        if (casesA !== casesB) return casesA - casesB;
+        return a.name.localeCompare(b.name);
+      }
+
+      if (sortBy === 'name_asc') {
+        return a.name.localeCompare(b.name);
+      }
+
+      // Default sorting: Pinned first (RLL, Diageo first), then A-Z
       const getPinnedRank = (c: Company) => {
         const id = c.id.toLowerCase();
         const name = c.name.toLowerCase();
@@ -303,22 +259,142 @@ export default function App() {
       }
       return a.name.localeCompare(b.name);
     });
-    return list;
-  }, [filteredCompanies]);
 
+    return list;
+  }, [filteredCompanies, sortBy, period]);
 
   const totalSummary = useMemo(() => {
     return sortedCompanies.reduce(
       (acc, c) => {
-        const d = c.data[period];
+        const d = c.data[period] || { cases: 0, bottles: 0 };
         return {
-          cases: acc.cases + Math.round(d.cases * scaleFactor),
-          bottles: acc.bottles + Math.round(d.bottles * scaleFactor),
+          cases: acc.cases + Math.round((d.cases || 0) * scaleFactor),
+          bottles: acc.bottles + Math.round((d.bottles || 0) * scaleFactor),
         };
       },
       { cases: 0, bottles: 0 }
     );
   }, [sortedCompanies, period]);
+
+  const renderCompanyItem = useCallback(
+    ({ item }: { item: Company }) => (
+      <CompanyCard
+        company={item}
+        period={period}
+        scaleFactor={scaleFactor}
+        onClick={() => setSelectedCompany(item)}
+        cardStyle={{
+          paddingVertical: cardDimensions.cardPaddingVertical,
+        }}
+      />
+    ),
+    [period, scaleFactor, cardDimensions.cardPaddingVertical]
+  );
+
+  const sortDropdownOptions = [
+    { key: 'default', label: 'Default Order', Icon: PinIcon },
+    { key: 'volume_desc', label: 'Top Sales (High → Low)', Icon: TrendingUpIcon },
+    { key: 'volume_asc', label: 'Lowest Sales (Low → High)', Icon: TrendingDownIcon },
+    { key: 'name_asc', label: 'Company Name (A → Z)', Icon: SortAlphabeticalIcon },
+  ];
+
+  const getSortLabel = () => {
+    if (sortBy === 'volume_desc') return 'Top Sales';
+    if (sortBy === 'volume_asc') return 'Low Sales';
+    if (sortBy === 'name_asc') return 'A-Z';
+    return 'Sort';
+  };
+
+  const toggleSortDropdown = () => {
+    if (!showSortDropdown && sortBtnRef.current) {
+      sortBtnRef.current.measureInWindow((x, y, width, height) => {
+        if (y && height) {
+          setDropdownPos({
+            top: y + height + 4,
+            right: 16,
+          });
+        }
+        setShowSortDropdown(true);
+      });
+    } else {
+      setShowSortDropdown(false);
+    }
+  };
+
+  const renderCompanyHeader = useCallback(
+    () => (
+      <View style={styles.headerControlsContainer}>
+        {/* Single Ultra-Compact 40px Control Bar */}
+        <View style={styles.searchAndFilterRow}>
+          {/* Search Box */}
+          <View style={styles.searchWrapper}>
+            <View style={{ marginRight: 6 }}>
+              <SearchIcon size={15} color="#94A3B8" />
+            </View>
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search company or brand"
+              placeholderTextColor="#94A3B8"
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+            />
+            {searchQuery ? (
+              <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.clearBtn}>
+                <XIcon size={12} color="#94A3B8" />
+              </TouchableOpacity>
+            ) : null}
+          </View>
+
+          {/* Inline Dropdown Pill Button */}
+          <View ref={sortBtnRef} collapsable={false}>
+            <TouchableOpacity
+              style={[
+                styles.sortDropdownPill,
+                sortBy !== 'default' ? styles.sortDropdownPillActive : null,
+              ]}
+              onPress={toggleSortDropdown}
+              activeOpacity={0.75}
+            >
+              <SwapVertIcon size={15} color={sortBy !== 'default' ? '#FFFFFF' : '#0F2042'} />
+              <Text
+                style={[
+                  styles.sortDropdownPillText,
+                  sortBy !== 'default' ? styles.sortDropdownPillTextActive : null,
+                ]}
+              >
+                {getSortLabel()}
+              </Text>
+              <ChevronDownIcon size={14} color={sortBy !== 'default' ? '#FFFFFF' : '#0F2042'} />
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    ),
+    [searchQuery, sortBy, showSortDropdown]
+  );
+
+  const renderCompanyEmpty = useCallback(
+    () => {
+      if (loadingSalesData || !apiData) {
+        return <CompanyListSkeletonList count={5} />;
+      }
+      return (
+        <View style={styles.emptyCard}>
+          <Text style={styles.emptyText}>No companies match your search</Text>
+          <TouchableOpacity
+            style={styles.resetSearchBtn}
+            onPress={() => {
+              setSearchQuery('');
+              setSortBy('default');
+            }}
+          >
+            <Text style={styles.resetSearchBtnText}>Reset Filter</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    },
+    [loadingSalesData, apiData]
+  );
 
   if (loadingSession) {
     return (
@@ -428,6 +504,60 @@ export default function App() {
               onClose={() => setSelectedCompany(null)}
             />
 
+            {/* Floating Inline Dropdown Card (Rendered in OS window layer via transparent Modal to ensure top zIndex) */}
+            <Modal
+              visible={showSortDropdown}
+              transparent={true}
+              animationType="none"
+              onRequestClose={() => setShowSortDropdown(false)}
+              statusBarTranslucent
+            >
+              <TouchableOpacity
+                style={styles.dropdownModalOverlay}
+                activeOpacity={1}
+                onPress={() => setShowSortDropdown(false)}
+              >
+                <View
+                  style={[
+                    styles.dropdownMenuCardModal,
+                    { top: dropdownPos.top, right: dropdownPos.right },
+                  ]}
+                >
+                  {sortDropdownOptions.map((opt) => {
+                    const isSelected = sortBy === opt.key;
+                    const IconComp = opt.Icon;
+                    return (
+                      <TouchableOpacity
+                        key={opt.key}
+                        style={[
+                          styles.dropdownMenuItem,
+                          isSelected ? styles.dropdownMenuItemActive : null,
+                        ]}
+                        onPress={() => {
+                          setSortBy(opt.key as CompanySortOption);
+                          setShowSortDropdown(false);
+                        }}
+                        activeOpacity={0.75}
+                      >
+                        <View style={styles.dropdownIconBox}>
+                          <IconComp size={15} color={isSelected ? '#0F2042' : '#64748B'} />
+                        </View>
+                        <Text
+                          style={[
+                            styles.dropdownMenuItemText,
+                            isSelected ? styles.dropdownMenuItemTextActive : null,
+                          ]}
+                        >
+                          {opt.label}
+                        </Text>
+                        {isSelected && <CheckCircleIcon size={16} color="#0F2042" />}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </TouchableOpacity>
+            </Modal>
+
             {/* Bottom nav tabs */}
             <FooterNav viewMode={viewMode} setViewMode={handleTabChange} />
           </SafeAreaView>
@@ -509,76 +639,129 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingHorizontal: 16,
-    paddingTop: 14,
+    paddingTop: 12,
     paddingBottom: 24,
   },
+  headerControlsContainer: {
+    marginBottom: 8,
+  },
+  searchAndFilterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   searchWrapper: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    borderRadius: 16,
-    paddingHorizontal: 14,
-    marginBottom: 14,
-    height: 44,
-  },
-  searchIcon: {
-    fontSize: 15,
-    marginRight: 10,
-    color: '#94A3B8',
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    height: 40,
   },
   searchInput: {
     flex: 1,
-    fontSize: 14,
+    fontSize: 13,
     color: '#0F172A',
-    fontWeight: '500',
+    fontWeight: '600',
     paddingVertical: 0,
   },
   clearBtn: {
-    padding: 6,
+    padding: 4,
   },
-  activeFiltersPillRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    marginBottom: 10,
-  },
-  filterPill: {
+  sortDropdownPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#EEF2F6',
+    backgroundColor: '#FFFFFF',
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    borderRadius: 20,
+    borderRadius: 14,
     paddingHorizontal: 10,
-    paddingVertical: 4,
-    marginRight: 8,
-    marginBottom: 6,
+    height: 40,
+    gap: 4,
   },
-  filterPillText: {
-    fontSize: 10,
-    fontWeight: 'bold',
+  sortDropdownPillActive: {
+    backgroundColor: '#0F2042',
+    borderColor: '#0F2042',
+  },
+  sortDropdownPillText: {
+    fontSize: 12,
+    fontWeight: '700',
     color: '#0F2042',
+  },
+  sortDropdownPillTextActive: {
+    color: '#FFFFFF',
+  },
+  dropdownModalOverlay: {
+    flex: 1,
+    backgroundColor: 'transparent',
+  },
+  dropdownMenuCardModal: {
+    position: 'absolute',
+    width: 220,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 10,
+    elevation: 15,
+  },
+  dropdownMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 9,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+  },
+  dropdownMenuItemActive: {
+    backgroundColor: '#EFF6FF',
+  },
+  dropdownIconBox: {
+    width: 20,
+    alignItems: 'center',
     marginRight: 6,
   },
-  filterPillClose: {
-    fontSize: 9,
-    fontWeight: '900',
-    color: '#94A3B8',
+  dropdownMenuItemText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#334155',
+    flex: 1,
+  },
+  dropdownMenuItemTextActive: {
+    color: '#0F2042',
+    fontWeight: '800',
   },
   emptyCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 16,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    padding: 30,
+    padding: 24,
     alignItems: 'center',
     marginVertical: 10,
   },
   emptyText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#64748B',
+    marginBottom: 12,
+  },
+  resetSearchBtn: {
+    backgroundColor: '#0F2042',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  resetSearchBtnText: {
+    color: '#FFFFFF',
     fontSize: 12,
-    fontWeight: 'bold',
-    color: '#94A3B8',
+    fontWeight: '800',
   },
 });
-

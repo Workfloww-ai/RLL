@@ -90,4 +90,41 @@ export const ChevronDownIcon = ({ color = '#94A3B8', size = 14 }: IconProps) => 
   <MaterialIcons name="arrow-drop-down" size={size} color={color} />
 );
 
+export const PhoneIcon = ({ color = '#94A3B8', size = 16 }: IconProps) => (
+  <MaterialIcons name="phone" size={size} color={color} />
+);
+
+export const EmailIcon = ({ color = '#94A3B8', size = 16 }: IconProps) => (
+  <MaterialIcons name="email" size={size} color={color} />
+);
+
+export const BadgeIcon = ({ color = '#94A3B8', size = 16 }: IconProps) => (
+  <MaterialIcons name="badge" size={size} color={color} />
+);
+
+export const ShieldCheckIcon = ({ color = '#94A3B8', size = 16 }: IconProps) => (
+  <MaterialIcons name="verified-user" size={size} color={color} />
+);
+
+export const FilterIcon = ({ color = '#94A3B8', size = 16 }: IconProps) => (
+  <MaterialIcons name="filter-list" size={size} color={color} />
+);
+
+export const TrendingUpIcon = ({ color = '#94A3B8', size = 16 }: IconProps) => (
+  <MaterialIcons name="trending-up" size={size} color={color} />
+);
+
+export const TrendingDownIcon = ({ color = '#94A3B8', size = 16 }: IconProps) => (
+  <MaterialIcons name="trending-down" size={size} color={color} />
+);
+
+export const SortAlphabeticalIcon = ({ color = '#94A3B8', size = 16 }: IconProps) => (
+  <MaterialIcons name="sort-by-alpha" size={size} color={color} />
+);
+
+export const BoltIcon = ({ color = '#94A3B8', size = 16 }: IconProps) => (
+  <MaterialIcons name="bolt" size={size} color={color} />
+);
+
+
 

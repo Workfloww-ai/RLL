@@ -304,7 +304,8 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
                     "phone": db_user.get("phone", ""),
                     "role_name": role_name,
                     "depot_name": depot_name,
-                    "hq_location": "All Headquarters"
+                    "hq_location": "All Headquarters",
+                    "is_active": bool(db_user.get("is_active", True))
                 }
                 logger.info(f"Mobile login successful for user: {email} with role: {role_name}")
         except HTTPException:
@@ -495,7 +496,8 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
                     "phone": db_user.get("phone") or phone,
                     "role_name": role_name,
                     "depot_name": depot_name,
-                    "hq_location": "All Headquarters"
+                    "hq_location": "All Headquarters",
+                    "is_active": bool(db_user.get("is_active", True))
                 }
         except HTTPException:
             raise
@@ -570,7 +572,8 @@ def get_mobile_user_profile(
                 "phone": db_user.get("phone", ""),
                 "role_name": role_name,
                 "depot_name": depot_name,
-                "hq_location": "All Headquarters"
+                "hq_location": "All Headquarters",
+                "is_active": bool(db_user.get("is_active", True))
             }
     except Exception as e:
         logger.warning(f"Error fetching profile in /mobile/me: {e}")
