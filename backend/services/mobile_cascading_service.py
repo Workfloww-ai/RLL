@@ -78,25 +78,16 @@ def _map_period_metrics(records: List[Dict[str, Any]], selected_period: Optional
         cases_key = f"{p_key}_cases"
         bottles_key = f"{p_key}_bottles"
 
-        c_raw = r.get(cases_key)
-        if c_raw is None or (isinstance(c_raw, (int, float)) and float(c_raw) == 0.0 and r.get("total_cases")):
-            c_raw = r.get("total_cases")
-        if c_raw is None or (isinstance(c_raw, (int, float)) and float(c_raw) == 0.0 and r.get("cases")):
-            c_raw = r.get("cases", 0.0)
-
-        b_raw = r.get(bottles_key)
-        if b_raw is None or (isinstance(b_raw, (int, float)) and float(b_raw) == 0.0 and r.get("total_bottles")):
-            b_raw = r.get("total_bottles")
-        if b_raw is None or (isinstance(b_raw, (int, float)) and float(b_raw) == 0.0 and r.get("bottles")):
-            b_raw = r.get("bottles", 0.0)
-
+        # Read the period-specific value directly — no fallback to other periods.
+        # Falling back to total_cases (which is aliased to MTD in SQL) would show
+        # wrong data when the selected period has genuine zero sales.
         try:
-            cases_val = float(c_raw or 0.0)
+            cases_val = float(r.get(cases_key) or 0.0)
         except (ValueError, TypeError):
             cases_val = 0.0
 
         try:
-            bottles_val = float(b_raw or 0.0)
+            bottles_val = float(r.get(bottles_key) or 0.0)
         except (ValueError, TypeError):
             bottles_val = 0.0
 

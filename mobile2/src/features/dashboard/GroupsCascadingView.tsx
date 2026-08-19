@@ -59,7 +59,7 @@ export function GroupsCascadingView({
   // Filtering & controls
   const [loading, setLoading] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [sortOption, setSortOption] = useState<'az' | 'za' | 'cases_desc' | 'cases_asc'>('az');
+  const [sortOption, setSortOption] = useState<'az' | 'za' | 'cases_desc' | 'cases_asc'>('cases_desc');
   const [showSortModal, setShowSortModal] = useState<boolean>(false);
   const [perPage, setPerPage] = useState<number>(15);
   const [showPerPageModal, setShowPerPageModal] = useState<boolean>(false);
@@ -71,16 +71,18 @@ export function GroupsCascadingView({
   const licenseesCacheRef = React.useRef<Map<string, any[]>>(new Map());
   const brandSalesCacheRef = React.useRef<Map<string, any[]>>(new Map());
 
-  // Reset cache on date/period change
+  // Reset cache and active lists on date/period change so stale arrays from previous periods never persist
   useEffect(() => {
     licenseesCacheRef.current.clear();
     brandSalesCacheRef.current.clear();
+    setLicensees([]);
+    setBrandSales([]);
   }, [dateFrom, dateTo, period]);
 
   // Reset pagination & search when level changes
   const resetFiltersOnLevelChange = () => {
     setSearchQuery('');
-    setSortOption('az');
+    setSortOption('cases_desc');
     setCurrentPage(1);
   };
 
@@ -114,16 +116,14 @@ export function GroupsCascadingView({
     if (!forceRefresh && licenseesCacheRef.current.has(key)) {
       const cached = licenseesCacheRef.current.get(key) || [];
       setLicensees(cached);
-      if (cached.length > 0) {
-        const sumCases = cached.reduce((sum: number, item: any) => sum + (Number(item.total_cases ?? item.cases ?? 0) || 0), 0);
-        const sumBottles = cached.reduce((sum: number, item: any) => sum + (Number(item.total_bottles ?? item.bottles ?? 0) || 0), 0);
-        setSelectedGroup((prev: any) => ({
-          ...prev,
-          total_licensees: cached.length,
-          total_cases: (prev && Number(prev.total_cases) > 0) ? prev.total_cases : sumCases,
-          total_bottles: (prev && Number(prev.total_bottles) > 0) ? prev.total_bottles : sumBottles,
-        }));
-      }
+      const sumCases = cached.reduce((sum: number, item: any) => sum + (Number(item.total_cases ?? item.cases ?? 0) || 0), 0);
+      const sumBottles = cached.reduce((sum: number, item: any) => sum + (Number(item.total_bottles ?? item.bottles ?? 0) || 0), 0);
+      setSelectedGroup((prev: any) => ({
+        ...prev,
+        total_licensees: cached.length,
+        total_cases: sumCases,
+        total_bottles: sumBottles,
+      }));
       return;
     }
 
@@ -134,16 +134,14 @@ export function GroupsCascadingView({
       licenseesCacheRef.current.set(key, result);
       setLicensees(result);
 
-      if (result.length > 0) {
-        const sumCases = result.reduce((sum: number, item: any) => sum + (Number(item.total_cases ?? item.cases ?? 0) || 0), 0);
-        const sumBottles = result.reduce((sum: number, item: any) => sum + (Number(item.total_bottles ?? item.bottles ?? 0) || 0), 0);
-        setSelectedGroup((prev: any) => ({
-          ...prev,
-          total_licensees: result.length,
-          total_cases: (prev && Number(prev.total_cases) > 0) ? prev.total_cases : sumCases,
-          total_bottles: (prev && Number(prev.total_bottles) > 0) ? prev.total_bottles : sumBottles,
-        }));
-      }
+      const sumCases = result.reduce((sum: number, item: any) => sum + (Number(item.total_cases ?? item.cases ?? 0) || 0), 0);
+      const sumBottles = result.reduce((sum: number, item: any) => sum + (Number(item.total_bottles ?? item.bottles ?? 0) || 0), 0);
+      setSelectedGroup((prev: any) => ({
+        ...prev,
+        total_licensees: result.length,
+        total_cases: sumCases,
+        total_bottles: sumBottles,
+      }));
     } catch (e) {
       console.error(`Error loading licensees for group ${groupId}:`, e);
       setLicensees([]);
@@ -158,15 +156,13 @@ export function GroupsCascadingView({
     if (!forceRefresh && brandSalesCacheRef.current.has(key)) {
       const cached = brandSalesCacheRef.current.get(key) || [];
       setBrandSales(cached);
-      if (cached.length > 0) {
-        const sumCases = cached.reduce((sum: number, item: any) => sum + (Number(item.total_cases ?? item.cases ?? 0) || 0), 0);
-        const sumBottles = cached.reduce((sum: number, item: any) => sum + (Number(item.total_bottles ?? item.bottles ?? 0) || 0), 0);
-        setSelectedLicensee((prev: any) => ({
-          ...prev,
-          total_cases: (prev && Number(prev.total_cases) > 0) ? prev.total_cases : sumCases,
-          total_bottles: (prev && Number(prev.total_bottles) > 0) ? prev.total_bottles : sumBottles,
-        }));
-      }
+      const sumCases = cached.reduce((sum: number, item: any) => sum + (Number(item.total_cases ?? item.cases ?? 0) || 0), 0);
+      const sumBottles = cached.reduce((sum: number, item: any) => sum + (Number(item.total_bottles ?? item.bottles ?? 0) || 0), 0);
+      setSelectedLicensee((prev: any) => ({
+        ...prev,
+        total_cases: sumCases,
+        total_bottles: sumBottles,
+      }));
       return;
     }
 
@@ -177,15 +173,13 @@ export function GroupsCascadingView({
       brandSalesCacheRef.current.set(key, result);
       setBrandSales(result);
 
-      if (result.length > 0) {
-        const sumCases = result.reduce((sum: number, item: any) => sum + (Number(item.total_cases ?? item.cases ?? 0) || 0), 0);
-        const sumBottles = result.reduce((sum: number, item: any) => sum + (Number(item.total_bottles ?? item.bottles ?? 0) || 0), 0);
-        setSelectedLicensee((prev: any) => ({
-          ...prev,
-          total_cases: (prev && Number(prev.total_cases) > 0) ? prev.total_cases : sumCases,
-          total_bottles: (prev && Number(prev.total_bottles) > 0) ? prev.total_bottles : sumBottles,
-        }));
-      }
+      const sumCases = result.reduce((sum: number, item: any) => sum + (Number(item.total_cases ?? item.cases ?? 0) || 0), 0);
+      const sumBottles = result.reduce((sum: number, item: any) => sum + (Number(item.total_bottles ?? item.bottles ?? 0) || 0), 0);
+      setSelectedLicensee((prev: any) => ({
+        ...prev,
+        total_cases: sumCases,
+        total_bottles: sumBottles,
+      }));
     } catch (e) {
       console.error(`Error loading brand sales for licensee ${licenseeId}:`, e);
       setBrandSales([]);
@@ -481,8 +475,8 @@ export function GroupsCascadingView({
           paginatedList.map((item, index) => {
             // Level 1: Group Card
             if (level === 1) {
-              const cases = Math.round((Number(item.total_cases ?? item.cases ?? item.mtd_cases ?? item.daily_cases ?? 0)) * scaleFactor);
-              const bottles = Math.round((Number(item.total_bottles ?? item.bottles ?? item.mtd_bottles ?? item.daily_bottles ?? 0)) * scaleFactor);
+              const cases = Math.round(Number(item.total_cases ?? 0) * scaleFactor);
+              const bottles = Math.round(Number(item.total_bottles ?? 0) * scaleFactor);
               return (
                 <TouchableOpacity
                   key={item.group_id || index}
@@ -521,8 +515,8 @@ export function GroupsCascadingView({
 
             // Level 2: Licensee Card
             if (level === 2) {
-              const cases = Math.round((Number(item.total_cases ?? item.cases ?? item.mtd_cases ?? item.daily_cases ?? 0)) * scaleFactor);
-              const bottles = Math.round((Number(item.total_bottles ?? item.bottles ?? item.mtd_bottles ?? item.daily_bottles ?? 0)) * scaleFactor);
+              const cases = Math.round(Number(item.total_cases ?? 0) * scaleFactor);
+              const bottles = Math.round(Number(item.total_bottles ?? 0) * scaleFactor);
               const depotName = item.licensee_depots && item.licensee_depots.length > 0 ? item.licensee_depots[0] : null;
 
               return (
@@ -569,8 +563,8 @@ export function GroupsCascadingView({
 
             // Level 3: Brand Sales Card
             if (level === 3) {
-              const cases = Math.round((Number(item.total_cases ?? item.cases ?? item.mtd_cases ?? item.daily_cases ?? 0)) * scaleFactor);
-              const bottles = Math.round((Number(item.total_bottles ?? item.bottles ?? item.mtd_bottles ?? item.daily_bottles ?? 0)) * scaleFactor);
+              const cases = Math.round(Number(item.total_cases ?? 0) * scaleFactor);
+              const bottles = Math.round(Number(item.total_bottles ?? 0) * scaleFactor);
               const depotName = item.sales_depots && item.sales_depots.length > 0 ? item.sales_depots[0] : null;
 
               return (
