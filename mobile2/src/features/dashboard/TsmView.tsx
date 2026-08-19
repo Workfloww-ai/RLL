@@ -60,7 +60,7 @@ export function TsmView({
 
   // Search & Filter State
   const [searchTerm, setSearchTerm] = useState<string>('');
-  const [sortOption, setSortOption] = useState<'az' | 'za' | 'cases_desc' | 'cases_asc'>('az');
+  const [sortOption, setSortOption] = useState<'az' | 'za' | 'cases_desc' | 'cases_asc'>('cases_desc');
   const [showSortModal, setShowSortModal] = useState<boolean>(false);
   const [perPage, setPerPage] = useState<number>(15);
   const [showPerPageModal, setShowPerPageModal] = useState<boolean>(false);
@@ -126,13 +126,20 @@ export function TsmView({
     }
   };
 
-  // 4. Sorted ASEs inside Modal (Sorted Alphabetically A-Z)
+  // 4. Sorted ASEs inside Modal (Sorted by Highest Cases First)
   const modalAses = useMemo(() => {
     if (!selectedTsm || !selectedTsm.ases) return [];
     const aseList: ASE[] = [...selectedTsm.ases];
-    aseList.sort((a, b) => a.name.localeCompare(b.name));
+    aseList.sort((a, b) => {
+      const aRaw = a.data?.[period] || { cases: 0, bottles: 0 };
+      const bRaw = b.data?.[period] || { cases: 0, bottles: 0 };
+      const aCases = Math.round((aRaw.cases || 0) * scaleFactor);
+      const bCases = Math.round((bRaw.cases || 0) * scaleFactor);
+      if (bCases !== aCases) return bCases - aCases;
+      return a.name.localeCompare(b.name);
+    });
     return aseList;
-  }, [selectedTsm]);
+  }, [selectedTsm, period, scaleFactor]);
 
   // Summary metrics for selected TSM inside Modal
   const modalTsmMetrics = useMemo(() => {
