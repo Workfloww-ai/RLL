@@ -784,22 +784,43 @@ class MasterService:
 
         if missing and client:
             payloads = list(missing.values())
-            try:
-                res = client.table("licensees").insert(payloads).execute()
-                for row in res.data or []:
-                    k = self._clean(row.get("licensee_name"))
-                    if k:
-                        self._licensee_cache[k] = row["licensee_id"]
-            except Exception as e_lic:
-                logger.warning(f"bulk_resolve_licensees insert notice: {e_lic}")
+            # Insert missing items in safe chunks of 200 to prevent single-row constraint failures from aborting the entire batch
+            for chunk_start in range(0, len(payloads), 200):
+                chunk = payloads[chunk_start:chunk_start + 200]
                 try:
-                    res = client.table("licensees").select("licensee_id,licensee_name").execute()
+                    res = client.table("licensees").insert(chunk).execute()
                     for row in res.data or []:
                         k = self._clean(row.get("licensee_name"))
                         if k:
                             self._licensee_cache[k] = row["licensee_id"]
-                except Exception:
-                    pass
+                except Exception as e_lic:
+                    logger.warning(f"bulk_resolve_licensees chunk insert notice: {e_lic}")
+                    # Fallback to item-by-item insert if chunk contains a conflict
+                    for single_item in chunk:
+                        try:
+                            res_single = client.table("licensees").insert(single_item).execute()
+                            if res_single.data:
+                                k = self._clean(res_single.data[0].get("licensee_name"))
+                                if k:
+                                    self._licensee_cache[k] = res_single.data[0]["licensee_id"]
+                        except Exception:
+                            pass
+
+            # Always refresh cache from DB for full coverage
+            try:
+                l_offset = 0
+                while True:
+                    res = client.table("licensees").select("licensee_id,licensee_name").range(l_offset, l_offset + 999).execute()
+                    rows = res.data or []
+                    for row in rows:
+                        k = self._clean(row.get("licensee_name"))
+                        if k:
+                            self._licensee_cache[k] = row["licensee_id"]
+                    if len(rows) < 1000:
+                        break
+                    l_offset += 1000
+            except Exception as e_fetch:
+                logger.warning(f"bulk_resolve_licensees fetch notice: {e_fetch}")
 
         return self._licensee_cache
 
@@ -819,22 +840,34 @@ class MasterService:
 
         if missing and client:
             payloads = list(missing.values())
-            try:
-                res = client.table("brands").insert(payloads).execute()
-                for row in res.data or []:
-                    k = self._clean(row.get("brand_name"))
-                    if k:
-                        self._brand_cache[k] = row["brand_id"]
-            except Exception as e_brd:
-                logger.warning(f"bulk_resolve_brands insert notice: {e_brd}")
+            for chunk_start in range(0, len(payloads), 200):
+                chunk = payloads[chunk_start:chunk_start + 200]
                 try:
-                    res = client.table("brands").select("brand_id,brand_name").execute()
+                    res = client.table("brands").insert(chunk).execute()
                     for row in res.data or []:
                         k = self._clean(row.get("brand_name"))
                         if k:
                             self._brand_cache[k] = row["brand_id"]
-                except Exception:
-                    pass
+                except Exception as e_brd:
+                    logger.warning(f"bulk_resolve_brands chunk insert notice: {e_brd}")
+                    for single_item in chunk:
+                        try:
+                            res_single = client.table("brands").insert(single_item).execute()
+                            if res_single.data:
+                                k = self._clean(res_single.data[0].get("brand_name"))
+                                if k:
+                                    self._brand_cache[k] = res_single.data[0]["brand_id"]
+                        except Exception:
+                            pass
+
+            try:
+                res = client.table("brands").select("brand_id,brand_name").execute()
+                for row in res.data or []:
+                    k = self._clean(row.get("brand_name"))
+                    if k:
+                        self._brand_cache[k] = row["brand_id"]
+            except Exception as e_fetch:
+                logger.warning(f"bulk_resolve_brands fetch notice: {e_fetch}")
 
         return self._brand_cache
 

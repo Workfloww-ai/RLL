@@ -15,6 +15,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 async def login(credentials: LoginRequest):
     email = credentials.email.lower().strip()
     password = credentials.password
+    logger.info(f"Web login attempt initiated for user: {email}")
 
     # Hardcoded Demo Account for Client Presentation
     if email == "khwaish.gahoi@workfloww.ai":
@@ -29,6 +30,7 @@ async def login(credentials: LoginRequest):
             "is_active": True
         }
         token = create_access_token(data={"sub": demo_user["email"], "role": "admin", "user_id": demo_user["user_id"]})
+        logger.info(f"Demo login successful for user: {email}")
         return {
             "access_token": token,
             "token_type": "bearer",
@@ -44,6 +46,7 @@ async def login(credentials: LoginRequest):
             temp_client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
             auth_response = temp_client.auth.sign_in_with_password({"email": email, "password": credentials.password})
             if not auth_response or not auth_response.user:
+                logger.warning(f"Web login failed for user {email} (invalid credentials / empty response)")
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
 
             # 2. Get user profile and role
@@ -51,6 +54,7 @@ async def login(credentials: LoginRequest):
             if res.data and len(res.data) > 0:
                 db_user = res.data[0]
                 if not db_user.get("is_active", True):
+                    logger.warning(f"Web login failed for user {email} (deactivated account)")
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,
                         detail="User account is deactivated"
@@ -60,17 +64,26 @@ async def login(credentials: LoginRequest):
                 try:
                     ur_res = client.table("user_roles").select("user_id, role_id, is_active, roles(role_id, role_name)").eq("user_id", db_user["user_id"]).execute()
                     if ur_res.data:
+                        active_roles = []
                         for ur in ur_res.data:
                             if ur.get("is_active", True):
                                 role_obj = ur.get("roles") or {}
-                                if role_obj.get("role_name"):
-                                    role_name = role_obj["role_name"]
-                                    break
+                                rname = role_obj.get("role_name")
+                                if rname:
+                                    active_roles.append(rname)
+                        
+                        # For Web dashboard, prioritize Admin / Super_Admin roles if user has multiple roles
+                        admin_role = next((r for r in active_roles if r.lower() in ["admin", "super_admin", "super admin"]), None)
+                        if admin_role:
+                            role_name = admin_role
+                        elif active_roles:
+                            role_name = active_roles[0]
                 except Exception:
                     pass
 
                 # 3. Guardrail: Enforce Web-only roles (Admins only)
                 if role_name.lower() not in ["admin", "super_admin", "super admin"]:
+                    logger.warning(f"Web login access denied for user {email} (role '{role_name}' lacks Web permissions)")
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="Access Denied: Web Dashboard is restricted to Administrators only."
@@ -86,9 +99,11 @@ async def login(credentials: LoginRequest):
                     "role": role_name,
                     "is_active": True
                 }
+                logger.info(f"Web login successful for user: {email} with role: {role_name}")
         except HTTPException:
             raise
         except Exception as e:
+            logger.error(f"Database/auth error during login for user {email}: {e}")
             if "Invalid login credentials" in str(e):
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
             pass

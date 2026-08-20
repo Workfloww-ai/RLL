@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "mobile2",
+    "slug": "mobile2",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true
+    },
+    "plugins": [
+      "@react-native-community/datetimepicker"
+    ],
+    "android": {
+      "package": "com.anonymous.mobile2"
+    }
+  }
+}
