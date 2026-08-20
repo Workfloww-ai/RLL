@@ -268,12 +268,20 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
                 try:
                     ur_res = client.table("user_roles").select("user_id, role_id, is_active, roles(role_id, role_name)").eq("user_id", db_user["user_id"]).execute()
                     if ur_res.data:
+                        active_roles = []
                         for ur in ur_res.data:
                             if ur.get("is_active", True):
                                 role_obj = ur.get("roles") or {}
-                                if role_obj.get("role_name"):
-                                    role_name = role_obj["role_name"]
-                                    break
+                                rname = role_obj.get("role_name")
+                                if rname:
+                                    active_roles.append(rname)
+                        
+                        # Prioritize valid mobile roles if user has multiple roles
+                        valid_mobile = next((r for r in active_roles if r.lower() in ["tsm", "ase", "leader", "admin", "territory executive"]), None)
+                        if valid_mobile:
+                            role_name = valid_mobile
+                        elif active_roles:
+                            role_name = active_roles[0]
                 except Exception:
                     pass
 
