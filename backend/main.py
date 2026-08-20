@@ -2,6 +2,8 @@ import sys
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import os
+import uvicorn
 
 # Ensure root project directory is in sys.path
 root_dir = Path(__file__).resolve().parent.parent
@@ -37,12 +39,8 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:5174",
         "http://localhost:3000",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-        "http://127.0.0.1:3000",
+        "http://[IP_ADDRESS]",
     ],
     allow_origin_regex=r"https?://.*",
     allow_credentials=True,
@@ -86,5 +84,10 @@ def read_root():
     }
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+    # Cloud Run injects PORT (defaults to 8000 locally if not set)
+    port = int(os.environ.get("PORT", 8000))
+    # Turn off reload in production
+    is_dev = os.environ.get("ENVIRONMENT", "development") == "development"
+    
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=is_dev)
