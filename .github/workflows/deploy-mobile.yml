@@ -1,0 +1,30 @@
+name: Build & Deploy Mobile App to Google Play
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'mobile2/**'
+
+jobs:
+  build-and-submit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🏗 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 📦 Setup Expo & EAS CLI
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: 🚀 Trigger EAS Build & Auto-Submit to Google Play Internal Testing
+        working-directory: ./mobile2
+        run: npx eas-cli build --platform android --profile production --auto-submit --non-interactive
