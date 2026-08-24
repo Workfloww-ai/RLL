@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "mobile2",
-    "slug": "mobile2",
+    "name": "360",
+    "slug": "rll",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
@@ -12,7 +12,14 @@
       "@react-native-community/datetimepicker"
     ],
     "android": {
-      "package": "com.anonymous.mobile2"
-    }
+      "package": "com.workfloww.lucid360",
+      "versionCode": 1
+    },
+    "extra": {
+      "eas": {
+        "projectId": "bd7dca48-80e7-4960-af9b-96dcd3cc14a1"
+      }
+    },
+    "owner": "workflowwais-team"
   }
 }
