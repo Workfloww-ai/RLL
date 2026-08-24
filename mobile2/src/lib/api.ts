@@ -31,8 +31,8 @@ export function getApiBaseUrl(): string {
     }
   }
 
-  // 3. Fallback to localhost (for ADB reverse tcp:8000 tcp:8000 or iOS Simulator)
-  return 'http://localhost:8000/api/v1';
+  // 3. Fallback to production live backend Cloud Run deployment
+  return 'https://rll-backend-414899512001.asia-south2.run.app/api/v1';
 }
 
 export const BASE_URL = getApiBaseUrl();
