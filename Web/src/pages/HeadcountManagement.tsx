@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import FileUpload from '../components/FileUpload';
 import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X, RefreshCw, Mail, Phone, Shield } from 'lucide-react';
 import { User } from '../types';
+import { API_BASE_URL } from '../config';
 
 const INITIAL_USERS: User[] = [];
 
@@ -82,7 +83,7 @@ export default function HeadcountManagement() {
   const fetchUsers = async () => {
     setLoading(true);
     try {
-      const res = await fetch('http://localhost:8000/api/v1/users/');
+      const res = await fetch(`${API_BASE_URL}/users/`);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) {
@@ -98,7 +99,7 @@ export default function HeadcountManagement() {
 
   const fetchRoles = async () => {
     try {
-      const res = await fetch('http://localhost:8000/api/v1/users/roles');
+      const res = await fetch(`${API_BASE_URL}/users/roles`);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) {
@@ -139,7 +140,7 @@ export default function HeadcountManagement() {
     };
 
     try {
-      const res = await fetch(`http://localhost:8000/api/v1/users/${userId}`, {
+      const res = await fetch(`${API_BASE_URL}/users/${userId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updatedPayload)
@@ -164,7 +165,7 @@ export default function HeadcountManagement() {
   const handleDelete = async (id: string) => {
     if (!confirm("Are you sure you want to delete this user record?")) return;
     try {
-      await fetch(`http://localhost:8000/api/v1/users/${id}`, { method: 'DELETE' });
+      await fetch(`${API_BASE_URL}/users/${id}`, { method: 'DELETE' });
     } catch (err) {
       console.error('Error deleting user on backend:', err);
     }
@@ -189,7 +190,7 @@ export default function HeadcountManagement() {
       };
 
       try {
-        const res = await fetch('http://localhost:8000/api/v1/users/', {
+        const res = await fetch(`${API_BASE_URL}/users/`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(userPayload)
@@ -281,7 +282,7 @@ export default function HeadcountManagement() {
         <div className="mb-6 shrink-0">
           <FileUpload 
             title="Upload Headcount Roster"
-            uploadEndpoint="http://localhost:8000/api/v1/users/upload-roster"
+            uploadEndpoint={`${API_BASE_URL}/users/upload-roster`}
             onUploadComplete={() => fetchUsers()}
             instructions={[
               "Ensure the file contains: Full Name, Phone Number, Email, Role, Reporting Manager.",

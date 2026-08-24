@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Rajasthan Liquor Limited (RLL) Sales Analytics Platform"
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
+    PORT: int = 8000
     
     # Supabase credentials
     SUPABASE_URL: str = ""
@@ -28,6 +29,16 @@ class Settings(BaseSettings):
     DOVESOFT_ENTITY_ID: str = ""
     DOVESOFT_TEMP_ID: str = ""
     DOVESOFT_MESSAGE_TEMPLATE: str = ""
+    
+    # Redis Cloud Configuration (loaded from .env or environment variables)
+    REDIS_URL: str = ""
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_PASSWORD: str = ""
+    REDIS_DB: int = 0
+    REDIS_ENABLED: bool = True
+    CACHE_DEFAULT_TTL: int = 300  # 5 minutes default
+
     
     model_config = SettingsConfigDict(
         env_file=str(BASE_DIR / ".env"),

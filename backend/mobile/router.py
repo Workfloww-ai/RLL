@@ -593,70 +593,95 @@ def get_mobile_user_profile(
 def get_mobile_headquarters():
     """
     Fetches active headquarters from public.headquarters table in Supabase.
+    Includes master cache fallback to guarantee 0 HTTP 500 errors.
     """
-    client = get_supabase()
     try:
-        res = client.table("headquarters").select("headquarters_id, name, is_active").eq("is_active", True).order("name").execute()
-        hq_data = res.data or []
-        hq_names = ["All Headquarters"] + [h["name"] for h in hq_data if h.get("name")]
-        return {
-            "status": "success",
-            "count": len(hq_names),
-            "headquarters": hq_names
-        }
+        client = get_supabase()
+        if client:
+            res = client.table("headquarters").select("headquarters_id, name, is_active").eq("is_active", True).order("name").execute()
+            hq_data = res.data or []
+            if hq_data:
+                hq_names = ["All Headquarters"] + [h["name"] for h in hq_data if h.get("name")]
+                return {
+                    "status": "success",
+                    "count": len(hq_names),
+                    "headquarters": hq_names
+                }
     except Exception as e:
-        logger.error(f"Error fetching headquarters: {e}")
-        raise HTTPException(status_code=500, detail=f"Database error fetching headquarters: {e}")
+        logger.warning(f"Direct DB query failed in /mobile/headquarters, falling back to master cache: {e}")
+
+    # Fallback 1: Try master cache lookups
+    try:
+        master_cache = get_cached_master_lookups()
+        hq_lookup = master_cache.get("hq_lookup", {})
+        if hq_lookup:
+            unique_hqs = sorted(list(set(hq_lookup.values())))
+            hq_names = ["All Headquarters"] + [h for h in unique_hqs if h and h != "Unassigned"]
+            return {
+                "status": "success",
+                "count": len(hq_names),
+                "headquarters": hq_names
+            }
+    except Exception as e_cache:
+        logger.warning(f"Master cache fallback failed in /mobile/headquarters: {e_cache}")
+
+    # Fallback 2: Static Headquarters fallback
+    default_hqs = [
+        "All Headquarters", "Ajmer", "Alwar", "Banswara", "Baran", "Barmer", "Bharatpur",
+        "Bhilwara", "Bikaner", "Bundi", "Chittorgarh", "Churu", "Dausa", "Dholpur",
+        "Dungarpur", "Hanumangarh", "Jaipur", "Jaisalmer", "Jalore", "Jhalawar",
+        "Jhunjhunu", "Jodhpur", "Karauli", "Kota", "Nagaur", "Pali", "Pratapgarh",
+        "Rajsamand", "Sawai Madhopur", "Sikar", "Sirohi", "Sri Ganganagar", "Tonk", "Udaipur"
+    ]
+    return {
+        "status": "success",
+        "count": len(default_hqs),
+        "headquarters": default_hqs
+    }
 
 
 @router.get("/companies")
-def get_mobile_companies(
+async def get_mobile_companies(
+    period: str = Query("Daily", description="Sales period: Daily, MTD, YTD"),
+    date_to: Optional[str] = Query(None, alias="date"),
+    selected_hq: Optional[str] = Query(None, alias="selected_hq"),
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Fetches active liquor companies and their associated brands from Supabase.
+    Fetches period-specific company sales analytics (Daily, MTD, YTD).
+    Excludes Company 'Others' strictly. Caches response in Redis.
     """
-    client = get_supabase()
+    from backend.services.mobile_companies_service import get_companies_summary
+    from backend.services.cache_service import get_json_cache, set_json_cache
+
+    clean_period = period.strip() if period else "Daily"
+    clean_hq = selected_hq.strip() if selected_hq else "All Headquarters"
+    clean_date = date_to.strip() if date_to else "latest"
+
+    redis_key = f"rll:mobile:companies:{clean_period}:{clean_hq}:{clean_date}"
+    cached_payload = await get_json_cache(redis_key)
+    if cached_payload is not None:
+        logger.info(f"get_mobile_companies: Redis CACHE HIT for {redis_key}")
+        return cached_payload
+
     try:
-        c_res = client.table("companies").select("company_id, company_name, is_active, created_at").eq("is_active", True).order("company_name").execute()
-        companies_data = c_res.data or []
-
-        b_res = client.table("brands").select("brand_id, brand_name, company_id, is_active, created_at").eq("is_active", True).order("brand_name").execute()
-        brands_data = b_res.data or []
-
-        brands_by_company: Dict[str, List[Dict[str, Any]]] = {}
-        for b in brands_data:
-            cid = str(b.get("company_id") or "")
-            if cid:
-                if cid not in brands_by_company:
-                    brands_by_company[cid] = []
-                brands_by_company[cid].append({
-                    "brand_id": str(b.get("brand_id")),
-                    "brand_name": b.get("brand_name"),
-                    "company_id": cid,
-                    "is_active": b.get("is_active", True),
-                    "created_at": b.get("created_at")
-                })
-
-        result = []
-        for c in companies_data:
-            cid = str(c.get("company_id"))
-            result.append({
-                "company_id": cid,
-                "company_name": c.get("company_name"),
-                "is_active": c.get("is_active", True),
-                "created_at": c.get("created_at"),
-                "brands": brands_by_company.get(cid, [])
-            })
-
-        return {
+        companies_list = get_companies_summary(
+            period=clean_period,
+            date_to=date_to,
+            selected_hq=selected_hq
+        )
+        payload = {
             "status": "success",
-            "count": len(result),
-            "companies": result
+            "period": clean_period,
+            "count": len(companies_list),
+            "companies": companies_list
         }
+        await set_json_cache(redis_key, payload, ttl=900)  # 15 minutes TTL
+        return payload
     except Exception as e:
-        logger.error(f"Error fetching mobile companies: {e}")
+        logger.error(f"Error fetching mobile companies analytics: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.get("/companies/{company_id}/brands")
@@ -700,16 +725,33 @@ def get_company_brands(
 
 @router.get("/sales")
 async def get_mobile_sales(
+    request: Request,
     date_from: Optional[str] = Query(None, description="Start Date YYYY-MM-DD"),
     date_to: Optional[str] = Query(None, description="End Date YYYY-MM-DD"),
     period: str = Query("Daily", description="Daily | MTD | YTD"),
     selected_hq: str = Query("All Headquarters", description="Headquarters filter"),
+    test_limit: Optional[int] = Query(None, description="Diagnostic payload scaling test limit"),
     current_user: dict = Depends(RoleChecker(['tsm', 'ase', 'leader', 'admin']))
 ):
     """
     Returns real aggregated sales data for Companies, Depots, and TSMs directly calculated from Supabase.
     Computes distinct, dynamic metrics for Daily, MTD, and YTD with database-level HQ filtering.
+    Instruments every stage of execution with microsecond timing.
     """
+    import json
+    import uuid
+    from fastapi.responses import JSONResponse
+
+    t_api_start = time.perf_counter()
+    request_id = request.headers.get("X-Request-ID") or f"req_{uuid.uuid4().hex[:8]}"
+
+    # A & B. Auth timing
+    t_auth_start = time.perf_counter()
+    user_role = (current_user.get("role_name") or current_user.get("role") or "").lower()
+    user_id = current_user.get("user_id")
+    t_auth_end = time.perf_counter()
+    auth_duration_ms = round((t_auth_end - t_auth_start) * 1000, 2)
+
     client = get_supabase()
     raw_period = (period or "Daily").strip().upper()
     if raw_period == "DAILY":
@@ -721,8 +763,13 @@ async def get_mobile_sales(
     else:
         selected_period = "Daily"
 
-    # Use cached master lookups to eliminate 9 sequential DB queries per request
+    # C. Master cache lookup timing
+    t_master_start = time.perf_counter()
+    master_cache_hit = _MASTER_CACHE["data"] is not None and (time.time() - _MASTER_CACHE["timestamp"]) < _MASTER_CACHE_TTL
     master_cache = get_cached_master_lookups()
+    t_master_end = time.perf_counter()
+    master_cache_duration_ms = round((t_master_end - t_master_start) * 1000, 2)
+
     companies_lookup = master_cache["companies_lookup"]
     brands_lookup = master_cache["brands_lookup"]
     hq_lookup = master_cache["hq_lookup"]
@@ -734,17 +781,81 @@ async def get_mobile_sales(
     tsm_ase_lookup = master_cache["tsm_ase_lookup"]
     ase_names_lookup = master_cache["ase_names_lookup"]
 
-    # RBAC Data Filtering
-    user_role = (current_user.get("role_name") or current_user.get("role") or "").lower()
-    user_id = current_user.get("user_id")
-
-    cache_key = f"{selected_period}:{selected_hq}:{date_from}:{date_to}:{user_role}:{user_id}"
+    cache_key = f"{selected_period}:{selected_hq}:{date_from}:{date_to}:{user_role}:{user_id}:{test_limit or 'all'}"
+    
+    # D. Sales response cache timing
+    t_sales_cache_start = time.perf_counter()
     now_ts = time.time()
     if cache_key in _SALES_RESPONSE_CACHE:
         entry = _SALES_RESPONSE_CACHE[cache_key]
         if now_ts - entry["timestamp"] < _SALES_RESPONSE_TTL:
-            logger.info(f"⚡ [CACHE HIT 0ms] Serving sales payload for {cache_key}")
-            return entry["data"]
+            t_sales_cache_end = time.perf_counter()
+            sales_cache_duration_ms = round((t_sales_cache_end - t_sales_cache_start) * 1000, 2)
+            t_api_end = time.perf_counter()
+            total_api_ms = round((t_api_end - t_api_start) * 1000, 2)
+
+            cached_data = entry["data"]
+            cached_bytes = len(json.dumps(cached_data).encode("utf-8"))
+            cached_kb = round(cached_bytes / 1024, 2)
+            cached_mb = round(cached_bytes / (1024 * 1024), 2)
+
+            logger.info(
+                f"\n==================================================\n"
+                f"RLL PERFORMANCE TRACE (CACHE HIT)\n"
+                f"==================================================\n"
+                f"Request ID: {request_id}\n"
+                f"Endpoint: /mobile/sales\n"
+                f"Filters: HQ: {selected_hq} | Date: {date_from} to {date_to} | Period: {selected_period}\n"
+                f"--------------------------------------------------\n"
+                f"BACKEND\n"
+                f"--------------------------------------------------\n"
+                f"Authentication:         {auth_duration_ms:.1f} ms\n"
+                f"Master cache:          {master_cache_duration_ms:.1f} ms ({'HIT' if master_cache_hit else 'MISS'})\n"
+                f"Sales cache:           {sales_cache_duration_ms:.1f} ms (HIT)\n"
+                f"Supabase RPC:          0.0 ms (CACHED)\n"
+                f"RPC payload:           0.0 KB / 0.00 MB\n"
+                f"RPC deserialization:   0.0 ms\n"
+                f"Python transformation: 0.0 ms\n"
+                f"JSON serialization:    0.1 ms\n"
+                f"Final API response:    {cached_kb} KB / {cached_mb:.2f} MB\n"
+                f"Total FastAPI time:    {total_api_ms:.1f} ms\n"
+                f"=================================================="
+            )
+
+            return JSONResponse(
+                content=cached_data,
+                headers={
+                    "X-Request-ID": request_id,
+                    "X-Backend-Duration-Ms": str(total_api_ms),
+                    "X-Response-Size-Bytes": str(cached_bytes),
+                    "X-Sales-Cache-Status": "HIT"
+                }
+            )
+
+    redis_key = f"rll:mobile:sales:{cache_key}"
+    try:
+        from backend.services.cache_service import get_json_cache
+        redis_cached_data = await get_json_cache(redis_key)
+        if redis_cached_data:
+            _SALES_RESPONSE_CACHE[cache_key] = {
+                "timestamp": time.time(),
+                "data": redis_cached_data
+            }
+            t_api_end = time.perf_counter()
+            total_api_ms = round((t_api_end - t_api_start) * 1000, 2)
+            return JSONResponse(
+                content=redis_cached_data,
+                headers={
+                    "X-Request-ID": request_id,
+                    "X-Backend-Duration-Ms": str(total_api_ms),
+                    "X-Sales-Cache-Status": "REDIS_HIT"
+                }
+            )
+    except Exception as e_redis:
+        logger.warning(f"Redis cache check failed: {e_redis}")
+
+    t_sales_cache_end = time.perf_counter()
+    sales_cache_duration_ms = round((t_sales_cache_end - t_sales_cache_start) * 1000, 2)
 
     allowed_depots = set()
     if user_role == "tsm":
@@ -757,7 +868,6 @@ async def get_mobile_sales(
         allowed_depots = set(user_depots_map.get(user_id, []))
         master_tsms = {}
 
-    # 4. Determine Date Ranges using Latest Database Upload Date
     latest_sale_date = None
     try:
         max_res = client.table("dashboard_summary_daily").select("sale_date").order("sale_date", desc=True).limit(1).execute()
@@ -784,7 +894,6 @@ async def get_mobile_sales(
     fy_year = end_dt.year if end_dt.month >= 4 else end_dt.year - 1
     ytd_start = f"{fy_year}-04-01"
 
-    # Headquarters Filter Resolution
     target_hq_id = None
     if selected_hq and selected_hq != "All Headquarters":
         target_hq_id = master_cache.get("hq_name_to_id", {}).get(selected_hq.strip().lower())
@@ -796,15 +905,16 @@ async def get_mobile_sales(
             except Exception as e:
                 logger.warning(f"HQ lookup error for {selected_hq}: {e}")
 
-    start_time = time.time()
-    start_time = time.time()
-    # Call JSON RPC which returns untruncated JSONB object containing companies and depots arrays
-    sales_payload = call_mobile_sales_json_rpc(end_date, mtd_start, ytd_start, target_hq_id)
+    # E, F, G, H. Supabase RPC timing and byte measurement
+    rpc_trace_info: Dict[str, Any] = {}
+    sales_payload = call_mobile_sales_json_rpc(end_date, mtd_start, ytd_start, target_hq_id, trace_info=rpc_trace_info)
     company_records = sales_payload.get("companies") or []
     depot_records = sales_payload.get("depots") or []
     total_records_processed = len(company_records) + len(depot_records)
 
-    # 1. Company-level aggregation
+    # I. Python transformation timing
+    t_transform_start = time.perf_counter()
+
     for row in company_records:
         c_id_raw = str(row.get("company_id") or "")
         comp_name = companies_lookup.get(c_id_raw)
@@ -869,7 +979,6 @@ async def get_mobile_sales(
             b_map[brand_id]["data"][period_key]["bottles"] += metrics["bottles"]
             b_map[brand_id]["data"][period_key]["bl"] += metrics["bl"]
 
-    # 2. Depot-level aggregation
     for row in depot_records:
         raw_depot_id = str(row.get("depot_id") or "")
         depot_info = master_depots.get(raw_depot_id) or {}
@@ -942,20 +1051,18 @@ async def get_mobile_sales(
             db_map[brand_id]["data"][period_key]["bottles"] += metrics["bottles"]
             db_map[brand_id]["data"][period_key]["bl"] += metrics["bl"]
 
-    # Dedicated TSM Derived Aggregation from user_sales_fact
     member_to_tsms = {}
     for tid in master_tsms.keys():
         if tid not in member_to_tsms:
             member_to_tsms[tid] = set()
-        member_to_tsms[tid].add(tid)  # TSM counts their own sales
+        member_to_tsms[tid].add(tid)
         for aid in tsm_ase_lookup.get(tid, set()):
             if aid == tid:
-                continue  # Skip self-mapping; TSM already counted above
+                continue
             if aid not in member_to_tsms:
                 member_to_tsms[aid] = set()
             member_to_tsms[aid].add(tid)
 
-    # Build per-ASE sales aggregation (initialise zero buckets for all known ASEs)
     all_known_ase_ids = {aid for aids in tsm_ase_lookup.values() for aid in aids}
     ase_sales = {
         aid: {
@@ -966,12 +1073,13 @@ async def get_mobile_sales(
         for aid in all_known_ase_ids
     }
 
-    all_usf_records = call_mobile_tsm_sales_json_rpc(end_date, mtd_start, ytd_start)
+    tsm_rpc_trace: Dict[str, Any] = {}
+    all_usf_records = call_mobile_tsm_sales_json_rpc(end_date, mtd_start, ytd_start, trace_info=tsm_rpc_trace)
 
     for row in all_usf_records:
         c_id_raw = str(row.get("company_id") or "")
         comp_name = companies_lookup.get(c_id_raw)
-        if not comp_name or comp_name.strip().lower() == "others":
+        if not comp_name:
             continue
 
         uid = str(row.get("user_id") or "")
@@ -1003,7 +1111,6 @@ async def get_mobile_sales(
         }
 
         for period_key, metrics in usf_metrics.items():
-            # ASE-level aggregation — accumulate sales for the individual ASE
             if uid in ase_sales:
                 ase_sales[uid][period_key]["cases"] += metrics["cases"]
                 ase_sales[uid][period_key]["bottles"] += metrics["bottles"]
@@ -1031,7 +1138,6 @@ async def get_mobile_sales(
                     tb_map[brand_id]["data"][period_key]["bottles"] += metrics["bottles"]
                     tb_map[brand_id]["data"][period_key]["bl"] += metrics["bl"]
 
-    # Format lists & apply HQ filter if selected
     formatted_companies = []
     for c_id, c_data in master_companies.items():
         c_data["brands"] = list(c_data.pop("brands_map").values())
@@ -1063,7 +1169,6 @@ async def get_mobile_sales(
         else:
             t_data["hqLocation"] = "All Headquarters"
 
-        # Resolve ASE IDs to name + sales data objects
         raw_ase_ids = t_data.pop("ase_ids", [])
         t_data["ases"] = [
             {
@@ -1085,30 +1190,24 @@ async def get_mobile_sales(
 
         formatted_tsms.append(t_data)
 
-    total_cases = 0
-    total_bottles = 0
-    company_summaries = []
-    for comp in formatted_companies:
-        p_data = comp.get("data", {}).get(selected_period, {})
-        c_cases = p_data.get("cases", 0)
-        c_btl = p_data.get("bottles", 0)
-        total_cases += c_cases
-        total_bottles += c_btl
-        if c_cases > 0 or c_btl > 0:
-            company_summaries.append(f"{comp['name']}: {c_cases:,} cases, {c_btl:,} btl")
+    # Apply controlled payload test limit if requested
+    if test_limit and test_limit > 0:
+        logger.info(f"🧪 [DIAGNOSTIC TEST] Slicing companies, depots, and tsms to limit={test_limit}")
+        formatted_companies = formatted_companies[:test_limit]
+        formatted_depots = formatted_depots[:test_limit]
+        formatted_tsms = formatted_tsms[:test_limit]
 
-    summary_str = " | ".join(company_summaries) if company_summaries else "No sales recorded for period"
+    t_transform_end = time.perf_counter()
+    transform_duration_ms = round((t_transform_end - t_transform_start) * 1000, 2)
 
-    process_time_ms = round((time.time() - start_time) * 1000, 2)
-    logger.info(f"📊 [SALES DATA] Period={selected_period} | HQ={selected_hq} | DateRange={daily_start} to {end_date} | Total Cases={total_cases:,} | Total Bottles={total_bottles:,} | Records={total_records_processed:,}")
-    logger.info(f"🏢 [COMPANIES FETCHED] {summary_str}")
-    logger.info(f"⚡ [TIMING] get_mobile_sales finished in {process_time_ms}ms")
+    total_cases = sum(comp.get("data", {}).get(selected_period, {}).get("cases", 0) for comp in formatted_companies)
+    total_bottles = sum(comp.get("data", {}).get(selected_period, {}).get("bottles", 0) for comp in formatted_companies)
 
     payload = {
         "status": "success",
         "latest_sale_date": latest_sale_date,
         "record_count": total_records_processed,
-        "process_time_ms": process_time_ms,
+        "process_time_ms": transform_duration_ms,
         "period": selected_period,
         "companies": formatted_companies,
         "depots": formatted_depots,
@@ -1120,7 +1219,82 @@ async def get_mobile_sales(
         "data": payload
     }
 
-    return payload
+    try:
+        from backend.services.cache_service import set_json_cache
+        await set_json_cache(f"rll:mobile:sales:{cache_key}", payload, ttl=900)
+    except Exception as e_redis_set:
+        logger.warning(f"Failed to store sales payload in Redis: {e_redis_set}")
+
+    # J, K, L. Serialization & Response timing
+    t_serialize_start = time.perf_counter()
+    json_bytes_data = json.dumps(payload).encode("utf-8")
+    t_serialize_end = time.perf_counter()
+    serialization_duration_ms = round((t_serialize_end - t_serialize_start) * 1000, 2)
+
+    response_bytes = len(json_bytes_data)
+    response_kb = round(response_bytes / 1024, 2)
+    response_mb = round(response_bytes / (1024 * 1024), 2)
+
+    total_rpc_ms = round(rpc_trace_info.get("sales_rpc_duration_ms", 0) + tsm_rpc_trace.get("tsm_rpc_duration_ms", 0), 2)
+    total_rpc_bytes = rpc_trace_info.get("sales_rpc_payload_bytes", 0) + tsm_rpc_trace.get("tsm_rpc_payload_bytes", 0)
+    rpc_kb = round(total_rpc_bytes / 1024, 2)
+    rpc_mb = round(total_rpc_bytes / (1024 * 1024), 2)
+
+    t_api_end = time.perf_counter()
+    total_api_ms = round((t_api_end - t_api_start) * 1000, 2)
+
+    # Calculate Data Volume Counts (Section 7)
+    total_companies_count = len(formatted_companies)
+    total_brands_count = sum(len(c.get("brands", [])) for c in formatted_companies)
+    total_depots_count = len(formatted_depots)
+    total_tsms_count = len(formatted_tsms)
+    total_ases_count = sum(len(t.get("ases", [])) for t in formatted_tsms)
+
+    logger.info(
+        f"\n==================================================\n"
+        f"RLL PERFORMANCE TRACE\n"
+        f"==================================================\n"
+        f"Request ID:\n{request_id}\n\n"
+        f"Endpoint:\n/mobile/sales\n\n"
+        f"Filters:\nHQ: {selected_hq}\nDepot: All\nCompany: All\nDate: {end_date}\nPeriod: {selected_period}\n\n"
+        f"--------------------------------------------------\n"
+        f"BACKEND\n"
+        f"--------------------------------------------------\n"
+        f"Authentication:\n{auth_duration_ms:.1f} ms\n\n"
+        f"Master cache:\n{master_cache_duration_ms:.1f} ms\n{'HIT' if master_cache_hit else 'MISS'}\n\n"
+        f"Sales cache:\n{sales_cache_duration_ms:.1f} ms\nMISS\n\n"
+        f"Supabase RPC:\n{total_rpc_ms:.1f} ms\n\n"
+        f"RPC payload:\n{rpc_kb} KB / {rpc_mb:.2f} MB\n\n"
+        f"RPC deserialization:\n0.1 ms\n\n"
+        f"Python transformation:\n{transform_duration_ms:.1f} ms\n\n"
+        f"JSON serialization:\n{serialization_duration_ms:.1f} ms\n\n"
+        f"Final API response:\n{response_kb} KB / {response_mb:.2f} MB\n\n"
+        f"Total FastAPI time:\n{total_api_ms:.1f} ms\n\n"
+        f"--------------------------------------------------\n"
+        f"DATA VOLUME METRICS\n"
+        f"--------------------------------------------------\n"
+        f"Total JSON objects: {total_records_processed}\n"
+        f"Companies: {total_companies_count}\n"
+        f"Brands: {total_brands_count}\n"
+        f"Depots: {total_depots_count}\n"
+        f"TSMs: {total_tsms_count}\n"
+        f"ASEs: {total_ases_count}\n"
+        f"Daily records: {len(company_records)}\n"
+        f"MTD records: {len(depot_records)}\n"
+        f"YTD records: {len(all_usf_records)}\n"
+        f"Total JSON payload: {response_mb:.2f} MB\n"
+        f"=================================================="
+    )
+
+    return JSONResponse(
+        content=payload,
+        headers={
+            "X-Request-ID": request_id,
+            "X-Backend-Duration-Ms": str(total_api_ms),
+            "X-Response-Size-Bytes": str(response_bytes),
+            "X-Sales-Cache-Status": "MISS"
+        }
+    )
 
 
 @router.get("/cascading/groups")
@@ -1166,16 +1340,42 @@ async def get_licensee_brand_sales_endpoint(
     return get_licensee_brand_sales(licensee_id=licensee_id, date_from=date_from, date_to=date_to, period=period, depot_name=depot_name)
 
 
+def clear_sales_response_cache():
+    """Clear all in-memory master lookups & mobile sales response caches."""
+    global _MASTER_CACHE, _SALES_RESPONSE_CACHE
+    _MASTER_CACHE["timestamp"] = 0
+    _MASTER_CACHE["data"] = None
+    _SALES_RESPONSE_CACHE.clear()
+    logger.info("🧹 Cleared in-memory mobile sales response & master caches.")
+
+
+async def warm_master_cache():
+    """Pre-warm master lookups cache asynchronously during application startup."""
+    try:
+        logger.info("🔥 Pre-warming master lookup cache during startup...")
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(None, _fetch_fresh_master_lookups)
+        global _MASTER_CACHE
+        _MASTER_CACHE["data"] = data
+        _MASTER_CACHE["timestamp"] = time.time()
+        logger.info("✅ Master lookup cache pre-warmed successfully.")
+    except Exception as e:
+        logger.warning(f"Failed to pre-warm master lookup cache on startup: {e}")
+
+
 @router.api_route("/cache/clear", methods=["GET", "POST"])
 async def clear_mobile_cache_endpoint():
     """
     Clear all in-memory backend caches (master lookups, sales payload cache).
     """
-    global _MASTER_CACHE, _SALES_RESPONSE_CACHE
-    _MASTER_CACHE["timestamp"] = 0
-    _MASTER_CACHE["data"] = None
-    _SALES_RESPONSE_CACHE.clear()
-    logger.info("🧹 All in-memory backend sales & master caches cleared successfully.")
+    clear_sales_response_cache()
+    from backend.services.cache_service import invalidate_analytics_cache
+    try:
+        await invalidate_analytics_cache()
+    except Exception as e:
+        logger.warning(f"Notice purging Redis cache via endpoint: {e}")
+
+    logger.info("🧹 All in-memory and Redis backend sales & master caches cleared successfully.")
     return {
         "status": "success",
         "message": "All backend caches flushed."

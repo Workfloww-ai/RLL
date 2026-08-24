@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import FileUpload from '../components/FileUpload';
+import { API_BASE_URL } from '../config';
 
 interface LatestUpload {
   lastUploadFormatted: string;
@@ -20,7 +21,7 @@ export default function StockUpload() {
 
   const fetchLatestBatch = async () => {
     try {
-      const res = await fetch('http://localhost:8000/api/v1/uploads/latest');
+      const res = await fetch(`${API_BASE_URL}/uploads/latest`);
       if (res.ok) {
         const data = await res.json();
         if (data && data.batch_id) {

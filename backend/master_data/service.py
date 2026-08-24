@@ -804,7 +804,21 @@ class MasterService:
                                 if k:
                                     self._licensee_cache[k] = res_single.data[0]["licensee_id"]
                         except Exception:
-                            pass
+                            try:
+                                minimal_item = {
+                                    "licensee_name": single_item.get("licensee_name"),
+                                    "trade": single_item.get("trade", "Off"),
+                                    "group_id": single_item.get("group_id"),
+                                    "is_active": True
+                                }
+                                res_min = client.table("licensees").insert(minimal_item).execute()
+                                if res_min.data:
+                                    k = self._clean(res_min.data[0].get("licensee_name"))
+                                    if k:
+                                        self._licensee_cache[k] = res_min.data[0]["licensee_id"]
+                            except Exception:
+                                pass
+
 
             # Always refresh cache from DB for full coverage
             try:

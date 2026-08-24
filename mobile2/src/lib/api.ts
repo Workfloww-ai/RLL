@@ -22,17 +22,20 @@ export function getApiBaseUrl(): string {
     return formatBaseUrl(envUrl);
   }
 
+  // Configurable backend port (defaults to 8000 if not specified)
+  const port = process.env.EXPO_PUBLIC_API_PORT || process.env.EXPO_PUBLIC_PORT || '8000';
+
   // 2. Automatically derive computer's host IP from Metro bundler hostUri (works for physical devices & emulators)
   const hostUri = Constants.expoConfig?.hostUri || Constants.manifest2?.extra?.expoGo?.developer?.tool;
   if (hostUri) {
     const hostIp = hostUri.split(':')[0];
     if (hostIp && hostIp !== 'localhost' && hostIp !== '127.0.0.1') {
-      return `http://${hostIp}:8000/api/v1`;
+      return `http://${hostIp}:${port}/api/v1`;
     }
   }
 
-  // 3. Fallback to localhost (for ADB reverse tcp:8000 tcp:8000 or iOS Simulator)
-  return 'http://localhost:8000/api/v1';
+  // 3. Fallback to localhost (for ADB reverse tcp or iOS Simulator)
+  return `http://localhost:${port}/api/v1`;
 }
 
 export const BASE_URL = getApiBaseUrl();
@@ -40,8 +43,26 @@ export const BASE_URL = getApiBaseUrl();
 export async function apiFetch(endpointPath: string, init?: RequestInit): Promise<Response> {
   const cleanPath = endpointPath.startsWith('/') ? endpointPath : `/${endpointPath}`;
   const url = `${BASE_URL}${cleanPath}`;
-  logger.info(`apiFetch: ${init?.method || 'GET'} ${url}`);
-  return await fetch(url, init);
+
+  const reqInit: RequestInit = { ...(init || {}) };
+  const token = await getAuthToken();
+  if (token) {
+    const headers = new Headers(reqInit.headers || {});
+    if (!headers.has('Authorization')) {
+      headers.set('Authorization', `Bearer ${token}`);
+    }
+    reqInit.headers = headers;
+  }
+
+  logger.info(`apiFetch: ${reqInit.method || 'GET'} ${url}`);
+  try {
+    return await fetch(url, reqInit);
+  } catch (err: any) {
+    if (err?.message && (err.message.includes('ConnectException') || err.message.includes('fetch failed') || err.message.includes('Network request failed'))) {
+      throw new Error(`Cannot connect to server at ${BASE_URL}. Please ensure the backend server is running.`);
+    }
+    throw err;
+  }
 }
 
 // ── Auth Token Cache ────────────────────────────────────────────────────────
@@ -62,12 +83,52 @@ export function clearCachedToken(): void {
   _cachedToken = null;
 }
 
-// ── API Response Cache (lightweight Map-based, TTL per entry) ────────────────
+// ── API Response Cache (Persistent L1 Memory + AsyncStorage) ──────────────────
 const _apiCache = new Map<string, { data: unknown; expiry: number }>();
+const DISK_CACHE_PREFIX = 'rll_disk_cache::';
 
 /**
- * Like apiFetch but caches GET responses for ttlMs milliseconds.
- * Subsequent calls with the same path + token return instantly from memory.
+ * Hydrates in-memory cache from persistent AsyncStorage on app startup.
+ * Enables 0ms instantaneous mounting even across cold app restarts.
+ */
+export async function hydratePersistentCache(): Promise<void> {
+  try {
+    const keys = await AsyncStorage.getAllKeys();
+    const cacheKeys = keys.filter(k => k.startsWith(DISK_CACHE_PREFIX));
+    if (cacheKeys.length === 0) return;
+    const pairs = await AsyncStorage.multiGet(cacheKeys);
+    for (const [key, val] of pairs) {
+      if (val) {
+        try {
+          const parsed = JSON.parse(val);
+          if (parsed && parsed.expiry > Date.now()) {
+            const memoryKey = key.replace(DISK_CACHE_PREFIX, '');
+            _apiCache.set(memoryKey, parsed);
+          } else {
+            AsyncStorage.removeItem(key).catch(() => {});
+          }
+        } catch (_) {}
+      }
+    }
+    logger.info(`hydratePersistentCache: Hydrated ${_apiCache.size} persistent cache entries from AsyncStorage.`);
+  } catch (err) {
+    logger.warn('Failed to hydrate persistent cache from AsyncStorage', err);
+  }
+}
+
+/**
+ * Synchronously checks if a cached response payload exists in memory or disk.
+ */
+export function getCachedSnapshot<T = unknown>(endpointPath: string, authToken?: string): T | null {
+  const cacheKey = `${endpointPath}::${authToken ?? ''}`;
+  const cached = _apiCache.get(cacheKey);
+  if (cached) return cached.data as T;
+  return null;
+}
+
+/**
+ * Caches GET responses in memory and persistent AsyncStorage.
+ * Returns cached snapshot in 0ms while supporting background revalidation.
  */
 export async function apiFetchCached(
   endpointPath: string,
@@ -76,28 +137,65 @@ export async function apiFetchCached(
 ): Promise<unknown> {
   const cacheKey = `${endpointPath}::${authToken ?? ''}`;
   const cached = _apiCache.get(cacheKey);
+
+  // 1. Memory HIT (0ms)
   if (cached && Date.now() < cached.expiry) {
-    logger.info(`apiFetchCached: cache HIT — ${endpointPath}`);
+    logger.info(`apiFetchCached: memory HIT — ${endpointPath}`);
     return cached.data;
   }
+
+  // 2. Disk HIT (fallback read if memory empty)
+  if (!cached) {
+    try {
+      const diskVal = await AsyncStorage.getItem(`${DISK_CACHE_PREFIX}${cacheKey}`);
+      if (diskVal) {
+        const parsed = JSON.parse(diskVal);
+        if (parsed && Date.now() < parsed.expiry) {
+          _apiCache.set(cacheKey, parsed);
+          logger.info(`apiFetchCached: disk HIT — ${endpointPath}`);
+          return parsed.data;
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 3. Network Fetch
   const headers: Record<string, string> = {};
   if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
   const res = await apiFetch(endpointPath, { headers });
-  if (!res.ok) throw new Error(`apiFetchCached: ${res.status} for ${endpointPath}`);
+  if (!res.ok) {
+    if (res.status === 401) {
+      logger.warn(`apiFetchCached: Auth token expired (HTTP 401) on ${endpointPath}. Clearing stale credentials.`);
+      AsyncStorage.removeItem('rll_mobile_token').catch(() => {});
+      AsyncStorage.removeItem('rll_mobile_user').catch(() => {});
+      clearCachedToken();
+    }
+    throw new Error(`apiFetchCached: ${res.status} for ${endpointPath}`);
+  }
   const data = await res.json();
-  _apiCache.set(cacheKey, { data, expiry: Date.now() + ttlMs });
+  const cacheEntry = { data, expiry: Date.now() + ttlMs };
+  _apiCache.set(cacheKey, cacheEntry);
+  AsyncStorage.setItem(`${DISK_CACHE_PREFIX}${cacheKey}`, JSON.stringify(cacheEntry)).catch(() => {});
   return data;
 }
 
 export function invalidateApiCache(pathPrefix?: string): void {
   if (!pathPrefix) {
     _apiCache.clear();
+    AsyncStorage.getAllKeys().then(keys => {
+      const cacheKeys = keys.filter(k => k.startsWith(DISK_CACHE_PREFIX));
+      if (cacheKeys.length > 0) AsyncStorage.multiRemove(cacheKeys).catch(() => {});
+    }).catch(() => {});
     return;
   }
   for (const key of _apiCache.keys()) {
-    if (key.startsWith(pathPrefix)) _apiCache.delete(key);
+    if (key.startsWith(pathPrefix)) {
+      _apiCache.delete(key);
+      AsyncStorage.removeItem(`${DISK_CACHE_PREFIX}${key}`).catch(() => {});
+    }
   }
 }
+
 
 export async function sendMobileOTP(phone: string, email: string = '') {
   logger.info(`sendMobileOTP: Requesting OTP for phone: ${phone}, email: ${email}`);
@@ -194,32 +292,86 @@ export async function fetchMobileSales(
   dateFrom: string,
   dateTo: string,
   period: string,
-  selectedHq: string
+  selectedHq: string = 'All Headquarters',
+  testLimit?: number
 ) {
-  logger.info(`fetchMobileSales: Fetching sales data (period: ${period}, hq: ${selectedHq}, from: ${dateFrom}, to: ${dateTo})`);
   const token = await getAuthToken();
   if (!token) {
     logger.warn('fetchMobileSales: Missing authentication token.');
     return null;
   }
 
-  const startTime = Date.now();
+  const requestId = `req_${Math.random().toString(36).substring(2, 10)}`;
+  const now = () => Date.now();
+  const tRequestStart = now();
+
   try {
-    const query = new URLSearchParams({
+    const queryParams: Record<string, string> = {
       date_from: dateFrom,
       date_to: dateTo,
       period,
       selected_hq: selectedHq,
-    });
+    };
+    if (testLimit) {
+      queryParams['test_limit'] = String(testLimit);
+    }
 
+    const query = new URLSearchParams(queryParams);
     const endpoint = `/mobile/sales?${query.toString()}`;
-    const data = await apiFetchCached(endpoint, 120_000, token) as any;
-    const fetchDuration = Date.now() - startTime;
-    if (data) data._fetchTimeMs = fetchDuration;
+    const cleanPath = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+    const url = `${BASE_URL}${cleanPath}`;
+
+    logger.info(`🚀 [MOBILE_REQUEST_START] Request ID: ${requestId} → GET ${url}`);
+
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${token}`,
+      'X-Request-ID': requestId,
+    };
+
+    const res = await fetch(url, { headers });
+    const tResponseReceived = now();
+    const networkDurationMs = Math.round(tResponseReceived - tRequestStart);
+
+    if (!res.ok) {
+      if (res.status === 401) {
+        logger.warn('fetchMobileSales: Authentication token expired or invalid (HTTP 401). Clearing stale credentials.');
+        await AsyncStorage.removeItem('rll_mobile_token');
+        await AsyncStorage.removeItem('rll_mobile_user');
+        clearCachedToken();
+      }
+      throw new Error(`fetchMobileSales API returned HTTP ${res.status}`);
+    }
+
+    const contentLength = res.headers.get('content-length');
+    const backendDurationMs = res.headers.get('x-backend-duration-ms');
+    const cacheStatus = res.headers.get('x-sales-cache-status') || 'MISS';
+
+    const responseText = await res.text();
+    const responseBytes = responseText.length;
+    const responseKb = (responseBytes / 1024).toFixed(2);
+    const responseMb = (responseBytes / (1024 * 1024)).toFixed(2);
+
+    const tParseStart = now();
+    const data = JSON.parse(responseText);
+    const tParseEnd = now();
+    const jsonParseDurationMs = Math.round(tParseStart > 0 ? tParseEnd - tParseStart : 0);
+
+    if (data) {
+      data._requestId = requestId;
+      data._tRequestStart = tRequestStart;
+      data._tResponseReceived = tResponseReceived;
+      data._networkDurationMs = networkDurationMs;
+      data._responseBytes = responseBytes;
+      data._responseKb = responseKb;
+      data._responseMb = responseMb;
+      data._jsonParseDurationMs = jsonParseDurationMs;
+      data._backendDurationMs = backendDurationMs ? parseFloat(backendDurationMs) : null;
+      data._cacheStatus = cacheStatus;
+    }
 
     let totCases = 0;
     let totBtl = 0;
-    if (Array.isArray(data.companies)) {
+    if (Array.isArray(data?.companies)) {
       data.companies.forEach((c: any) => {
         const pData = c.data?.[period] || c.data?.Daily || { cases: 0, bottles: 0 };
         totCases += pData.cases || 0;
@@ -227,8 +379,12 @@ export async function fetchMobileSales(
       });
     }
 
-    logger.info(`📊 [SALES FETCH] Period=${period} | HQ=${selectedHq} | Records=${data.record_count || 0} | Total Cases=${totCases.toLocaleString()} | Total Bottles=${totBtl.toLocaleString()}`);
-    logger.info(`⚡ [TIMING] Total Fetch = ${fetchDuration}ms | Backend Process = ${data.process_time_ms ?? 'N/A'}ms`);
+    logger.info(
+      `📊 [MOBILE_RESPONSE_RECEIVED] Request ID: ${requestId} | ` +
+      `Network=${networkDurationMs}ms | Size=${responseKb}KB (${responseMb}MB) | ` +
+      `JSON.parse=${jsonParseDurationMs}ms | Cache=${cacheStatus}`
+    );
+
     return data;
   } catch (error) {
     logger.error('fetchMobileSales: Exception while retrieving sales data', error);
@@ -293,10 +449,24 @@ export async function fetchMobileHeadquarters() {
   }
 }
 
+export async function clearAllPhoneCaches() {
+  try {
+    const keys = await AsyncStorage.getAllKeys();
+    const cacheKeys = keys.filter((k) => k.startsWith('rll_phone_cache_') || k.startsWith('rll_mobile_cascading_') || k.startsWith('DISK_CACHE_'));
+    if (cacheKeys.length > 0) {
+      await AsyncStorage.multiRemove(cacheKeys);
+      logger.info(`clearAllPhoneCaches: Cleared ${cacheKeys.length} stale phone cache keys.`);
+    }
+  } catch (e) {
+    logger.warn(`clearAllPhoneCaches error: ${e}`);
+  }
+}
+
 export async function clearAuthSession() {
   logger.info('clearAuthSession: Clearing user auth tokens and profiles from AsyncStorage.');
   await AsyncStorage.removeItem('rll_mobile_token');
   await AsyncStorage.removeItem('rll_mobile_user');
+  await clearAllPhoneCaches();
   clearCachedToken();
   invalidateApiCache();
 }
@@ -366,3 +536,53 @@ export async function fetchLicenseeBrandSales(licenseeId: string, dateFrom?: str
     return [];
   }
 }
+
+export async function fetchMobileCompanies(period: string = 'Daily', dateTo?: string, selectedHq: string = 'All Headquarters') {
+  logger.info(`fetchMobileCompanies: period=${period}, dateTo=${dateTo}, selectedHq=${selectedHq}`);
+  const cacheKey = `rll_phone_cache_companies_${period}_${selectedHq}`;
+
+  // 1. Try reading phone local AsyncStorage cache first for instant mounting
+  try {
+    const cachedStr = await AsyncStorage.getItem(cacheKey);
+    if (cachedStr) {
+      const cachedData = JSON.parse(cachedStr);
+      logger.info(`fetchMobileCompanies: Phone cache HIT for ${cacheKey}`);
+      // Revalidate silently in background
+      setTimeout(() => {
+        fetchMobileCompaniesNetwork(period, dateTo, selectedHq, cacheKey).catch(() => {});
+      }, 50);
+      return cachedData.companies || [];
+    }
+  } catch (e) {
+    logger.warn(`fetchMobileCompanies: Phone cache read error: ${e}`);
+  }
+
+  // 2. Cache miss: Fetch directly from network
+  return fetchMobileCompaniesNetwork(period, dateTo, selectedHq, cacheKey);
+}
+
+async function fetchMobileCompaniesNetwork(period: string, dateTo?: string, selectedHq: string = 'All Headquarters', cacheKey?: string) {
+  try {
+    const params = new URLSearchParams();
+    params.append('period', period);
+    if (dateTo) params.append('date', dateTo);
+    if (selectedHq) params.append('selected_hq', selectedHq);
+
+    const res = await apiFetch(`/mobile/companies?${params.toString()}`);
+    if (!res.ok) {
+      logger.warn(`fetchMobileCompaniesNetwork: API status ${res.status}`);
+      return [];
+    }
+    const data = await res.json();
+    const companies = data?.companies || [];
+
+    if (cacheKey && companies.length > 0) {
+      AsyncStorage.setItem(cacheKey, JSON.stringify(data)).catch(() => {});
+    }
+    return companies;
+  } catch (error) {
+    logger.error('fetchMobileCompaniesNetwork: Exception fetching companies:', error);
+    return [];
+  }
+}
+

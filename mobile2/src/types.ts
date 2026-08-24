@@ -28,6 +28,8 @@ export interface Company {
   isPinned: boolean;
   category?: string;
   hqLocation?: string;
+  cases?: number;
+  bottles?: number;
   data: Record<Period, Metrics>;
   brands: Brand[];
 }

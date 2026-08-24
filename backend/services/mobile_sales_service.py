@@ -35,6 +35,17 @@ def _cache_set(key: str, data: Any) -> None:
 def invalidate_sales_cache() -> None:
     """Call this after a data upload to force fresh data on next request."""
     _SALES_CACHE.clear()
+    try:
+        import asyncio
+        from backend.db.redis_client import safe_delete_pattern
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(safe_delete_pattern("rll:mobile:*"))
+        except RuntimeError:
+            pass
+    except Exception as e:
+        logger.warning(f"Could not purge Redis mobile sales cache: {e}")
+
 
 
 # ---------------------------------------------------------------------------

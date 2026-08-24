@@ -19,9 +19,9 @@ export const CompanyCard = React.memo(function CompanyCard({
   onClick,
   cardStyle,
 }: CompanyCardProps) {
-  const rawData = company.data[period];
-  const cases = Math.round(rawData.cases * scaleFactor);
-  const bottles = Math.round(rawData.bottles * scaleFactor);
+  const rawData = company.data?.[period] || { cases: company.cases || 0, bottles: company.bottles || 0 };
+  const cases = Math.round((rawData.cases ?? company.cases ?? 0) * scaleFactor);
+  const bottles = Math.round((rawData.bottles ?? company.bottles ?? 0) * scaleFactor);
 
   return (
     <TouchableOpacity

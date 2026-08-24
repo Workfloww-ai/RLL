@@ -4,6 +4,7 @@ import {
   ChevronLeft, ChevronRight, ArrowUpDown, ChevronUp, ChevronDown, RotateCcw,
   User as UserIcon, Building2, Shield, Plus, CheckCircle2, AlertCircle, Info
 } from "lucide-react";
+import { API_BASE_URL } from "../config";
 
 interface DepotRecord {
   depot_id: number;
@@ -78,9 +79,9 @@ export default function TerritoryManagement() {
       const headers = { Authorization: `Bearer ${token}` };
       
       const [depotsRes, hqRes, usersRes] = await Promise.all([
-        fetch("http://localhost:8000/api/v1/master-data/depots", { headers }),
-        fetch("http://localhost:8000/api/v1/master-data/headquarters", { headers }),
-        fetch("http://localhost:8000/api/v1/users/", { headers })
+        fetch(`${API_BASE_URL}/master-data/depots`, { headers }),
+        fetch(`${API_BASE_URL}/master-data/headquarters`, { headers }),
+        fetch(`${API_BASE_URL}/users/`, { headers })
       ]);
 
       let fetchedUsers: UserOption[] = [];
@@ -265,7 +266,7 @@ export default function TerritoryManagement() {
 
       // 1. Mark previous record as INACTIVE
       try {
-        await fetch(`http://localhost:8000/api/v1/master-data/depots/${depotId}`, {
+        await fetch(`${API_BASE_URL}/master-data/depots/${depotId}`, {
           method: "PUT",
           headers: {
             "Content-Type": "application/json",
@@ -287,7 +288,7 @@ export default function TerritoryManagement() {
       };
 
       try {
-        const createRes = await fetch("http://localhost:8000/api/v1/master-data/depots", {
+        const createRes = await fetch(`${API_BASE_URL}/master-data/depots`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -341,7 +342,7 @@ export default function TerritoryManagement() {
     if (!confirm("Are you sure you want to delete this depot record?")) return;
 
     try {
-      const res = await fetch(`http://localhost:8000/api/v1/master-data/depots/${depotId}`, {
+      const res = await fetch(`${API_BASE_URL}/master-data/depots/${depotId}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` }
       });
