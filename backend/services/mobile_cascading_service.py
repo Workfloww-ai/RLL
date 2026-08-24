@@ -56,11 +56,16 @@ def _resolve_multi_period_dates(
         dt = datetime.strptime(latest, "%Y-%m-%d")
         target_date_str = latest
 
-    mtd_start = f"{dt.year:04d}-{dt.month:02d}-01"
+    if date_from and date_from.strip():
+        mtd_start = date_from.strip()
+    else:
+        mtd_start = f"{dt.year:04d}-{dt.month:02d}-01"
+
     fy_year = dt.year if dt.month >= 4 else dt.year - 1
     ytd_start = f"{fy_year:04d}-04-01"
 
     return target_date_str, mtd_start, ytd_start
+
 
 
 def _map_period_metrics(records: List[Dict[str, Any]], selected_period: Optional[str]) -> List[Dict[str, Any]]:

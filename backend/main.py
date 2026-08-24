@@ -39,13 +39,35 @@ from backend.analytics.router import router as analytics_router
 from backend.reports.router import router as reports_router
 from backend.mobile.router import router as mobile_router
 
+from contextlib import asynccontextmanager
+from backend.db.redis_client import init_redis, close_redis
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Initializing Redis connection pool...")
+    await init_redis()
+    
+    # Pre-warm master lookup cache asynchronously in background on startup
+    try:
+        import asyncio
+        from backend.mobile.router import warm_master_cache
+        asyncio.create_task(warm_master_cache())
+    except Exception as e:
+        logger.warning(f"Master cache warming initiation notice: {e}")
+
+    yield
+    logger.info("Closing Redis connection pool...")
+    await close_redis()
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="API Server for Rajasthan Liquor Limited (RLL) Sales Analytics Platform. Processes government daily Excel uploads, master data, real-time dashboards, and analytics.",
     version=settings.VERSION,
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    lifespan=lifespan
 )
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -98,9 +120,8 @@ def read_root():
 
 if __name__ == "__main__":
 
-    # Cloud Run injects PORT (defaults to 8000 locally if not set)
-    port = int(os.environ.get("PORT", 8000))
-    # Turn off reload in production
+    port = int(os.environ.get("PORT", settings.PORT))
+    host = os.environ.get("HOST", "0.0.0.0")
     is_dev = os.environ.get("ENVIRONMENT", "development") == "development"
     
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=is_dev)
+    uvicorn.run("main:app", host=host, port=port, reload=is_dev)

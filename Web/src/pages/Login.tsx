@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { LogIn, Mail, ArrowLeft, CheckCircle2, Lock, Send, KeyRound } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { API_BASE_URL } from '../lib/api';
+import { API_BASE_URL } from '../config';
 
 interface LoginProps {
   onLogin: (userName: string) => void;
