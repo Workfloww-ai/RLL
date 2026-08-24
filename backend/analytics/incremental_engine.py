@@ -50,9 +50,23 @@ class IncrementalAnalyticsEngine:
         for d in sale_dates:
             if not d:
                 continue
-            d_str = str(d).split("T")[0].strip()
-            if d_str:
-                unique_dates.add(d_str)
+            if isinstance(d, (date, datetime)):
+                unique_dates.add(d.strftime("%Y-%m-%d"))
+            else:
+                d_str = str(d).strip()
+                # Split by T or space to extract the date portion
+                d_date_part = d_str.split("T")[0].split(" ")[0].strip()
+                parsed = False
+                for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%Y/%m/%d"):
+                    try:
+                        dt = datetime.strptime(d_date_part, fmt).date()
+                        unique_dates.add(dt.strftime("%Y-%m-%d"))
+                        parsed = True
+                        break
+                    except ValueError:
+                        continue
+                if not parsed:
+                    logger.warning(f"[ANALYTICS] Could not parse date format: '{d_str}'")
 
         sorted_dates = sorted(list(unique_dates))
         affected_months: Set[str] = set()
@@ -62,7 +76,7 @@ class IncrementalAnalyticsEngine:
                 month_start = f"{dt.year:04d}-{dt.month:02d}-01"
                 affected_months.add(month_start)
             except ValueError:
-                logger.warning(f"[ANALYTICS] Invalid date format encountered: '{s_date}'")
+                logger.warning(f"[ANALYTICS] Invalid parsed date string encountered: '{s_date}'")
 
         sorted_months = sorted(list(affected_months))
         logger.info(
@@ -113,14 +127,9 @@ class IncrementalAnalyticsEngine:
                     next_month = dt.month + 1
                 m_end = f"{next_year:04d}-{next_month:02d}-01"
 
-                # Find affected depots in daily summary and existing depots in monthly summary
-                res_daily = client.table("sales_daily_summary").select("depot_id").gte("sale_date", m_start).lt("sale_date", m_end).execute()
-                depots_daily = {r["depot_id"] for r in (res_daily.data or []) if r.get("depot_id")}
-
-                res_monthly = client.table("sales_monthly_summary").select("depot_id").eq("month_start", m_start).execute()
-                depots_monthly = {r["depot_id"] for r in (res_monthly.data or []) if r.get("depot_id")}
-
-                all_depots = depots_daily.union(depots_monthly)
+                # Fetch all depots in the system to ensure complete refresh without any page limit issues
+                depots_res = client.table("depots").select("depot_id").execute()
+                all_depots = {r["depot_id"] for r in (depots_res.data or []) if r.get("depot_id")}
                 logger.info(f"[ANALYTICS] Refreshing {len(all_depots)} depots for month {m_start}...")
 
                 for d_id in sorted(list(all_depots)):
@@ -144,28 +153,9 @@ class IncrementalAnalyticsEngine:
                 success = False
 
         # 4. Redis Cache Pattern Invalidation (Event-Driven)
-        redis_keys_deleted = 0
         try:
-            # Safely handle async redis call from sync code context
-            loop = None
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            
-            if loop.is_running():
-                # If running loop exists, run task in background or create task
-                asyncio.create_task(safe_delete_pattern("rll:sales:v2:*"))
-            else:
-                redis_keys_deleted = loop.run_until_complete(safe_delete_pattern("rll:sales:v2:*"))
-
-            # Also clear legacy in-memory cache if present
-            try:
-                from backend.mobile.router import _SALES_RESPONSE_CACHE
-                _SALES_RESPONSE_CACHE.clear()
-            except Exception:
-                pass
+            from backend.services.cache_service import invalidate_analytics_cache_sync
+            invalidate_analytics_cache_sync()
             logger.info(f"[ANALYTICS] Invalidated Redis cache keys for batch {batch_id}.")
         except Exception as e_redis:
             logger.warning(f"[ANALYTICS] Non-fatal Redis invalidation notice: {e_redis}")

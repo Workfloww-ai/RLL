@@ -676,6 +676,16 @@ class ImportPipelineEngine:
                 except Exception as e_cal:
                     logger.warning(f"dim_calendar population notice: {e_cal}")
 
+                # Clear existing sales facts for these dates to prevent duplication
+                client = get_supabase()
+                if client:
+                    try:
+                        for s_date in distinct_dates:
+                            client.table("sales_fact").delete().eq("sale_date", s_date).execute()
+                        logger.info(f"Batch {batch_id}: Cleaned up existing sales_fact records for {len(distinct_dates)} dates.")
+                    except Exception as e_del:
+                        logger.warning(f"Batch {batch_id}: Error cleaning up existing sales_fact: {e_del}")
+
                 self._bulk_insert(
                     table="sales_fact",
                     records=fact_records,
@@ -2276,6 +2286,15 @@ class ImportPipelineEngine:
                 })
 
             if fact_records:
+                # Clear existing user sales facts for these dates to prevent duplication
+                unique_user_dates = {r["sale_date"] for r in fact_records if r.get("sale_date")}
+                try:
+                    for u_date in unique_user_dates:
+                        client.table("user_sales_fact").delete().eq("sale_date", u_date).execute()
+                    logger.info(f"Batch {batch_id}: Cleaned up existing user_sales_fact records for {len(unique_user_dates)} dates.")
+                except Exception as e_del_usf:
+                    logger.warning(f"Batch {batch_id}: Error cleaning up existing user_sales_fact: {e_del_usf}")
+
                 self._bulk_insert(
                     table="user_sales_fact",
                     records=fact_records,

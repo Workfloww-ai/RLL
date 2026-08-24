@@ -75,14 +75,9 @@ def backfill_summary_tables(start_date: Optional[str] = None, end_date: Optional
                     next_month = dt.month + 1
                 m_end = f"{next_year:04d}-{next_month:02d}-01"
 
-                # Find affected depots in daily summary and existing depots in monthly summary
-                res_daily = client.table("sales_daily_summary").select("depot_id").gte("sale_date", m_start).lt("sale_date", m_end).execute()
-                depots_daily = {r["depot_id"] for r in (res_daily.data or []) if r.get("depot_id")}
-
-                res_monthly = client.table("sales_monthly_summary").select("depot_id").eq("month_start", m_start).execute()
-                depots_monthly = {r["depot_id"] for r in (res_monthly.data or []) if r.get("depot_id")}
-
-                all_depots = depots_daily.union(depots_monthly)
+                # Fetch all depots in the system to ensure complete refresh without any page limit issues
+                depots_res = client.table("depots").select("depot_id").execute()
+                all_depots = {r["depot_id"] for r in (depots_res.data or []) if r.get("depot_id")}
                 logger.info(f"[ANALYTICS BACKFILL] Refreshing {len(all_depots)} depots for month {m_start}...")
 
                 for d_id in sorted(list(all_depots)):
@@ -94,6 +89,14 @@ def backfill_summary_tables(start_date: Optional[str] = None, end_date: Optional
                 logger.info(f"[ANALYTICS BACKFILL] Refreshed monthly summary for month_start={m_start}")
             except Exception as e_month:
                 logger.error(f"[ANALYTICS BACKFILL] Error refreshing month {m_start}: {e_month}")
+
+        # Clear Redis and in-memory caches to reflect new backfilled totals immediately
+        try:
+            from backend.services.cache_service import invalidate_analytics_cache_sync
+            invalidate_analytics_cache_sync()
+            logger.info("[ANALYTICS BACKFILL] Invalidated Redis and in-memory caches successfully.")
+        except Exception as e_cache:
+            logger.warning(f"[ANALYTICS BACKFILL] Failed to invalidate cache: {e_cache}")
 
         t_total = round(time.time() - t_start, 2)
         logger.info(f"[ANALYTICS BACKFILL] Completed backfill for {processed_count}/{total_dates} dates across {len(affected_months)} months in {t_total}s.")

@@ -1,5 +1,4 @@
 import logging
-import collections
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from backend.db.supabase_client import get_supabase_client
@@ -15,6 +14,7 @@ def get_companies_summary(
     Period-specific Companies sales analytics service.
     Excludes company 'Others' strictly.
     Returns list of company objects structured for mobile UI.
+    Uses sales_daily_summary as the single source of truth.
     """
     client = get_supabase_client()
     if not client:
@@ -25,30 +25,6 @@ def get_companies_summary(
     if clean_period not in ("Daily", "MTD", "YTD"):
         clean_period = "Daily"
 
-    # 1. Resolve master maps (companies, brands, headquarters)
-    comp_res = client.table("companies").select("company_id, company_name").execute()
-    companies_map: Dict[str, str] = {}
-    excluded_comp_ids = set()
-
-    for c in (comp_res.data or []):
-        cid = str(c["company_id"])
-        cname = str(c.get("company_name", "")).strip()
-        if not cname or cname.lower() == "others":
-            excluded_comp_ids.add(cid)
-            continue
-        companies_map[cid] = cname
-
-    brand_res = client.table("brands").select("brand_id, brand_name, company_id").execute()
-    brand_comp_map: Dict[str, str] = {}
-    brand_name_map: Dict[str, str] = {}
-
-    for b in (brand_res.data or []):
-        bid = str(b["brand_id"])
-        cid = str(b.get("company_id") or "")
-        bname = str(b.get("brand_name", "")).strip()
-        brand_comp_map[bid] = cid
-        brand_name_map[bid] = bname or f"Brand {bid[:8]}"
-
     # Resolve HQ filter if provided
     hq_id_filter = None
     if selected_hq and selected_hq != "All Headquarters":
@@ -56,12 +32,13 @@ def get_companies_summary(
         if hq_res.data:
             hq_id_filter = hq_res.data[0]["headquarters_id"]
 
-    # 2. Determine target dates
+    # Determine target dates
     target_date = date_to
     if not target_date:
-        max_res = client.table("sales_monthly_summary").select("month_start").order("month_start", desc=True).limit(1).execute()
-        if max_res.data and max_res.data[0].get("month_start"):
-            target_date = max_res.data[0]["month_start"]
+        # Get latest sale date from daily summary
+        max_res = client.table("sales_daily_summary").select("sale_date").order("sale_date", desc=True).limit(1).execute()
+        if max_res.data and max_res.data[0].get("sale_date"):
+            target_date = max_res.data[0]["sale_date"]
         else:
             target_date = datetime.utcnow().strftime("%Y-%m-%d")
 
@@ -72,139 +49,154 @@ def get_companies_summary(
         target_date = dt.strftime("%Y-%m-%d")
 
     mtd_start = dt.replace(day=1).strftime("%Y-%m-%d")
+    fy_year = dt.year if dt.month >= 4 else dt.year - 1
+    ytd_start = f"{fy_year}-04-01"
 
-    # 3. Query appropriate summary table based on period
-    company_totals = collections.defaultdict(lambda: {"cases": 0.0, "bottles": 0.0})
-    brand_totals = collections.defaultdict(lambda: {"cases": 0.0, "bottles": 0.0})
+    # 1. Call Canonical Company Summary RPC
+    rpc_params = {
+        "p_target_date": target_date,
+        "p_mtd_start": mtd_start,
+        "p_ytd_start": ytd_start,
+    }
+    if hq_id_filter:
+        rpc_params["p_hq_id"] = hq_id_filter
 
-    if clean_period == "Daily":
-        # Check if target_date exists in sales_daily_summary, otherwise fallback to latest available sale_date
-        effective_date = target_date
-        check_res = client.table("sales_daily_summary").select("sale_date").eq("sale_date", target_date).limit(1).execute()
-        if not (check_res.data and len(check_res.data) > 0):
-            latest_res = client.table("sales_daily_summary").select("sale_date").order("sale_date", desc=True).limit(1).execute()
-            if latest_res.data and latest_res.data[0].get("sale_date"):
-                effective_date = latest_res.data[0]["sale_date"]
+    try:
+        comp_summary_res = client.rpc("get_mobile_companies_summary", rpc_params).execute()
+        comp_summary_data = comp_summary_res.data or []
+    except Exception as e:
+        logger.error(f"Error calling get_mobile_companies_summary RPC: {e}")
+        return []
 
-        offset = 0
-        limit = 2000
-        while True:
-            q = client.table("sales_daily_summary").select("company_id, brand_id, total_cases, total_bottles").eq("sale_date", effective_date)
-            if hq_id_filter:
-                q = q.eq("headquarters_id", hq_id_filter)
-            res = q.range(offset, offset + limit - 1).execute()
-            batch = res.data or []
-            for r in batch:
-                cid = str(r.get("company_id") or "")
-                bid = str(r.get("brand_id") or "")
-                if cid in excluded_comp_ids or (bid and brand_comp_map.get(bid) in excluded_comp_ids):
-                    continue
-                if not cid and bid:
-                    cid = brand_comp_map.get(bid, "")
-                if cid in excluded_comp_ids:
-                    continue
+    # 2. Company Aliases Normalization (Willam vs William)
+    COMPANY_ALIASES = {
+        "willam grants": "William Grants",
+        "william grants": "William Grants",
+        "william grants & sons": "William Grants"
+    }
 
-                cases = float(r.get("total_cases") or 0.0)
-                bottles = float(r.get("total_bottles") or 0.0)
-
-                company_totals[cid]["cases"] += cases
-                company_totals[cid]["bottles"] += bottles
-
-                if bid:
-                    key = (cid, bid)
-                    brand_totals[key]["cases"] += cases
-                    brand_totals[key]["bottles"] += bottles
-
-            if len(batch) < limit:
-                break
-            offset += limit
-            if offset > 100000:
-                break
-
-    elif clean_period in ("MTD", "YTD"):
-        offset = 0
-        limit = 2000
-        while True:
-            q = client.table("sales_monthly_summary").select("company_id, brand_id, total_cases, total_bottles")
-            if clean_period == "MTD":
-                q = q.eq("month_start", mtd_start)
-            else:
-                fy_year = dt.year if dt.month >= 4 else dt.year - 1
-                ytd_start = f"{fy_year}-04-01"
-                q = q.gte("month_start", ytd_start).lte("month_start", mtd_start)
-
-            if hq_id_filter:
-                q = q.eq("headquarters_id", hq_id_filter)
-
-            res = q.range(offset, offset + limit - 1).execute()
-            batch = res.data or []
-            for r in batch:
-                cid = str(r.get("company_id") or "")
-                bid = str(r.get("brand_id") or "")
-                if cid in excluded_comp_ids or (bid and brand_comp_map.get(bid) in excluded_comp_ids):
-                    continue
-                if not cid and bid:
-                    cid = brand_comp_map.get(bid, "")
-                if cid in excluded_comp_ids:
-                    continue
-
-                cases = float(r.get("total_cases") or 0.0)
-                bottles = float(r.get("total_bottles") or 0.0)
-
-                company_totals[cid]["cases"] += cases
-                company_totals[cid]["bottles"] += bottles
-
-                if bid:
-                    key = (cid, bid)
-                    brand_totals[key]["cases"] += cases
-                    brand_totals[key]["bottles"] += bottles
-
-            if len(batch) < limit:
-                break
-            offset += limit
-            if offset > 300000:
-                break
-
-    # 4. Construct response objects structured for Company interface
-    response_list = []
-    for cid, cname in companies_map.items():
-        if cid in excluded_comp_ids:
+    grouped_companies = {}
+    for row in comp_summary_data:
+        cid = str(row.get("company_id") or "")
+        cname = str(row.get("company_name") or "").strip()
+        if not cname or cname.lower() == "others":
             continue
 
-        c_cases = round(company_totals[cid]["cases"], 2)
-        c_bottles = round(company_totals[cid]["bottles"], 2)
+        norm_name = COMPANY_ALIASES.get(cname.lower(), cname)
+        norm_key = norm_name.lower().replace(" ", "-").replace("/", "-")
+
+        if norm_key not in grouped_companies:
+            grouped_companies[norm_key] = {
+                "id": norm_key,
+                "name": norm_name,
+                "isPinned": norm_key in ("rll", "diageo-inbrew") or norm_name.upper() == "RLL",
+                "hqLocation": selected_hq or "All Headquarters",
+                "company_ids": [],
+                "daily_cases": 0.0,
+                "daily_bottles": 0.0,
+                "daily_bl": 0.0,
+                "mtd_cases": 0.0,
+                "mtd_bottles": 0.0,
+                "mtd_bl": 0.0,
+                "ytd_cases": 0.0,
+                "ytd_bottles": 0.0,
+                "ytd_bl": 0.0,
+            }
+
+        g = grouped_companies[norm_key]
+        g["company_ids"].append(cid)
+        g["daily_cases"] += float(row.get("daily_cases") or 0.0)
+        g["daily_bottles"] += float(row.get("daily_bottles") or 0.0)
+        g["daily_bl"] += float(row.get("daily_bl") or 0.0)
+        g["mtd_cases"] += float(row.get("mtd_cases") or 0.0)
+        g["mtd_bottles"] += float(row.get("mtd_bottles") or 0.0)
+        g["mtd_bl"] += float(row.get("mtd_bl") or 0.0)
+        g["ytd_cases"] += float(row.get("ytd_cases") or 0.0)
+        g["ytd_bottles"] += float(row.get("ytd_bottles") or 0.0)
+        g["ytd_bl"] += float(row.get("ytd_bl") or 0.0)
+
+    # 3. For each company, fetch Brand summaries and construct final list
+    response_list = []
+    for norm_key, g in grouped_companies.items():
+        brand_params = {
+            "p_company_ids": g["company_ids"],
+            "p_target_date": target_date,
+            "p_mtd_start": mtd_start,
+            "p_ytd_start": ytd_start,
+        }
+        if hq_id_filter:
+            brand_params["p_hq_id"] = hq_id_filter
+
+        try:
+            brand_res = client.rpc("get_mobile_company_brands_summary", brand_params).execute()
+            brands_data = brand_res.data or []
+        except Exception as e_brands:
+            logger.error(f"Error calling get_mobile_company_brands_summary RPC for {g['name']}: {e_brands}")
+            brands_data = []
 
         comp_brands = []
-        for (b_cid, bid), b_metrics in brand_totals.items():
-            if b_cid == cid:
-                b_name = brand_name_map.get(bid, f"Brand {bid[:8]}")
-                b_cases = round(b_metrics["cases"], 2)
-                b_btls = round(b_metrics["bottles"], 2)
-                comp_brands.append({
-                    "id": bid,
-                    "name": b_name,
-                    "cases": b_cases,
-                    "bottles": b_btls,
-                    "data": {
-                        clean_period: {"cases": b_cases, "bottles": b_btls, "bl": 0.0}
-                    }
-                })
+        for b in brands_data:
+            bid = str(b.get("brand_id") or "")
+            bname = str(b.get("brand_name") or "Generic Brand").strip()
+            
+            b_daily_cases = float(b.get("daily_cases") or 0.0)
+            b_daily_bottles = float(b.get("daily_bottles") or 0.0)
+            b_daily_bl = float(b.get("daily_bl") or 0.0)
+            
+            b_mtd_cases = float(b.get("mtd_cases") or 0.0)
+            b_mtd_bottles = float(b.get("mtd_bottles") or 0.0)
+            b_mtd_bl = float(b.get("mtd_bl") or 0.0)
+            
+            b_ytd_cases = float(b.get("ytd_cases") or 0.0)
+            b_ytd_bottles = float(b.get("ytd_bottles") or 0.0)
+            b_ytd_bl = float(b.get("ytd_bl") or 0.0)
+
+            if clean_period == "Daily":
+                b_cases = round(b_daily_cases, 2)
+                b_btls = round(b_daily_bottles, 2)
+            elif clean_period == "MTD":
+                b_cases = round(b_mtd_cases, 2)
+                b_btls = round(b_mtd_bottles, 2)
+            else:
+                b_cases = round(b_ytd_cases, 2)
+                b_btls = round(b_ytd_bottles, 2)
+
+            comp_brands.append({
+                "id": bid,
+                "name": bname,
+                "cases": b_cases,
+                "bottles": b_btls,
+                "data": {
+                    "Daily": {"cases": round(b_daily_cases, 2), "bottles": round(b_daily_bottles, 2), "bl": round(b_daily_bl, 2)},
+                    "MTD": {"cases": round(b_mtd_cases, 2), "bottles": round(b_mtd_bottles, 2), "bl": round(b_mtd_bl, 2)},
+                    "YTD": {"cases": round(b_ytd_cases, 2), "bottles": round(b_ytd_bottles, 2), "bl": round(b_ytd_bl, 2)},
+                }
+            })
 
         comp_brands.sort(key=lambda x: x["cases"], reverse=True)
 
-        c_key = cname.lower().replace(" ", "-").replace("/", "-")
-        is_pinned = c_key in ("rll", "diageo-inbrew") or cname.upper() == "RLL"
+        if clean_period == "Daily":
+            p_cases = g["daily_cases"]
+            p_bottles = g["daily_bottles"]
+        elif clean_period == "MTD":
+            p_cases = g["mtd_cases"]
+            p_bottles = g["mtd_bottles"]
+        else:
+            p_cases = g["ytd_cases"]
+            p_bottles = g["ytd_bottles"]
 
         response_list.append({
-            "id": c_key,
-            "company_id": cid,
-            "name": cname,
-            "isPinned": is_pinned,
-            "hqLocation": selected_hq or "All Headquarters",
-            "cases": c_cases,
-            "bottles": c_bottles,
+            "id": g["id"],
+            "company_id": g["company_ids"][0] if g["company_ids"] else None,
+            "name": g["name"],
+            "isPinned": g["isPinned"],
+            "hqLocation": g["hqLocation"],
+            "cases": round(p_cases, 2),
+            "bottles": round(p_bottles, 2),
             "data": {
-                clean_period: {"cases": c_cases, "bottles": c_bottles, "bl": 0.0}
+                "Daily": {"cases": round(g["daily_cases"], 2), "bottles": round(g["daily_bottles"], 2), "bl": round(g["daily_bl"], 2)},
+                "MTD": {"cases": round(g["mtd_cases"], 2), "bottles": round(g["mtd_bottles"], 2), "bl": round(g["mtd_bl"], 2)},
+                "YTD": {"cases": round(g["ytd_cases"], 2), "bottles": round(g["ytd_bottles"], 2), "bl": round(g["ytd_bl"], 2)},
             },
             "brands": comp_brands
         })

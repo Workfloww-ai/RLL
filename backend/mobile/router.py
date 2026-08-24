@@ -907,77 +907,144 @@ async def get_mobile_sales(
 
     # E, F, G, H. Supabase RPC timing and byte measurement
     rpc_trace_info: Dict[str, Any] = {}
-    sales_payload = call_mobile_sales_json_rpc(end_date, mtd_start, ytd_start, target_hq_id, trace_info=rpc_trace_info)
-    company_records = sales_payload.get("companies") or []
+    comp_rpc_params = {
+        "p_target_date": end_date,
+        "p_mtd_start": mtd_start,
+        "p_ytd_start": ytd_start,
+    }
+    if target_hq_id:
+        comp_rpc_params["p_hq_id"] = target_hq_id
+
+    t0 = time.perf_counter()
+    try:
+        comp_res = client.rpc("get_mobile_companies_summary", comp_rpc_params).execute()
+        company_records = comp_res.data or []
+    except Exception as e_comp:
+        logger.error(f"Error calling get_mobile_companies_summary RPC: {e_comp}")
+        company_records = []
+    t1 = time.perf_counter()
+    rpc_trace_info["sales_rpc_duration_ms"] = round((t1 - t0) * 1000, 2)
+
+    sales_payload = call_mobile_sales_json_rpc(end_date, mtd_start, ytd_start, target_hq_id)
     depot_records = sales_payload.get("depots") or []
     total_records_processed = len(company_records) + len(depot_records)
 
     # I. Python transformation timing
     t_transform_start = time.perf_counter()
 
+    # Company Aliases Normalization (Willam vs William)
+    COMPANY_ALIASES = {
+        "willam grants": "William Grants",
+        "william grants": "William Grants",
+        "william grants & sons": "William Grants"
+    }
+
+    grouped_comp_rows = {}
     for row in company_records:
-        c_id_raw = str(row.get("company_id") or "")
-        comp_name = companies_lookup.get(c_id_raw)
-        if not comp_name or comp_name.strip().lower() == "others":
+        cid = str(row.get("company_id") or "")
+        cname = str(row.get("company_name") or "").strip()
+        if not cname or cname.lower() == "others":
             continue
 
-        b_id_raw = str(row.get("brand_id") or "")
-        b_info = brands_lookup.get(b_id_raw, {})
-        brand_name = b_info.get("name") or "Generic Brand"
-        brand_id = b_id_raw or brand_name.lower().replace(" ", "-")
+        norm_name = COMPANY_ALIASES.get(cname.lower(), cname)
+        comp_id = norm_name.lower().replace(" ", "-").replace("/", "-")
 
-        comp_id = comp_name.lower().replace(" ", "-").replace("/", "-")
-        if comp_id not in master_companies:
-            master_companies[comp_id] = {
+        if comp_id not in grouped_comp_rows:
+            grouped_comp_rows[comp_id] = {
                 "id": comp_id,
-                "name": comp_name,
-                "isPinned": comp_id in ["rll", "diageo-inbrew"] or comp_name.upper() == "RLL",
-                "hqLocation": "All Headquarters",
+                "name": norm_name,
+                "isPinned": comp_id in ["rll", "diageo-inbrew"] or norm_name.upper() == "RLL",
+                "hqLocation": selected_hq or "All Headquarters",
+                "company_ids": [],
                 "data": {
-                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                    "Daily": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+                    "MTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+                    "YTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
                 },
                 "brands_map": {}
             }
 
-        row_metrics = {
-            "Daily": {
-                "cases": int(row.get("daily_cases") or 0),
-                "bottles": int(row.get("daily_bottles") or 0),
-                "bl": float(row.get("daily_bl") or 0.0),
-            },
-            "MTD": {
-                "cases": int(row.get("mtd_cases") or 0),
-                "bottles": int(row.get("mtd_bottles") or 0),
-                "bl": float(row.get("mtd_bl") or 0.0),
-            },
-            "YTD": {
-                "cases": int(row.get("ytd_cases") or 0),
-                "bottles": int(row.get("ytd_bottles") or 0),
-                "bl": float(row.get("ytd_bl") or 0.0),
-            },
+        g = grouped_comp_rows[comp_id]
+        g["company_ids"].append(cid)
+        g["data"]["Daily"]["cases"] += float(row.get("daily_cases") or 0.0)
+        g["data"]["Daily"]["bottles"] += float(row.get("daily_bottles") or 0.0)
+        g["data"]["Daily"]["bl"] += float(row.get("daily_bl") or 0.0)
+        g["data"]["MTD"]["cases"] += float(row.get("mtd_cases") or 0.0)
+        g["data"]["MTD"]["bottles"] += float(row.get("mtd_bottles") or 0.0)
+        g["data"]["MTD"]["bl"] += float(row.get("mtd_bl") or 0.0)
+        g["data"]["YTD"]["cases"] += float(row.get("ytd_cases") or 0.0)
+        g["data"]["YTD"]["bottles"] += float(row.get("ytd_bottles") or 0.0)
+        g["data"]["YTD"]["bl"] += float(row.get("ytd_bl") or 0.0)
+
+    # For each grouped company, fetch Brand summaries using get_mobile_company_brands_summary RPC
+    for comp_id, g in grouped_comp_rows.items():
+        brand_params = {
+            "p_company_ids": g["company_ids"],
+            "p_target_date": end_date,
+            "p_mtd_start": mtd_start,
+            "p_ytd_start": ytd_start,
         }
+        if target_hq_id:
+            brand_params["p_hq_id"] = target_hq_id
 
-        for period_key, metrics in row_metrics.items():
-            master_companies[comp_id]["data"][period_key]["cases"] += metrics["cases"]
-            master_companies[comp_id]["data"][period_key]["bottles"] += metrics["bottles"]
-            master_companies[comp_id]["data"][period_key]["bl"] += metrics["bl"]
+        try:
+            brand_res = client.rpc("get_mobile_company_brands_summary", brand_params).execute()
+            brands_data = brand_res.data or []
+        except Exception as e_brands:
+            logger.error(f"Error calling get_mobile_company_brands_summary RPC for {g['name']}: {e_brands}")
+            brands_data = []
 
-            b_map = master_companies[comp_id]["brands_map"]
-            if brand_id not in b_map:
-                b_map[brand_id] = {
-                    "id": brand_id,
-                    "name": brand_name,
+        for b in brands_data:
+            bid = str(b.get("brand_id") or "")
+            bname = str(b.get("brand_name") or "Generic Brand").strip()
+            
+            b_daily_cases = float(b.get("daily_cases") or 0.0)
+            b_daily_bottles = float(b.get("daily_bottles") or 0.0)
+            b_daily_bl = float(b.get("daily_bl") or 0.0)
+            
+            b_mtd_cases = float(b.get("mtd_cases") or 0.0)
+            b_mtd_bottles = float(b.get("mtd_bottles") or 0.0)
+            b_mtd_bl = float(b.get("mtd_bl") or 0.0)
+            
+            b_ytd_cases = float(b.get("ytd_cases") or 0.0)
+            b_ytd_bottles = float(b.get("ytd_bottles") or 0.0)
+            b_ytd_bl = float(b.get("ytd_bl") or 0.0)
+
+            if bid not in g["brands_map"]:
+                g["brands_map"][bid] = {
+                    "id": bid,
+                    "name": bname,
                     "data": {
-                        "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                        "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                        "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                        "Daily": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+                        "MTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+                        "YTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
                     }
                 }
-            b_map[brand_id]["data"][period_key]["cases"] += metrics["cases"]
-            b_map[brand_id]["data"][period_key]["bottles"] += metrics["bottles"]
-            b_map[brand_id]["data"][period_key]["bl"] += metrics["bl"]
+            bm = g["brands_map"][bid]
+            bm["data"]["Daily"]["cases"] += b_daily_cases
+            bm["data"]["Daily"]["bottles"] += b_daily_bottles
+            bm["data"]["Daily"]["bl"] += b_daily_bl
+            bm["data"]["MTD"]["cases"] += b_mtd_cases
+            bm["data"]["MTD"]["bottles"] += b_mtd_bottles
+            bm["data"]["MTD"]["bl"] += b_mtd_bl
+            bm["data"]["YTD"]["cases"] += b_ytd_cases
+            bm["data"]["YTD"]["bottles"] += b_ytd_bottles
+            bm["data"]["YTD"]["bl"] += b_ytd_bl
+
+    # Store in master_companies
+    for comp_id, g in grouped_comp_rows.items():
+        master_companies[comp_id] = {
+            "id": comp_id,
+            "name": g["name"],
+            "isPinned": g["isPinned"],
+            "hqLocation": g["hqLocation"],
+            "data": {
+                "Daily": {"cases": round(g["data"]["Daily"]["cases"], 2), "bottles": round(g["data"]["Daily"]["bottles"], 2), "bl": round(g["data"]["Daily"]["bl"], 2)},
+                "MTD": {"cases": round(g["data"]["MTD"]["cases"], 2), "bottles": round(g["data"]["MTD"]["bottles"], 2), "bl": round(g["data"]["MTD"]["bl"], 2)},
+                "YTD": {"cases": round(g["data"]["YTD"]["cases"], 2), "bottles": round(g["data"]["YTD"]["bottles"], 2), "bl": round(g["data"]["YTD"]["bl"], 2)},
+            },
+            "brands_map": g["brands_map"]
+        }
 
     for row in depot_records:
         raw_depot_id = str(row.get("depot_id") or "")
@@ -1015,18 +1082,18 @@ async def get_mobile_sales(
 
         row_metrics = {
             "Daily": {
-                "cases": int(row.get("daily_cases") or 0),
-                "bottles": int(row.get("daily_bottles") or 0),
+                "cases": float(row.get("daily_cases") or 0.0),
+                "bottles": float(row.get("daily_bottles") or 0.0),
                 "bl": float(row.get("daily_bl") or 0.0),
             },
             "MTD": {
-                "cases": int(row.get("mtd_cases") or 0),
-                "bottles": int(row.get("mtd_bottles") or 0),
+                "cases": float(row.get("mtd_cases") or 0.0),
+                "bottles": float(row.get("mtd_bottles") or 0.0),
                 "bl": float(row.get("mtd_bl") or 0.0),
             },
             "YTD": {
-                "cases": int(row.get("ytd_cases") or 0),
-                "bottles": int(row.get("ytd_bottles") or 0),
+                "cases": float(row.get("ytd_cases") or 0.0),
+                "bottles": float(row.get("ytd_bottles") or 0.0),
                 "bl": float(row.get("ytd_bl") or 0.0),
             },
         }
@@ -1094,18 +1161,18 @@ async def get_mobile_sales(
 
         usf_metrics = {
             "Daily": {
-                "cases": int(row.get("daily_cases") or 0),
-                "bottles": int(row.get("daily_bottles") or 0),
+                "cases": float(row.get("daily_cases") or 0.0),
+                "bottles": float(row.get("daily_bottles") or 0.0),
                 "bl": float(row.get("daily_bl") or 0.0),
             },
             "MTD": {
-                "cases": int(row.get("mtd_cases") or 0),
-                "bottles": int(row.get("mtd_bottles") or 0),
+                "cases": float(row.get("mtd_cases") or 0.0),
+                "bottles": float(row.get("mtd_bottles") or 0.0),
                 "bl": float(row.get("mtd_bl") or 0.0),
             },
             "YTD": {
-                "cases": int(row.get("ytd_cases") or 0),
-                "bottles": int(row.get("ytd_bottles") or 0),
+                "cases": float(row.get("ytd_cases") or 0.0),
+                "bottles": float(row.get("ytd_bottles") or 0.0),
                 "bl": float(row.get("ytd_bl") or 0.0),
             },
         }
