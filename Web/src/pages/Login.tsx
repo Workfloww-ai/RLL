@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { LogIn, Mail, ArrowLeft, CheckCircle2, Lock, Send, KeyRound } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { API_BASE_URL } from '../lib/api';
 
 interface LoginProps {
   onLogin: (userName: string) => void;
@@ -53,7 +54,7 @@ export default function Login({ onLogin }: LoginProps) {
     const fallbackName = formattedName || 'User';
 
     try {
-      const response = await fetch('http://localhost:8000/api/v1/auth/login', {
+      const response = await fetch(`${API_BASE_URL}/auth/login`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -95,7 +96,7 @@ export default function Login({ onLogin }: LoginProps) {
     setSuccessMessage(null);
 
     try {
-      const response = await fetch('http://localhost:8000/api/v1/auth/forgot-password', {
+      const response = await fetch(`${API_BASE_URL}/auth/forgot-password`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -139,7 +140,7 @@ export default function Login({ onLogin }: LoginProps) {
     setSuccessMessage(null);
 
     try {
-      const response = await fetch('http://localhost:8000/api/v1/auth/reset-password', {
+      const response = await fetch(`${API_BASE_URL}/auth/reset-password`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

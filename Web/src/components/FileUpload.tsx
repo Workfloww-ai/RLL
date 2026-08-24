@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { UploadCloud, FileText, CheckCircle, AlertCircle, Database, RefreshCw, Server, X, Check, Clock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { FileUploadState } from '../types';
+import { API_BASE_URL } from '../lib/api';
 
 interface FileUploadProps {
   title: string;
@@ -58,7 +59,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
         const headers: Record<string, string> = {};
         if (token) headers['Authorization'] = `Bearer ${token}`;
 
-        const res = await fetch(`http://localhost:8000/api/v1/uploads/batches/${batchId}`, { headers });
+        const res = await fetch(`${API_BASE_URL}/uploads/batches/${batchId}`, { headers });
         if (!res.ok) {
           if (pollAttempts >= maxPollAttempts) {
             if (pollTimerRef.current) clearInterval(pollTimerRef.current);
@@ -113,7 +114,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
           // Fetch error logs for detail if available
           let logs: string[] = [];
           try {
-            const logsRes = await fetch(`http://localhost:8000/api/v1/uploads/batches/${batchId}/logs`, { headers });
+            const logsRes = await fetch(`${API_BASE_URL}/uploads/batches/${batchId}/logs`, { headers });
             if (logsRes.ok) {
               const logsData = await logsRes.json();
               if (Array.isArray(logsData)) {
@@ -189,7 +190,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
         headers['Authorization'] = `Bearer ${token}`;
       }
 
-      const targetUrl = uploadEndpoint || 'http://localhost:8000/api/v1/uploads/';
+      const targetUrl = uploadEndpoint || `${API_BASE_URL}/uploads/`;
 
       const response = await fetch(targetUrl, {
         method: 'POST',
