@@ -5,10 +5,21 @@ from fastapi.middleware.cors import CORSMiddleware
 import os
 import uvicorn
 
-# Ensure root project directory is in sys.path
-root_dir = Path(__file__).resolve().parent.parent
+# Ensure root and backend directories are in sys.path
+backend_dir = Path(__file__).resolve().parent
+root_dir = backend_dir.parent
+
+if str(backend_dir) not in sys.path:
+    sys.path.insert(0, str(backend_dir))
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
+
+# Handle virtual 'backend' namespace when running inside container root
+if "backend" not in sys.modules and (backend_dir / "main.py").exists():
+    import types
+    backend_module = types.ModuleType("backend")
+    backend_module.__path__ = [str(backend_dir)]
+    sys.modules["backend"] = backend_module
 
 from backend.core.logging_config import setup_logging
 
@@ -63,6 +74,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
     ],
     allow_origin_regex=r"https?://.*",
     allow_credentials=True,
