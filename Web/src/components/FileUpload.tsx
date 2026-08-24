@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { UploadCloud, FileText, CheckCircle, AlertCircle, Database, RefreshCw, Server, X, Check, Clock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { FileUploadState } from '../types';
-import { API_BASE_URL } from '../lib/api';
+import { API_BASE_URL } from '../config';
 
 interface FileUploadProps {
   title: string;

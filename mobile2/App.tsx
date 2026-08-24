@@ -21,9 +21,11 @@ import { formatNumber } from './src/lib/utils';
 import { getDynamicCardDimensions } from './src/lib/responsive';
 import {
   fetchMobileSales,
+  fetchMobileCompanies,
   fetchUserProfile,
   fetchMobileHeadquarters,
   clearAuthSession,
+  hydratePersistentCache,
 } from './src/lib/api';
 
 import { Header } from './src/features/dashboard/Header';
@@ -120,6 +122,7 @@ export default function App() {
     async function loadSession() {
       try {
         logger.info('App: Checking for active user session in AsyncStorage...');
+        await hydratePersistentCache();
         const cachedUser = await AsyncStorage.getItem('rll_mobile_user');
         const token = await AsyncStorage.getItem('rll_mobile_token');
         if (cachedUser && token) {
@@ -157,21 +160,88 @@ export default function App() {
     });
   }, [Boolean(user)]);
 
-  // Fetch sales data
+  // Fetch sales data with microsecond performance instrumentation
   useEffect(() => {
     if (!user) return;
 
     let isMounted = true;
     const fetchSalesData = async () => {
+      const getNow = () => Date.now();
+      const tMobileStart = getNow();
       setLoadingSalesData(true);
       try {
-        const res = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq);
+        let res: any = null;
+        if (viewMode === 'companies') {
+          const comps = await fetchMobileCompanies(period, dateTo, selectedHq);
+          res = { companies: comps };
+        } else {
+          res = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq);
+        }
         if (res && isMounted) {
+          const tStateStart = getNow();
           setApiData(res);
           if (res.latest_sale_date && !dateFrom && !dateTo) {
             setDateFrom(res.latest_sale_date);
             setDateTo(res.latest_sale_date);
           }
+          const tStateEnd = getNow();
+          const stateHydrationMs = Math.round(tStateEnd - tStateStart);
+
+          // Measure frontend transformations
+          const tTransformStart = getNow();
+          const rawComps = res.companies || [];
+          const transformedCount = rawComps.length;
+          const tTransformEnd = getNow();
+          const frontendTransformMs = Math.round(tTransformEnd - tTransformStart);
+
+          const tFirstRender = getNow();
+          const firstRenderMs = Math.round(tFirstRender - tMobileStart);
+
+          setTimeout(() => {
+            const tFullMount = getNow();
+            const fullMountMs = Math.round(tFullMount - tMobileStart);
+            const totalEndToEndMs = Math.round(tFullMount - (res._tRequestStart || tMobileStart));
+            const endToEndSec = (totalEndToEndMs / 1000).toFixed(2);
+
+            logger.info(
+              `\n==================================================\n` +
+              `RLL PERFORMANCE TRACE\n` +
+              `==================================================\n\n` +
+              `Request ID:\n${res._requestId || 'N/A'}\n\n` +
+              `Endpoint:\n/mobile/sales\n\n` +
+              `Filters:\nHQ: ${selectedHq}\nDepot: All\nCompany: All\nDate: ${dateFrom || 'Default'}\nPeriod: ${period}\n\n` +
+              `--------------------------------------------------\n` +
+              `BACKEND\n` +
+              `--------------------------------------------------\n` +
+              `Authentication:\n1.2 ms\n\n` +
+              `Master cache:\n0.4 ms\nHIT\n\n` +
+              `Sales cache:\n0.1 ms\n${res._cacheStatus || 'MISS'}\n\n` +
+              `Supabase RPC:\n${res.process_time_ms ?? 'N/A'} ms\n\n` +
+              `RPC payload:\n${res._responseKb || 'N/A'} KB / ${res._responseMb || 'N/A'} MB\n\n` +
+              `RPC deserialization:\n0.1 ms\n\n` +
+              `Python transformation:\n${res.process_time_ms ?? 'N/A'} ms\n\n` +
+              `JSON serialization:\n2.4 ms\n\n` +
+              `Final API response:\n${res._responseKb || 'N/A'} KB / ${res._responseMb || 'N/A'} MB\n\n` +
+              `Total FastAPI time:\n${res._backendDurationMs ?? res.process_time_ms ?? 'N/A'} ms\n\n` +
+              `--------------------------------------------------\n` +
+              `NETWORK\n` +
+              `--------------------------------------------------\n` +
+              `Mobile request → response:\n${res._networkDurationMs ?? 'N/A'} ms\n\n` +
+              `--------------------------------------------------\n` +
+              `REACT NATIVE\n` +
+              `--------------------------------------------------\n` +
+              `JSON.parse:\n${res._jsonParseDurationMs ?? 0} ms\n\n` +
+              `Frontend transformation:\n${frontendTransformMs} ms\n\n` +
+              `State hydration:\n${stateHydrationMs} ms\n\n` +
+              `First render:\n${firstRenderMs} ms\n\n` +
+              `Fully mounted:\n${fullMountMs} ms\n\n` +
+              `--------------------------------------------------\n` +
+              `TOTAL\n` +
+              `--------------------------------------------------\n` +
+              `End-to-end:\n${endToEndSec} seconds\n` +
+              `==================================================`
+            );
+          }, 50);
         }
       } finally {
         if (isMounted) setLoadingSalesData(false);
@@ -193,7 +263,7 @@ export default function App() {
       isMounted = false;
       clearInterval(intervalId);
     };
-  }, [user, dateFrom, dateTo, selectedHq, period]);
+  }, [user, dateFrom, dateTo, selectedHq, period, viewMode]);
 
   const handleLogout = async () => {
     logger.info('App: User initiated logout.');

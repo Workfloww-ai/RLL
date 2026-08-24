@@ -120,9 +120,9 @@ export function BrandModal({
 
   if (!company) return null;
 
-  const rawCompanyData = company.data[period];
-  const companyCases = Math.round(rawCompanyData.cases * scaleFactor);
-  const companyBottles = Math.round(rawCompanyData.bottles * scaleFactor);
+  const rawCompanyData = company.data?.[period] || { cases: company.cases || 0, bottles: company.bottles || 0 };
+  const companyCases = Math.round((rawCompanyData.cases ?? company.cases ?? 0) * scaleFactor);
+  const companyBottles = Math.round((rawCompanyData.bottles ?? company.bottles ?? 0) * scaleFactor);
 
   const getSortLabel = () => {
     if (sortBy === 'volume_desc') return 'Top Sales';

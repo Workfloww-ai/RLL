@@ -5,12 +5,15 @@ from fastapi import APIRouter, Depends, Query, HTTPException, Response, status
 from backend.analytics.service import analytics_service
 from backend.analytics.schemas import DashboardResponse
 from backend.core.security import get_current_user
+from backend.services.cache_service import cache_response
 
 router = APIRouter(prefix="/analytics", tags=["Sales Analytics Engine"])
 
 
 @router.get("/dashboard", response_model=DashboardResponse)
+@cache_response(prefix="analytics", ttl=300)
 async def get_dashboard_analytics(
+
     period: str = Query("daily", description="Period selection: daily | mtd | ytd"),
     from_date: Optional[str] = Query(None, description="Start date format: YYYY-MM-DD"),
     to_date: Optional[str] = Query(None, description="End date format: YYYY-MM-DD"),

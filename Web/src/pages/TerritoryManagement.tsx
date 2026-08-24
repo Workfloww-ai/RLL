@@ -5,6 +5,7 @@ import {
   ChevronLeft, ChevronRight, ArrowUpDown, ChevronUp, ChevronDown, RotateCcw,
   User as UserIcon, Building2, Shield, Plus, CheckCircle2, AlertCircle, Info
 } from "lucide-react";
+import { API_BASE_URL } from "../config";
 
 interface DepotRecord {
   depot_id: number;

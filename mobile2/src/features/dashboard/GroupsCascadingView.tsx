@@ -88,19 +88,21 @@ export function GroupsCascadingView({
 
   // 1. Fetch Level 1: Groups List
   const loadGroups = async (showIndicator = false, forceRefresh = false) => {
-    if (!forceRefresh && groupsCacheRef.current && groupsCacheRef.current.key === cacheKey) {
+    if (!forceRefresh && groupsCacheRef.current && groupsCacheRef.current.key === cacheKey && groupsCacheRef.current.data.length > 0) {
       setGroups(groupsCacheRef.current.data);
       return;
     }
 
-    if (showIndicator && (!groupsCacheRef.current || groupsCacheRef.current.key !== cacheKey)) {
+    if (showIndicator && (!groupsCacheRef.current || groupsCacheRef.current.key !== cacheKey || groupsCacheRef.current.data.length === 0)) {
       setLoading(true);
     }
 
     try {
       const data = await fetchCascadingGroups(dateFrom, dateTo, period);
       const result = data || [];
-      groupsCacheRef.current = { key: cacheKey, data: result };
+      if (result.length > 0) {
+        groupsCacheRef.current = { key: cacheKey, data: result };
+      }
       setGroups(result);
     } catch (e) {
       console.error('Error loading groups:', e);
@@ -116,14 +118,6 @@ export function GroupsCascadingView({
     if (!forceRefresh && licenseesCacheRef.current.has(key)) {
       const cached = licenseesCacheRef.current.get(key) || [];
       setLicensees(cached);
-      const sumCases = cached.reduce((sum: number, item: any) => sum + (Number(item.total_cases ?? item.cases ?? 0) || 0), 0);
-      const sumBottles = cached.reduce((sum: number, item: any) => sum + (Number(item.total_bottles ?? item.bottles ?? 0) || 0), 0);
-      setSelectedGroup((prev: any) => ({
-        ...prev,
-        total_licensees: cached.length,
-        total_cases: sumCases,
-        total_bottles: sumBottles,
-      }));
       return;
     }
 
@@ -133,15 +127,6 @@ export function GroupsCascadingView({
       const result = data || [];
       licenseesCacheRef.current.set(key, result);
       setLicensees(result);
-
-      const sumCases = result.reduce((sum: number, item: any) => sum + (Number(item.total_cases ?? item.cases ?? 0) || 0), 0);
-      const sumBottles = result.reduce((sum: number, item: any) => sum + (Number(item.total_bottles ?? item.bottles ?? 0) || 0), 0);
-      setSelectedGroup((prev: any) => ({
-        ...prev,
-        total_licensees: result.length,
-        total_cases: sumCases,
-        total_bottles: sumBottles,
-      }));
     } catch (e) {
       console.error(`Error loading licensees for group ${groupId}:`, e);
       setLicensees([]);
@@ -156,13 +141,6 @@ export function GroupsCascadingView({
     if (!forceRefresh && brandSalesCacheRef.current.has(key)) {
       const cached = brandSalesCacheRef.current.get(key) || [];
       setBrandSales(cached);
-      const sumCases = cached.reduce((sum: number, item: any) => sum + (Number(item.total_cases ?? item.cases ?? 0) || 0), 0);
-      const sumBottles = cached.reduce((sum: number, item: any) => sum + (Number(item.total_bottles ?? item.bottles ?? 0) || 0), 0);
-      setSelectedLicensee((prev: any) => ({
-        ...prev,
-        total_cases: sumCases,
-        total_bottles: sumBottles,
-      }));
       return;
     }
 
@@ -172,14 +150,6 @@ export function GroupsCascadingView({
       const result = data || [];
       brandSalesCacheRef.current.set(key, result);
       setBrandSales(result);
-
-      const sumCases = result.reduce((sum: number, item: any) => sum + (Number(item.total_cases ?? item.cases ?? 0) || 0), 0);
-      const sumBottles = result.reduce((sum: number, item: any) => sum + (Number(item.total_bottles ?? item.bottles ?? 0) || 0), 0);
-      setSelectedLicensee((prev: any) => ({
-        ...prev,
-        total_cases: sumCases,
-        total_bottles: sumBottles,
-      }));
     } catch (e) {
       console.error(`Error loading brand sales for licensee ${licenseeId}:`, e);
       setBrandSales([]);
@@ -187,6 +157,7 @@ export function GroupsCascadingView({
       setLoading(false);
     }
   };
+
 
   // Sync Level 1 on mount or date/period changes
   // Debounce ref — avoids firing multiple rapid fetches when date/period changes quickly
@@ -475,8 +446,8 @@ export function GroupsCascadingView({
           paginatedList.map((item, index) => {
             // Level 1: Group Card
             if (level === 1) {
-              const cases = Math.round(Number(item.total_cases ?? 0) * scaleFactor);
-              const bottles = Math.round(Number(item.total_bottles ?? 0) * scaleFactor);
+              const cases = Math.round(Number(item.total_cases ?? item.cases ?? item.mtd_cases ?? 0) * scaleFactor);
+              const bottles = Math.round(Number(item.total_bottles ?? item.bottles ?? item.mtd_bottles ?? 0) * scaleFactor);
               return (
                 <TouchableOpacity
                   key={item.group_id || index}

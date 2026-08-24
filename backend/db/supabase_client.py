@@ -403,7 +403,6 @@ def get_batch_details(batch_id: Any) -> Dict[str, Any]:
         return {"batch_id": batch_id, "error": str(e)}
 
 
-# ---------------------------------------------------------------------------
 def fetch_cascading_groups_json_db(
     target_date: str,
     mtd_start: str,
@@ -411,14 +410,11 @@ def fetch_cascading_groups_json_db(
     exclude_company: str = "Others"
 ) -> List[Dict[str, Any]]:
     """
-    Calls get_cascading_groups_summary_json PostgreSQL RPC.
-    Returns JSONB array of groups with single-pass Daily, MTD, and YTD metrics.
-    Guarantees 0 PostgREST row truncation.
+    Fetches group sales summary by calling get_cascading_groups_summary_json RPC.
     """
     client = get_supabase_client()
     if not client:
         return []
-
     try:
         res = client.rpc("get_cascading_groups_summary_json", {
             "p_target_date": target_date,
@@ -495,47 +491,36 @@ def fetch_licensee_brand_sales_json_db(
 
 
 def fetch_cascading_groups_db(date_from: str, date_to: str) -> List[Dict[str, Any]]:
-    """
-    Fetches aggregated cascading groups with total licensees, linked depots, cases, and bottles.
-    Attempts RPC first; falls back to optimized query if RPC is not present.
-    """
     client = get_supabase_client()
     if not client:
         return []
 
-    # 1. Try RPC execution
     try:
-        res = client.rpc("get_cascading_groups_summary", {
-            "p_date_from": date_from,
-            "p_date_to": date_to
-        }).execute()
-        if res.data and len(res.data) > 0:
-            return [
-                {
-                    "group_id": str(r["group_id"]),
-                    "group_name": r["group_name"],
-                    "total_licensees": int(r.get("total_licensees") or 0),
-                    "linked_depots": r.get("linked_depots") or [],
-                    "total_cases": float(r.get("total_cases") or 0.0),
-                    "total_bottles": float(r.get("total_bottles") or 0.0),
-                }
-                for r in res.data
-            ]
-    except Exception as rpc_err:
-        logger.info(f"RPC get_cascading_groups_summary unavailable, using fallback query: {rpc_err}")
+        month_start = f"{date_from[:7]}-01"
 
-    # 2. Optimized & Paginated Database Implementation
-    try:
+        # 1. Fetch active groups
         g_res = client.table("groups").select("group_id, group_name").eq("is_active", True).execute()
         all_groups = {str(g["group_id"]): g["group_name"] for g in (g_res.data or [])}
 
-        # Paginate all licensees to avoid 1000 row cap
+        # 2. Exclude company Others brands
+        b_res = client.table("brands").select("brand_id, companies!inner(company_name)").execute()
+        excluded_brand_ids = set()
+        for b in (b_res.data or []):
+            comp_obj = b.get("companies") or {}
+            cname = comp_obj.get("company_name", "") if isinstance(comp_obj, dict) else ""
+            if cname and cname.lower().strip() == "others":
+                excluded_brand_ids.add(str(b["brand_id"]))
+
+        # 3. Paginate all active licensees
         licensees_rows = []
         l_offset = 0
         l_limit = 1000
         while True:
-            l_res = client.table("licensees").select("licensee_id, group_id, depot_id, depots(name)").range(l_offset, l_offset + l_limit - 1).execute()
+            q_lic = client.table("licensees").select("licensee_id, group_id, depot_id, depots(name)").eq("is_active", True)
+            l_res = q_lic.range(l_offset, l_offset + l_limit - 1).execute()
             batch = l_res.data or []
+            if not batch:
+                break
             licensees_rows.extend(batch)
             if len(batch) < l_limit:
                 break
@@ -559,31 +544,40 @@ def fetch_cascading_groups_db(date_from: str, date_to: str) -> List[Dict[str, An
                 if dname:
                     group_depots[gid].add(dname)
 
-        # Paginate sales_fact to avoid 1000 row cap
+        # 4. Query sales_monthly_summary for month_start excluding Others
         group_metrics: Dict[str, Dict[str, Any]] = {}
-        sf_offset = 0
-        sf_limit = 1000
+        sms_offset = 0
+        sms_limit = 1000
         while True:
-            sf_res = client.table("sales_fact").select(
-                "licensee_id, total_case, total_btl"
-            ).gte("sale_date", date_from).lte("sale_date", date_to).range(sf_offset, sf_offset + sf_limit - 1).execute()
-            
-            batch = sf_res.data or []
-            for sf in batch:
-                lid = str(sf.get("licensee_id")) if sf.get("licensee_id") else None
-                gid = lic_to_group.get(lid)
+            q = client.table("sales_monthly_summary").select("group_id, licensee_id, brand_id, total_cases, total_bottles").eq("month_start", month_start)
+            sms_res = q.range(sms_offset, sms_offset + sms_limit - 1).execute()
+
+            batch = sms_res.data or []
+            if not batch:
+                break
+
+            for sms in batch:
+                bid = str(sms.get("brand_id")) if sms.get("brand_id") else None
+                if bid and bid in excluded_brand_ids:
+                    continue
+
+                gid = str(sms.get("group_id")) if sms.get("group_id") else None
+                if not gid:
+                    lid = str(sms.get("licensee_id")) if sms.get("licensee_id") else None
+                    gid = lic_to_group.get(lid)
+
                 if not gid or gid not in all_groups:
                     continue
 
                 if gid not in group_metrics:
                     group_metrics[gid] = {"cases": 0.0, "bottles": 0.0}
 
-                group_metrics[gid]["cases"] += float(sf.get("total_case") or 0)
-                group_metrics[gid]["bottles"] += float(sf.get("total_btl") or 0)
+                group_metrics[gid]["cases"] += float(sms.get("total_cases") or 0)
+                group_metrics[gid]["bottles"] += float(sms.get("total_bottles") or 0)
 
-            if len(batch) < sf_limit:
+            if len(batch) < sms_limit:
                 break
-            sf_offset += sf_limit
+            sms_offset += sms_limit
 
         results = []
         for gid, gname in all_groups.items():
@@ -596,6 +590,12 @@ def fetch_cascading_groups_db(date_from: str, date_to: str) -> List[Dict[str, An
                     "group_name": gname,
                     "total_licensees": lic_count,
                     "linked_depots": depots_list,
+                    "daily_cases": 0.0,
+                    "daily_bottles": 0.0,
+                    "mtd_cases": round(m["cases"], 2),
+                    "mtd_bottles": round(m["bottles"], 2),
+                    "ytd_cases": round(m["cases"], 2),
+                    "ytd_bottles": round(m["bottles"], 2),
                     "total_cases": round(m["cases"], 2),
                     "total_bottles": round(m["bottles"], 2),
                 })
@@ -612,39 +612,21 @@ def fetch_group_licensees_db(
     date_to: str,
     depot_name: Optional[str] = None
 ) -> List[Dict[str, Any]]:
-    """
-    Fetches licensees and their sales breakdown for a specified group.
-    Attempts RPC first; falls back to optimized query if RPC is unavailable.
-    """
     client = get_supabase_client()
     if not client:
         return []
 
-    # 1. Try RPC execution
     try:
-        res = client.rpc("get_group_licensees_summary", {
-            "p_group_id": group_id,
-            "p_date_from": date_from,
-            "p_date_to": date_to,
-            "p_depot_name": depot_name or ""
-        }).execute()
-        if res.data is not None:
-            return [
-                {
-                    "licensee_id": str(r["licensee_id"]),
-                    "licensee_name": r["licensee_name"],
-                    "trade": r.get("trade") or "Off",
-                    "licensee_depots": r.get("licensee_depots") or [],
-                    "total_cases": float(r.get("total_cases") or 0.0),
-                    "total_bottles": float(r.get("total_bottles") or 0.0),
-                }
-                for r in res.data
-            ]
-    except Exception as rpc_err:
-        logger.info(f"RPC get_group_licensees_summary unavailable, using fallback query: {rpc_err}")
+        month_start = f"{date_from[:7]}-01"
 
-    # 2. Fallback query implementation
-    try:
+        b_res = client.table("brands").select("brand_id, companies!inner(company_name)").execute()
+        excluded_brand_ids = set()
+        for b in (b_res.data or []):
+            comp_obj = b.get("companies") or {}
+            cname = comp_obj.get("company_name", "") if isinstance(comp_obj, dict) else ""
+            if cname and cname.lower().strip() == "others":
+                excluded_brand_ids.add(str(b["brand_id"]))
+
         res = client.table("licensees").select("licensee_id, licensee_name, trade, depot_id, depots(name)").eq("group_id", group_id).eq("is_active", True).execute()
         lic_map = {}
         for l in (res.data or []):
@@ -655,26 +637,37 @@ def fetch_group_licensees_db(
                 "licensee_id": lid,
                 "licensee_name": l["licensee_name"],
                 "trade": l.get("trade") or "Off",
+                "depot_name": dname or "Unassigned",
                 "licensee_depots": [dname] if dname else [],
+                "daily_cases": 0.0,
+                "daily_bottles": 0.0,
+                "mtd_cases": 0.0,
+                "mtd_bottles": 0.0,
+                "ytd_cases": 0.0,
+                "ytd_bottles": 0.0,
                 "total_cases": 0.0,
                 "total_bottles": 0.0,
             }
 
-        sf_res = client.table("sales_fact").select(
-            "licensee_id, total_case, total_btl, brands!inner(company_id, companies!inner(company_name)), licensees!inner(group_id)"
-        ).eq("licensees.group_id", group_id).gte("sale_date", date_from).lte("sale_date", date_to).execute()
+        sms_res = client.table("sales_monthly_summary").select(
+            "licensee_id, brand_id, total_cases, total_bottles"
+        ).eq("group_id", group_id).eq("month_start", month_start).execute()
 
-        for sf in (sf_res.data or []):
-            brand_obj = sf.get("brands") or {}
-            comp_obj = brand_obj.get("companies") if isinstance(brand_obj, dict) else {}
-            cname = comp_obj.get("company_name", "") if isinstance(comp_obj, dict) else ""
-            if cname and cname.lower().strip() == "others":
+        for sms in (sms_res.data or []):
+            bid = str(sms.get("brand_id")) if sms.get("brand_id") else None
+            if bid and bid in excluded_brand_ids:
                 continue
 
-            lid = str(sf.get("licensee_id")) if sf.get("licensee_id") else None
+            lid = str(sms.get("licensee_id")) if sms.get("licensee_id") else None
             if lid in lic_map:
-                lic_map[lid]["total_cases"] += float(sf.get("total_case") or 0)
-                lic_map[lid]["total_bottles"] += float(sf.get("total_btl") or 0)
+                cases = float(sms.get("total_cases") or 0)
+                bottles = float(sms.get("total_bottles") or 0)
+                lic_map[lid]["mtd_cases"] += cases
+                lic_map[lid]["mtd_bottles"] += bottles
+                lic_map[lid]["ytd_cases"] += cases
+                lic_map[lid]["ytd_bottles"] += bottles
+                lic_map[lid]["total_cases"] += cases
+                lic_map[lid]["total_bottles"] += bottles
 
         results = []
         for lid, item in lic_map.items():
@@ -684,7 +677,14 @@ def fetch_group_licensees_db(
                 "licensee_id": item["licensee_id"],
                 "licensee_name": item["licensee_name"],
                 "trade": item["trade"],
+                "depot_name": item["depot_name"],
                 "licensee_depots": item["licensee_depots"],
+                "daily_cases": round(item["daily_cases"], 2),
+                "daily_bottles": round(item["daily_bottles"], 2),
+                "mtd_cases": round(item["mtd_cases"], 2),
+                "mtd_bottles": round(item["mtd_bottles"], 2),
+                "ytd_cases": round(item["ytd_cases"], 2),
+                "ytd_bottles": round(item["ytd_bottles"], 2),
                 "total_cases": round(item["total_cases"], 2),
                 "total_bottles": round(item["total_bottles"], 2),
             })
@@ -701,58 +701,32 @@ def fetch_licensee_brand_sales_db(
     date_to: str,
     depot_name: Optional[str] = None
 ) -> List[Dict[str, Any]]:
-    """
-    Fetches brand-wise sales breakdown for a specific licensee.
-    Attempts RPC first; falls back to optimized query if RPC is unavailable.
-    """
     client = get_supabase_client()
     if not client:
         return []
 
-    # 1. Try RPC execution
     try:
-        res = client.rpc("get_licensee_brand_sales_summary", {
-            "p_licensee_id": licensee_id,
-            "p_date_from": date_from,
-            "p_date_to": date_to,
-            "p_depot_name": depot_name or ""
-        }).execute()
-        if res.data is not None:
-            return [
-                {
-                    "brand_id": str(r["brand_id"]),
-                    "brand_name": r["brand_name"],
-                    "company_name": r["company_name"],
-                    "total_cases": float(r.get("total_cases") or 0.0),
-                    "total_bottles": float(r.get("total_bottles") or 0.0),
-                    "sales_depots": r.get("sales_depots") or [],
-                }
-                for r in res.data
-            ]
-    except Exception as rpc_err:
-        logger.info(f"RPC get_licensee_brand_sales_summary unavailable, using fallback query: {rpc_err}")
+        month_start = f"{date_from[:7]}-01"
 
-    # 2. Fallback query implementation
-    try:
         lic_res = client.table("licensees").select("licensee_id, depot_id, depots(name)").eq("licensee_id", licensee_id).limit(1).execute()
         dname = None
         if lic_res.data:
             depot_obj = lic_res.data[0].get("depots") or {}
             dname = depot_obj.get("name") if isinstance(depot_obj, dict) else None
 
-        sf_res = client.table("sales_fact").select(
-            "licensee_id, brand_id, total_case, total_btl, brands!inner(brand_id, brand_name, company_id, companies!inner(company_name))"
-        ).eq("licensee_id", licensee_id).gte("sale_date", date_from).lte("sale_date", date_to).execute()
+        sms_res = client.table("sales_monthly_summary").select(
+            "licensee_id, brand_id, total_cases, total_bottles, brands!inner(brand_id, brand_name, company_id, companies!inner(company_name))"
+        ).eq("licensee_id", licensee_id).eq("month_start", month_start).execute()
 
         brand_map: Dict[str, Dict[str, Any]] = {}
-        for sf in (sf_res.data or []):
-            brand_obj = sf.get("brands") or {}
+        for sms in (sms_res.data or []):
+            brand_obj = sms.get("brands") or {}
             comp_obj = brand_obj.get("companies") if isinstance(brand_obj, dict) else {}
             cname = comp_obj.get("company_name", "") if isinstance(comp_obj, dict) else ""
             if cname and cname.lower().strip() == "others":
                 continue
 
-            bid = str(brand_obj.get("brand_id") or sf.get("brand_id"))
+            bid = str(brand_obj.get("brand_id") or sms.get("brand_id"))
             bname = brand_obj.get("brand_name") or "Unknown Brand"
             if not bid:
                 continue
@@ -762,12 +736,25 @@ def fetch_licensee_brand_sales_db(
                     "brand_id": bid,
                     "brand_name": bname,
                     "company_name": cname or "Other",
+                    "depot_name": dname or "Unassigned",
+                    "daily_cases": 0.0,
+                    "daily_bottles": 0.0,
+                    "mtd_cases": 0.0,
+                    "mtd_bottles": 0.0,
+                    "ytd_cases": 0.0,
+                    "ytd_bottles": 0.0,
                     "total_cases": 0.0,
                     "total_bottles": 0.0,
                     "sales_depots": [dname] if dname else [],
                 }
-            brand_map[bid]["total_cases"] += float(sf.get("total_case") or 0)
-            brand_map[bid]["total_bottles"] += float(sf.get("total_btl") or 0)
+            cases = float(sms.get("total_cases") or 0)
+            bottles = float(sms.get("total_bottles") or 0)
+            brand_map[bid]["mtd_cases"] += cases
+            brand_map[bid]["mtd_bottles"] += bottles
+            brand_map[bid]["ytd_cases"] += cases
+            brand_map[bid]["ytd_bottles"] += bottles
+            brand_map[bid]["total_cases"] += cases
+            brand_map[bid]["total_bottles"] += bottles
 
         results = []
         for bid, item in brand_map.items():
@@ -775,6 +762,13 @@ def fetch_licensee_brand_sales_db(
                 "brand_id": item["brand_id"],
                 "brand_name": item["brand_name"],
                 "company_name": item["company_name"],
+                "depot_name": item["depot_name"],
+                "daily_cases": round(item["daily_cases"], 2),
+                "daily_bottles": round(item["daily_bottles"], 2),
+                "mtd_cases": round(item["mtd_cases"], 2),
+                "mtd_bottles": round(item["mtd_bottles"], 2),
+                "ytd_cases": round(item["ytd_cases"], 2),
+                "ytd_bottles": round(item["ytd_bottles"], 2),
                 "total_cases": round(item["total_cases"], 2),
                 "total_bottles": round(item["total_bottles"], 2),
                 "sales_depots": item["sales_depots"],
@@ -849,12 +843,15 @@ def call_mobile_sales_json_rpc(
     mtd_start: str,
     ytd_start: str,
     hq_id: Optional[str] = None,
+    trace_info: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Calls get_mobile_sales_summary_json PostgreSQL RPC function.
     Returns JSONB object {'companies': [...], 'depots': [...]} containing 100% complete
     untruncated aggregated records for all companies and depots.
     """
+    import time
+    import json
     client = get_supabase_client()
     if not client:
         logger.warning("call_mobile_sales_json_rpc: No Supabase client available.")
@@ -867,8 +864,18 @@ def call_mobile_sales_json_rpc(
         }
         if hq_id:
             params["p_hq_id"] = hq_id
+        
+        t0 = time.perf_counter()
         res = client.rpc("get_mobile_sales_summary_json", params).execute()
-        return res.data or {"companies": [], "depots": []}
+        t1 = time.perf_counter()
+        
+        data = res.data or {"companies": [], "depots": []}
+        if trace_info is not None:
+            raw_bytes = len(json.dumps(data).encode("utf-8")) if data else 0
+            trace_info["sales_rpc_duration_ms"] = round((t1 - t0) * 1000, 2)
+            trace_info["sales_rpc_payload_bytes"] = raw_bytes
+
+        return data
     except Exception as e:
         logger.error(f"call_mobile_sales_json_rpc error (target={target_date}, mtd={mtd_start}, ytd={ytd_start}, hq={hq_id}): {e}")
         return {"companies": [], "depots": []}
@@ -878,11 +885,14 @@ def call_mobile_tsm_sales_json_rpc(
     target_date: str,
     mtd_start: str,
     ytd_start: str,
+    trace_info: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Calls get_mobile_tsm_sales_summary_json PostgreSQL RPC function.
     Returns JSONB list [...] of untruncated TSM/ASE sales fact aggregations.
     """
+    import time
+    import json
     client = get_supabase_client()
     if not client:
         logger.warning("call_mobile_tsm_sales_json_rpc: No Supabase client available.")
@@ -893,8 +903,17 @@ def call_mobile_tsm_sales_json_rpc(
             "p_mtd_start": mtd_start,
             "p_ytd_start": ytd_start,
         }
+        t0 = time.perf_counter()
         res = client.rpc("get_mobile_tsm_sales_summary_json", params).execute()
-        return res.data or []
+        t1 = time.perf_counter()
+        
+        data = res.data or []
+        if trace_info is not None:
+            raw_bytes = len(json.dumps(data).encode("utf-8")) if data else 0
+            trace_info["tsm_rpc_duration_ms"] = round((t1 - t0) * 1000, 2)
+            trace_info["tsm_rpc_payload_bytes"] = raw_bytes
+
+        return data
     except Exception as e:
         logger.error(f"call_mobile_tsm_sales_json_rpc error (target={target_date}, mtd={mtd_start}, ytd={ytd_start}): {e}")
         return []

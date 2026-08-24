@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import FileUpload from '../components/FileUpload';
-import { API_BASE_URL } from '../lib/api';
+import { API_BASE_URL } from '../config';
 
 interface LatestUpload {
   lastUploadFormatted: string;

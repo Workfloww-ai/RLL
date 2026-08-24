@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import FileUpload from '../components/FileUpload';
 import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X, RefreshCw, Mail, Phone, Shield } from 'lucide-react';
 import { User } from '../types';
-import { API_BASE_URL } from '../lib/api';
+import { API_BASE_URL } from '../config';
 
 const INITIAL_USERS: User[] = [];
 

@@ -3,6 +3,7 @@ import os
 import time
 import logging
 import tempfile
+import asyncio
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
@@ -14,9 +15,10 @@ from numbers_parser import Document
 
 from backend.db.client import get_supabase
 from backend.master_data.service import master_service
-
+from backend.services.cache_service import invalidate_analytics_cache
 
 logger = logging.getLogger(__name__)
+
 
 
 # ============================================================
@@ -674,6 +676,16 @@ class ImportPipelineEngine:
                 except Exception as e_cal:
                     logger.warning(f"dim_calendar population notice: {e_cal}")
 
+                # Clear existing sales facts for these dates to prevent duplication
+                client = get_supabase()
+                if client:
+                    try:
+                        for s_date in distinct_dates:
+                            client.table("sales_fact").delete().eq("sale_date", s_date).execute()
+                        logger.info(f"Batch {batch_id}: Cleaned up existing sales_fact records for {len(distinct_dates)} dates.")
+                    except Exception as e_del:
+                        logger.warning(f"Batch {batch_id}: Error cleaning up existing sales_fact: {e_del}")
+
                 self._bulk_insert(
                     table="sales_fact",
                     records=fact_records,
@@ -681,13 +693,32 @@ class ImportPipelineEngine:
                     batch_id=batch_id,
                 )
 
-            # Step 10 - Trigger Analytics Summaries Refresh (Daily + Monthly) ONLY after complete sales_fact ingestion
+            # Step 10 - Trigger Incremental Analytics Summaries & Validation ONLY after complete sales_fact ingestion
             if fact_records and imported_rows > 0:
                 distinct_dates = list({r.get("sale_date") for r in fact_records if r.get("sale_date")})
-                from backend.analytics.refresh_service import analytics_refresh_service
-                refresh_ok = analytics_refresh_service.refresh_sales_analytics_for_dates(distinct_dates)
-                if not refresh_ok:
-                    logger.warning(f"Analytics summary refresh encountered minor issues for batch {batch_id}.")
+                
+                # Update status state to aggregating
+                self._update_batch(batch_id=batch_id, status="aggregating")
+
+                from backend.analytics.incremental_engine import incremental_engine
+                from backend.analytics.validator import analytics_validator
+
+                agg_res = incremental_engine.process_batch_incremental_aggregation(
+                    batch_id=batch_id,
+                    sale_dates=distinct_dates
+                )
+
+                if not agg_res.get("success"):
+                    logger.warning(f"Incremental summary aggregation encountered minor issues for batch {batch_id}.")
+
+                # Run validation check on primary affected date
+                if distinct_dates:
+                    self._update_batch(batch_id=batch_id, status="validating")
+                    val_res = analytics_validator.validate_date_accuracy(target_date=str(distinct_dates[0]).split("T")[0])
+                    if val_res.get("is_accurate"):
+                        logger.info(f"Batch {batch_id}: Incremental analytics 100% verified accurate against legacy RPC.")
+                    else:
+                        logger.warning(f"Batch {batch_id}: Accuracy validation notice: {val_res.get('mismatches')}")
 
             # Clean up temporary raw staging records once fully processed
             client = get_supabase()
@@ -700,6 +731,14 @@ class ImportPipelineEngine:
 
             final_status = "loaded" if imported_rows > 0 else "failed"
             self._update_batch(batch_id=batch_id, row_count=total_rows, status=final_status)
+
+            if final_status == "loaded":
+                from backend.services.cache_service import invalidate_analytics_cache_sync
+                try:
+                    purged_count = invalidate_analytics_cache_sync()
+                    logger.info(f"Batch {batch_id}: Post-load cache invalidation purged {purged_count} entries.")
+                except Exception as cache_err:
+                    logger.warning(f"Batch {batch_id}: Cache invalidation notice: {cache_err}")
 
             processing_time = round(time.time() - start_time, 2)
             if local_batch:
@@ -1783,8 +1822,16 @@ class ImportPipelineEngine:
 
         try:
             client.table("upload_batches").update(payload).eq("batch_id", batch_id).execute()
+            if status in ("completed", "loaded", "success"):
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        loop.create_task(invalidate_analytics_cache())
+                except Exception as cache_exc:
+                    logger.warning(f"Could not trigger cache invalidation: {cache_exc}")
         except Exception as exc:
             logger.warning(f"Could not update upload_batches row: {exc}")
+
 
 
     # ========================================================
@@ -2239,6 +2286,15 @@ class ImportPipelineEngine:
                 })
 
             if fact_records:
+                # Clear existing user sales facts for these dates to prevent duplication
+                unique_user_dates = {r["sale_date"] for r in fact_records if r.get("sale_date")}
+                try:
+                    for u_date in unique_user_dates:
+                        client.table("user_sales_fact").delete().eq("sale_date", u_date).execute()
+                    logger.info(f"Batch {batch_id}: Cleaned up existing user_sales_fact records for {len(unique_user_dates)} dates.")
+                except Exception as e_del_usf:
+                    logger.warning(f"Batch {batch_id}: Error cleaning up existing user_sales_fact: {e_del_usf}")
+
                 self._bulk_insert(
                     table="user_sales_fact",
                     records=fact_records,
