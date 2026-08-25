@@ -59,7 +59,7 @@ export function GroupsCascadingView({
   // Filtering & controls
   const [loading, setLoading] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [sortOption, setSortOption] = useState<'az' | 'za' | 'cases_desc' | 'cases_asc'>('cases_desc');
+  const [sortOption, setSortOption] = useState<'az' | 'za' | 'cases_desc' | 'cases_asc'>('az');
   const [showSortModal, setShowSortModal] = useState<boolean>(false);
   const [perPage, setPerPage] = useState<number>(15);
   const [showPerPageModal, setShowPerPageModal] = useState<boolean>(false);
@@ -82,7 +82,7 @@ export function GroupsCascadingView({
   // Reset pagination & search when level changes
   const resetFiltersOnLevelChange = () => {
     setSearchQuery('');
-    setSortOption('cases_desc');
+    setSortOption('az');
     setCurrentPage(1);
   };
 

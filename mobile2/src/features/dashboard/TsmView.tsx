@@ -60,7 +60,7 @@ export function TsmView({
 
   // Search & Filter State
   const [searchTerm, setSearchTerm] = useState<string>('');
-  const [sortOption, setSortOption] = useState<'az' | 'za' | 'cases_desc' | 'cases_asc'>('cases_desc');
+  const [sortOption, setSortOption] = useState<'az' | 'za' | 'cases_desc' | 'cases_asc'>('az');
   const [showSortModal, setShowSortModal] = useState<boolean>(false);
   const [perPage, setPerPage] = useState<number>(15);
   const [showPerPageModal, setShowPerPageModal] = useState<boolean>(false);
