@@ -702,7 +702,7 @@ const styles = StyleSheet.create({
   },
   tabViewWrapper: {
     flex: 1,
-    padding: 16,
+    padding: 0,
   },
   scrollList: {
     flex: 1,
