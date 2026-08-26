@@ -471,13 +471,14 @@ export async function clearAuthSession() {
   invalidateApiCache();
 }
 
-export async function fetchCascadingGroups(dateFrom?: string, dateTo?: string, period?: string) {
-  logger.info(`fetchCascadingGroups: Fetching active groups (dateFrom: ${dateFrom}, dateTo: ${dateTo}, period: ${period})`);
+export async function fetchCascadingGroups(dateFrom?: string, dateTo?: string, period?: string, selectedHq?: string) {
+  logger.info(`fetchCascadingGroups: Fetching active groups (dateFrom: ${dateFrom}, dateTo: ${dateTo}, period: ${period}, selectedHq: ${selectedHq})`);
   try {
     const params = new URLSearchParams();
     if (dateFrom) params.append('date_from', dateFrom);
     if (dateTo) params.append('date_to', dateTo);
     if (period) params.append('period', period);
+    if (selectedHq && selectedHq !== 'All Headquarters') params.append('selected_hq', selectedHq);
 
     const queryStr = params.toString() ? `?${params.toString()}` : '';
     const res = await apiFetch(`/mobile/cascading/groups${queryStr}`);
@@ -493,13 +494,37 @@ export async function fetchCascadingGroups(dateFrom?: string, dateTo?: string, p
   }
 }
 
-export async function fetchGroupLicensees(groupId: string, dateFrom?: string, dateTo?: string, period?: string) {
+export async function fetchGroupBrands(groupId: string, dateFrom?: string, dateTo?: string, period?: string, selectedHq?: string) {
+  logger.info(`fetchGroupBrands: Fetching brand sales for group ${groupId}`);
+  try {
+    const params = new URLSearchParams();
+    if (dateFrom) params.append('date_from', dateFrom);
+    if (dateTo) params.append('date_to', dateTo);
+    if (period) params.append('period', period);
+    if (selectedHq && selectedHq !== 'All Headquarters') params.append('depot_name', selectedHq);
+
+    const queryStr = params.toString() ? `?${params.toString()}` : '';
+    const res = await apiFetch(`/mobile/cascading/groups/${encodeURIComponent(groupId)}/brands${queryStr}`);
+    if (!res.ok) {
+      logger.warn(`fetchGroupBrands: API returned status ${res.status}`);
+      return [];
+    }
+    const data = await res.json();
+    return data || [];
+  } catch (error) {
+    logger.error(`fetchGroupBrands: Error fetching brand sales for group ${groupId}:`, error);
+    return [];
+  }
+}
+
+export async function fetchGroupLicensees(groupId: string, dateFrom?: string, dateTo?: string, period?: string, selectedHq?: string) {
   logger.info(`fetchGroupLicensees: Fetching licensees for group ${groupId}`);
   try {
     const params = new URLSearchParams();
     if (dateFrom) params.append('date_from', dateFrom);
     if (dateTo) params.append('date_to', dateTo);
     if (period) params.append('period', period);
+    if (selectedHq && selectedHq !== 'All Headquarters') params.append('depot_name', selectedHq);
 
     const queryStr = params.toString() ? `?${params.toString()}` : '';
     const res = await apiFetch(`/mobile/cascading/groups/${encodeURIComponent(groupId)}/licensees${queryStr}`);
@@ -515,13 +540,14 @@ export async function fetchGroupLicensees(groupId: string, dateFrom?: string, da
   }
 }
 
-export async function fetchLicenseeBrandSales(licenseeId: string, dateFrom?: string, dateTo?: string, period?: string) {
+export async function fetchLicenseeBrandSales(licenseeId: string, dateFrom?: string, dateTo?: string, period?: string, selectedHq?: string) {
   logger.info(`fetchLicenseeBrandSales: Fetching brand sales for licensee ${licenseeId}`);
   try {
     const params = new URLSearchParams();
     if (dateFrom) params.append('date_from', dateFrom);
     if (dateTo) params.append('date_to', dateTo);
     if (period) params.append('period', period);
+    if (selectedHq && selectedHq !== 'All Headquarters') params.append('depot_name', selectedHq);
 
     const queryStr = params.toString() ? `?${params.toString()}` : '';
     const res = await apiFetch(`/mobile/cascading/licensees/${encodeURIComponent(licenseeId)}/brand-sales${queryStr}`);

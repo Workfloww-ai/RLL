@@ -6,7 +6,7 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "lint": "eslint .",
-    "start": "expo start",
+    "start": "expo start --go",
     "test": "jest"
   },
   "dependencies": {
@@ -14,7 +14,7 @@
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native-community/datetimepicker": "9.1.0",
     "@react-native/new-app-screen": "0.87.0",
-    "expo": "~57.0.16",
+    "expo": "^57.0.16",
     "expo-dev-client": "~57.0.15",
     "expo-font": "~57.0.1",
     "react": "19.2.3",

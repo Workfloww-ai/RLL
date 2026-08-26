@@ -8,6 +8,8 @@ import {
   TouchableOpacity,
   TouchableWithoutFeedback,
   BackHandler,
+  Animated,
+  RefreshControl,
 } from 'react-native';
 import { TSM, Period, ASE } from '../../types';
 import { formatNumber } from '../../lib/utils';
@@ -33,6 +35,7 @@ interface TsmViewProps {
   scaleFactor: number;
   selectedHq: string;
   loading?: boolean;
+  onRefresh?: () => Promise<void> | void;
 }
 
 export function TsmView({
@@ -41,6 +44,7 @@ export function TsmView({
   scaleFactor,
   selectedHq,
   loading = false,
+  onRefresh,
 }: TsmViewProps) {
   // Navigation level:
   // Level 1 = Root TSM List (Image 1)
@@ -60,6 +64,20 @@ export function TsmView({
   const [perPage, setPerPage] = useState<number>(15);
   const [showPerPageModal, setShowPerPageModal] = useState<boolean>(false);
   const [currentPage, setCurrentPage] = useState<number>(1);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      if (onRefresh) {
+        await onRefresh();
+      }
+    } catch (err) {
+      console.error('Error refreshing TsmView:', err);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [onRefresh]);
 
   const scaledFontSize = useCallback(
     (base: number) => Math.round(base * scaleFactor),
@@ -140,27 +158,30 @@ export function TsmView({
     });
   }, [tsms, selectedHq, searchQuery]);
 
-  // Determine active raw list based on level and active tab
   const activeRawList = useMemo(() => {
     if (level === 1) return filteredTsms;
 
     if (level === 2) {
       if (activeTsmTab === 'companies') {
-        return selectedTsm?.brands || [];
+        const comps = (selectedTsm as any)?.companies || selectedTsm?.brands || [];
+        return comps.filter((item: any) => {
+          const raw = item.data?.[period] || { cases: 0, bottles: 0 };
+          return (raw.cases || 0) > 0 || (raw.bottles || 0) > 0;
+        });
       }
-      // ASE tab inside TSM
       return selectedTsm?.ases || [];
     }
 
-    // Level 3: Companies under selected ASE
-    return (selectedAse as any)?.brands || selectedTsm?.brands || [];
-  }, [level, activeTsmTab, filteredTsms, selectedTsm, selectedAse]);
+    const aseComps = (selectedAse as any)?.companies || (selectedAse as any)?.brands || (selectedTsm as any)?.companies || [];
+    return aseComps.filter((item: any) => {
+      const raw = item.data?.[period] || { cases: 0, bottles: 0 };
+      return (raw.cases || 0) > 0 || (raw.bottles || 0) > 0;
+    });
+  }, [level, activeTsmTab, filteredTsms, selectedTsm, selectedAse, period]);
 
-  // Sort active list
   const filteredAndSortedList = useMemo(() => {
     let result = [...activeRawList];
 
-    // Filter search for Level 2 & Level 3
     if (level > 1 && searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       result = result.filter((item: any) => {
@@ -189,14 +210,12 @@ export function TsmView({
     return result;
   }, [activeRawList, level, searchQuery, sortOption, period, scaleFactor]);
 
-  // Pagination calculations
   const totalItems = filteredAndSortedList.length;
   const totalPages = Math.ceil(totalItems / perPage) || 1;
   const startIndex = (currentPage - 1) * perPage;
   const endIndex = Math.min(startIndex + perPage, totalItems);
   const paginatedList = filteredAndSortedList.slice(startIndex, endIndex);
 
-  // Search input placeholder matching Images 1, 2, 3, 4
   const searchPlaceholder = useMemo(() => {
     if (level === 1) return 'Search TSM name or HQ..';
     if (level === 2) {
@@ -204,14 +223,12 @@ export function TsmView({
         ? 'Search companies for this TSM...'
         : 'Search ASE name or area.';
     }
-    // Level 3
     const firstName = selectedAse?.name?.split(' ')[0] || 'ASE';
     return `Search companies for ${firstName}...`;
   }, [level, activeTsmTab, selectedAse]);
 
   return (
     <View style={styles.container}>
-      {/* Top Header Bar for Level 2 & Level 3: [ Back Button ] + [ Segmented Tabs ] */}
       {level > 1 && (
         <View style={styles.topHeaderBar}>
           <TouchableOpacity
@@ -305,6 +322,14 @@ export function TsmView({
       <ScrollView
         style={styles.scrollList}
         contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            colors={['#0284C7', '#0F172A']}
+            tintColor="#0284C7"
+          />
+        }
       >
         {loading ? (
           <TsmListSkeletonList count={5} />
@@ -319,9 +344,9 @@ export function TsmView({
               const rawData = item.data?.[period] || { cases: 0, bottles: 0 };
               const cases = Math.round((rawData.cases || 0) * scaleFactor);
               const bottles = Math.round((rawData.bottles || 0) * scaleFactor);
-              const aseCount = item.ases?.length || 5;
-              const companyCount = item.brands?.length || 22;
-              const hqName = item.hqLocation || 'Jaipur';
+              const aseCount = item.ases?.length || 0;
+              const companyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.brands?.filter((b: any) => (b.data?.[period]?.cases || 0) > 0 || (b.data?.[period]?.bottles || 0) > 0).length || 0);
+              const hqName = item.hqLocation || 'All Headquarters';
 
               return (
                 <MetricsCard
@@ -348,7 +373,7 @@ export function TsmView({
               const bottles = Math.round((rawData.bottles || item.total_bottles || 0) * scaleFactor);
               const compName = item.brandName || item.company_name || item.name || 'Company';
               const tsmName = selectedTsm?.name || 'TSM';
-              const hqName = selectedTsm?.hqLocation || 'Jaipur';
+              const hqName = selectedTsm?.hqLocation || 'All Headquarters';
 
               return (
                 <MetricsCard
@@ -372,7 +397,7 @@ export function TsmView({
               const cases = Math.round((rawData.cases || 0) * scaleFactor);
               const bottles = Math.round((rawData.bottles || 0) * scaleFactor);
               const areaName = item.name.split(' ')[0] + ' North';
-              const companyCount = 22;
+              const companyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.brands?.filter((b: any) => (b.data?.[period]?.cases || 0) > 0 || (b.data?.[period]?.bottles || 0) > 0).length || 0);
 
               return (
                 <MetricsCard
@@ -399,7 +424,7 @@ export function TsmView({
               const bottles = Math.round((rawData.bottles || item.total_bottles || 0) * scaleFactor);
               const compName = item.brandName || item.company_name || item.name || 'Company';
               const aseName = selectedAse?.name || 'ASE';
-              const areaName = selectedAse?.name.split(' ')[0] + ' North';
+              const areaName = selectedAse?.name?.split(' ')[0] + ' North';
 
               return (
                 <MetricsCard
@@ -416,7 +441,6 @@ export function TsmView({
                 />
               );
             }
-
             return null;
           })
         )}

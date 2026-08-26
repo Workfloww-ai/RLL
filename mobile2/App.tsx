@@ -11,7 +11,13 @@ import {
   useWindowDimensions,
   BackHandler,
   Modal,
+  Animated,
+  RefreshControl,
+  NativeSyntheticEvent,
+  NativeScrollEvent,
 } from 'react-native';
+
+
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { logger } from './src/lib/logger';
@@ -65,6 +71,33 @@ export default function App() {
   const [headquartersList, setHeadquartersList] = useState<string[]>(['All Headquarters']);
   const [apiData, setApiData] = useState<any>(null);
   const [loadingSalesData, setLoadingSalesData] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = useCallback(async () => {
+    if (!user) return;
+    setRefreshing(true);
+    try {
+      if (viewMode === 'companies') {
+        const comps = await fetchMobileCompanies(period, dateTo, selectedHq);
+        setApiData((prev: any) => ({ ...(prev || {}), companies: comps }));
+      } else {
+        const res = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq);
+        if (res) setApiData(res);
+      }
+      const profile = await fetchUserProfile();
+      if (profile && (profile.email || profile.phone || profile.user_id)) {
+        setUser(profile);
+      }
+      const hqs = await fetchMobileHeadquarters();
+      if (hqs && hqs.length > 0) {
+        setHeadquartersList(hqs);
+      }
+    } catch (err) {
+      logger.error('Error refreshing data in App.tsx:', err);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [user, viewMode, period, dateFrom, dateTo, selectedHq]);
 
   // Minimal Sort State & Floating Dropdown Position
   const [sortBy, setSortBy] = useState<CompanySortOption>('default');
@@ -532,6 +565,14 @@ export default function App() {
                   maxToRenderPerBatch={10}
                   windowSize={5}
                   removeClippedSubviews={Platform.OS === 'android'}
+                  refreshControl={
+                    <RefreshControl
+                      refreshing={refreshing}
+                      onRefresh={handleRefresh}
+                      colors={['#0284C7', '#0F172A']}
+                      tintColor="#0284C7"
+                    />
+                  }
                 />
               )}
 
@@ -543,6 +584,7 @@ export default function App() {
                     dateFrom={dateFrom}
                     dateTo={dateTo}
                     scaleFactor={scaleFactor}
+                    selectedHq={selectedHq}
                   />
                 </View>
               )}
@@ -556,13 +598,14 @@ export default function App() {
                     scaleFactor={scaleFactor}
                     selectedHq={selectedHq}
                     loading={loadingSalesData}
+                    onRefresh={handleRefresh}
                   />
                 </View>
               )}
 
               {/* View Mode: PROFILE */}
               {viewMode === 'profile' && (
-                <ProfileScreen user={user} onLogout={handleLogout} loading={loadingSession} />
+                <ProfileScreen user={user} onLogout={handleLogout} loading={loadingSession} onRefresh={handleRefresh} />
               )}
             </View>
 

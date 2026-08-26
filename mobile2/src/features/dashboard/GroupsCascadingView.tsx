@@ -8,12 +8,15 @@ import {
   TouchableOpacity,
   TouchableWithoutFeedback,
   BackHandler,
+  Animated,
+  RefreshControl,
 } from 'react-native';
 import { Period } from '../../types';
 import { formatNumber } from '../../lib/utils';
 import { GroupListSkeletonList } from '../../components/SkeletonLoaders';
 import {
   fetchCascadingGroups,
+  fetchGroupBrands,
   fetchGroupLicensees,
   fetchLicenseeBrandSales,
 } from '../../lib/api';
@@ -36,6 +39,7 @@ interface GroupsCascadingViewProps {
   dateFrom: string;
   dateTo: string;
   scaleFactor: number;
+  selectedHq?: string;
 }
 
 export function GroupsCascadingView({
@@ -43,6 +47,7 @@ export function GroupsCascadingView({
   dateFrom,
   dateTo,
   scaleFactor,
+  selectedHq,
 }: GroupsCascadingViewProps) {
   // Navigation level:
   // Level 1 = Groups List
@@ -63,6 +68,7 @@ export function GroupsCascadingView({
 
   // Filtering & controls
   const [loading, setLoading] = useState<boolean>(false);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [sortOption, setSortOption] = useState<SortOptionValue>('az');
   const [showSortModal, setShowSortModal] = useState<boolean>(false);
@@ -76,21 +82,23 @@ export function GroupsCascadingView({
   );
 
   // Caching refs
-  const cacheKey = `${dateFrom}_${dateTo}_${period}`;
+  const cacheKey = `${dateFrom}_${dateTo}_${period}_${selectedHq || 'All'}`;
   const groupsCacheRef = useRef<{ key: string; data: any[] } | null>(null);
   const groupLicenseesCacheRef = useRef<Map<string, any[]>>(new Map());
   const groupBrandsCacheRef = useRef<Map<string, any[]>>(new Map());
   const licenseeBrandsCacheRef = useRef<Map<string, any[]>>(new Map());
 
-  // Reset cache on date/period change
+  // Reset cache and set loading state on date/period/selectedHq change
   useEffect(() => {
+    groupsCacheRef.current = null;
     groupLicenseesCacheRef.current.clear();
     groupBrandsCacheRef.current.clear();
     licenseeBrandsCacheRef.current.clear();
     setLicensees([]);
     setGroupBrands([]);
     setLicenseeBrands([]);
-  }, [dateFrom, dateTo, period]);
+    setLoading(true);
+  }, [dateFrom, dateTo, period, selectedHq]);
 
   // Reset search and pagination
   const resetFilters = () => {
@@ -100,7 +108,7 @@ export function GroupsCascadingView({
   };
 
   // 1. Fetch Level 1: Groups List
-  const loadGroups = async (showIndicator = false, forceRefresh = false) => {
+  const loadGroups = async (showIndicator = true, forceRefresh = false) => {
     if (
       !forceRefresh &&
       groupsCacheRef.current &&
@@ -108,20 +116,14 @@ export function GroupsCascadingView({
       groupsCacheRef.current.data.length > 0
     ) {
       setGroups(groupsCacheRef.current.data);
+      setLoading(false);
       return;
     }
 
-    if (
-      showIndicator &&
-      (!groupsCacheRef.current ||
-        groupsCacheRef.current.key !== cacheKey ||
-        groupsCacheRef.current.data.length === 0)
-    ) {
-      setLoading(true);
-    }
+    setLoading(true);
 
     try {
-      const data = await fetchCascadingGroups(dateFrom, dateTo, period);
+      const data = await fetchCascadingGroups(dateFrom, dateTo, period, selectedHq);
       const result = data || [];
       if (result.length > 0) {
         groupsCacheRef.current = { key: cacheKey, data: result };
@@ -131,7 +133,7 @@ export function GroupsCascadingView({
       console.error('Error loading groups:', e);
       setGroups([]);
     } finally {
-      if (showIndicator) setLoading(false);
+      setLoading(false);
     }
   };
 
@@ -151,49 +153,19 @@ export function GroupsCascadingView({
 
     setLoading(true);
     try {
-      // Fetch licensees for group
-      const licsData = await fetchGroupLicensees(groupId, dateFrom, dateTo, period);
+      // Fetch licensees and brand sales for group concurrently
+      const [licsData, brandsData] = await Promise.all([
+        fetchGroupLicensees(groupId, dateFrom, dateTo, period, selectedHq),
+        fetchGroupBrands(groupId, dateFrom, dateTo, period, selectedHq),
+      ]);
+
       const lics = licsData || [];
+      const gBrands = brandsData || [];
+
       groupLicenseesCacheRef.current.set(key, lics);
-      setLicensees(lics);
-
-      // Aggregate brands across all licensees in this group
-      const groupBrandMap = new Map<string, any>();
-      for (const lic of lics.slice(0, 15)) {
-        try {
-          const bSales = await fetchLicenseeBrandSales(lic.licensee_id, dateFrom, dateTo, period);
-          for (const b of bSales || []) {
-            const bKey = b.brand_id || b.brand_name;
-            const depotPill =
-              b.sales_depots && b.sales_depots.length > 0
-                ? b.sales_depots[0]
-                : lic.licensee_depots && lic.licensee_depots.length > 0
-                ? lic.licensee_depots[0]
-                : 'R.S.B.C.L.';
-
-            if (!groupBrandMap.has(bKey)) {
-              groupBrandMap.set(bKey, {
-                brand_id: b.brand_id,
-                brand_name: b.brand_name,
-                company_name: b.company_name || 'Brand Product',
-                total_cases: 0,
-                total_bottles: 0,
-                depot_name: depotPill,
-              });
-            }
-            const existing = groupBrandMap.get(bKey);
-            existing.total_cases += Number(b.total_cases || 0);
-            existing.total_bottles += Number(b.total_bottles || 0);
-          }
-        } catch (err) {
-          console.error(`Error loading brand sales for licensee ${lic.licensee_id}:`, err);
-        }
-      }
-
-      const gBrands = Array.from(groupBrandMap.values()).sort(
-        (a, b) => b.total_cases - a.total_cases
-      );
       groupBrandsCacheRef.current.set(key, gBrands);
+
+      setLicensees(lics);
       setGroupBrands(gBrands);
     } catch (e) {
       console.error(`Error loading group details for ${groupId}:`, e);
@@ -214,7 +186,7 @@ export function GroupsCascadingView({
 
     setLoading(true);
     try {
-      const data = await fetchLicenseeBrandSales(licenseeId, dateFrom, dateTo, period);
+      const data = await fetchLicenseeBrandSales(licenseeId, dateFrom, dateTo, period, selectedHq);
       const result = data || [];
       licenseeBrandsCacheRef.current.set(key, result);
       setLicenseeBrands(result);
@@ -291,6 +263,27 @@ export function GroupsCascadingView({
     const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => subscription.remove();
   }, [level, handleGoBack, showSortModal, showPerPageModal]);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    groupsCacheRef.current = null;
+    groupLicenseesCacheRef.current.clear();
+    groupBrandsCacheRef.current.clear();
+    licenseeBrandsCacheRef.current.clear();
+    try {
+      if (level === 1) {
+        await loadGroups();
+      } else if (level === 2 && selectedGroup) {
+        await loadGroupDetails(selectedGroup);
+      } else if (level === 3 && selectedGroup && selectedLicensee) {
+        await loadLicenseeBrands(selectedGroup.group_name, selectedLicensee.licensee_name);
+      }
+    } catch (err) {
+      console.error('Error refreshing GroupsCascadingView:', err);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [level, selectedGroup, selectedLicensee, loadGroups, loadGroupDetails, loadLicenseeBrands]);
 
   // Determine active dataset for current view state
   const activeRawList = useMemo(() => {
@@ -417,10 +410,10 @@ export function GroupsCascadingView({
             {sortOption === 'az'
               ? 'A-Z (Name)'
               : sortOption === 'za'
-              ? 'Z-A (Name)'
-              : sortOption === 'cases_desc'
-              ? 'Cases (High-Low)'
-              : 'Cases (Low-High)'}
+                ? 'Z-A (Name)'
+                : sortOption === 'cases_desc'
+                  ? 'Cases (High-Low)'
+                  : 'Cases (Low-High)'}
           </Text>
           <ChevronDownIcon size={14} color="#94A3B8" />
         </TouchableOpacity>
@@ -452,6 +445,14 @@ export function GroupsCascadingView({
       <ScrollView
         style={styles.scrollList}
         contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            colors={['#0284C7', '#0F172A']}
+            tintColor="#0284C7"
+          />
+        }
       >
         {loading ? (
           <GroupListSkeletonList count={5} />
@@ -464,15 +465,15 @@ export function GroupsCascadingView({
             // Level 1: Root Group Card (Image 1)
             if (level === 1) {
               const cases = Math.round(
-                Number(item.total_cases ?? item.cases ?? item.mtd_cases ?? 0) * scaleFactor
+                Number(item.total_cases ?? item.cases ?? item.mtd_cases ?? 0)
               );
               const bottles = Math.round(
-                Number(item.total_bottles ?? item.bottles ?? item.mtd_bottles ?? 0) * scaleFactor
+                Number(item.total_bottles ?? item.bottles ?? item.mtd_bottles ?? 0)
               );
               const depotPill =
                 item.group_depots && item.group_depots.length > 0
                   ? item.group_depots[0]
-                  : 'R.S.B.C.L. - Abu Road';
+                  : item.depot_name || 'R.S.B.C.L.';
 
               return (
                 <MetricsCard
@@ -493,16 +494,16 @@ export function GroupsCascadingView({
 
             // Level 2: Group Brands View (Image 2)
             if (level === 2 && activeGroupTab === 'brands') {
-              const cases = Math.round(Number(item.total_cases ?? 0) * scaleFactor);
-              const bottles = Math.round(Number(item.total_bottles ?? 0) * scaleFactor);
-              const depotPill = item.depot_name || 'R.S.B.C.L. - Abu Road';
+              const cases = Math.round(Number(item.total_cases ?? 0));
+              const bottles = Math.round(Number(item.total_bottles ?? 0));
+              const depotPill = item.depot_name || 'R.S.B.C.L.';
 
               return (
                 <MetricsCard
                   key={item.brand_id || index}
                   title={item.brand_name}
                   titleIcon={<WineIcon size={16} color="#0F172A" />}
-                  companyBadge={item.company_name || 'Pernod Ricard'}
+                  companyBadge={item.company_name || 'Brand Product'}
                   metrics={[
                     { label: 'Cases', value: cases },
                     { label: 'Bottles', value: bottles },
@@ -516,18 +517,20 @@ export function GroupsCascadingView({
 
             // Level 2: Group Licensees View (Image 3)
             if (level === 2 && activeGroupTab === 'licensees') {
-              const cases = Math.round(Number(item.total_cases ?? 0) * scaleFactor);
-              const bottles = Math.round(Number(item.total_bottles ?? 0) * scaleFactor);
+              const cases = Math.round(Number(item.total_cases ?? 0));
+              const bottles = Math.round(Number(item.total_bottles ?? 0));
               const depotPill =
-                item.licensee_depots && item.licensee_depots.length > 0
-                  ? item.licensee_depots[0]
-                  : 'R.S.B.C.L. - Abu Road';
+                item.depot_name && item.depot_name !== 'Unassigned'
+                  ? item.depot_name
+                  : item.licensee_depots && item.licensee_depots.length > 0
+                    ? item.licensee_depots[0]
+                    : 'R.S.B.C.L.';
 
               return (
                 <MetricsCard
                   key={item.licensee_id || index}
                   title={item.licensee_name}
-                  subtitle={`Trade: ${item.trade || 'Off'}  •  2 Brand(s)`}
+                  subtitle={`Trade: ${item.trade || 'Off'}  •  🍷 ${item.total_brands || 0} Brand(s)`}
                   metrics={[
                     { label: 'Cases', value: cases },
                     { label: 'Bottles', value: bottles },
@@ -542,12 +545,14 @@ export function GroupsCascadingView({
 
             // Level 3: Licensee Brands View (Image 4)
             if (level === 3) {
-              const cases = Math.round(Number(item.total_cases ?? 0) * scaleFactor);
-              const bottles = Math.round(Number(item.total_bottles ?? 0) * scaleFactor);
+              const cases = Math.round(Number(item.total_cases ?? 0));
+              const bottles = Math.round(Number(item.total_bottles ?? 0));
               const depotPill =
-                item.sales_depots && item.sales_depots.length > 0
-                  ? item.sales_depots[0]
-                  : 'R.S.B.C.L. - Abu Road';
+                item.depot_name && item.depot_name !== 'Unassigned'
+                  ? item.depot_name
+                  : item.sales_depots && item.sales_depots.length > 0
+                    ? item.sales_depots[0]
+                    : 'R.S.B.C.L.';
 
               return (
                 <MetricsCard
