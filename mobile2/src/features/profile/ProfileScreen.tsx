@@ -1,5 +1,5 @@
-import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import React, { useState, useCallback } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, RefreshControl } from 'react-native';
 import {
   LogOutIcon,
   PhoneIcon,
@@ -7,6 +7,7 @@ import {
   BadgeIcon,
   LocationIcon,
   ShieldCheckIcon,
+  UserIcon,
 } from '../../components/Icons';
 import { ProfileSkeleton } from '../../components/SkeletonLoaders';
 
@@ -14,9 +15,25 @@ interface ProfileScreenProps {
   user: any;
   onLogout: () => void;
   loading?: boolean;
+  onRefresh?: () => Promise<void> | void;
 }
 
-export function ProfileScreen({ user, onLogout, loading = false }: ProfileScreenProps) {
+export function ProfileScreen({ user, onLogout, loading = false, onRefresh }: ProfileScreenProps) {
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      if (onRefresh) {
+        await onRefresh();
+      }
+    } catch (err) {
+      console.error('Error refreshing ProfileScreen:', err);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [onRefresh]);
+
   if (loading || !user) {
     return <ProfileSkeleton />;
   }
@@ -38,7 +55,6 @@ export function ProfileScreen({ user, onLogout, loading = false }: ProfileScreen
     user?.is_leader === true;
 
   const isActive = user?.is_active !== undefined ? Boolean(user.is_active) : true;
-  const initials = `${firstName.charAt(0)}${lastName ? lastName.charAt(0) : ''}`.toUpperCase() || 'U';
 
   return (
     <View style={styles.container}>
@@ -46,13 +62,21 @@ export function ProfileScreen({ user, onLogout, loading = false }: ProfileScreen
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            colors={['#0284C7', '#0F172A']}
+            tintColor="#0284C7"
+          />
+        }
       >
         {/* Top Profile Hero Card */}
         <View style={styles.profileHeroCard}>
           <View style={styles.heroTopRow}>
             <View style={styles.avatarWrapper}>
               <View style={styles.avatar}>
-                <Text style={styles.avatarText}>{initials}</Text>
+                <UserIcon size={32} color="#38BDF8" />
               </View>
             </View>
 

@@ -407,7 +407,8 @@ def fetch_cascading_groups_json_db(
     target_date: str,
     mtd_start: str,
     ytd_start: str,
-    exclude_company: str = "Others"
+    exclude_company: str = "Others",
+    hq_name: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """
     Fetches group sales summary by calling get_cascading_groups_summary_json RPC.
@@ -416,16 +417,52 @@ def fetch_cascading_groups_json_db(
     if not client:
         return []
     try:
-        res = client.rpc("get_cascading_groups_summary_json", {
+        rpc_params = {
             "p_target_date": target_date,
             "p_mtd_start": mtd_start,
             "p_ytd_start": ytd_start,
             "p_exclude_company": exclude_company,
-        }).execute()
+        }
+        if hq_name and hq_name.strip() and hq_name.strip() != "All Headquarters":
+            rpc_params["p_hq_name"] = hq_name.strip()
+
+        res = client.rpc("get_cascading_groups_summary_json", rpc_params).execute()
         return res.data or []
     except Exception as e:
         logger.error(f"fetch_cascading_groups_json_db error: {e}")
         return fetch_cascading_groups_db(date_from=mtd_start, date_to=target_date)
+
+
+def fetch_group_brand_sales_json_db(
+    group_id: str,
+    target_date: str,
+    mtd_start: str,
+    ytd_start: str,
+    depot_name: Optional[str] = None,
+    exclude_company: str = "Others"
+) -> List[Dict[str, Any]]:
+    """
+    Calls get_group_brand_sales_summary_json PostgreSQL RPC.
+    Returns JSONB array of brand sales under a group with Daily, MTD, and YTD metrics.
+    """
+    client = get_supabase_client()
+    if not client:
+        return []
+
+    try:
+        res = client.rpc("get_group_brand_sales_summary_json", {
+            "p_group_id": group_id,
+            "p_target_date": target_date,
+            "p_mtd_start": mtd_start,
+            "p_ytd_start": ytd_start,
+            "p_depot_name": depot_name or "",
+            "p_exclude_company": exclude_company,
+        }).execute()
+        return res.data or []
+    except Exception as e:
+        logger.error(f"fetch_group_brand_sales_json_db error: {e}")
+        return []
+
 
 
 def fetch_group_licensees_json_db(

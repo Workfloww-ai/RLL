@@ -4,31 +4,34 @@ import {
   Text,
   StyleSheet,
   ScrollView,
-  TextInput,
-  TouchableOpacity,
-  ActivityIndicator,
   Modal,
-  FlatList,
+  TouchableOpacity,
+  TouchableWithoutFeedback,
   BackHandler,
+  Animated,
+  RefreshControl,
 } from 'react-native';
 import { Period } from '../../types';
 import { formatNumber } from '../../lib/utils';
 import { GroupListSkeletonList } from '../../components/SkeletonLoaders';
 import {
   fetchCascadingGroups,
+  fetchGroupBrands,
   fetchGroupLicensees,
   fetchLicenseeBrandSales,
 } from '../../lib/api';
+import { MetricsCard } from '../../components/MetricsCard';
+import { SegmentedTabs, GroupTabType } from '../../components/SegmentedTabs';
+import { SearchBar } from '../../components/SearchBar';
+import { PaginationBar } from '../../components/PaginationBar';
+import { SortModal, SortOptionValue } from '../../components/SortModal';
 import {
-  SearchIcon,
-  ChevronRightIcon,
-  ChevronLeftIcon,
-  LocationIcon,
-  UsersIcon,
-  XIcon,
-  WineIcon,
   SwapVertIcon,
   ChevronDownIcon,
+  XIcon,
+  ChevronLeftIcon,
+  WineIcon,
+  UsersIcon,
 } from '../../components/Icons';
 
 interface GroupsCascadingViewProps {
@@ -36,6 +39,7 @@ interface GroupsCascadingViewProps {
   dateFrom: string;
   dateTo: string;
   scaleFactor: number;
+  selectedHq?: string;
 }
 
 export function GroupsCascadingView({
@@ -43,9 +47,14 @@ export function GroupsCascadingView({
   dateFrom,
   dateTo,
   scaleFactor,
+  selectedHq,
 }: GroupsCascadingViewProps) {
-  // Navigation level: 1 = Groups List, 2 = Group Licensees List, 3 = Licensee Brand Sales List
+  // Navigation level:
+  // Level 1 = Groups List
+  // Level 2 = Group Detail (Brands Tab & Licensees Tab)
+  // Level 3 = Licensee Detail (Brands for selected licensee)
   const [level, setLevel] = useState<1 | 2 | 3>(1);
+  const [activeGroupTab, setActiveGroupTab] = useState<GroupTabType>('brands');
 
   // Selected items
   const [selectedGroup, setSelectedGroup] = useState<any>(null);
@@ -53,52 +62,68 @@ export function GroupsCascadingView({
 
   // Data lists
   const [groups, setGroups] = useState<any[]>([]);
+  const [groupBrands, setGroupBrands] = useState<any[]>([]);
   const [licensees, setLicensees] = useState<any[]>([]);
-  const [brandSales, setBrandSales] = useState<any[]>([]);
+  const [licenseeBrands, setLicenseeBrands] = useState<any[]>([]);
 
   // Filtering & controls
   const [loading, setLoading] = useState<boolean>(false);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [sortOption, setSortOption] = useState<'az' | 'za' | 'cases_desc' | 'cases_asc'>('cases_desc');
+  const [sortOption, setSortOption] = useState<SortOptionValue>('az');
   const [showSortModal, setShowSortModal] = useState<boolean>(false);
   const [perPage, setPerPage] = useState<number>(15);
   const [showPerPageModal, setShowPerPageModal] = useState<boolean>(false);
   const [currentPage, setCurrentPage] = useState<number>(1);
 
-  // Client-side instant caching
-  const cacheKey = `${dateFrom}_${dateTo}_${period}`;
-  const groupsCacheRef = React.useRef<{ key: string; data: any[] } | null>(null);
-  const licenseesCacheRef = React.useRef<Map<string, any[]>>(new Map());
-  const brandSalesCacheRef = React.useRef<Map<string, any[]>>(new Map());
+  const scaledFontSize = useCallback(
+    (base: number) => Math.round(base * scaleFactor),
+    [scaleFactor]
+  );
 
-  // Reset cache and active lists on date/period change so stale arrays from previous periods never persist
+  // Caching refs
+  const cacheKey = `${dateFrom}_${dateTo}_${period}_${selectedHq || 'All'}`;
+  const groupsCacheRef = useRef<{ key: string; data: any[] } | null>(null);
+  const groupLicenseesCacheRef = useRef<Map<string, any[]>>(new Map());
+  const groupBrandsCacheRef = useRef<Map<string, any[]>>(new Map());
+  const licenseeBrandsCacheRef = useRef<Map<string, any[]>>(new Map());
+
+  // Reset cache and set loading state on date/period/selectedHq change
   useEffect(() => {
-    licenseesCacheRef.current.clear();
-    brandSalesCacheRef.current.clear();
+    groupsCacheRef.current = null;
+    groupLicenseesCacheRef.current.clear();
+    groupBrandsCacheRef.current.clear();
+    licenseeBrandsCacheRef.current.clear();
     setLicensees([]);
-    setBrandSales([]);
-  }, [dateFrom, dateTo, period]);
+    setGroupBrands([]);
+    setLicenseeBrands([]);
+    setLoading(true);
+  }, [dateFrom, dateTo, period, selectedHq]);
 
-  // Reset pagination & search when level changes
-  const resetFiltersOnLevelChange = () => {
+  // Reset search and pagination
+  const resetFilters = () => {
     setSearchQuery('');
-    setSortOption('cases_desc');
+    setSortOption('az');
     setCurrentPage(1);
   };
 
   // 1. Fetch Level 1: Groups List
-  const loadGroups = async (showIndicator = false, forceRefresh = false) => {
-    if (!forceRefresh && groupsCacheRef.current && groupsCacheRef.current.key === cacheKey && groupsCacheRef.current.data.length > 0) {
+  const loadGroups = async (showIndicator = true, forceRefresh = false) => {
+    if (
+      !forceRefresh &&
+      groupsCacheRef.current &&
+      groupsCacheRef.current.key === cacheKey &&
+      groupsCacheRef.current.data.length > 0
+    ) {
       setGroups(groupsCacheRef.current.data);
+      setLoading(false);
       return;
     }
 
-    if (showIndicator && (!groupsCacheRef.current || groupsCacheRef.current.key !== cacheKey || groupsCacheRef.current.data.length === 0)) {
-      setLoading(true);
-    }
+    setLoading(true);
 
     try {
-      const data = await fetchCascadingGroups(dateFrom, dateTo, period);
+      const data = await fetchCascadingGroups(dateFrom, dateTo, period, selectedHq);
       const result = data || [];
       if (result.length > 0) {
         groupsCacheRef.current = { key: cacheKey, data: result };
@@ -108,105 +133,116 @@ export function GroupsCascadingView({
       console.error('Error loading groups:', e);
       setGroups([]);
     } finally {
-      if (showIndicator) setLoading(false);
+      setLoading(false);
     }
   };
 
-  // 2. Fetch Level 2: Group Licensees List
-  const loadGroupLicensees = async (groupId: string, forceRefresh = false) => {
+  // 2. Fetch Group Licensees and Group Brands
+  const loadGroupDetails = async (groupId: string, forceRefresh = false) => {
     const key = `${groupId}_${cacheKey}`;
-    if (!forceRefresh && licenseesCacheRef.current.has(key)) {
-      const cached = licenseesCacheRef.current.get(key) || [];
-      setLicensees(cached);
+
+    if (
+      !forceRefresh &&
+      groupLicenseesCacheRef.current.has(key) &&
+      groupBrandsCacheRef.current.has(key)
+    ) {
+      setLicensees(groupLicenseesCacheRef.current.get(key) || []);
+      setGroupBrands(groupBrandsCacheRef.current.get(key) || []);
       return;
     }
 
     setLoading(true);
     try {
-      const data = await fetchGroupLicensees(groupId, dateFrom, dateTo, period);
-      const result = data || [];
-      licenseesCacheRef.current.set(key, result);
-      setLicensees(result);
+      // Fetch licensees and brand sales for group concurrently
+      const [licsData, brandsData] = await Promise.all([
+        fetchGroupLicensees(groupId, dateFrom, dateTo, period, selectedHq),
+        fetchGroupBrands(groupId, dateFrom, dateTo, period, selectedHq),
+      ]);
+
+      const lics = licsData || [];
+      const gBrands = brandsData || [];
+
+      groupLicenseesCacheRef.current.set(key, lics);
+      groupBrandsCacheRef.current.set(key, gBrands);
+
+      setLicensees(lics);
+      setGroupBrands(gBrands);
     } catch (e) {
-      console.error(`Error loading licensees for group ${groupId}:`, e);
+      console.error(`Error loading group details for ${groupId}:`, e);
       setLicensees([]);
+      setGroupBrands([]);
     } finally {
       setLoading(false);
     }
   };
 
-  // 3. Fetch Level 3: Licensee Brand Sales List
-  const loadLicenseeBrandSales = async (licenseeId: string, forceRefresh = false) => {
+  // 3. Fetch Licensee Brands (Level 3)
+  const loadLicenseeBrands = async (licenseeId: string, forceRefresh = false) => {
     const key = `${licenseeId}_${cacheKey}`;
-    if (!forceRefresh && brandSalesCacheRef.current.has(key)) {
-      const cached = brandSalesCacheRef.current.get(key) || [];
-      setBrandSales(cached);
+    if (!forceRefresh && licenseeBrandsCacheRef.current.has(key)) {
+      setLicenseeBrands(licenseeBrandsCacheRef.current.get(key) || []);
       return;
     }
 
     setLoading(true);
     try {
-      const data = await fetchLicenseeBrandSales(licenseeId, dateFrom, dateTo, period);
+      const data = await fetchLicenseeBrandSales(licenseeId, dateFrom, dateTo, period, selectedHq);
       const result = data || [];
-      brandSalesCacheRef.current.set(key, result);
-      setBrandSales(result);
+      licenseeBrandsCacheRef.current.set(key, result);
+      setLicenseeBrands(result);
     } catch (e) {
       console.error(`Error loading brand sales for licensee ${licenseeId}:`, e);
-      setBrandSales([]);
+      setLicenseeBrands([]);
     } finally {
       setLoading(false);
     }
   };
 
-
   // Sync Level 1 on mount or date/period changes
-  // Debounce ref — avoids firing multiple rapid fetches when date/period changes quickly
-  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   useEffect(() => {
-    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    debounceTimerRef.current = setTimeout(() => {
-      if (level === 1) {
-        loadGroups(true);
-      } else if (level === 2 && selectedGroup) {
-        loadGroupLicensees(selectedGroup.group_id);
-      } else if (level === 3 && selectedLicensee) {
-        loadLicenseeBrandSales(selectedLicensee.licensee_id);
-      }
-    }, 150);
-    return () => {
-      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    };
+    if (level === 1) {
+      loadGroups(true);
+    } else if (level === 2 && selectedGroup) {
+      loadGroupDetails(selectedGroup.group_id);
+    } else if (level === 3 && selectedLicensee) {
+      loadLicenseeBrands(selectedLicensee.licensee_id);
+    }
   }, [dateFrom, dateTo, period]);
 
-  const handleSelectGroup = useCallback((g: any) => {
+  // Selection handlers
+  const handleSelectGroup = (g: any) => {
     setSelectedGroup(g);
     setSelectedLicensee(null);
+    setActiveGroupTab('brands'); // Default to Brands tab as shown in Image 2!
     setLevel(2);
-    resetFiltersOnLevelChange();
-    loadGroupLicensees(g.group_id);
-  }, []);
+    resetFilters();
+    loadGroupDetails(g.group_id);
+  };
 
-  const handleSelectLicensee = useCallback((l: any) => {
+  const handleSelectLicensee = (l: any) => {
     setSelectedLicensee(l);
     setLevel(3);
-    resetFiltersOnLevelChange();
-    loadLicenseeBrandSales(l.licensee_id);
-  }, []);
+    resetFilters();
+    loadLicenseeBrands(l.licensee_id);
+  };
 
   const handleGoBack = useCallback(() => {
     if (level === 3) {
+      // Return from Licensee Brands view to Group Licensees view (Image 3)
       setSelectedLicensee(null);
       setLevel(2);
-      resetFiltersOnLevelChange();
+      setActiveGroupTab('licensees');
+      resetFilters();
     } else if (level === 2) {
+      // Return from Group Detail view to Root Groups view (Image 1)
       setSelectedGroup(null);
+      setSelectedLicensee(null);
       setLevel(1);
-      resetFiltersOnLevelChange();
+      resetFilters();
     }
   }, [level]);
 
-  // Hardware BackHandler for drill-down levels (Level 3 -> Level 2 -> Level 1) and dropdown modals
+  // Hardware BackHandler
   useEffect(() => {
     if (level === 1 && !showSortModal && !showPerPageModal) return;
     const onBackPress = () => {
@@ -228,39 +264,58 @@ export function GroupsCascadingView({
     return () => subscription.remove();
   }, [level, handleGoBack, showSortModal, showPerPageModal]);
 
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    groupsCacheRef.current = null;
+    groupLicenseesCacheRef.current.clear();
+    groupBrandsCacheRef.current.clear();
+    licenseeBrandsCacheRef.current.clear();
+    try {
+      if (level === 1) {
+        await loadGroups();
+      } else if (level === 2 && selectedGroup) {
+        await loadGroupDetails(selectedGroup);
+      } else if (level === 3 && selectedGroup && selectedLicensee) {
+        await loadLicenseeBrands(selectedGroup.group_name, selectedLicensee.licensee_name);
+      }
+    } catch (err) {
+      console.error('Error refreshing GroupsCascadingView:', err);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [level, selectedGroup, selectedLicensee, loadGroups, loadGroupDetails, loadLicenseeBrands]);
 
-
-  // Filter and sort active list
+  // Determine active dataset for current view state
   const activeRawList = useMemo(() => {
     if (level === 1) return groups;
-    if (level === 2) return licensees;
-    return brandSales;
-  }, [level, groups, licensees, brandSales]);
+    if (level === 2) {
+      return activeGroupTab === 'brands' ? groupBrands : licensees;
+    }
+    return licenseeBrands; // Level 3
+  }, [level, activeGroupTab, groups, groupBrands, licensees, licenseeBrands]);
 
+  // Filter & Sort active list
   const filteredAndSortedList = useMemo(() => {
     let result = [...activeRawList];
 
-    // Filter search
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       result = result.filter((item) => {
-        if (level === 1) {
-          return (item.group_name || '').toLowerCase().includes(q);
-        } else if (level === 2) {
-          return (
-            (item.licensee_name || '').toLowerCase().includes(q) ||
-            (item.trade || '').toLowerCase().includes(q)
-          );
-        } else {
-          return (
-            (item.brand_name || '').toLowerCase().includes(q) ||
-            (item.company_name || '').toLowerCase().includes(q)
-          );
-        }
+        const name = (
+          item.group_name ||
+          item.licensee_name ||
+          item.brand_name ||
+          ''
+        ).toLowerCase();
+        const sub = (
+          item.trade ||
+          item.company_name ||
+          ''
+        ).toLowerCase();
+        return name.includes(q) || sub.includes(q);
       });
     }
 
-    // Sort
     result.sort((a, b) => {
       const nameA = (a.group_name || a.licensee_name || a.brand_name || '').toLowerCase();
       const nameB = (b.group_name || b.licensee_name || b.brand_name || '').toLowerCase();
@@ -275,159 +330,114 @@ export function GroupsCascadingView({
     });
 
     return result;
-  }, [activeRawList, searchQuery, sortOption, level]);
+  }, [activeRawList, searchQuery, sortOption]);
 
-  // Pagination bounds
+  // Pagination calculations
   const totalItems = filteredAndSortedList.length;
   const totalPages = Math.ceil(totalItems / perPage) || 1;
   const startIndex = (currentPage - 1) * perPage;
   const endIndex = Math.min(startIndex + perPage, totalItems);
   const paginatedList = filteredAndSortedList.slice(startIndex, endIndex);
 
+  // Search input placeholder calculation
+  const searchPlaceholder = useMemo(() => {
+    if (level === 1) return 'Search group...';
+    if (level === 2) {
+      return activeGroupTab === 'brands' ? 'Search group brands...' : 'Search licensee...';
+    }
+    // Level 3
+    const firstName = selectedLicensee?.licensee_name?.split(' ')[0] || 'licensee';
+    return `Search brands in ${firstName}...`;
+  }, [level, activeGroupTab, selectedLicensee]);
+
   return (
     <View style={styles.container}>
-      {/* Breadcrumb Header Bar (Level 2 & 3) */}
+      {/* Top Header Bar for Level 2 & Level 3: [ Back Button ] + [ Segmented Tabs ] */}
       {level > 1 && (
-        <View style={styles.breadcrumbBar}>
-          <TouchableOpacity style={styles.backBtn} onPress={handleGoBack} activeOpacity={0.7}>
-            <ChevronLeftIcon size={16} color="#0F172A" />
-            <Text style={styles.backBtnText}>Back</Text>
+        <View style={styles.topHeaderBar}>
+          <TouchableOpacity
+            style={styles.backBtn}
+            onPress={handleGoBack}
+            activeOpacity={0.75}
+          >
+            <ChevronLeftIcon size={scaledFontSize(16)} color="#0F172A" />
+            <Text style={[styles.backBtnText, { fontSize: scaledFontSize(13) }]}>
+              Back
+            </Text>
           </TouchableOpacity>
 
-          <View style={styles.breadcrumbPathContainer}>
-            <Text style={styles.breadcrumbPathText} numberOfLines={1}>
-              <Text style={styles.breadcrumbSeparator}> › </Text>
-              <Text style={level === 2 ? styles.breadcrumbActive : styles.breadcrumbMuted}>
-                {selectedGroup?.group_name}
-              </Text>
-              {level === 3 && (
-                <>
-                  <Text style={styles.breadcrumbSeparator}> › </Text>
-                  <Text style={styles.breadcrumbActive} numberOfLines={1}>
-                    {selectedLicensee?.licensee_name}
-                  </Text>
-                </>
-              )}
-            </Text>
-          </View>
+          <SegmentedTabs
+            tabs={[
+              { key: 'brands', label: 'Brands', icon: <WineIcon /> },
+              { key: 'licensees', label: 'Licensees', icon: <UsersIcon /> },
+            ]}
+            activeTabKey={activeGroupTab}
+            onTabChange={(tabKey) => {
+              setActiveGroupTab(tabKey as any);
+              if (level === 3 && tabKey === 'brands') {
+                setLevel(2);
+                setSelectedLicensee(null);
+              }
+              resetFilters();
+            }}
+            scaleFactor={scaleFactor}
+          />
         </View>
       )}
 
-      {/* Level 2 Banner: GROUP SELECTED */}
-      {level === 2 && selectedGroup && (
-        <View style={styles.selectionBanner}>
-          <View style={styles.bannerInfo}>
-            <Text style={styles.bannerSubtitle}>GROUP SELECTED</Text>
-            <Text style={styles.bannerTitle} numberOfLines={1}>
-              {selectedGroup.group_name}
-            </Text>
-          </View>
-          <View style={styles.bannerPillRow}>
-            <View style={styles.casesPill}>
-              <Text style={styles.pillLabel}>CASES</Text>
-              <Text style={styles.casesPillValue}>
-                {formatNumber(Math.round(selectedGroup.total_cases * scaleFactor))}
-              </Text>
-            </View>
-            <View style={styles.bottlesPill}>
-              <Text style={styles.pillLabel}>BOTTLES</Text>
-              <Text style={styles.bottlesPillValue}>
-                {formatNumber(Math.round(selectedGroup.total_bottles * scaleFactor))}
-              </Text>
-            </View>
-          </View>
-        </View>
-      )}
-
-      {/* Level 3 Banner: LICENSEE SELECTED */}
-      {level === 3 && selectedLicensee && (
-        <View style={styles.selectionBanner}>
-          <View style={styles.bannerInfo}>
-            <Text style={styles.bannerSubtitle}>LICENSEE SELECTED</Text>
-            <Text style={styles.bannerTitle} numberOfLines={1}>
-              {selectedLicensee.licensee_name}
-            </Text>
-          </View>
-          <View style={styles.bannerPillRow}>
-            <View style={styles.casesPill}>
-              <Text style={styles.pillLabel}>CASES</Text>
-              <Text style={styles.casesPillValue}>
-                {formatNumber(Math.round(selectedLicensee.total_cases * scaleFactor))}
-              </Text>
-            </View>
-            <View style={styles.bottlesPill}>
-              <Text style={styles.pillLabel}>BOTTLES</Text>
-              <Text style={styles.bottlesPillValue}>
-                {formatNumber(Math.round(selectedLicensee.total_bottles * scaleFactor))}
-              </Text>
-            </View>
-          </View>
-        </View>
-      )}
-
-      {/* Search Input Bar & Sort Controls */}
+      {/* Filter Row: SearchBar & Sort Pill */}
       <View style={styles.searchControlsRow}>
-        <View style={styles.searchWrapper}>
-          <SearchIcon size={18} color="#94A3B8" />
-          <TextInput
-            style={styles.searchInput}
-            placeholder={
-              level === 1
-                ? 'Search group...'
-                : level === 2
-                ? 'Search licensee...'
-                : 'Search brand...'
-            }
-            placeholderTextColor="#94A3B8"
+        <View style={{ flex: 1, marginRight: 8 }}>
+          <SearchBar
             value={searchQuery}
             onChangeText={(text) => {
               setSearchQuery(text);
               setCurrentPage(1);
             }}
+            placeholder={searchPlaceholder}
+            scaleFactor={scaleFactor}
           />
-          {searchQuery ? (
-            <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.clearBtn}>
-              <XIcon size={14} color="#94A3B8" />
-            </TouchableOpacity>
-          ) : null}
         </View>
 
         {/* Sort Pill Dropdown */}
         <TouchableOpacity
           style={styles.sortPillBtn}
           onPress={() => setShowSortModal(true)}
-          activeOpacity={0.7}
+          activeOpacity={0.75}
         >
-          <View style={{ marginRight: 4 }}>
-            <SwapVertIcon size={14} color="#64748B" />
-          </View>
+          <SwapVertIcon size={14} color="#64748B" />
           <Text style={styles.sortText}>
             {sortOption === 'az'
               ? 'A-Z (Name)'
               : sortOption === 'za'
-              ? 'Z-A (Name)'
-              : sortOption === 'cases_desc'
-              ? 'Cases (High-Low)'
-              : 'Cases (Low-High)'}
+                ? 'Z-A (Name)'
+                : sortOption === 'cases_desc'
+                  ? 'Cases (High-Low)'
+                  : 'Cases (Low-High)'}
           </Text>
           <ChevronDownIcon size={14} color="#94A3B8" />
         </TouchableOpacity>
       </View>
 
-      {/* Items Count & Per-Page Controls Row */}
-      <View style={styles.itemsCountRow}>
-        <Text style={styles.showingText}>
+      {/* Showing Items & Per Page Limit Info Row */}
+      <View style={styles.showingInfoRow}>
+        <Text style={[styles.showingText, { fontSize: scaledFontSize(12) }]}>
           Showing {totalItems === 0 ? 0 : startIndex + 1}-{endIndex} of {totalItems} item(s)
         </Text>
-
         <TouchableOpacity
-          style={styles.perPageBtn}
+          style={styles.perPageTrigger}
           onPress={() => setShowPerPageModal(true)}
-          activeOpacity={0.7}
+          activeOpacity={0.75}
         >
-          <Text style={styles.perPageLabel}>Per page: </Text>
-          <Text style={styles.perPageValue}>{perPage}</Text>
-          <ChevronDownIcon size={14} color="#94A3B8" />
+          <Text style={[styles.perPageLabelText, { fontSize: scaledFontSize(12) }]}>
+            Per page:
+          </Text>
+          <View style={styles.perPagePill}>
+            <Text style={[styles.perPageValueText, { fontSize: scaledFontSize(12) }]}>
+              {perPage}
+            </Text>
+            <ChevronDownIcon size={12} color="#64748B" />
+          </View>
         </TouchableOpacity>
       </View>
 
@@ -435,6 +445,14 @@ export function GroupsCascadingView({
       <ScrollView
         style={styles.scrollList}
         contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            colors={['#0284C7', '#0F172A']}
+            tintColor="#0284C7"
+          />
+        }
       >
         {loading ? (
           <GroupListSkeletonList count={5} />
@@ -444,256 +462,187 @@ export function GroupsCascadingView({
           </View>
         ) : (
           paginatedList.map((item, index) => {
-            // Level 1: Group Card
+            // Level 1: Root Group Card (Image 1)
             if (level === 1) {
-              const cases = Math.round(Number(item.total_cases ?? item.cases ?? item.mtd_cases ?? 0) * scaleFactor);
-              const bottles = Math.round(Number(item.total_bottles ?? item.bottles ?? item.mtd_bottles ?? 0) * scaleFactor);
+              const cases = Math.round(
+                Number(item.total_cases ?? item.cases ?? item.mtd_cases ?? 0)
+              );
+              const bottles = Math.round(
+                Number(item.total_bottles ?? item.bottles ?? item.mtd_bottles ?? 0)
+              );
+              const depotPill =
+                item.group_depots && item.group_depots.length > 0
+                  ? item.group_depots[0]
+                  : item.depot_name || 'R.S.B.C.L.';
+
               return (
-                <TouchableOpacity
+                <MetricsCard
                   key={item.group_id || index}
-                  style={styles.card}
+                  title={item.group_name}
+                  subtitle={`👥 ${item.total_licensees || 0} Licensee(s)  •  🍷 ${item.total_brands || 0} Brand(s)`}
+                  metrics={[
+                    { label: 'Cases', value: cases },
+                    { label: 'Bottles', value: bottles },
+                  ]}
+                  locationPill={depotPill}
+                  pillTheme="blue"
                   onPress={() => handleSelectGroup(item)}
-                  activeOpacity={0.75}
-                >
-                  <View style={styles.cardHeader}>
-                    <View style={styles.titleWrapper}>
-                      <Text style={styles.companyName} numberOfLines={1}>
-                        {item.group_name}
-                      </Text>
-                      <View style={styles.licenseeBadgeRow}>
-                        <UsersIcon size={12} color="#94A3B8" />
-                        <Text style={styles.brandCount}>
-                          {item.total_licensees || 0} Licensee(s)
-                        </Text>
-                      </View>
-                    </View>
-                    <ChevronRightIcon size={20} color="#94A3B8" />
-                  </View>
-
-                  <View style={styles.metricsGrid}>
-                    <View style={styles.metricCell}>
-                      <Text style={styles.metricLabel}>CASES</Text>
-                      <Text style={styles.metricValue}>{formatNumber(cases)}</Text>
-                    </View>
-                    <View style={styles.metricCell}>
-                      <Text style={styles.metricLabel}>BOTTLES</Text>
-                      <Text style={styles.metricValue}>{formatNumber(bottles)}</Text>
-                    </View>
-                  </View>
-                </TouchableOpacity>
+                  scaleFactor={scaleFactor}
+                />
               );
             }
 
-            // Level 2: Licensee Card
-            if (level === 2) {
-              const cases = Math.round(Number(item.total_cases ?? 0) * scaleFactor);
-              const bottles = Math.round(Number(item.total_bottles ?? 0) * scaleFactor);
-              const depotName = item.licensee_depots && item.licensee_depots.length > 0 ? item.licensee_depots[0] : null;
+            // Level 2: Group Brands View (Image 2)
+            if (level === 2 && activeGroupTab === 'brands') {
+              const cases = Math.round(Number(item.total_cases ?? 0));
+              const bottles = Math.round(Number(item.total_bottles ?? 0));
+              const depotPill = item.depot_name || 'R.S.B.C.L.';
 
               return (
-                <TouchableOpacity
+                <MetricsCard
+                  key={item.brand_id || index}
+                  title={item.brand_name}
+                  titleIcon={<WineIcon size={16} color="#0F172A" />}
+                  companyBadge={item.company_name || 'Brand Product'}
+                  metrics={[
+                    { label: 'Cases', value: cases },
+                    { label: 'Bottles', value: bottles },
+                  ]}
+                  locationPill={depotPill}
+                  pillTheme="red"
+                  scaleFactor={scaleFactor}
+                />
+              );
+            }
+
+            // Level 2: Group Licensees View (Image 3)
+            if (level === 2 && activeGroupTab === 'licensees') {
+              const cases = Math.round(Number(item.total_cases ?? 0));
+              const bottles = Math.round(Number(item.total_bottles ?? 0));
+              const depotPill =
+                item.depot_name && item.depot_name !== 'Unassigned'
+                  ? item.depot_name
+                  : item.licensee_depots && item.licensee_depots.length > 0
+                    ? item.licensee_depots[0]
+                    : 'R.S.B.C.L.';
+
+              return (
+                <MetricsCard
                   key={item.licensee_id || index}
-                  style={styles.card}
+                  title={item.licensee_name}
+                  subtitle={`Trade: ${item.trade || 'Off'}  •  🍷 ${item.total_brands || 0} Brand(s)`}
+                  metrics={[
+                    { label: 'Cases', value: cases },
+                    { label: 'Bottles', value: bottles },
+                  ]}
+                  locationPill={depotPill}
+                  pillTheme="blue"
                   onPress={() => handleSelectLicensee(item)}
-                  activeOpacity={0.75}
-                >
-                  <View style={styles.cardHeader}>
-                    <View style={styles.titleWrapper}>
-                      <Text style={styles.companyName} numberOfLines={1}>
-                        {item.licensee_name}
-                      </Text>
-                      <View style={styles.tradeBadge}>
-                        <Text style={styles.tradeBadgeText}>Trade: {item.trade || 'Off'}</Text>
-                      </View>
-                    </View>
-                    <ChevronRightIcon size={20} color="#94A3B8" />
-                  </View>
-
-                  <View style={styles.metricsGrid}>
-                    <View style={styles.metricCell}>
-                      <Text style={styles.metricLabel}>CASES</Text>
-                      <Text style={styles.metricValue}>{formatNumber(cases)}</Text>
-                    </View>
-                    <View style={styles.metricCell}>
-                      <Text style={styles.metricLabel}>BOTTLES</Text>
-                      <Text style={styles.metricValue}>{formatNumber(bottles)}</Text>
-                    </View>
-                  </View>
-
-                  {depotName ? (
-                    <View style={styles.depotLocationPill}>
-                      <LocationIcon size={12} color="#94A3B8" />
-                      <Text style={styles.depotLocationText} numberOfLines={1}>
-                        {depotName}
-                      </Text>
-                    </View>
-                  ) : null}
-                </TouchableOpacity>
+                  scaleFactor={scaleFactor}
+                />
               );
             }
 
-            // Level 3: Brand Sales Card
+            // Level 3: Licensee Brands View (Image 4)
             if (level === 3) {
-              const cases = Math.round(Number(item.total_cases ?? 0) * scaleFactor);
-              const bottles = Math.round(Number(item.total_bottles ?? 0) * scaleFactor);
-              const depotName = item.sales_depots && item.sales_depots.length > 0 ? item.sales_depots[0] : null;
+              const cases = Math.round(Number(item.total_cases ?? 0));
+              const bottles = Math.round(Number(item.total_bottles ?? 0));
+              const depotPill =
+                item.depot_name && item.depot_name !== 'Unassigned'
+                  ? item.depot_name
+                  : item.sales_depots && item.sales_depots.length > 0
+                    ? item.sales_depots[0]
+                    : 'R.S.B.C.L.';
 
               return (
-                <View key={item.brand_id || index} style={styles.card}>
-                  <View style={styles.cardHeader}>
-                    <View style={styles.titleWrapper}>
-                      <View style={styles.brandTitleRow}>
-                        <View style={{ marginRight: 6 }}>
-                          <WineIcon size={14} color="#94A3B8" />
-                        </View>
-                        <Text style={styles.companyName} numberOfLines={1}>
-                          {item.brand_name}
-                        </Text>
-                      </View>
-                      {item.company_name ? (
-                        <View style={styles.tradeBadge}>
-                          <Text style={styles.tradeBadgeText}>{item.company_name}</Text>
-                        </View>
-                      ) : null}
-                    </View>
-                  </View>
-
-                  <View style={styles.metricsGrid}>
-                    <View style={styles.metricCell}>
-                      <Text style={styles.metricLabel}>CASES</Text>
-                      <Text style={styles.metricValue}>{formatNumber(cases)}</Text>
-                    </View>
-                    <View style={styles.metricCell}>
-                      <Text style={styles.metricLabel}>BOTTLES</Text>
-                      <Text style={styles.metricValue}>{formatNumber(bottles)}</Text>
-                    </View>
-                  </View>
-
-                  {depotName ? (
-                    <View style={styles.depotLocationPill}>
-                      <LocationIcon size={12} color="#0284C7" />
-                      <Text style={styles.depotLocationText} numberOfLines={1}>
-                        {depotName}
-                      </Text>
-                    </View>
-                  ) : null}
-                </View>
+                <MetricsCard
+                  key={item.brand_id || index}
+                  title={item.brand_name}
+                  titleIcon={<WineIcon size={16} color="#0F172A" />}
+                  companyBadge={item.company_name || 'Brand'}
+                  metrics={[
+                    { label: 'Cases', value: cases },
+                    { label: 'Bottles', value: bottles },
+                  ]}
+                  locationPill={depotPill}
+                  pillTheme="red"
+                  scaleFactor={scaleFactor}
+                />
               );
             }
 
             return null;
           })
         )}
-
-        {/* Pagination Controls at Bottom */}
-        {totalPages > 1 && (
-          <View style={styles.paginationRow}>
-            <TouchableOpacity
-              style={[styles.pageBtn, currentPage === 1 ? styles.pageBtnDisabled : null]}
-              onPress={() => setCurrentPage((p) => Math.max(p - 1, 1))}
-              disabled={currentPage === 1}
-              activeOpacity={0.7}
-            >
-              <ChevronLeftIcon size={14} color={currentPage === 1 ? '#94A3B8' : '#0F172A'} />
-              <Text style={[styles.pageBtnText, currentPage === 1 ? styles.pageBtnTextDisabled : null]}>
-                Prev
-              </Text>
-            </TouchableOpacity>
-
-            <Text style={styles.pageInfoText}>
-              Page <Text style={styles.boldPageText}>{currentPage}</Text> of {totalPages}
-            </Text>
-
-            <TouchableOpacity
-              style={[styles.pageBtn, currentPage === totalPages ? styles.pageBtnDisabled : null]}
-              onPress={() => setCurrentPage((p) => Math.min(p + 1, totalPages))}
-              disabled={currentPage === totalPages}
-              activeOpacity={0.7}
-            >
-              <Text style={[styles.pageBtnText, currentPage === totalPages ? styles.pageBtnTextDisabled : null]}>
-                Next
-              </Text>
-              <ChevronRightIcon size={14} color={currentPage === totalPages ? '#94A3B8' : '#0F172A'} />
-            </TouchableOpacity>
-          </View>
-        )}
       </ScrollView>
 
-      {/* Sort Options Modal */}
-      <Modal visible={showSortModal} transparent={true} animationType="fade" onRequestClose={() => setShowSortModal(false)}>
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowSortModal(false)}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Sort By</Text>
-            <TouchableOpacity
-              style={[styles.modalItem, sortOption === 'az' ? styles.modalItemActive : null]}
-              onPress={() => {
-                setSortOption('az');
-                setShowSortModal(false);
-              }}
-            >
-              <Text style={[styles.modalItemText, sortOption === 'az' ? styles.modalItemTextActive : null]}>
-                A-Z (Name)
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.modalItem, sortOption === 'za' ? styles.modalItemActive : null]}
-              onPress={() => {
-                setSortOption('za');
-                setShowSortModal(false);
-              }}
-            >
-              <Text style={[styles.modalItemText, sortOption === 'za' ? styles.modalItemTextActive : null]}>
-                Z-A (Name)
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.modalItem, sortOption === 'cases_desc' ? styles.modalItemActive : null]}
-              onPress={() => {
-                setSortOption('cases_desc');
-                setShowSortModal(false);
-              }}
-            >
-              <Text style={[styles.modalItemText, sortOption === 'cases_desc' ? styles.modalItemTextActive : null]}>
-                Cases (High to Low)
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.modalItem, sortOption === 'cases_asc' ? styles.modalItemActive : null]}
-              onPress={() => {
-                setSortOption('cases_asc');
-                setShowSortModal(false);
-              }}
-            >
-              <Text style={[styles.modalItemText, sortOption === 'cases_asc' ? styles.modalItemTextActive : null]}>
-                Cases (Low to High)
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
-      </Modal>
+      {/* Pagination Bar */}
+      <PaginationBar
+        currentPage={currentPage}
+        totalPages={totalPages}
+        totalItems={totalItems}
+        perPage={perPage}
+        onPageChange={(page) => setCurrentPage(page)}
+        onOpenPerPageModal={() => setShowPerPageModal(true)}
+        scaleFactor={scaleFactor}
+      />
 
-      {/* Per Page Selection Modal */}
-      <Modal visible={showPerPageModal} transparent={true} animationType="fade" onRequestClose={() => setShowPerPageModal(false)}>
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowPerPageModal(false)}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Items Per Page</Text>
-            {[10, 15, 25, 50].map((num) => (
-              <TouchableOpacity
-                key={num}
-                style={[styles.modalItem, perPage === num ? styles.modalItemActive : null]}
-                onPress={() => {
-                  setPerPage(num);
-                  setCurrentPage(1);
-                  setShowPerPageModal(false);
-                }}
-              >
-                <Text style={[styles.modalItemText, perPage === num ? styles.modalItemTextActive : null]}>
-                  {num} items
-                </Text>
-              </TouchableOpacity>
-            ))}
+      {/* Reusable SortModal */}
+      <SortModal
+        visible={showSortModal}
+        onClose={() => setShowSortModal(false)}
+        selectedOption={sortOption}
+        onSelectOption={(val) => {
+          setSortOption(val);
+          setCurrentPage(1);
+        }}
+        scaleFactor={scaleFactor}
+      />
+
+      {/* Per Page Modal */}
+      <Modal
+        visible={showPerPageModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowPerPageModal(false)}
+      >
+        <TouchableWithoutFeedback onPress={() => setShowPerPageModal(false)}>
+          <View style={styles.modalOverlay}>
+            <TouchableWithoutFeedback>
+              <View style={styles.perPageModalCard}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>Items Per Page</Text>
+                  <TouchableOpacity onPress={() => setShowPerPageModal(false)}>
+                    <XIcon size={18} color="#64748B" />
+                  </TouchableOpacity>
+                </View>
+                {[15, 25, 50, 100].map((num) => (
+                  <TouchableOpacity
+                    key={num}
+                    style={[
+                      styles.perPageOptionRow,
+                      perPage === num && styles.perPageOptionSelected,
+                    ]}
+                    onPress={() => {
+                      setPerPage(num);
+                      setCurrentPage(1);
+                      setShowPerPageModal(false);
+                    }}
+                  >
+                    <Text
+                      style={[
+                        styles.perPageOptionText,
+                        perPage === num && styles.perPageOptionTextSelected,
+                      ]}
+                    >
+                      {num} items
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </TouchableWithoutFeedback>
           </View>
-        </TouchableOpacity>
+        </TouchableWithoutFeedback>
       </Modal>
     </View>
   );
@@ -704,421 +653,161 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#F8FAFC',
   },
-  breadcrumbBar: {
+  topHeaderBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
     paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
+    paddingVertical: 8,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+    gap: 10,
   },
   backBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#EEF2F6',
-    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
     paddingHorizontal: 12,
-    paddingVertical: 6,
-    marginRight: 8,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    gap: 4,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
   },
   backBtnText: {
-    fontSize: 13,
-    fontWeight: '800',
+    fontWeight: '700',
     color: '#0F172A',
-    marginLeft: 4,
-  },
-  breadcrumbPathContainer: {
-    flex: 1,
-  },
-  breadcrumbPathText: {
-    fontSize: 13,
-    color: '#64748B',
-  },
-  breadcrumbSeparator: {
-    color: '#94A3B8',
-    fontWeight: 'bold',
-  },
-  breadcrumbActive: {
-    fontWeight: '800',
-    color: '#0F172A',
-  },
-  breadcrumbMuted: {
-    fontWeight: '500',
-    color: '#64748B',
-  },
-  selectionBanner: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#0A1128',
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    marginBottom: 12,
-  },
-  bannerInfo: {
-    flex: 1,
-    marginRight: 10,
-  },
-  bannerSubtitle: {
-    fontSize: 9,
-    fontWeight: '800',
-    color: 'rgba(255, 255, 255, 0.7)',
-    letterSpacing: 0.6,
-  },
-  bannerTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#FFFFFF',
-    marginTop: 2,
-  },
-  bannerPillRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  casesPill: {
-    backgroundColor: 'rgba(245, 158, 11, 0.18)',
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    alignItems: 'center',
-    minWidth: 55,
-  },
-  casesPillValue: {
-    color: '#F59E0B',
-    fontSize: 14,
-    fontWeight: '900',
-    marginTop: 1,
-  },
-  bottlesPill: {
-    backgroundColor: 'rgba(56, 189, 248, 0.18)',
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    alignItems: 'center',
-    minWidth: 55,
-  },
-  bottlesPillValue: {
-    color: '#38BDF8',
-    fontSize: 14,
-    fontWeight: '900',
-    marginTop: 1,
-  },
-  pillLabel: {
-    fontSize: 8,
-    fontWeight: '800',
-    color: 'rgba(255, 255, 255, 0.7)',
-    letterSpacing: 0.5,
   },
   searchControlsRow: {
     flexDirection: 'row',
-    gap: 8,
-    marginBottom: 10,
-  },
-  searchWrapper: {
-    flex: 1,
-    flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderRadius: 14,
     paddingHorizontal: 12,
-    height: 44,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 13,
-    color: '#0F172A',
-    fontWeight: '500',
-    paddingVertical: 0,
-    marginLeft: 6,
-  },
-  clearBtn: {
-    padding: 4,
+    paddingVertical: 10,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
   },
   sortPillBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 10,
+    height: 42,
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    borderRadius: 14,
-    paddingHorizontal: 10,
-    height: 44,
-  },
-  sortIcon: {
-    fontSize: 13,
-    color: '#64748B',
-    marginRight: 4,
+    gap: 4,
   },
   sortText: {
-    fontSize: 12,
-    fontWeight: '700',
     color: '#0F172A',
-  },
-  dropdownArrow: {
-    fontSize: 10,
-    color: '#94A3B8',
-    marginLeft: 4,
-  },
-  itemsCountRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
-    paddingHorizontal: 4,
-  },
-  showingText: {
-    fontSize: 11,
-    color: '#64748B',
+    fontSize: 12,
     fontWeight: '600',
   },
-  perPageBtn: {
+  showingInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  showingText: {
+    color: '#64748B',
+    fontWeight: '500',
+  },
+  perPageTrigger: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  perPageLabelText: {
+    color: '#64748B',
+    fontWeight: '500',
+  },
+  perPagePill: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    borderRadius: 10,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    gap: 4,
   },
-  perPageLabel: {
-    fontSize: 11,
-    color: '#64748B',
-  },
-  perPageValue: {
-    fontSize: 11,
-    fontWeight: '800',
+  perPageValueText: {
     color: '#0F172A',
-  },
-  perPageArrow: {
-    fontSize: 9,
-    color: '#94A3B8',
+    fontWeight: '700',
   },
   scrollList: {
     flex: 1,
   },
   scrollContent: {
-    paddingBottom: 24,
-  },
-  loadingBox: {
-    padding: 30,
-    alignItems: 'center',
-  },
-  loadingText: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingBottom: 16,
   },
   emptyCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 16,
+    borderRadius: 12,
+    padding: 24,
+    alignItems: 'center',
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    padding: 30,
-    alignItems: 'center',
-    marginVertical: 10,
+    marginTop: 20,
   },
   emptyText: {
-    fontSize: 12,
-    fontWeight: 'bold',
-    color: '#94A3B8',
-  },
-  card: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    padding: 14,
-    marginBottom: 10,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
-    shadowRadius: 3,
-    elevation: 1,
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  titleWrapper: {
-    flex: 1,
-    marginRight: 8,
-  },
-  companyName: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: '#0F172A',
-    letterSpacing: -0.2,
-  },
-  brandTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  brandEmoji: {
-    fontSize: 14,
-    marginRight: 6,
-  },
-  licenseeBadgeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 3,
-  },
-  brandCount: {
-    fontSize: 11,
     color: '#64748B',
-    fontWeight: '600',
-    marginLeft: 4,
-  },
-  tradeBadge: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#F1F5F9',
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    marginTop: 4,
-  },
-  tradeBadgeText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#475569',
-  },
-  metricsGrid: {
-    flexDirection: 'row',
-    backgroundColor: '#F8FAFC',
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 8,
-    marginTop: 4,
-    borderWidth: 1,
-    borderColor: '#F1F5F9',
-  },
-  metricCell: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  metricLabel: {
-    fontSize: 8,
-    fontWeight: '700',
-    color: '#94A3B8',
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
-  },
-  metricValue: {
     fontSize: 14,
-    fontWeight: '900',
-    color: '#0F172A',
-    marginTop: 2,
-  },
-  depotLocationPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    backgroundColor: '#F0F9FF',
-    borderWidth: 1,
-    borderColor: '#BAE6FD',
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    marginTop: 10,
-  },
-  depotPinIcon: {
-    fontSize: 10,
-    marginRight: 4,
-  },
-  depotLocationText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#0284C7',
-  },
-  paginationRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderRadius: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginTop: 10,
-    marginBottom: 20,
-  },
-  pageBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#EEF2F6',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    gap: 4,
-  },
-  pageBtnDisabled: {
-    backgroundColor: '#F1F5F9',
-    opacity: 0.5,
-  },
-  pageBtnText: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: '#0F172A',
-  },
-  pageBtnTextDisabled: {
-    color: '#94A3B8',
-  },
-  pageInfoText: {
-    fontSize: 13,
-    color: '#475569',
-  },
-  boldPageText: {
-    fontWeight: '900',
-    color: '#0F172A',
+    fontWeight: '500',
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: 'rgba(15, 23, 42, 0.4)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 20,
   },
-  modalContent: {
+  perPageModalCard: {
     width: '100%',
+    maxWidth: 320,
     backgroundColor: '#FFFFFF',
-    borderRadius: 20,
+    borderRadius: 16,
     padding: 16,
-    maxHeight: '60%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
   },
   modalTitle: {
-    fontSize: 13,
-    fontWeight: 'bold',
-    color: '#0F2042',
-    marginBottom: 12,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#0F172A',
   },
-  modalItem: {
+  perPageOptionRow: {
     paddingVertical: 12,
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
     borderRadius: 10,
     marginBottom: 4,
   },
-  modalItemActive: {
-    backgroundColor: '#EEF2F6',
+  perPageOptionSelected: {
+    backgroundColor: '#F0F9FF',
   },
-  modalItemText: {
-    fontSize: 12,
-    color: '#64748B',
-    fontWeight: '600',
+  perPageOptionText: {
+    color: '#334155',
+    fontSize: 14,
+    fontWeight: '500',
   },
-  modalItemTextActive: {
-    color: '#0F2042',
-    fontWeight: 'bold',
+  perPageOptionTextSelected: {
+    color: '#0284C7',
+    fontWeight: '700',
   },
 });

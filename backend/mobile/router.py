@@ -13,6 +13,7 @@ from backend.db.supabase_client import (
     call_mobile_tsm_sales_rpc,
     call_mobile_sales_json_rpc,
     call_mobile_tsm_sales_json_rpc,
+    # Reload uvicorn cache for TSM and ASE company level aggregation
 )
 from backend.core.config import settings
 from backend.services.otp_service import (
@@ -34,9 +35,9 @@ _MASTER_CACHE = {
 }
 _MASTER_CACHE_TTL = 300  # 300 seconds (5 mins)
 
-# Sales endpoint response cache with 60-second TTL
+# Sales endpoint response cache with 1-second TTL for real-time updates
 _SALES_RESPONSE_CACHE: Dict[str, Dict[str, Any]] = {}
-_SALES_RESPONSE_TTL = 60
+_SALES_RESPONSE_TTL = 1
 
 def _fetch_fresh_master_lookups():
     client = get_supabase()
@@ -142,6 +143,7 @@ def _fetch_fresh_master_lookups():
                             "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
                             "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
                         },
+                        "companies_map": {},
                         "brands_map": {}
                     }
 
@@ -1139,6 +1141,14 @@ async def get_mobile_sales(
         }
         for aid in all_known_ase_ids
     }
+    ase_comp_sets = {aid: {"Daily": set(), "MTD": set(), "YTD": set()} for aid in all_known_ase_ids}
+    tsm_comp_sets = {tid: {"Daily": set(), "MTD": set(), "YTD": set()} for tid in master_tsms.keys()}
+    ase_company_maps = {aid: {} for aid in all_known_ase_ids}
+    ase_brand_maps = {aid: {} for aid in all_known_ase_ids}
+
+    # Initialize companies_map on master_tsms
+    for tid in master_tsms.keys():
+        master_tsms[tid]["companies_map"] = {}
 
     tsm_rpc_trace: Dict[str, Any] = {}
     all_usf_records = call_mobile_tsm_sales_json_rpc(end_date, mtd_start, ytd_start, trace_info=tsm_rpc_trace)
@@ -1178,32 +1188,92 @@ async def get_mobile_sales(
         }
 
         for period_key, metrics in usf_metrics.items():
-            if uid in ase_sales:
-                ase_sales[uid][period_key]["cases"] += metrics["cases"]
-                ase_sales[uid][period_key]["bottles"] += metrics["bottles"]
-                ase_sales[uid][period_key]["bl"] += metrics["bl"]
+            if metrics["cases"] > 0 or metrics["bottles"] > 0:
+                if uid in ase_sales:
+                    ase_sales[uid][period_key]["cases"] += metrics["cases"]
+                    ase_sales[uid][period_key]["bottles"] += metrics["bottles"]
+                    ase_sales[uid][period_key]["bl"] += metrics["bl"]
+                    ase_comp_sets[uid][period_key].add(c_id_raw)
 
-            for tid in target_tsm_ids:
-                if tid in master_tsms:
-                    t_obj = master_tsms[tid]
-                    t_obj["data"][period_key]["cases"] += metrics["cases"]
-                    t_obj["data"][period_key]["bottles"] += metrics["bottles"]
-                    t_obj["data"][period_key]["bl"] += metrics["bl"]
-
-                    tb_map = t_obj["brands_map"]
-                    if brand_id not in tb_map:
-                        tb_map[brand_id] = {
-                            "brandId": brand_id,
-                            "brandName": brand_name,
+                    # ASE Company level
+                    ac_map = ase_company_maps[uid]
+                    if c_id_raw not in ac_map:
+                        ac_map[c_id_raw] = {
+                            "companyId": c_id_raw,
+                            "companyName": comp_name,
+                            "name": comp_name,
                             "data": {
                                 "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
                                 "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
                                 "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
                             }
                         }
-                    tb_map[brand_id]["data"][period_key]["cases"] += metrics["cases"]
-                    tb_map[brand_id]["data"][period_key]["bottles"] += metrics["bottles"]
-                    tb_map[brand_id]["data"][period_key]["bl"] += metrics["bl"]
+                    ac_map[c_id_raw]["data"][period_key]["cases"] += metrics["cases"]
+                    ac_map[c_id_raw]["data"][period_key]["bottles"] += metrics["bottles"]
+                    ac_map[c_id_raw]["data"][period_key]["bl"] += metrics["bl"]
+
+                    # ASE Brand level
+                    ab_map = ase_brand_maps[uid]
+                    if brand_id not in ab_map:
+                        ab_map[brand_id] = {
+                            "brandId": brand_id,
+                            "brandName": brand_name,
+                            "name": brand_name,
+                            "companyId": c_id_raw,
+                            "companyName": comp_name,
+                            "data": {
+                                "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                                "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                                "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                            }
+                        }
+                    ab_map[brand_id]["data"][period_key]["cases"] += metrics["cases"]
+                    ab_map[brand_id]["data"][period_key]["bottles"] += metrics["bottles"]
+                    ab_map[brand_id]["data"][period_key]["bl"] += metrics["bl"]
+
+                for tid in target_tsm_ids:
+                    if tid in master_tsms:
+                        t_obj = master_tsms[tid]
+                        t_obj["data"][period_key]["cases"] += metrics["cases"]
+                        t_obj["data"][period_key]["bottles"] += metrics["bottles"]
+                        t_obj["data"][period_key]["bl"] += metrics["bl"]
+                        tsm_comp_sets[tid][period_key].add(c_id_raw)
+
+                        # TSM Company level
+                        tc_map = t_obj["companies_map"]
+                        if c_id_raw not in tc_map:
+                            tc_map[c_id_raw] = {
+                                "companyId": c_id_raw,
+                                "companyName": comp_name,
+                                "name": comp_name,
+                                "data": {
+                                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                                    "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                                    "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                                }
+                            }
+                        tc_map[c_id_raw]["data"][period_key]["cases"] += metrics["cases"]
+                        tc_map[c_id_raw]["data"][period_key]["bottles"] += metrics["bottles"]
+                        tc_map[c_id_raw]["data"][period_key]["bl"] += metrics["bl"]
+
+                        # TSM Brand level
+                        tb_map = t_obj["brands_map"]
+                        if brand_id not in tb_map:
+                            tb_map[brand_id] = {
+                                "brandId": brand_id,
+                                "brandName": brand_name,
+                                "name": brand_name,
+                                "companyId": c_id_raw,
+                                "companyName": comp_name,
+                                "data": {
+                                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                                    "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                                    "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                                }
+                            }
+                        tb_map[brand_id]["data"][period_key]["cases"] += metrics["cases"]
+                        tb_map[brand_id]["data"][period_key]["bottles"] += metrics["bottles"]
+                        tb_map[brand_id]["data"][period_key]["bl"] += metrics["bl"]
 
     formatted_companies = []
     for c_id, c_data in master_companies.items():
@@ -1222,9 +1292,20 @@ async def get_mobile_sales(
         formatted_depots.append(d_data)
 
     formatted_tsms = []
-    for t_id, t_data in master_tsms.items():
-        t_data["brands"] = list(t_data.pop("brands_map").values())
-        depot_ids_list = list(t_data.pop("depot_ids", set()))
+    for t_id, raw_t_data in master_tsms.items():
+        t_data = dict(raw_t_data)
+        t_data["companies"] = list(t_data.get("companies_map", {}).values())
+        t_data["brands"] = list(t_data.get("brands_map", {}).values())
+        t_data["companyCount"] = {
+            "Daily": len(tsm_comp_sets.get(t_id, {}).get("Daily", set())),
+            "MTD": len(tsm_comp_sets.get(t_id, {}).get("MTD", set())),
+            "YTD": len(tsm_comp_sets.get(t_id, {}).get("YTD", set())),
+        }
+        depot_ids_list = list(t_data.get("depot_ids", set()))
+        t_data.pop("depot_ids", None)
+        t_data.pop("companies_map", None)
+        t_data.pop("brands_map", None)
+
         assigned_hq_names = []
         for did in depot_ids_list:
             d_obj = master_depots.get(did)
@@ -1245,7 +1326,14 @@ async def get_mobile_sales(
                     "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
                     "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
                     "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                })
+                }),
+                "companyCount": {
+                    "Daily": len(ase_comp_sets.get(aid, {}).get("Daily", set())),
+                    "MTD": len(ase_comp_sets.get(aid, {}).get("MTD", set())),
+                    "YTD": len(ase_comp_sets.get(aid, {}).get("YTD", set())),
+                },
+                "companies": list(ase_company_maps.get(aid, {}).values()),
+                "brands": list(ase_brand_maps.get(aid, {}).values())
             }
             for aid in raw_ase_ids
         ]
@@ -1368,13 +1456,29 @@ async def get_mobile_sales(
 async def get_cascading_groups_endpoint(
     date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
-    period: Optional[str] = Query(None, description="Period filter (Daily/MTD/YTD)")
+    period: Optional[str] = Query(None, description="Period filter (Daily/MTD/YTD)"),
+    selected_hq: Optional[str] = Query(None, description="Filter by Headquarters name")
 ):
     """
     Mobile endpoint: Fetch active groups with total licensees, linked depots, and sales summaries using optimized JSON RPC.
     """
     from backend.services.mobile_cascading_service import get_cascading_groups
-    return get_cascading_groups(date_from=date_from, date_to=date_to, period=period)
+    return get_cascading_groups(date_from=date_from, date_to=date_to, period=period, selected_hq=selected_hq)
+
+
+@router.get("/cascading/groups/{group_id}/brands")
+async def get_group_brands_endpoint(
+    group_id: str,
+    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    period: Optional[str] = Query(None, description="Period filter (Daily/MTD/YTD)"),
+    depot_name: Optional[str] = Query(None, description="Filter by depot name")
+):
+    """
+    Mobile endpoint: Fetch aggregated brand-wise sales for all licensees in a group.
+    """
+    from backend.services.mobile_cascading_service import get_group_brand_sales
+    return get_group_brand_sales(group_id=group_id, date_from=date_from, date_to=date_to, period=period, depot_name=depot_name)
 
 
 @router.get("/cascading/groups/{group_id}/licensees")
@@ -1405,6 +1509,7 @@ async def get_licensee_brand_sales_endpoint(
     """
     from backend.services.mobile_cascading_service import get_licensee_brand_sales
     return get_licensee_brand_sales(licensee_id=licensee_id, date_from=date_from, date_to=date_to, period=period, depot_name=depot_name)
+
 
 
 def clear_sales_response_cache():
