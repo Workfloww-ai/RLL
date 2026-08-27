@@ -2,7 +2,7 @@
   "expo": {
     "name": "360",
     "slug": "rll",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "ios": {
@@ -14,7 +14,7 @@
     ],
     "android": {
       "package": "com.workfloww.lucid360",
-      "versionCode": 1
+      "versionCode": 2
     },
     "extra": {
       "eas": {
