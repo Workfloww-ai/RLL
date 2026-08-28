@@ -17,102 +17,95 @@ async def login(credentials: LoginRequest):
     password = credentials.password
     logger.info(f"Web login attempt initiated for user: {email}")
 
-    # Hardcoded Demo Account for Client Presentation
-    if email == "khwaish.gahoi@workfloww.ai":
-        demo_user = {
-            "user_id": "00000000-0000-0000-0000-000000000001",
-            "email": "khwaish.gahoi@workfloww.ai",
-            "first_name": "Khwaish",
-            "last_name": "Gahoi",
-            "phone": "+919711101492",
-            "role_name": "admin",
-            "role": "admin",
-            "is_active": True
-        }
-        token = create_access_token(data={"sub": demo_user["email"], "role": "admin", "user_id": demo_user["user_id"]})
-        logger.info(f"Demo login successful for user: {email}")
-        return {
-            "access_token": token,
-            "token_type": "bearer",
-            "user": demo_user
-        }
-
     client = get_supabase()
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database service unavailable"
+        )
 
-    user_data = None
-    if client:
+    # 1. Validate credentials dynamically: Try Supabase Auth, fallback to verify_user_credentials RPC
+    authenticated = False
+    try:
+        temp_client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        auth_response = temp_client.auth.sign_in_with_password({"email": email, "password": password})
+        if auth_response and auth_response.user:
+            authenticated = True
+    except Exception as auth_err:
+        logger.info(f"Supabase auth sign-in notice for {email}, verifying database credentials: {auth_err}")
         try:
-            # 1. Verify credentials with an ephemeral Supabase Auth client to avoid mutating the global client
-            temp_client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
-            auth_response = temp_client.auth.sign_in_with_password({"email": email, "password": credentials.password})
-            if not auth_response or not auth_response.user:
-                logger.warning(f"Web login failed for user {email} (invalid credentials / empty response)")
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+            rpc_res = client.rpc("verify_user_credentials", {"p_email": email, "p_password": password}).execute()
+            if rpc_res and rpc_res.data is True:
+                authenticated = True
+        except Exception as rpc_err:
+            logger.error(f"Error executing verify_user_credentials RPC for {email}: {rpc_err}")
 
-            # 2. Get user profile and role
-            res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active").ilike("email", email).execute()
-            if res.data and len(res.data) > 0:
-                db_user = res.data[0]
-                if not db_user.get("is_active", True):
-                    logger.warning(f"Web login failed for user {email} (deactivated account)")
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="User account is deactivated"
-                    )
-
-                role_name = "admin"
-                try:
-                    ur_res = client.table("user_roles").select("user_id, role_id, is_active, roles(role_id, role_name)").eq("user_id", db_user["user_id"]).execute()
-                    if ur_res.data:
-                        active_roles = []
-                        for ur in ur_res.data:
-                            if ur.get("is_active", True):
-                                role_obj = ur.get("roles") or {}
-                                rname = role_obj.get("role_name")
-                                if rname:
-                                    active_roles.append(rname)
-                        
-                        # For Web dashboard, prioritize Admin / Super_Admin roles if user has multiple roles
-                        admin_role = next((r for r in active_roles if r.lower() in ["admin", "super_admin", "super admin"]), None)
-                        if admin_role:
-                            role_name = admin_role
-                        elif active_roles:
-                            role_name = active_roles[0]
-                except Exception:
-                    pass
-
-                # 3. Guardrail: Enforce Web-only roles (Admins only)
-                if role_name.lower() not in ["admin", "super_admin", "super admin"]:
-                    logger.warning(f"Web login access denied for user {email} (role '{role_name}' lacks Web permissions)")
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Access Denied: Web Dashboard is restricted to Administrators only."
-                    )
-
-                user_data = {
-                    "user_id": str(db_user.get("user_id")),
-                    "email": db_user.get("email"),
-                    "first_name": db_user.get("first_name", email.split("@")[0].capitalize()),
-                    "last_name": db_user.get("last_name", ""),
-                    "phone": db_user.get("phone", ""),
-                    "role_name": role_name,
-                    "role": role_name,
-                    "is_active": True
-                }
-                logger.info(f"Web login successful for user: {email} with role: {role_name}")
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Database/auth error during login for user {email}: {e}")
-            if "Invalid login credentials" in str(e):
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
-            pass
-
-    if not user_data:
+    if not authenticated:
+        logger.warning(f"Web login failed for user {email} (invalid credentials)")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password"
         )
+
+    # 2. Fetch user profile from public.users
+    res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active").ilike("email", email).execute()
+    if not res.data or len(res.data) == 0:
+        logger.warning(f"Web login failed for user {email} (user profile not found)")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password"
+        )
+
+    db_user = res.data[0]
+    if not db_user.get("is_active", True):
+        logger.warning(f"Web login failed for user {email} (deactivated account)")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account is deactivated"
+        )
+
+    # 3. Fetch user roles dynamically from public.user_roles
+    active_roles = []
+    role_name = "admin"
+    try:
+        ur_res = client.table("user_roles").select("user_id, role_id, is_active, roles(role_id, role_name)").eq("user_id", db_user["user_id"]).execute()
+        if ur_res.data:
+            for ur in ur_res.data:
+                if ur.get("is_active", True):
+                    role_obj = ur.get("roles") or {}
+                    rname = role_obj.get("role_name")
+                    if rname:
+                        active_roles.append(rname)
+            
+            # Prioritize Admin / Super_Admin / Leader roles for Web dashboard
+            preferred_role = next((r for r in active_roles if r.lower() in ["admin", "super_admin", "super admin", "leader"]), None)
+            if preferred_role:
+                role_name = preferred_role
+            elif active_roles:
+                role_name = active_roles[0]
+    except Exception as r_err:
+        logger.warning(f"Error resolving roles for user {email}: {r_err}")
+
+    # 4. Guardrail: Enforce Web-only roles
+    if role_name.lower() not in ["admin", "super_admin", "super admin", "leader"]:
+        logger.warning(f"Web login access denied for user {email} (role '{role_name}' lacks Web permissions)")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access Denied: Web Dashboard is restricted to Administrators only."
+        )
+
+    user_data = {
+        "user_id": str(db_user.get("user_id")),
+        "email": db_user.get("email"),
+        "first_name": db_user.get("first_name", email.split("@")[0].capitalize()),
+        "last_name": db_user.get("last_name", ""),
+        "phone": db_user.get("phone", ""),
+        "role_name": role_name,
+        "role": role_name,
+        "roles": active_roles if active_roles else [role_name],
+        "is_active": True
+    }
+    logger.info(f"Web login successful for user: {email} with role: {role_name}")
 
     token = create_access_token(data={"sub": user_data["email"], "role": user_data.get("role_name", "admin"), "user_id": user_data["user_id"]})
     return {
