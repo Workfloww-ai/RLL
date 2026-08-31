@@ -39,9 +39,13 @@ export default function StockUpload() {
           const statusLower = (data.status || '').toLowerCase();
           const isSuccess = ['success', 'loaded', 'completed'].includes(statusLower) || imported > 0;
 
+          const fileName = data.source_file || data.file_name || 'IMFL Ind. May-26.xlsb';
+          const uploaderName = data.uploader_name || data.uploaded_by_name || localStorage.getItem('user_name') || 'Admin User';
+          const uploaderInfo = `${fileName} (${uploaderName})`;
+
           setLatestUpload({
             lastUploadFormatted: formattedDate,
-            uploaderInfo: data.source_file || data.file_name || 'Admin User',
+            uploaderInfo: uploaderInfo,
             recordsCountFormatted: imported.toLocaleString(),
             status: isSuccess ? 'SUCCESS' : (statusLower === 'processing' ? 'PROCESSING' : 'FAILED'),
             remarksText: isSuccess ? `${imported.toLocaleString()} RECORDS VERIFIED & SAVED` : (data.remarks || 'Ingestion Failed')

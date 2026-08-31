@@ -61,6 +61,7 @@ async def get_latest_upload_batch():
     Returns details of the latest upload batch from Supabase DB or memory.
     """
     client = get_supabase()
+    batch = None
     if client:
         try:
             res = client.table("upload_batches").select("batch_id, source_file, file_name, storage_path, load_type, covers_start, covers_end, row_count, total_rows, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, upload_status, remarks, uploaded_by, created_at, updated_at").order("created_at", desc=True).limit(1).execute()
@@ -73,18 +74,39 @@ async def get_latest_upload_batch():
                         batch["imported_rows"] = fact_res.count
                         batch["status"] = "success"
                         batch["upload_status"] = "success"
-                return batch
         except Exception as e:
             logger.warning(f"Failed to fetch latest batch from Supabase: {e}")
-            
-    batches = list(upload_batches_db.values())
-    if batches:
-        return sorted(batches, key=lambda x: x.get("created_at", ""), reverse=True)[0]
-        
-    return {
-        "status": "none",
-        "message": "No upload history found."
-    }
+
+    if not batch:
+        batches = list(upload_batches_db.values())
+        if batches:
+            batch = sorted(batches, key=lambda x: x.get("created_at", ""), reverse=True)[0]
+
+    if not batch:
+        return {
+            "status": "none",
+            "message": "No upload history found."
+        }
+
+    # Resolve uploader's name if uploaded_by is present
+    uploader_id = batch.get("uploaded_by")
+    uploader_name = "Admin User"
+    if uploader_id and client:
+        try:
+            u_res = client.table("users").select("first_name, last_name, email").eq("user_id", uploader_id).limit(1).execute()
+            if u_res.data and len(u_res.data) > 0:
+                u_data = u_res.data[0]
+                fn = u_data.get("first_name") or ""
+                ln = u_data.get("last_name") or ""
+                full_name = f"{fn} {ln}".strip()
+                uploader_name = full_name or u_data.get("email") or "Admin User"
+            elif "@" in str(uploader_id):
+                uploader_name = str(uploader_id)
+        except Exception as e_u:
+            logger.warning(f"Could not resolve uploader_name for {uploader_id}: {e_u}")
+
+    batch["uploader_name"] = uploader_name
+    return batch
 
 @router.get("/batches/{batch_id}", response_model=UploadBatchResponse)
 async def get_upload_batch(batch_id: str):

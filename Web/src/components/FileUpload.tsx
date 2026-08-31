@@ -268,7 +268,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
-      <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex flex-col min-h-[340px]">
+      <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex flex-col min-h-340px">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-bold text-slate-800">{title}</h2>
           <div className="flex items-center gap-2">
@@ -362,7 +362,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
 
                 <div className="w-full h-2.5 bg-slate-200 rounded-full overflow-hidden mt-4">
                   <motion.div 
-                    className="h-full bg-amber-500 rounded-full bg-gradient-to-r from-amber-500 to-indigo-600"
+                    className="h-full bg-amber-500 rounded-full bg-linear-to-r from-amber-500 to-indigo-600"
                     initial={{ width: '30%' }}
                     animate={{ width: `${uploadState.progress}%` }}
                     transition={{ duration: 0.4 }}
@@ -454,7 +454,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
         <ul className="space-y-3">
           {instructions.map((inst, idx) => (
             <li key={idx} className="flex items-start gap-3">
-              <span className="w-5 h-5 bg-slate-100 rounded text-slate-600 flex-shrink-0 flex items-center justify-center text-[10px] font-bold">
+              <span className="w-5 h-5 bg-slate-100 rounded text-slate-600 shrink-0 flex items-center justify-center text-[10px] font-bold">
                 {String(idx + 1).padStart(2, '0')}
               </span>
               <p className="text-xs text-slate-600 leading-relaxed pt-0.5">{inst}</p>
