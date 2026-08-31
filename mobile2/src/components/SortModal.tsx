@@ -28,8 +28,8 @@ export interface SortModalProps {
 const DEFAULT_SORT_OPTIONS: SortOptionItem[] = [
   { label: 'Name (A to Z)', value: 'az' },
   { label: 'Name (Z to A)', value: 'za' },
-  { label: 'Volume (Cases: High to Low)', value: 'cases_desc' },
-  { label: 'Volume (Cases: Low to High)', value: 'cases_asc' },
+  { label: 'Cases: (High to Low)', value: 'cases_desc' },
+  { label: 'Cases: (Low to High)', value: 'cases_asc' },
 ];
 
 export function SortModal({

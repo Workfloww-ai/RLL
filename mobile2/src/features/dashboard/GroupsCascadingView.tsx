@@ -272,11 +272,11 @@ export function GroupsCascadingView({
     licenseeBrandsCacheRef.current.clear();
     try {
       if (level === 1) {
-        await loadGroups();
-      } else if (level === 2 && selectedGroup) {
-        await loadGroupDetails(selectedGroup);
-      } else if (level === 3 && selectedGroup && selectedLicensee) {
-        await loadLicenseeBrands(selectedGroup.group_name, selectedLicensee.licensee_name);
+        await loadGroups(true);
+      } else if (level === 2 && selectedGroup?.group_id) {
+        await loadGroupDetails(selectedGroup.group_id, true);
+      } else if (level === 3 && selectedLicensee?.licensee_id) {
+        await loadLicenseeBrands(selectedLicensee.licensee_id, true);
       }
     } catch (err) {
       console.error('Error refreshing GroupsCascadingView:', err);
