@@ -149,9 +149,9 @@ export function BrandModal({
 
   const sortDropdownOptions = [
     { key: 'default', label: 'Default Order', Icon: PinIcon },
-    { key: 'volume_desc', label: 'Top Sales (High → Low)', Icon: TrendingUpIcon },
-    { key: 'volume_asc', label: 'Lowest Sales (Low → High)', Icon: TrendingDownIcon },
-    { key: 'name_asc', label: 'Brand Name (A → Z)', Icon: SortAlphabeticalIcon },
+    { key: 'volume_desc', label: 'Cases: (High to Low)', Icon: TrendingUpIcon },
+    { key: 'volume_asc', label: 'Cases: (Low to High)', Icon: TrendingDownIcon },
+    { key: 'name_asc', label: 'Name (A to Z)', Icon: SortAlphabeticalIcon },
   ];
 
   return (

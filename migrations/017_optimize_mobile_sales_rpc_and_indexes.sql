@@ -67,7 +67,7 @@ BEGIN
                     ROUND(SUM(CASE WHEN d.sale_date = p_target_date  THEN d.total_btl  ELSE 0 END), 2)::NUMERIC AS daily_bottles,
                     ROUND(SUM(CASE WHEN d.sale_date = p_target_date THEN d.total_bl ELSE 0 END), 2)::NUMERIC  AS daily_bl,
                     ROUND(SUM(CASE WHEN d.sale_date >= p_mtd_start   THEN d.total_case ELSE 0 END), 2)::NUMERIC AS mtd_cases,
-                    ROUND(SUM(CASE WHEN d.sale_date >= p_mtd_start   THEN d.total_case ELSE 0 END), 2)::NUMERIC AS mtd_bottles,
+                    ROUND(SUM(CASE WHEN d.sale_date >= p_mtd_start   THEN d.total_btl  ELSE 0 END), 2)::NUMERIC AS mtd_bottles,
                     ROUND(SUM(CASE WHEN d.sale_date >= p_mtd_start  THEN d.total_bl  ELSE 0 END), 2)::NUMERIC AS mtd_bl,
                     ROUND(SUM(d.total_case), 2)::NUMERIC                                                         AS ytd_cases,
                     ROUND(SUM(d.total_btl), 2)::NUMERIC                                                          AS ytd_bottles,

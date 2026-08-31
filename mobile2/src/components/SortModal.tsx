@@ -25,7 +25,7 @@ export interface SortModalProps {
   scaleFactor?: number;
 }
 
-const DEFAULT_SORT_OPTIONS: SortOptionItem[] = [
+export const DEFAULT_SORT_OPTIONS: SortOptionItem[] = [
   { label: 'Name (A to Z)', value: 'az' },
   { label: 'Name (Z to A)', value: 'za' },
   { label: 'Cases: (High to Low)', value: 'cases_desc' },

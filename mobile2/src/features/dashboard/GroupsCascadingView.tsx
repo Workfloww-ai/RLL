@@ -408,12 +408,12 @@ export function GroupsCascadingView({
           <SwapVertIcon size={14} color="#64748B" />
           <Text style={styles.sortText}>
             {sortOption === 'az'
-              ? 'A-Z (Name)'
+              ? 'Name (A to Z)'
               : sortOption === 'za'
-                ? 'Z-A (Name)'
+                ? 'Name (Z to A)'
                 : sortOption === 'cases_desc'
-                  ? 'Cases (High-Low)'
-                  : 'Cases (Low-High)'}
+                  ? 'Cases: (High to Low)'
+                  : 'Cases: (Low to High)'}
           </Text>
           <ChevronDownIcon size={14} color="#94A3B8" />
         </TouchableOpacity>
