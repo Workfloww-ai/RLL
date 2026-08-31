@@ -31,6 +31,7 @@ import {
   fetchUserProfile,
   fetchMobileHeadquarters,
   clearAuthSession,
+  clearAllPhoneCaches,
   hydratePersistentCache,
 } from './src/lib/api';
 
@@ -61,8 +62,8 @@ export default function App() {
   const [user, setUser] = useState<any>(null);
   const [loadingSession, setLoadingSession] = useState(true);
   const [period, setPeriod] = useState<Period>('Daily');
-  const [dateFrom, setDateFrom] = useState<string>('2026-05-31');
-  const [dateTo, setDateTo] = useState<string>('2026-05-31');
+  const [dateFrom, setDateFrom] = useState<string>('2026-07-31');
+  const [dateTo, setDateTo] = useState<string>('2026-07-31');
   const [viewMode, setViewMode] = useState<ViewMode>('companies');
   const [viewModeHistory, setViewModeHistory] = useState<ViewMode[]>(['companies']);
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
@@ -77,6 +78,7 @@ export default function App() {
     if (!user) return;
     setRefreshing(true);
     try {
+      await clearAllPhoneCaches();
       if (viewMode === 'companies') {
         const comps = await fetchMobileCompanies(period, dateTo, selectedHq);
         setApiData((prev: any) => ({ ...(prev || {}), companies: comps }));
@@ -367,17 +369,21 @@ export default function App() {
   }, [filteredCompanies, sortBy, period]);
 
   const totalSummary = useMemo(() => {
-    return sortedCompanies.reduce(
+    const raw = sortedCompanies.reduce(
       (acc, c) => {
         const d = c.data[period] || { cases: 0, bottles: 0 };
         return {
-          cases: acc.cases + Math.round((d.cases || 0) * scaleFactor),
-          bottles: acc.bottles + Math.round((d.bottles || 0) * scaleFactor),
+          cases: acc.cases + (d.cases || 0),
+          bottles: acc.bottles + (d.bottles || 0),
         };
       },
       { cases: 0, bottles: 0 }
     );
-  }, [sortedCompanies, period]);
+    return {
+      cases: Math.round(raw.cases * scaleFactor),
+      bottles: Math.round(raw.bottles * scaleFactor),
+    };
+  }, [sortedCompanies, period, scaleFactor]);
 
   const renderCompanyItem = useCallback(
     ({ item }: { item: Company }) => (

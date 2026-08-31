@@ -127,11 +127,11 @@ COLUMN_ALIASES = {
         "packing_size",
     ],
     "TOTAL_CASE": [
+        "case",
+        "cases",
         "total_case",
         "total case",
         "total cases",
-        "cases",
-        "case",
     ],
     "TOTAL_BTL": [
         "total_btl",

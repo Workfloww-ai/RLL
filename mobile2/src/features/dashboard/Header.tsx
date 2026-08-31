@@ -129,7 +129,7 @@ export function Header({
 
   const handlePeriodChange = (p: Period) => {
     setPeriod(p);
-    const targetDate = latestSaleDate || '2026-05-31';
+    const targetDate = latestSaleDate || '2026-07-31';
 
     if (p === 'Daily') {
       setDateFrom(targetDate);

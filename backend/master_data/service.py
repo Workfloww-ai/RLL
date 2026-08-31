@@ -420,19 +420,23 @@ class MasterService:
 
         try:
             # ---------------- GROUPS ----------------
-
-            result = (
-                client
-                .table("groups")
-                .select("group_id,group_name")
-                .execute()
-            )
-
-            for row in result.data or []:
-                key = self._clean(row.get("group_name"))
-
-                if key:
-                    self._group_cache[key] = row["group_id"]
+            g_offset = 0
+            while True:
+                res_g = (
+                    client
+                    .table("groups")
+                    .select("group_id,group_name")
+                    .range(g_offset, g_offset + 999)
+                    .execute()
+                )
+                rows_g = res_g.data or []
+                for row in rows_g:
+                    key = self._clean(row.get("group_name"))
+                    if key:
+                        self._group_cache[key] = row["group_id"]
+                if len(rows_g) < 1000:
+                    break
+                g_offset += 1000
 
             # ---------------- OFFICES ----------------
 
@@ -480,19 +484,23 @@ class MasterService:
                     self._depot_cache[key] = row["depot_id"]
 
             # ---------------- LICENSEES ----------------
-
-            result = (
-                client
-                .table("licensees")
-                .select("licensee_id,licensee_name")
-                .execute()
-            )
-
-            for row in result.data or []:
-                key = self._clean(row.get("licensee_name"))
-
-                if key:
-                    self._licensee_cache[key] = row["licensee_id"]
+            l_offset = 0
+            while True:
+                res_l = (
+                    client
+                    .table("licensees")
+                    .select("licensee_id,licensee_name")
+                    .range(l_offset, l_offset + 999)
+                    .execute()
+                )
+                rows_l = res_l.data or []
+                for row in rows_l:
+                    key = self._clean(row.get("licensee_name"))
+                    if key:
+                        self._licensee_cache[key] = row["licensee_id"]
+                if len(rows_l) < 1000:
+                    break
+                l_offset += 1000
 
             # ---------------- BRANDS ----------------
 

@@ -33,7 +33,7 @@ _MASTER_CACHE = {
     "timestamp": 0,
     "data": None
 }
-_MASTER_CACHE_TTL = 300  # 300 seconds (5 mins)
+_MASTER_CACHE_TTL = 0  # Set to 0 to guarantee fresh database lookups and prevent stale empty caches
 
 # Sales endpoint response cache with 1-second TTL for real-time updates
 _SALES_RESPONSE_CACHE: Dict[str, Dict[str, Any]] = {}

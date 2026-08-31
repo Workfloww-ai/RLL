@@ -153,9 +153,10 @@ class IncrementalAnalyticsEngine:
                 success = False
 
         # 4. Redis Cache Pattern Invalidation (Event-Driven)
+        redis_keys_deleted = 0
         try:
             from backend.services.cache_service import invalidate_analytics_cache_sync
-            invalidate_analytics_cache_sync()
+            redis_keys_deleted = invalidate_analytics_cache_sync() or 0
             logger.info(f"[ANALYTICS] Invalidated Redis cache keys for batch {batch_id}.")
         except Exception as e_redis:
             logger.warning(f"[ANALYTICS] Non-fatal Redis invalidation notice: {e_redis}")
