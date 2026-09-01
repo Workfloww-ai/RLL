@@ -25,38 +25,43 @@ def decode_access_token(token: str) -> Optional[dict]:
     except jwt.PyJWTError:
         return None
 
+import json
+from fastapi import Depends, HTTPException, status, Request
+from backend.db.redis_client import safe_get
+
 async def get_current_user(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ) -> dict:
-    if not credentials or not credentials.credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    token = credentials.credentials
-    if token.startswith("demo-token-") or token.startswith("google-token-"):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    session_token = request.cookies.get("rll_session")
+    email = None
+    user_id = None
+    role_name = None
 
-    payload = decode_access_token(token)
-    if not payload:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication token or token expired",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    email = payload.get("sub")
-    user_id = payload.get("user_id")
+    if session_token:
+        redis_session_raw = await safe_get(f"rll:session:{session_token}")
+        if redis_session_raw:
+            try:
+                session_data = json.loads(redis_session_raw)
+                email = session_data.get("email")
+                user_id = session_data.get("user_id")
+                role_name = session_data.get("role")
+            except Exception:
+                pass
+
+    if not email and credentials and credentials.credentials:
+        token = credentials.credentials
+        if not (token.startswith("demo-token-") or token.startswith("google-token-")):
+            payload = decode_access_token(token)
+            if payload:
+                email = payload.get("sub")
+                user_id = payload.get("user_id")
+                role_name = payload.get("role", "admin")
+
     if not email:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Malformed token payload",
+            detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
 

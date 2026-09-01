@@ -1,7 +1,11 @@
+import json
+import uuid
 import logging
-from fastapi import APIRouter, HTTPException, Depends, status
+from datetime import datetime
+from fastapi import APIRouter, HTTPException, Depends, status, Response, Request
 from backend.core.security import create_access_token, get_current_user
 from backend.db.client import get_supabase
+from backend.db.redis_client import safe_set, safe_delete
 from backend.core.config import settings
 from backend.auth.schemas import LoginRequest, TokenResponse, ForgotPasswordRequest, ResetPasswordRequest
 from supabase import create_client
@@ -12,7 +16,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(credentials: LoginRequest):
+async def login(credentials: LoginRequest, response: Response):
     email = credentials.email.lower().strip()
     password = credentials.password
     logger.info(f"Web login attempt initiated for user: {email}")
@@ -108,6 +112,32 @@ async def login(credentials: LoginRequest):
     logger.info(f"Web login successful for user: {email} with role: {role_name}")
 
     token = create_access_token(data={"sub": user_data["email"], "role": user_data.get("role_name", "admin"), "user_id": user_data["user_id"]})
+
+    # Create Redis Session & Set HttpOnly Cookie
+    session_token = str(uuid.uuid4())
+    remember_me = bool(credentials.remember_me)
+    ttl = 30 * 86400 if remember_me else 86400  # 30 days vs 24 hours
+
+    session_payload = json.dumps({
+        "session_token": session_token,
+        "user_id": user_data["user_id"],
+        "email": user_data["email"],
+        "role": user_data.get("role_name", "admin"),
+        "remember_me": remember_me,
+        "created_at": datetime.now().isoformat()
+    })
+
+    await safe_set(f"rll:session:{session_token}", session_payload, ttl=ttl)
+
+    response.set_cookie(
+        key="rll_session",
+        value=session_token,
+        max_age=ttl,
+        httponly=True,
+        samesite="lax",
+        secure=False
+    )
+
     return {
         "access_token": token,
         "token_type": "bearer",
@@ -217,4 +247,19 @@ async def reset_password(req: ResetPasswordRequest):
 
 @router.get("/me")
 async def get_me(current_user: dict = Depends(get_current_user)):
-    return current_user
+    return {
+        "authenticated": True,
+        "user": current_user
+    }
+
+
+@router.post("/logout")
+async def logout(request: Request, response: Response):
+    session_token = request.cookies.get("rll_session")
+    if session_token:
+        await safe_delete(f"rll:session:{session_token}")
+    response.delete_cookie(key="rll_session")
+    return {
+        "success": True,
+        "message": "Logged out successfully"
+    }
