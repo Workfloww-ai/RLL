@@ -421,7 +421,7 @@ export default function TerritoryManagement() {
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-8rem)] relative">
+    <div className="flex flex-col h-full min-h-0 relative">
       {/* Top Right Toast Notification */}
       {toast && (
         <div className={`fixed top-6 right-6 z-50 flex items-center gap-3 px-4 py-3 text-xs font-semibold rounded-xl shadow-2xl border transition-all duration-300 ${
@@ -443,38 +443,25 @@ export default function TerritoryManagement() {
           </button>
         </div>
       )}
-      {/* Header & Controls */}
-      <div className="mb-6 flex flex-col md:flex-row justify-between items-start md:items-end gap-4 shrink-0">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-800">
-            Territory Management
-          </h1>
-          <p className="text-slate-500 mt-1 text-sm font-medium">
-            Manage employee roles, depot and headquarters alignments with automatic historical audit records.
-          </p>
+      {/* Integrated Control Toolbar */}
+      <div className="py-2 px-3 bg-white border border-slate-200/80 rounded-xl flex flex-wrap items-center gap-3 text-xs font-semibold text-slate-700 shrink-0 shadow-2xs">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-3.5 h-3.5" />
+          <input
+            type="text"
+            placeholder="Search employee, depot, HQ..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200/80 rounded-lg text-xs font-medium text-slate-900 focus:outline-none focus:border-[#0D3B8E] focus:bg-white transition-all placeholder:text-slate-400"
+          />
         </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
-            <input
-              type="text"
-              placeholder="Search employee, depot, HQ..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 pr-4 py-2 bg-white border border-slate-200 rounded text-xs font-bold text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#004B87] w-64"
-            />
-          </div>
-        </div>
-      </div>
 
-      {/* Filter Panel (Always Visible) */}
-      <div className="mb-4 p-4 bg-slate-50 border border-slate-200 rounded-xl flex flex-wrap items-center gap-4 text-xs font-semibold text-slate-700 shrink-0">
-        <div className="flex items-center gap-2">
-          <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Status:</span>
+        <div className="flex items-center gap-1.5">
+          <span className="text-slate-400 font-bold uppercase tracking-wider text-[9px]">Status:</span>
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as any)}
-            className="px-3 py-1.5 bg-white border border-slate-200 rounded font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-[#004B87]"
+            className="px-2.5 py-1 bg-slate-50 border border-slate-200/80 rounded-lg font-bold text-slate-700 text-xs focus:outline-none focus:border-[#0D3B8E]"
           >
             <option value="all">All Statuses</option>
             <option value="active">Active Only</option>
@@ -482,12 +469,12 @@ export default function TerritoryManagement() {
           </select>
         </div>
 
-        <div className="flex items-center gap-2">
-          <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">HQ Alignment:</span>
+        <div className="flex items-center gap-1.5">
+          <span className="text-slate-400 font-bold uppercase tracking-wider text-[9px]">HQ Alignment:</span>
           <select
             value={hqFilter}
             onChange={(e) => setHqFilter(e.target.value === "all" ? "all" : e.target.value)}
-            className="px-3 py-1.5 bg-white border border-slate-200 rounded font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-[#004B87]"
+            className="px-2.5 py-1 bg-slate-50 border border-slate-200/80 rounded-lg font-bold text-slate-700 text-xs focus:outline-none focus:border-[#0D3B8E]"
           >
             <option value="all">All Headquarters</option>
             {headquartersList.map((hq) => (
@@ -498,12 +485,12 @@ export default function TerritoryManagement() {
           </select>
         </div>
 
-        <div className="flex items-center gap-2">
-          <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Depot Alignment:</span>
+        <div className="flex items-center gap-1.5">
+          <span className="text-slate-400 font-bold uppercase tracking-wider text-[9px]">Depot Alignment:</span>
           <select
             value={depotFilter}
             onChange={(e) => setDepotFilter(e.target.value)}
-            className="px-3 py-1.5 bg-white border border-slate-200 rounded font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-[#004B87]"
+            className="px-2.5 py-1 bg-slate-50 border border-slate-200/80 rounded-lg font-bold text-slate-700 text-xs focus:outline-none focus:border-[#0D3B8E]"
           >
             <option value="all">All Depots</option>
             {masterDepotsList.map((d) => (
@@ -516,28 +503,34 @@ export default function TerritoryManagement() {
 
         <button
           onClick={resetFilters}
-          className="ml-auto flex items-center gap-1 text-[11px] font-bold text-slate-500 hover:text-slate-800 transition-colors"
+          className="ml-auto flex items-center gap-1 text-[11px] font-bold text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
+          title="Reset Filters"
         >
-          <RotateCcw className="w-3 h-3" /> Reset Filters
+          <RotateCcw className="w-3 h-3" /> Reset
         </button>
       </div>
 
 
       {/* Data Table Container */}
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex-1 overflow-hidden flex flex-col">
+      <div className="bg-white rounded-xl shadow-2xs border border-slate-200/80 flex-1 min-h-0 overflow-hidden flex flex-col">
         <div className="overflow-x-auto flex-1">
-          <table className="w-full text-left border-collapse table-fixed min-w-700px">
+          <table className="w-full text-left border-collapse table-fixed min-w-[750px]">
             <thead>
-              <tr className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10 select-none">
+              <tr className="bg-slate-50/80 border-b border-slate-200/80 sticky top-0 z-10 select-none">
+                {/* S.No Column */}
+                <th className="w-[6%] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">
+                  #
+                </th>
+
                 {/* User */}
                 <th 
                   onClick={() => handleSort("depot_user")}
-                  className="w-[22%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[22%] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>User</span>
                     {sortField === "depot_user" ? (
-                      sortDirection === "asc" ? <ChevronUp className="w-3 h-3 text-[#004B87]" /> : <ChevronDown className="w-3 h-3 text-[#004B87]" />
+                      sortDirection === "asc" ? <ChevronUp className="w-3 h-3 text-[#0D3B8E]" /> : <ChevronDown className="w-3 h-3 text-[#0D3B8E]" />
                     ) : (
                       <ArrowUpDown className="w-3 h-3 text-slate-300" />
                     )}
@@ -547,12 +540,12 @@ export default function TerritoryManagement() {
                 {/* Role */}
                 <th 
                   onClick={() => handleSort("depot_user_role")}
-                  className="w-[14%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[12%] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Role</span>
                     {sortField === "depot_user_role" ? (
-                      sortDirection === "asc" ? <ChevronUp className="w-3 h-3 text-[#004B87]" /> : <ChevronDown className="w-3 h-3 text-[#004B87]" />
+                      sortDirection === "asc" ? <ChevronUp className="w-3 h-3 text-[#0D3B8E]" /> : <ChevronDown className="w-3 h-3 text-[#0D3B8E]" />
                     ) : (
                       <ArrowUpDown className="w-3 h-3 text-slate-300" />
                     )}
@@ -562,12 +555,12 @@ export default function TerritoryManagement() {
                 {/* Depot */}
                 <th 
                   onClick={() => handleSort("name")}
-                  className="w-[24%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[24%] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Depot</span>
                     {sortField === "name" ? (
-                      sortDirection === "asc" ? <ChevronUp className="w-3 h-3 text-[#004B87]" /> : <ChevronDown className="w-3 h-3 text-[#004B87]" />
+                      sortDirection === "asc" ? <ChevronUp className="w-3 h-3 text-[#0D3B8E]" /> : <ChevronDown className="w-3 h-3 text-[#0D3B8E]" />
                     ) : (
                       <ArrowUpDown className="w-3 h-3 text-slate-300" />
                     )}
@@ -577,12 +570,12 @@ export default function TerritoryManagement() {
                 {/* Headquarter */}
                 <th 
                   onClick={() => handleSort("headquarters_name")}
-                  className="w-[20%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[20%] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Headquarter</span>
                     {sortField === "headquarters_name" ? (
-                      sortDirection === "asc" ? <ChevronUp className="w-3 h-3 text-[#004B87]" /> : <ChevronDown className="w-3 h-3 text-[#004B87]" />
+                      sortDirection === "asc" ? <ChevronUp className="w-3 h-3 text-[#0D3B8E]" /> : <ChevronDown className="w-3 h-3 text-[#0D3B8E]" />
                     ) : (
                       <ArrowUpDown className="w-3 h-3 text-slate-300" />
                     )}
@@ -592,12 +585,12 @@ export default function TerritoryManagement() {
                 {/* Active / Inactive Status */}
                 <th 
                   onClick={() => handleSort("is_active")}
-                  className="w-[10%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[10%] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Status</span>
                     {sortField === "is_active" ? (
-                      sortDirection === "asc" ? <ChevronUp className="w-3 h-3 text-[#004B87]" /> : <ChevronDown className="w-3 h-3 text-[#004B87]" />
+                      sortDirection === "asc" ? <ChevronUp className="w-3 h-3 text-[#0D3B8E]" /> : <ChevronDown className="w-3 h-3 text-[#0D3B8E]" />
                     ) : (
                       <ArrowUpDown className="w-3 h-3 text-slate-300" />
                     )}
@@ -605,7 +598,7 @@ export default function TerritoryManagement() {
                 </th>
 
                 {/* Actions */}
-                <th className="w-[10%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">
+                <th className="w-[10%] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">
                   Actions
                 </th>
               </tr>
@@ -613,19 +606,20 @@ export default function TerritoryManagement() {
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-12 text-center text-sm font-medium text-slate-500">
-                    <RefreshCw className="w-6 h-6 animate-spin mx-auto text-[#004B87] mb-2" />
+                  <td colSpan={7} className="px-6 py-12 text-center text-sm font-medium text-slate-500">
+                    <RefreshCw className="w-5 h-5 animate-spin mx-auto text-[#0D3B8E] mb-2" />
                     Loading territory records from database...
                   </td>
                 </tr>
               ) : paginatedDepots.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-12 text-center text-sm font-medium text-slate-500">
+                  <td colSpan={7} className="px-6 py-12 text-center text-sm font-medium text-slate-500">
                     No Territory Records Found.
                   </td>
                 </tr>
               ) : (
-                paginatedDepots.map((depot) => {
+                paginatedDepots.map((depot, idx) => {
+                  const serialNumber = (currentPage - 1) * rowsPerPage + idx + 1;
                   const roleText = resolveUserRole(depot);
                   const isEditing = editingId === depot.depot_id;
                   const selectedUser = usersList.find(u => String(u.user_id) === String(editUserId));
@@ -634,10 +628,15 @@ export default function TerritoryManagement() {
                   return (
                     <tr
                       key={depot.depot_id}
-                      className={`transition-colors group ${!depot.is_active ? 'bg-slate-50/70 text-slate-400' : 'hover:bg-slate-50/50'}`}
+                      className={`transition-colors group ${!depot.is_active ? 'bg-slate-50/70 text-slate-400' : 'hover:bg-blue-50/20'}`}
                     >
+                      {/* S.No Cell */}
+                      <td className="px-4 py-2.5 text-center text-xs font-bold text-slate-400">
+                        {serialNumber}
+                      </td>
+
                       {/* User Column */}
-                      <td className="px-6 py-4">
+                      <td className="px-4 py-2.5">
                         {isEditing ? (
                           <select
                             value={editUserId}
@@ -673,14 +672,14 @@ export default function TerritoryManagement() {
                       </td>
 
                       {/* Employee's Role */}
-                      <td className="px-6 py-4">
+                      <td className="px-4 py-2.5">
                         <span className={`px-2.5 py-1 rounded border text-[10px] font-bold uppercase tracking-wider ${getRoleBadgeStyle(displayRole)}`}>
                           {displayRole}
                         </span>
                       </td>
 
                       {/* Depot */}
-                      <td className="px-6 py-4">
+                      <td className="px-4 py-2.5">
                         {isEditing ? (
                           <select
                             value={editDepotId || editName}
@@ -697,7 +696,7 @@ export default function TerritoryManagement() {
                                 setEditName(val);
                               }
                             }}
-                            className="w-full px-2.5 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#004B87]"
+                            className="w-full px-2.5 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
                           >
                             <option value="">Unassigned</option>
                             {masterDepotsList.map((d) => (
@@ -709,7 +708,7 @@ export default function TerritoryManagement() {
                         ) : (
                           <div className="flex items-center gap-2">
                             <MapPin
-                              className={`w-3.5 h-3.5 ${depot.name === "Unassigned" ? "text-slate-300" : depot.is_active ? "text-[#004B87]" : "text-slate-400"}`}
+                              className={`w-3.5 h-3.5 ${depot.name === "Unassigned" ? "text-slate-300" : depot.is_active ? "text-[#0D3B8E]" : "text-slate-400"}`}
                             />
                             <span
                               className={`text-xs font-bold ${depot.name === "Unassigned" ? "text-slate-400 italic" : depot.is_active ? "text-slate-700" : "text-slate-500"}`}
@@ -721,12 +720,12 @@ export default function TerritoryManagement() {
                       </td>
 
                       {/* Headquarter */}
-                      <td className="px-6 py-4">
+                      <td className="px-4 py-2.5">
                         {isEditing ? (
                           <select
                             value={editHqId}
                             onChange={(e) => setEditHqId(e.target.value === "" ? "" : e.target.value)}
-                            className="w-full px-2.5 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#004B87]"
+                            className="w-full px-2.5 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
                           >
                             <option value="">Unassigned</option>
                             {headquartersList.map((hq) => (
@@ -738,7 +737,7 @@ export default function TerritoryManagement() {
                         ) : (
                           <div className="flex items-center gap-2">
                             <Building2
-                              className={`w-3.5 h-3.5 ${depot.headquarters_name === "Unassigned" ? "text-slate-300" : depot.is_active ? "text-[#004B87]" : "text-slate-400"}`}
+                              className={`w-3.5 h-3.5 ${depot.headquarters_name === "Unassigned" ? "text-slate-300" : depot.is_active ? "text-[#0D3B8E]" : "text-slate-400"}`}
                             />
                             <span
                               className={`text-xs font-bold ${depot.headquarters_name === "Unassigned" ? "text-slate-400 italic" : depot.is_active ? "text-slate-700" : "text-slate-500"}`}
@@ -750,12 +749,12 @@ export default function TerritoryManagement() {
                       </td>
 
                       {/* Status */}
-                      <td className="px-6 py-4">
+                      <td className="px-4 py-2.5">
                         {isEditing ? (
                           <select
                             value={editIsActive ? "active" : "inactive"}
                             onChange={(e) => setEditIsActive(e.target.value === "active")}
-                            className="px-2.5 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#004B87]"
+                            className="w-full px-2.5 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
                           >
                             <option value="active">Active</option>
                             <option value="inactive">Inactive</option>
@@ -771,7 +770,7 @@ export default function TerritoryManagement() {
                       </td>
 
                       {/* Actions */}
-                      <td className="px-6 py-4 text-right">
+                      <td className="px-4 py-2.5 text-right">
                         {isEditing ? (
                           <div className="flex items-center justify-end gap-2">
                             <button
