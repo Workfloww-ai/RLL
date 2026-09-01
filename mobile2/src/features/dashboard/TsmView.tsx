@@ -353,7 +353,21 @@ export function TsmView({
                   key={item.id || index}
                   title={item.name}
                   titleIcon={<UserIcon size={18} color="#0F172A" />}
-                  subtitle={`👥 ${aseCount} ASE(s)  •  🏢 ${companyCount} Companies`}
+                  subtitle={
+                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <UsersIcon size={scaledFontSize(12)} color="#64748B" />
+                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500', marginLeft: 3 }}>
+                        {`${aseCount} ASE(s)`}
+                      </Text>
+                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500' }}>
+                        {'  •  '}
+                      </Text>
+                      <BuildingIcon size={scaledFontSize(12)} color="#64748B" />
+                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500', marginLeft: 3 }}>
+                        {`${companyCount} Companies`}
+                      </Text>
+                    </View>
+                  }
                   metrics={[
                     { label: 'Total Cases', value: cases },
                     { label: 'Total Bottles', value: bottles },
@@ -404,7 +418,20 @@ export function TsmView({
                   key={item.id || index}
                   title={item.name}
                   titleIcon={<UserIcon size={18} color="#0F172A" />}
-                  subtitle={`${areaName}  •  🏢 ${companyCount} Companies`}
+                  subtitle={
+                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500' }}>
+                        {areaName}
+                      </Text>
+                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500' }}>
+                        {'  •  '}
+                      </Text>
+                      <BuildingIcon size={scaledFontSize(12)} color="#64748B" />
+                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500', marginLeft: 3 }}>
+                        {`${companyCount} Companies`}
+                      </Text>
+                    </View>
+                  }
                   metrics={[
                     { label: 'Cases', value: cases },
                     { label: 'Bottles', value: bottles },
