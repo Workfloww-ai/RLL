@@ -169,7 +169,7 @@ export default function Login({ onLogin }: LoginProps) {
   };
 
   return (
-    <div className="min-h-screen bg-[#F8F8F8] flex flex-col justify-center py-12 sm:px-6 lg:px-8 font-sans">
+    <div className="min-h-screen bg-#F8F8F8 flex flex-col justify-center py-12 sm:px-6 lg:px-8 font-sans">
       <motion.div 
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -178,10 +178,10 @@ export default function Login({ onLogin }: LoginProps) {
         <div className="flex justify-center mb-4">
           <img src="/images/rll.png" alt="RLL Logo" className="w-24 h-24 object-contain bg-white rounded-xl shadow-sm p-1" />
         </div>
-        <h2 className="mt-4 text-center text-2xl font-black tracking-tight text-[#222222] drop-shadow-sm">
+        <h2 className="mt-4 text-center text-2xl font-black tracking-tight text-#222222 drop-shadow-sm">
           RLL Admin Dashboard
         </h2>
-        <p className="mt-1 text-center text-xs text-[#666666] font-medium">
+        <p className="mt-1 text-center text-xs text-#666666 font-medium">
           Rajasthan Liquor Limited Executive Portal
         </p>
       </motion.div>
@@ -192,7 +192,7 @@ export default function Login({ onLogin }: LoginProps) {
         transition={{ delay: 0.1 }}
         className="mt-5 sm:mx-auto sm:w-full sm:max-w-md relative px-4 sm:px-0"
       >
-        <div className="bg-gradient-to-br from-[#0D3B8E] to-[#0A2F73] py-6 px-4 shadow-2xl rounded-2xl sm:px-8 border border-[#0D3B8E] overflow-hidden relative">
+        <div className="bg-linear-to-br from-#0D3B8E to-#0A2F73 py-6 px-4 shadow-2xl rounded-2xl sm:px-8 border border-#0D3B8E overflow-hidden relative">
           
           {error && (
             <div className="mb-4 p-3 text-xs text-red-100 bg-red-600/40 border border-red-400/50 rounded-xl backdrop-blur-sm font-medium leading-relaxed">
@@ -292,7 +292,7 @@ export default function Login({ onLogin }: LoginProps) {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="flex w-full justify-center rounded-xl bg-white py-2.5 px-4 text-xs font-extrabold text-[#0D3B8E] shadow-md hover:bg-blue-50 transition-colors gap-2 items-center mt-3 disabled:opacity-70 cursor-pointer"
+                  className="flex w-full justify-center rounded-xl bg-white py-2.5 px-4 text-xs font-extrabold text-#0D3B8E shadow-md hover:bg-blue-50 transition-colors gap-2 items-center mt-3 disabled:opacity-70 cursor-pointer"
                 >
                   <LogIn className="w-4 h-4" />
                   {loading ? 'Authenticating Admin...' : 'Sign In'}

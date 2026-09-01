@@ -288,6 +288,9 @@ export async function loginMobileUser(email: string, password: string) {
   }
 }
 
+let activeSalesAbortController: AbortController | null = null;
+let activeCompaniesAbortController: AbortController | null = null;
+
 export async function fetchMobileSales(
   dateFrom: string,
   dateTo: string,
@@ -300,6 +303,14 @@ export async function fetchMobileSales(
     logger.warn('fetchMobileSales: Missing authentication token.');
     return null;
   }
+
+  // Cancel previous in-flight sales request if filters change rapidly
+  if (activeSalesAbortController) {
+    activeSalesAbortController.abort();
+    logger.info('fetchMobileSales: Aborted previous in-flight sales request due to filter update.');
+  }
+  activeSalesAbortController = new AbortController();
+  const signal = activeSalesAbortController.signal;
 
   const requestId = `req_${Math.random().toString(36).substring(2, 10)}`;
   const now = () => Date.now();
@@ -328,7 +339,7 @@ export async function fetchMobileSales(
       'X-Request-ID': requestId,
     };
 
-    const res = await fetch(url, { headers });
+    const res = await fetch(url, { headers, signal });
     const tResponseReceived = now();
     const networkDurationMs = Math.round(tResponseReceived - tRequestStart);
 
@@ -386,7 +397,11 @@ export async function fetchMobileSales(
     );
 
     return data;
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.name === 'AbortError') {
+      logger.info('fetchMobileSales: Request aborted successfully.');
+      return null;
+    }
     logger.error('fetchMobileSales: Exception while retrieving sales data', error);
     return null;
   }
@@ -572,12 +587,15 @@ export async function fetchMobileCompanies(period: string = 'Daily', dateTo?: st
     const cachedStr = await AsyncStorage.getItem(cacheKey);
     if (cachedStr) {
       const cachedData = JSON.parse(cachedStr);
-      logger.info(`fetchMobileCompanies: Phone cache HIT for ${cacheKey}`);
-      // Revalidate silently in background
-      setTimeout(() => {
-        fetchMobileCompaniesNetwork(period, dateTo, selectedHq, cacheKey).catch(() => {});
-      }, 50);
-      return cachedData.companies || [];
+      const comps = cachedData.companies || [];
+      if (comps.length > 0) {
+        logger.info(`fetchMobileCompanies: Phone cache HIT for ${cacheKey}`);
+        // Revalidate silently in background
+        setTimeout(() => {
+          fetchMobileCompaniesNetwork(period, dateTo, selectedHq, cacheKey).catch(() => {});
+        }, 50);
+        return comps;
+      }
     }
   } catch (e) {
     logger.warn(`fetchMobileCompanies: Phone cache read error: ${e}`);
@@ -588,13 +606,20 @@ export async function fetchMobileCompanies(period: string = 'Daily', dateTo?: st
 }
 
 async function fetchMobileCompaniesNetwork(period: string, dateTo?: string, selectedHq: string = 'All Headquarters', cacheKey?: string) {
+  if (activeCompaniesAbortController) {
+    activeCompaniesAbortController.abort();
+    logger.info('fetchMobileCompaniesNetwork: Aborted previous in-flight companies request.');
+  }
+  activeCompaniesAbortController = new AbortController();
+  const signal = activeCompaniesAbortController.signal;
+
   try {
     const params = new URLSearchParams();
     params.append('period', period);
     if (dateTo) params.append('date', dateTo);
     if (selectedHq) params.append('selected_hq', selectedHq);
 
-    const res = await apiFetch(`/mobile/companies?${params.toString()}`);
+    const res = await apiFetch(`/mobile/companies?${params.toString()}`, { signal });
     if (!res.ok) {
       logger.warn(`fetchMobileCompaniesNetwork: API status ${res.status}`);
       return [];
@@ -606,7 +631,11 @@ async function fetchMobileCompaniesNetwork(period: string, dateTo?: string, sele
       AsyncStorage.setItem(cacheKey, JSON.stringify(data)).catch(() => {});
     }
     return companies;
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.name === 'AbortError') {
+      logger.info('fetchMobileCompaniesNetwork: Request aborted successfully.');
+      return [];
+    }
     logger.error('fetchMobileCompaniesNetwork: Exception fetching companies:', error);
     return [];
   }

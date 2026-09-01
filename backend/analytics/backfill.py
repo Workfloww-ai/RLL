@@ -62,29 +62,13 @@ def backfill_summary_tables(start_date: Optional[str] = None, end_date: Optional
             except Exception as e_date:
                 logger.error(f"[ANALYTICS BACKFILL] Error backfilling date {s_date}: {e_date}")
 
-        # 2. Refresh Monthly Summaries for affected months (depot-by-depot to prevent timeouts)
+        # 2. Refresh Monthly Summaries for affected months
         logger.info(f"[ANALYTICS BACKFILL] Refreshing {len(affected_months)} affected monthly summaries...")
         for m_start in sorted(list(affected_months)):
             try:
-                dt = datetime.strptime(m_start, "%Y-%m-%d")
-                if dt.month == 12:
-                    next_year = dt.year + 1
-                    next_month = 1
-                else:
-                    next_year = dt.year
-                    next_month = dt.month + 1
-                m_end = f"{next_year:04d}-{next_month:02d}-01"
-
-                # Fetch all depots in the system to ensure complete refresh without any page limit issues
-                depots_res = client.table("depots").select("depot_id").execute()
-                all_depots = {r["depot_id"] for r in (depots_res.data or []) if r.get("depot_id")}
-                logger.info(f"[ANALYTICS BACKFILL] Refreshing {len(all_depots)} depots for month {m_start}...")
-
-                for d_id in sorted(list(all_depots)):
-                    client.rpc("refresh_sales_monthly_summary_for_month", {
-                        "p_month_start": m_start,
-                        "p_depot_id": d_id
-                    }).execute()
+                client.rpc("refresh_sales_monthly_summary_for_month", {
+                    "p_month_start": m_start
+                }).execute()
 
                 logger.info(f"[ANALYTICS BACKFILL] Refreshed monthly summary for month_start={m_start}")
             except Exception as e_month:

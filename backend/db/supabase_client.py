@@ -412,6 +412,7 @@ def fetch_cascading_groups_json_db(
 ) -> List[Dict[str, Any]]:
     """
     Fetches group sales summary by calling get_cascading_groups_summary_json RPC.
+    Enriches total_licensees and total_brands counts for complete UI display.
     """
     client = get_supabase_client()
     if not client:
@@ -533,14 +534,26 @@ def fetch_cascading_groups_db(date_from: str, date_to: str) -> List[Dict[str, An
         return []
 
     try:
-        month_start = f"{date_from[:7]}-01"
+        target_date = date_to or date_from
+        month_start = f"{target_date[:7]}-01"
 
-        # 1. Fetch active groups
-        g_res = client.table("groups").select("group_id, group_name").eq("is_active", True).execute()
-        all_groups = {str(g["group_id"]): g["group_name"] for g in (g_res.data or [])}
+        # 1. Fetch ALL active groups with range pagination
+        all_groups: Dict[str, str] = {}
+        g_offset = 0
+        while True:
+            g_res = client.table("groups").select("group_id, group_name").eq("is_active", True).range(g_offset, g_offset + 999).execute()
+            batch = g_res.data or []
+            if not batch:
+                break
+            for g in batch:
+                if g.get("group_id") and g.get("group_name"):
+                    all_groups[str(g["group_id"])] = g["group_name"]
+            if len(batch) < 1000:
+                break
+            g_offset += 1000
 
         # 2. Exclude company Others brands
-        b_res = client.table("brands").select("brand_id, companies!inner(company_name)").execute()
+        b_res = client.table("brands").select("brand_id, company_id, companies!inner(company_name)").execute()
         excluded_brand_ids = set()
         for b in (b_res.data or []):
             comp_obj = b.get("companies") or {}
@@ -548,95 +561,74 @@ def fetch_cascading_groups_db(date_from: str, date_to: str) -> List[Dict[str, An
             if cname and cname.lower().strip() == "others":
                 excluded_brand_ids.add(str(b["brand_id"]))
 
-        # 3. Paginate all active licensees
-        licensees_rows = []
-        l_offset = 0
-        l_limit = 1000
+        # 3. Query sales_daily_summary for target_date with range pagination
+        daily_groups: Dict[str, Dict[str, float]] = {}
+        d_offset = 0
         while True:
-            q_lic = client.table("licensees").select("licensee_id, group_id, depot_id, depots(name)").eq("is_active", True)
-            l_res = q_lic.range(l_offset, l_offset + l_limit - 1).execute()
-            batch = l_res.data or []
+            sds_res = client.table("sales_daily_summary").select("group_id, brand_id, total_cases, total_bottles").eq("sale_date", target_date).range(d_offset, d_offset + 999).execute()
+            batch = sds_res.data or []
             if not batch:
                 break
-            licensees_rows.extend(batch)
-            if len(batch) < l_limit:
+            for r in batch:
+                bid = str(r.get("brand_id")) if r.get("brand_id") else None
+                if bid and bid in excluded_brand_ids:
+                    continue
+                gid = str(r.get("group_id")) if r.get("group_id") else None
+                if not gid or gid not in all_groups:
+                    continue
+                if gid not in daily_groups:
+                    daily_groups[gid] = {"cases": 0.0, "bottles": 0.0}
+                daily_groups[gid]["cases"] += float(r.get("total_cases") or 0)
+                daily_groups[gid]["bottles"] += float(r.get("total_bottles") or 0)
+            if len(batch) < 1000:
                 break
-            l_offset += l_limit
+            d_offset += 1000
 
-        group_lics: Dict[str, set] = {}
-        group_depots: Dict[str, set] = {}
-        lic_to_group: Dict[str, str] = {}
-        for lic in licensees_rows:
-            gid = str(lic.get("group_id")) if lic.get("group_id") else None
-            lid = str(lic.get("licensee_id")) if lic.get("licensee_id") else None
-            depot_obj = lic.get("depots") or {}
-            dname = depot_obj.get("name") if isinstance(depot_obj, dict) else None
-
-            if gid and lid:
-                lic_to_group[lid] = gid
-                if gid not in group_lics:
-                    group_lics[gid] = set()
-                    group_depots[gid] = set()
-                group_lics[gid].add(lid)
-                if dname:
-                    group_depots[gid].add(dname)
-
-        # 4. Query sales_monthly_summary for month_start excluding Others
-        group_metrics: Dict[str, Dict[str, Any]] = {}
-        sms_offset = 0
-        sms_limit = 1000
+        # 4. Query sales_monthly_summary for month_start with range pagination (1k chunks)
+        mtd_groups: Dict[str, Dict[str, float]] = {}
+        m_offset = 0
+        m_chunk = 1000
         while True:
-            q = client.table("sales_monthly_summary").select("group_id, licensee_id, brand_id, total_cases, total_bottles").eq("month_start", month_start)
-            sms_res = q.range(sms_offset, sms_offset + sms_limit - 1).execute()
-
+            sms_res = client.table("sales_monthly_summary").select("group_id, brand_id, total_cases, total_bottles").eq("month_start", month_start).range(m_offset, m_offset + m_chunk - 1).execute()
             batch = sms_res.data or []
             if not batch:
                 break
-
-            for sms in batch:
-                bid = str(sms.get("brand_id")) if sms.get("brand_id") else None
+            for r in batch:
+                bid = str(r.get("brand_id")) if r.get("brand_id") else None
                 if bid and bid in excluded_brand_ids:
                     continue
-
-                gid = str(sms.get("group_id")) if sms.get("group_id") else None
-                if not gid:
-                    lid = str(sms.get("licensee_id")) if sms.get("licensee_id") else None
-                    gid = lic_to_group.get(lid)
-
+                gid = str(r.get("group_id")) if r.get("group_id") else None
                 if not gid or gid not in all_groups:
                     continue
-
-                if gid not in group_metrics:
-                    group_metrics[gid] = {"cases": 0.0, "bottles": 0.0}
-
-                group_metrics[gid]["cases"] += float(sms.get("total_cases") or 0)
-                group_metrics[gid]["bottles"] += float(sms.get("total_bottles") or 0)
-
-            if len(batch) < sms_limit:
+                if gid not in mtd_groups:
+                    mtd_groups[gid] = {"cases": 0.0, "bottles": 0.0}
+                mtd_groups[gid]["cases"] += float(r.get("total_cases") or 0)
+                mtd_groups[gid]["bottles"] += float(r.get("total_bottles") or 0)
+            if len(batch) < m_chunk:
                 break
-            sms_offset += sms_limit
+            m_offset += m_chunk
 
+        # 5. Combine and build results
+        active_gids = set(daily_groups.keys()).union(mtd_groups.keys())
         results = []
-        for gid, gname in all_groups.items():
-            lic_count = len(group_lics.get(gid, set()))
-            m = group_metrics.get(gid, {"cases": 0.0, "bottles": 0.0})
-            depots_list = sorted(list(group_depots.get(gid, set())))
-            if lic_count > 0 or m["cases"] > 0:
-                results.append({
-                    "group_id": gid,
-                    "group_name": gname,
-                    "total_licensees": lic_count,
-                    "linked_depots": depots_list,
-                    "daily_cases": 0.0,
-                    "daily_bottles": 0.0,
-                    "mtd_cases": round(m["cases"], 2),
-                    "mtd_bottles": round(m["bottles"], 2),
-                    "ytd_cases": round(m["cases"], 2),
-                    "ytd_bottles": round(m["bottles"], 2),
-                    "total_cases": round(m["cases"], 2),
-                    "total_bottles": round(m["bottles"], 2),
-                })
-        results.sort(key=lambda x: (x["total_cases"], x["total_licensees"]), reverse=True)
+        for gid in active_gids:
+            gname = all_groups.get(gid, "Unknown Group")
+            d_m = daily_groups.get(gid, {"cases": 0.0, "bottles": 0.0})
+            m_m = mtd_groups.get(gid, {"cases": 0.0, "bottles": 0.0})
+            results.append({
+                "group_id": gid,
+                "group_name": gname,
+                "daily_cases": round(d_m["cases"], 2),
+                "daily_bottles": round(d_m["bottles"], 2),
+                "mtd_cases": round(m_m["cases"], 2),
+                "mtd_bottles": round(m_m["bottles"], 2),
+                "ytd_cases": round(m_m["cases"], 2),
+                "ytd_bottles": round(m_m["bottles"], 2),
+                "total_cases": round(m_m["cases"], 2),
+                "total_bottles": round(m_m["bottles"], 2),
+            })
+
+        results.sort(key=lambda x: (x["daily_cases"], x["mtd_cases"]), reverse=True)
         return results
     except Exception as e:
         logger.error(f"Fallback fetch_cascading_groups_db error: {e}")

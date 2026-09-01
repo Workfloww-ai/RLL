@@ -33,7 +33,7 @@ _MASTER_CACHE = {
     "timestamp": 0,
     "data": None
 }
-_MASTER_CACHE_TTL = 300  # 300 seconds (5 mins)
+_MASTER_CACHE_TTL = 300  # 5-minute TTL for master data lookups (companies, depots, HQs)
 
 # Sales endpoint response cache with 1-second TTL for real-time updates
 _SALES_RESPONSE_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -742,6 +742,7 @@ async def get_mobile_sales(
     """
     import json
     import uuid
+    from fastapi import Response
     from fastapi.responses import JSONResponse
 
     t_api_start = time.perf_counter()
@@ -839,17 +840,22 @@ async def get_mobile_sales(
         from backend.services.cache_service import get_json_cache
         redis_cached_data = await get_json_cache(redis_key)
         if redis_cached_data:
+            if isinstance(redis_cached_data, dict):
+                redis_cached_data["process_time_ms"] = 0.0
             _SALES_RESPONSE_CACHE[cache_key] = {
                 "timestamp": time.time(),
                 "data": redis_cached_data
             }
             t_api_end = time.perf_counter()
             total_api_ms = round((t_api_end - t_api_start) * 1000, 2)
-            return JSONResponse(
-                content=redis_cached_data,
+            raw_str = json.dumps(redis_cached_data) if isinstance(redis_cached_data, (dict, list)) else str(redis_cached_data)
+            return Response(
+                content=raw_str,
+                media_type="application/json",
                 headers={
                     "X-Request-ID": request_id,
                     "X-Backend-Duration-Ms": str(total_api_ms),
+                    "X-Response-Size-Bytes": str(len(raw_str.encode('utf-8'))),
                     "X-Sales-Cache-Status": "REDIS_HIT"
                 }
             )

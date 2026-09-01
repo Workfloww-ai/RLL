@@ -2,9 +2,10 @@
   "expo": {
     "name": "360",
     "slug": "rll",
-    "version": "1.0.0",
+    "version": "1.0.2",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
+    "icon": "./src/assets/lucid_logo_nobg.png",
     "ios": {
       "supportsTablet": true
     },
@@ -14,7 +15,11 @@
     ],
     "android": {
       "package": "com.workfloww.lucid360",
-      "versionCode": 1
+      "versionCode": 3,
+      "adaptiveIcon": {
+        "foregroundImage": "./src/assets/lucid_logo_nobg.png",
+        "backgroundColor": "#FFFFFF"
+      }
     },
     "extra": {
       "eas": {

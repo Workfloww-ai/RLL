@@ -114,29 +114,14 @@ class IncrementalAnalyticsEngine:
                 logger.error(f"[ANALYTICS] Failed daily aggregation for date {s_date}: {e_daily}", exc_info=True)
                 success = False
 
-        # 3. Incremental Monthly Aggregation (depot-by-depot to prevent timeouts)
+        # 3. Incremental Monthly Aggregation (Single set-based RPC execution per affected month)
         for m_start in sorted_months:
             t0 = time.perf_counter()
             try:
-                dt = datetime.strptime(m_start, "%Y-%m-%d")
-                if dt.month == 12:
-                    next_year = dt.year + 1
-                    next_month = 1
-                else:
-                    next_year = dt.year
-                    next_month = dt.month + 1
-                m_end = f"{next_year:04d}-{next_month:02d}-01"
-
-                # Fetch all depots in the system to ensure complete refresh without any page limit issues
-                depots_res = client.table("depots").select("depot_id").execute()
-                all_depots = {r["depot_id"] for r in (depots_res.data or []) if r.get("depot_id")}
-                logger.info(f"[ANALYTICS] Refreshing {len(all_depots)} depots for month {m_start}...")
-
-                for d_id in sorted(list(all_depots)):
-                    client.rpc("refresh_sales_monthly_summary_for_month", {
-                        "p_month_start": m_start,
-                        "p_depot_id": d_id
-                    }).execute()
+                logger.info(f"[ANALYTICS] Refreshing monthly summary for month_start {m_start}...")
+                client.rpc("refresh_sales_monthly_summary_for_month", {
+                    "p_month_start": m_start
+                }).execute()
                 
                 # Backward Compatibility Refresh Calls
                 try:
@@ -153,9 +138,10 @@ class IncrementalAnalyticsEngine:
                 success = False
 
         # 4. Redis Cache Pattern Invalidation (Event-Driven)
+        redis_keys_deleted = 0
         try:
             from backend.services.cache_service import invalidate_analytics_cache_sync
-            invalidate_analytics_cache_sync()
+            redis_keys_deleted = invalidate_analytics_cache_sync() or 0
             logger.info(f"[ANALYTICS] Invalidated Redis cache keys for batch {batch_id}.")
         except Exception as e_redis:
             logger.warning(f"[ANALYTICS] Non-fatal Redis invalidation notice: {e_redis}")

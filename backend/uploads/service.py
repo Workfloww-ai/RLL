@@ -127,11 +127,11 @@ COLUMN_ALIASES = {
         "packing_size",
     ],
     "TOTAL_CASE": [
+        "case",
+        "cases",
         "total_case",
         "total case",
         "total cases",
-        "cases",
-        "case",
     ],
     "TOTAL_BTL": [
         "total_btl",
@@ -660,6 +660,16 @@ class ImportPipelineEngine:
                 from backend.users.service import user_service
                 u_stats = user_service.populate_users_and_hierarchy_from_raw(batch_id)
                 logger.info(f"Batch {batch_id}: Populated {u_stats.get('users', 0)} users & {u_stats.get('mappings', 0)} hierarchy mappings.")
+                try:
+                    from backend.db.redis_client import safe_delete
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.create_task(safe_delete("rll:cache:users_list"))
+                        asyncio.create_task(safe_delete("rll:cache:depots_list"))
+                        asyncio.create_task(safe_delete("rll:cache:headquarters_list"))
+                except Exception as c_err:
+                    logger.warning(f"Cache invalidation notice during upload: {c_err}")
             except Exception as u_err:
                 logger.warning(f"Batch {batch_id}: User population notice: {u_err}")
 

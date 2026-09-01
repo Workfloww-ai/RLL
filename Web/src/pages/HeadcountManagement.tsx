@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import FileUpload from '../components/FileUpload';
-import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X, RefreshCw, Mail, Phone, Shield } from 'lucide-react';
+import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X, RefreshCw, Mail, Phone, Shield, RotateCcw, ChevronUp, ChevronDown, ArrowUpDown } from 'lucide-react';
 import { User } from '../types';
 import { API_BASE_URL } from '../config';
 
@@ -78,6 +78,16 @@ export default function HeadcountManagement() {
   const [editReportingManager, setEditReportingManager] = useState("");
   const [editIsActive, setEditIsActive] = useState(true);
 
+  type SortField = 'name' | 'phoneNumber' | 'email' | 'role' | 'reportingManager' | 'isActive';
+  type SortDirection = 'asc' | 'desc';
+
+  const [roleFilter, setRoleFilter] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  const [managerFilter, setManagerFilter] = useState<string>('all');
+
+  const [sortField, setSortField] = useState<SortField>('name');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+
   const [availableRoles, setAvailableRoles] = useState<{ role_id: string; role_name: string; description?: string }[]>([]);
 
   const fetchUsers = async () => {
@@ -115,6 +125,24 @@ export default function HeadcountManagement() {
     fetchUsers();
     fetchRoles();
   }, []);
+
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
+  };
+
+  const resetFilters = () => {
+    setSearchQuery('');
+    setRoleFilter('all');
+    setStatusFilter('all');
+    setManagerFilter('all');
+    setSortField('name');
+    setSortDirection('asc');
+  };
 
   const handleEditClick = (user: User) => {
     setEditingId(user.id);
@@ -211,23 +239,85 @@ export default function HeadcountManagement() {
     }
   };
 
-  const query = (searchQuery || '').toLowerCase().trim();
-  const filteredUsers = users.filter(user => {
-    if (!user) return false;
-    const name = (user.name || '').toLowerCase();
-    const id = (user.id || '').toLowerCase();
-    const role = (user.role || '').toLowerCase();
-    const phone = (user.phoneNumber || '').toLowerCase();
-    const email = (user.email || '').toLowerCase();
-    const manager = (user.reportingManager || '').toLowerCase();
+  // Extract unique reporting managers & roles for filters
+  const uniqueManagers = useMemo(() => {
+    const managers = new Set<string>();
+    users.forEach(u => {
+      if (u.reportingManager && u.reportingManager !== 'Unassigned') {
+        managers.add(u.reportingManager);
+      }
+    });
+    return Array.from(managers).sort();
+  }, [users]);
 
-    return name.includes(query) ||
-           id.includes(query) ||
-           role.includes(query) ||
-           phone.includes(query) ||
-           email.includes(query) ||
-           manager.includes(query);
-  });
+  const uniqueRoles = useMemo(() => {
+    const roles = new Set<string>();
+    if (availableRoles.length > 0) {
+      availableRoles.forEach(r => roles.add(r.role_name));
+    }
+    users.forEach(u => {
+      if (u.role) roles.add(u.role);
+    });
+    return Array.from(roles).sort();
+  }, [users, availableRoles]);
+
+  const filteredUsers = useMemo(() => {
+    let result = users.filter(u => {
+      if (!u) return false;
+      // Always retain row currently being edited so editing controls never disappear mid-edit
+      if (editingId !== null && String(u.id) === String(editingId)) {
+        return true;
+      }
+
+      // Search query filter
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase().trim();
+        const matches =
+          (u.name || '').toLowerCase().includes(q) ||
+          (u.id || '').toLowerCase().includes(q) ||
+          (u.role || '').toLowerCase().includes(q) ||
+          (u.phoneNumber || '').toLowerCase().includes(q) ||
+          (u.email || '').toLowerCase().includes(q) ||
+          (u.reportingManager || '').toLowerCase().includes(q);
+        if (!matches) return false;
+      }
+
+      // Role filter
+      if (roleFilter !== 'all' && u.role !== roleFilter) return false;
+
+      // Status filter
+      if (statusFilter === 'active' && u.isActive !== true) return false;
+      if (statusFilter === 'inactive' && u.isActive !== false) return false;
+
+      // Manager filter
+      if (managerFilter !== 'all' && u.reportingManager !== managerFilter) return false;
+
+      return true;
+    });
+
+    // Sorting
+    result.sort((a, b) => {
+      let aVal: any = "";
+      let bVal: any = "";
+
+      if (sortField === 'isActive') {
+        aVal = a.isActive ? 1 : 0;
+        bVal = b.isActive ? 1 : 0;
+      } else {
+        aVal = a[sortField] ?? "";
+        bVal = b[sortField] ?? "";
+      }
+
+      if (typeof aVal === "string") aVal = aVal.toLowerCase();
+      if (typeof bVal === "string") bVal = bVal.toLowerCase();
+
+      if (aVal < bVal) return sortDirection === "asc" ? -1 : 1;
+      if (aVal > bVal) return sortDirection === "asc" ? 1 : -1;
+      return 0;
+    });
+
+    return result;
+  }, [users, searchQuery, roleFilter, statusFilter, managerFilter, sortField, sortDirection, editingId]);
 
   const getRoleColor = (role: string) => {
     switch (role) {
@@ -278,6 +368,61 @@ export default function HeadcountManagement() {
         </div>
       </div>
 
+      {/* Filter Panel (Always Visible) */}
+      <div className="mb-4 p-4 bg-slate-50 border border-slate-200 rounded-xl flex flex-wrap items-center gap-4 text-xs font-semibold text-slate-700 shrink-0">
+        <div className="flex items-center gap-2">
+          <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Status:</span>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as any)}
+            className="px-3 py-1.5 bg-white border border-slate-200 rounded font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-[#004B87]"
+          >
+            <option value="all">All Statuses</option>
+            <option value="active">Active Only</option>
+            <option value="inactive">Inactive Only</option>
+          </select>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Role:</span>
+          <select
+            value={roleFilter}
+            onChange={(e) => setRoleFilter(e.target.value)}
+            className="px-3 py-1.5 bg-white border border-slate-200 rounded font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-[#004B87]"
+          >
+            <option value="all">All Roles</option>
+            {uniqueRoles.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Reporting Manager:</span>
+          <select
+            value={managerFilter}
+            onChange={(e) => setManagerFilter(e.target.value)}
+            className="px-3 py-1.5 bg-white border border-slate-200 rounded font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-[#004B87]"
+          >
+            <option value="all">All Managers</option>
+            {uniqueManagers.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <button
+          onClick={resetFilters}
+          className="ml-auto flex items-center gap-1 text-[11px] font-bold text-slate-500 hover:text-slate-800 transition-colors"
+        >
+          <RotateCcw className="w-3 h-3" /> Reset Filters
+        </button>
+      </div>
+
       {showUpload && (
         <div className="mb-6 shrink-0">
           <FileUpload 
@@ -297,7 +442,7 @@ export default function HeadcountManagement() {
         <div className="mb-6 bg-white p-4 rounded-xl shadow-sm border border-[#004B87]/40 ring-2 ring-[#004B87]/10 flex flex-col gap-4 shrink-0">
           <h3 className="font-bold text-slate-800 text-sm">Add New Employee</h3>
           <div className="flex flex-wrap gap-4 items-end">
-            <div className="flex-1 min-w-[140px] space-y-1">
+            <div className="flex-1 min-w-140px space-y-1">
               <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">First Name</label>
               <input 
                 type="text" 
@@ -307,7 +452,7 @@ export default function HeadcountManagement() {
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
               />
             </div>
-            <div className="flex-1 min-w-[140px] space-y-1">
+            <div className="flex-1 min-w-140px space-y-1">
               <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Last Name</label>
               <input 
                 type="text" 
@@ -317,7 +462,7 @@ export default function HeadcountManagement() {
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
               />
             </div>
-            <div className="flex-1 min-w-[140px] space-y-1">
+            <div className="flex-1 min-w-140px space-y-1">
               <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Phone Number</label>
               <input 
                 type="text" 
@@ -327,7 +472,7 @@ export default function HeadcountManagement() {
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
               />
             </div>
-            <div className="flex-1 min-w-[180px] space-y-1">
+            <div className="flex-1 min-w-180px space-y-1">
               <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Email</label>
               <input 
                 type="email" 
@@ -337,7 +482,7 @@ export default function HeadcountManagement() {
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
               />
             </div>
-            <div className="flex-1 min-w-[160px] space-y-1">
+            <div className="flex-1 min-w-160px space-y-1">
               <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Role</label>
               <select 
                 value={newUser.role}
@@ -349,7 +494,7 @@ export default function HeadcountManagement() {
                 ))}
               </select>
             </div>
-            <div className="flex-1 min-w-[160px] space-y-1">
+            <div className="flex-1 min-w-160px space-y-1">
               <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Reporting Manager</label>
               <input 
                 type="text" 
@@ -379,16 +524,103 @@ export default function HeadcountManagement() {
 
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex-1 overflow-hidden flex flex-col">
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
+          <table className="w-full text-left border-collapse table-fixed min-w-800px">
             <thead>
-              <tr className="bg-slate-50 border-b border-slate-200">
-                <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Name</th>
-                <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Phone Number</th>
-                <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Email</th>
-                <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Role</th>
-                <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Reporting Manager</th>
-                <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Status</th>
-                <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Actions</th>
+              <tr className="bg-slate-50 border-b border-slate-200 select-none">
+                {/* Name */}
+                <th 
+                  onClick={() => handleSort('name')}
+                  className="w-[20%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span>Name</span>
+                    {sortField === 'name' ? (
+                      sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#004B87]" /> : <ChevronDown className="w-3 h-3 text-[#004B87]" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 text-slate-300" />
+                    )}
+                  </div>
+                </th>
+
+                {/* Phone Number */}
+                <th 
+                  onClick={() => handleSort('phoneNumber')}
+                  className="w-[15%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span>Phone Number</span>
+                    {sortField === 'phoneNumber' ? (
+                      sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#004B87]" /> : <ChevronDown className="w-3 h-3 text-[#004B87]" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 text-slate-300" />
+                    )}
+                  </div>
+                </th>
+
+                {/* Email */}
+                <th 
+                  onClick={() => handleSort('email')}
+                  className="w-[22%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span>Email</span>
+                    {sortField === 'email' ? (
+                      sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#004B87]" /> : <ChevronDown className="w-3 h-3 text-[#004B87]" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 text-slate-300" />
+                    )}
+                  </div>
+                </th>
+
+                {/* Role */}
+                <th 
+                  onClick={() => handleSort('role')}
+                  className="w-[14%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span>Role</span>
+                    {sortField === 'role' ? (
+                      sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#004B87]" /> : <ChevronDown className="w-3 h-3 text-[#004B87]" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 text-slate-300" />
+                    )}
+                  </div>
+                </th>
+
+                {/* Reporting Manager */}
+                <th 
+                  onClick={() => handleSort('reportingManager')}
+                  className="w-[17%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span>Reporting Manager</span>
+                    {sortField === 'reportingManager' ? (
+                      sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#004B87]" /> : <ChevronDown className="w-3 h-3 text-[#004B87]" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 text-slate-300" />
+                    )}
+                  </div>
+                </th>
+
+                {/* Status */}
+                <th 
+                  onClick={() => handleSort('isActive')}
+                  className="w-[10%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span>Status</span>
+                    {sortField === 'isActive' ? (
+                      sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#004B87]" /> : <ChevronDown className="w-3 h-3 text-[#004B87]" />
+                    ) : (
+                      <ArrowUpDown className="w-3 h-3 text-slate-300" />
+                    )}
+                  </div>
+                </th>
+
+                {/* Actions */}
+                <th className="w-[12%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">
+                  Actions
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">

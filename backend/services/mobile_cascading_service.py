@@ -69,7 +69,7 @@ def _resolve_multi_period_dates(
 
 
 def _map_period_metrics(records: List[Dict[str, Any]], selected_period: Optional[str]) -> List[Dict[str, Any]]:
-    """Dynamically maps active period metric (Daily, MTD, YTD) into total_cases and total_bottles."""
+    """Dynamically maps active period metric (Daily, MTD, YTD) into total_cases, total_bottles, total_licensees, and total_brands."""
     raw_p = (selected_period or "MTD").strip().upper()
     if raw_p == "DAILY":
         p_key = "daily"
@@ -82,6 +82,8 @@ def _map_period_metrics(records: List[Dict[str, Any]], selected_period: Optional
     for r in records:
         cases_key = f"{p_key}_cases"
         bottles_key = f"{p_key}_bottles"
+        lic_key = f"{p_key}_licensees"
+        brand_key = f"{p_key}_brands"
 
         try:
             cases_val = float(r.get(cases_key) or 0.0)
@@ -93,9 +95,19 @@ def _map_period_metrics(records: List[Dict[str, Any]], selected_period: Optional
         except (ValueError, TypeError):
             bottles_val = 0.0
 
+        lic_val = r.get(lic_key)
+        if lic_val is None:
+            lic_val = r.get("total_licensees") or 0
+
+        brand_val = r.get(brand_key)
+        if brand_val is None:
+            brand_val = r.get("total_brands") or 0
+
         r_copy = dict(r)
         r_copy["total_cases"] = round(cases_val, 2)
         r_copy["total_bottles"] = round(bottles_val, 2)
+        r_copy["total_licensees"] = int(lic_val)
+        r_copy["total_brands"] = int(brand_val)
         mapped.append(r_copy)
 
     mapped.sort(key=lambda x: (x.get("total_cases", 0.0), x.get("total_licensees", 0)), reverse=True)

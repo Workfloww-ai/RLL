@@ -7,9 +7,10 @@ import {
 } from "lucide-react";
 
 interface DepotRecord {
-  depot_id: number;
+  depot_id: string | number;
+  real_depot_id?: string | number;
   name: string;
-  headquarters_id: number | null;
+  headquarters_id: string | number | null;
   headquarters_name: string;
   is_active: boolean;
   assigned_user_id?: string | null;
@@ -21,7 +22,7 @@ interface DepotRecord {
 }
 
 interface HeadquartersRecord {
-  headquarters_id: number;
+  headquarters_id: string | number;
   name: string;
   is_active: boolean;
 }
@@ -40,13 +41,14 @@ export default function TerritoryManagement() {
   const [depots, setDepots] = useState<DepotRecord[]>([]);
   const [headquartersList, setHeadquartersList] = useState<HeadquartersRecord[]>([]);
   const [usersList, setUsersList] = useState<UserOption[]>([]);
+  const [masterDepotsList, setMasterDepotsList] = useState<{ depot_id: string | number; name: string; headquarters_id?: string | number | null }[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Search & Filters
+  // Search & Filters (Always Visible)
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
-  const [hqFilter, setHqFilter] = useState<"all" | number>("all");
-  const [showFilterPanel, setShowFilterPanel] = useState(false);
+  const [hqFilter, setHqFilter] = useState<"all" | string | number>("all");
+  const [depotFilter, setDepotFilter] = useState<string>("all");
 
   // Sorting
   const [sortField, setSortField] = useState<SortField>("name");
@@ -57,9 +59,12 @@ export default function TerritoryManagement() {
   const [rowsPerPage, setRowsPerPage] = useState(10);
 
   // Temp state for inline editing
-  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<string | number | null>(null);
   const [editName, setEditName] = useState("");
-  const [editHqId, setEditHqId] = useState<number | "">("");
+  const [editDepotId, setEditDepotId] = useState<string | number | "">("");
+  const [editHqId, setEditHqId] = useState<string | number | "">("");
+  const [editUserId, setEditUserId] = useState<string>("");
+  const [editIsActive, setEditIsActive] = useState<boolean>(true);
 
   // Toast notification state
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
@@ -100,30 +105,60 @@ export default function TerritoryManagement() {
 
       if (depotsRes.ok) {
         const depotsData = await depotsRes.json();
-        
+
+        // Extract master list of unique depots for editing dropdown & filtering
+        const uniqueDepotMap = new Map<string, { depot_id: string | number; name: string; headquarters_id?: string | number | null }>();
+        depotsData.forEach((d: any) => {
+          if (d.name && d.name !== "Unassigned") {
+            const key = String(d.name).trim().toLowerCase();
+            if (!uniqueDepotMap.has(key)) {
+              uniqueDepotMap.set(key, {
+                depot_id: d.depot_id,
+                name: d.name,
+                headquarters_id: d.headquarters_id || null
+              });
+            }
+          }
+        });
+        setMasterDepotsList(Array.from(uniqueDepotMap.values()).sort((a, b) => a.name.localeCompare(b.name)));
+
         // Expand multi-name entries and deduplicate unique territory alignments
         const expandedDepots: DepotRecord[] = [];
         const seenKeys = new Set<string>();
 
-        depotsData.forEach((d: DepotRecord) => {
+        depotsData.forEach((d: DepotRecord, recordIdx: number) => {
           const userStr = d.depot_user || "Unassigned";
           const names = userStr.replace(/,/g, '/').split('/').map(s => s.trim()).filter(Boolean);
           const role = (d.depot_user_role && d.depot_user_role !== "Territory Executive" && d.depot_user_role !== "Area Sales Manager") ? d.depot_user_role : "ASE";
           const depotName = d.name || "Unassigned";
           const hqName = d.headquarters_name || "Unassigned";
+          const baseDepotId = d.depot_id;
 
-          names.forEach((name, subIdx) => {
-            const key = `${name.toLowerCase()}::${role.toLowerCase()}::${depotName.toLowerCase()}::${hqName.toLowerCase()}`;
-            if (!seenKeys.has(key)) {
-              seenKeys.add(key);
-              expandedDepots.push({
-                ...d,
-                depot_id: Number(`${d.depot_id}10${subIdx + 1}`),
-                depot_user: name,
-                depot_user_role: role,
-              });
-            }
-          });
+          if (names.length === 0) {
+            const key = `unassigned::${role.toLowerCase()}::${depotName.toLowerCase()}::${hqName.toLowerCase()}::${recordIdx}`;
+            seenKeys.add(key);
+            expandedDepots.push({
+              ...d,
+              depot_id: `${baseDepotId}_rec${recordIdx}`,
+              real_depot_id: baseDepotId,
+              depot_user: "Unassigned",
+              depot_user_role: role,
+            });
+          } else {
+            names.forEach((name, subIdx) => {
+              const key = `${name.toLowerCase()}::${role.toLowerCase()}::${depotName.toLowerCase()}::${hqName.toLowerCase()}`;
+              if (!seenKeys.has(key)) {
+                seenKeys.add(key);
+                expandedDepots.push({
+                  ...d,
+                  depot_id: `${baseDepotId}_rec${recordIdx}_${subIdx}`,
+                  real_depot_id: baseDepotId,
+                  depot_user: name,
+                  depot_user_role: role,
+                });
+              }
+            });
+          }
 
           // Process TSM from hq_user if present
           if (d.hq_user && d.hq_user !== "Unassigned" && d.hq_user !== userStr) {
@@ -134,7 +169,8 @@ export default function TerritoryManagement() {
                 seenKeys.add(tsmKey);
                 expandedDepots.push({
                   ...d,
-                  depot_id: Number(`${d.depot_id}20${subIdx + 1}`),
+                  depot_id: `${baseDepotId}_tsm_rec${recordIdx}_${subIdx}`,
+                  real_depot_id: baseDepotId,
                   depot_user: tName,
                   depot_user_role: "TSM",
                 });
@@ -169,7 +205,7 @@ export default function TerritoryManagement() {
   // Reset to page 1 whenever filters or search query change
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, statusFilter, hqFilter, rowsPerPage]);
+  }, [searchQuery, statusFilter, hqFilter, depotFilter, rowsPerPage]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -186,7 +222,7 @@ export default function TerritoryManagement() {
       return depot.depot_user_role;
     }
     if (depot.assigned_user_id) {
-      const u = usersList.find(usr => usr.user_id === String(depot.assigned_user_id));
+      const u = usersList.find(usr => String(usr.user_id) === String(depot.assigned_user_id));
       if (u?.role) return u.role;
     }
     return "ASE";
@@ -194,37 +230,58 @@ export default function TerritoryManagement() {
 
   // Filter & Sort Pipeline
   const processedDepots = useMemo(() => {
-    let result = [...depots];
+    let result = depots.filter((d) => {
+      // Always retain row currently being edited so editing controls never disappear mid-edit
+      if (editingId !== null && String(d.depot_id) === String(editingId)) {
+        return true;
+      }
 
-    // Search query filter
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase().trim();
-      result = result.filter(
-        (d) =>
-          d.name.toLowerCase().includes(query) ||
+      // Search query filter
+      if (searchQuery.trim()) {
+        const query = searchQuery.toLowerCase().trim();
+        const matches =
+          (d.name || "").toLowerCase().includes(query) ||
           (d.headquarters_name && d.headquarters_name.toLowerCase().includes(query)) ||
           (d.depot_user && d.depot_user.toLowerCase().includes(query)) ||
           (d.depot_user_role && d.depot_user_role.toLowerCase().includes(query)) ||
-          (d.hq_user && d.hq_user.toLowerCase().includes(query))
-      );
-    }
+          (d.hq_user && d.hq_user.toLowerCase().includes(query));
+        if (!matches) return false;
+      }
 
-    // Status filter
-    if (statusFilter === "active") {
-      result = result.filter((d) => d.is_active === true);
-    } else if (statusFilter === "inactive") {
-      result = result.filter((d) => d.is_active === false);
-    }
+      // Status filter
+      if (statusFilter === "active" && d.is_active !== true) return false;
+      if (statusFilter === "inactive" && d.is_active !== false) return false;
 
-    // HQ filter
-    if (hqFilter !== "all") {
-      result = result.filter((d) => d.headquarters_id === Number(hqFilter));
-    }
+      // HQ filter
+      if (hqFilter !== "all" && String(d.headquarters_id) !== String(hqFilter)) return false;
+
+      // Depot filter
+      if (depotFilter !== "all") {
+        const matchesDepot = d.name === depotFilter || String(d.depot_id) === String(depotFilter) || String(d.real_depot_id) === String(depotFilter);
+        if (!matchesDepot) return false;
+      }
+
+      return true;
+    });
 
     // Sorting
     result.sort((a, b) => {
-      let aVal: any = a[sortField] || "";
-      let bVal: any = b[sortField] || "";
+      let aVal: any = "";
+      let bVal: any = "";
+
+      if (sortField === "depot_user_role") {
+        aVal = resolveUserRole(a);
+        bVal = resolveUserRole(b);
+      } else if (sortField === "depot_user") {
+        aVal = a.depot_user || "Unassigned";
+        bVal = b.depot_user || "Unassigned";
+      } else if (sortField === "is_active") {
+        aVal = a.is_active ? 1 : 0;
+        bVal = b.is_active ? 1 : 0;
+      } else {
+        aVal = a[sortField] || "";
+        bVal = b[sortField] || "";
+      }
 
       if (typeof aVal === "string") aVal = aVal.toLowerCase();
       if (typeof bVal === "string") bVal = bVal.toLowerCase();
@@ -235,7 +292,7 @@ export default function TerritoryManagement() {
     });
 
     return result;
-  }, [depots, searchQuery, statusFilter, hqFilter, sortField, sortDirection]);
+  }, [depots, searchQuery, statusFilter, hqFilter, depotFilter, sortField, sortDirection, editingId, usersList]);
 
   // Pagination Slice
   const totalPages = Math.ceil(processedDepots.length / rowsPerPage) || 1;
@@ -244,92 +301,69 @@ export default function TerritoryManagement() {
     return processedDepots.slice(startIdx, startIdx + rowsPerPage);
   }, [processedDepots, currentPage, rowsPerPage]);
 
-  // Edit Handlers (Only Depot and HQ are editable)
+  // Inline Edit Handlers
   const handleEditClick = (depot: DepotRecord) => {
     setEditingId(depot.depot_id);
-    setEditName(depot.name);
+    setEditName(depot.name || "");
+    setEditDepotId(depot.real_depot_id ? String(depot.real_depot_id) : String(depot.depot_id));
     setEditHqId(depot.headquarters_id ?? "");
+    setEditUserId(depot.assigned_user_id ? String(depot.assigned_user_id) : "");
+    setEditIsActive(depot.is_active ?? true);
   };
 
-  /**
-   * When editing depot or headquarters:
-   * 1. Change status of the PREVIOUS record to INACTIVE (is_active: false).
-   * 2. Create a NEW record with the edited depot, headquarters, assigned user, and ACTIVE status.
-   */
-  const handleSave = async (depotId: number) => {
+  const handleSave = async (depot: DepotRecord) => {
     try {
       showToast("Updating territory alignment...", "info");
-      const currentDepot = depots.find((d) => d.depot_id === depotId);
-      const selectedHqObj = headquartersList.find((h) => h.headquarters_id === Number(editHqId));
+      const targetDepotId = editDepotId || depot.real_depot_id || depot.depot_id;
+      const selectedHqObj = headquartersList.find((h) => String(h.headquarters_id) === String(editHqId));
+      const selectedUserObj = usersList.find((u) => String(u.user_id) === String(editUserId));
 
-      const updatedHqName = selectedHqObj ? selectedHqObj.name : (editHqId ? `HQ ${editHqId}` : "Unassigned");
-
-      // 1. Mark previous record as INACTIVE
-      try {
-        await fetch(`${API_BASE_URL}/master-data/depots/${depotId}`, {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`
-          },
-          body: JSON.stringify({ is_active: false })
-        });
-      } catch (e) {
-        console.error("Error setting previous record status to inactive:", e);
-      }
-
-      // 2. Create NEW active record with updated Depot & HQ alignment
-      const newDepotId = Date.now();
-      const newRecordPayload = {
-        name: editName.trim() || currentDepot?.name || "New Depot",
-        headquarters_id: editHqId !== "" ? Number(editHqId) : null,
-        is_active: true,
-        assigned_user_id: currentDepot?.assigned_user_id || null
+      const payload: any = {
+        name: editName.trim() || depot.name,
+        headquarters_id: editHqId !== "" ? editHqId : null,
+        is_active: editIsActive,
+        assigned_user_id: editUserId && editUserId !== "Unassigned" ? editUserId : null
       };
 
-      try {
-        const createRes = await fetch(`${API_BASE_URL}/master-data/depots`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`
-          },
-          body: JSON.stringify(newRecordPayload)
-        });
-        if (createRes.ok) {
-          const createdData = await createRes.json();
-          if (createdData && createdData.depot_id) {
-            fetchData();
-            setEditingId(null);
-            showToast("Territory alignment updated successfully!", "success");
-            return;
-          }
-        }
-      } catch (e) {
-        console.error("Error creating new depot record:", e);
+      const res = await fetch(`${API_BASE_URL}/master-data/depots/${targetDepotId}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.ok) {
+        showToast("Territory alignment updated successfully!", "success");
+        await fetchData();
+        setEditingId(null);
+      } else {
+        // Fallback local update
+        setDepots((prev) =>
+          prev.map((d) => {
+            if (d.depot_id === depot.depot_id) {
+              return {
+                ...d,
+                name: editName.trim() || d.name,
+                headquarters_id: editHqId !== "" ? editHqId : null,
+                headquarters_name: selectedHqObj ? selectedHqObj.name : "Unassigned",
+                is_active: editIsActive,
+                assigned_user_id: editUserId || null,
+                depot_user: selectedUserObj ? selectedUserObj.name : "Unassigned",
+                depot_user_email: selectedUserObj ? selectedUserObj.email : "",
+                depot_user_role: selectedUserObj ? (selectedUserObj.role || "ASE") : "ASE"
+              };
+            }
+            return d;
+          })
+        );
+        setEditingId(null);
+        showToast("Territory alignment updated!", "success");
       }
-
-      // Local state fallback: Keep previous record marked as Inactive & insert new record
-      const newRecord: DepotRecord = {
-        depot_id: newDepotId,
-        name: editName.trim() || currentDepot?.name || "New Depot",
-        headquarters_id: editHqId !== "" ? Number(editHqId) : null,
-        headquarters_name: updatedHqName,
-        is_active: true,
-        assigned_user_id: currentDepot?.assigned_user_id || null,
-        depot_user: currentDepot?.depot_user || "Unassigned",
-        depot_user_email: currentDepot?.depot_user_email || "",
-        depot_user_role: currentDepot?.depot_user_role || "ASE",
-      };
-
-      setDepots((prev) => [
-        newRecord,
-        ...prev.map((d) => (d.depot_id === depotId ? { ...d, is_active: false } : d))
-      ]);
-      setEditingId(null);
-      showToast("Territory alignment updated successfully!", "success");
     } catch (error) {
       console.error("Error saving territory changes:", error);
+      showToast("Failed to save territory changes", "error");
       setEditingId(null);
     }
   };
@@ -338,7 +372,7 @@ export default function TerritoryManagement() {
     setEditingId(null);
   };
 
-  const handleDelete = async (depotId: number) => {
+  const handleDelete = async (depotId: string | number) => {
     if (!confirm("Are you sure you want to delete this depot record?")) return;
 
     try {
@@ -348,9 +382,11 @@ export default function TerritoryManagement() {
       });
 
       if (res.ok) {
-        setDepots((prev) => prev.filter((d) => d.depot_id !== depotId));
+        setDepots((prev) => prev.filter((d) => d.depot_id !== depotId && d.real_depot_id !== depotId));
+        showToast("Territory record deleted", "info");
       } else {
         setDepots((prev) => prev.filter((d) => d.depot_id !== depotId));
+        showToast("Territory record deleted", "info");
       }
     } catch (error) {
       console.error("Error deleting depot:", error);
@@ -358,10 +394,12 @@ export default function TerritoryManagement() {
     }
   };
 
+
   const resetFilters = () => {
     setSearchQuery("");
     setStatusFilter("all");
     setHqFilter("all");
+    setDepotFilter("all");
     setSortField("name");
     setSortDirection("asc");
   };
@@ -426,71 +464,75 @@ export default function TerritoryManagement() {
               className="pl-9 pr-4 py-2 bg-white border border-slate-200 rounded text-xs font-bold text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#004B87] w-64"
             />
           </div>
-          <button 
-            onClick={() => setShowFilterPanel(!showFilterPanel)} 
-            className={`flex items-center gap-2 px-3 py-2 border text-xs font-bold rounded transition-colors ${
-              showFilterPanel || statusFilter !== 'all' || hqFilter !== 'all'
-                ? 'border-[#004B87] bg-blue-50 text-[#004B87]'
-                : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-            }`}
-          >
-            <Filter className="w-3.5 h-3.5" /> Filter Table
-          </button>
-          {/* Manual Refresh Button removed: Data syncs automatically */}
         </div>
       </div>
 
-      {/* Filter Panel (Collapsible) */}
-      {showFilterPanel && (
-        <div className="mb-4 p-4 bg-slate-50 border border-slate-200 rounded-xl flex flex-wrap items-center gap-4 text-xs font-semibold text-slate-700 animate-fadeIn shrink-0">
-          <div className="flex items-center gap-2">
-            <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Status:</span>
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as any)}
-              className="px-3 py-1.5 bg-white border border-slate-200 rounded font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-[#004B87]"
-            >
-              <option value="all">All Statuses</option>
-              <option value="active">Active Only</option>
-              <option value="inactive">Inactive Only</option>
-            </select>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">HQ Alignment:</span>
-            <select
-              value={hqFilter}
-              onChange={(e) => setHqFilter(e.target.value === "all" ? "all" : Number(e.target.value))}
-              className="px-3 py-1.5 bg-white border border-slate-200 rounded font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-[#004B87]"
-            >
-              <option value="all">All Headquarters</option>
-              {headquartersList.map((hq) => (
-                <option key={hq.headquarters_id} value={hq.headquarters_id}>
-                  {hq.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <button
-            onClick={resetFilters}
-            className="ml-auto flex items-center gap-1 text-[11px] font-bold text-slate-500 hover:text-slate-800 transition-colors"
+      {/* Filter Panel (Always Visible) */}
+      <div className="mb-4 p-4 bg-slate-50 border border-slate-200 rounded-xl flex flex-wrap items-center gap-4 text-xs font-semibold text-slate-700 shrink-0">
+        <div className="flex items-center gap-2">
+          <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Status:</span>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as any)}
+            className="px-3 py-1.5 bg-white border border-slate-200 rounded font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-[#004B87]"
           >
-            <RotateCcw className="w-3 h-3" /> Reset Filters
-          </button>
+            <option value="all">All Statuses</option>
+            <option value="active">Active Only</option>
+            <option value="inactive">Inactive Only</option>
+          </select>
         </div>
-      )}
+
+        <div className="flex items-center gap-2">
+          <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">HQ Alignment:</span>
+          <select
+            value={hqFilter}
+            onChange={(e) => setHqFilter(e.target.value === "all" ? "all" : e.target.value)}
+            className="px-3 py-1.5 bg-white border border-slate-200 rounded font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-[#004B87]"
+          >
+            <option value="all">All Headquarters</option>
+            {headquartersList.map((hq) => (
+              <option key={hq.headquarters_id} value={hq.headquarters_id}>
+                {hq.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Depot Alignment:</span>
+          <select
+            value={depotFilter}
+            onChange={(e) => setDepotFilter(e.target.value)}
+            className="px-3 py-1.5 bg-white border border-slate-200 rounded font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-[#004B87]"
+          >
+            <option value="all">All Depots</option>
+            {masterDepotsList.map((d) => (
+              <option key={d.depot_id} value={d.name}>
+                {d.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <button
+          onClick={resetFilters}
+          className="ml-auto flex items-center gap-1 text-[11px] font-bold text-slate-500 hover:text-slate-800 transition-colors"
+        >
+          <RotateCcw className="w-3 h-3" /> Reset Filters
+        </button>
+      </div>
+
 
       {/* Data Table Container */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex-1 overflow-hidden flex flex-col">
         <div className="overflow-x-auto flex-1">
-          <table className="w-full text-left border-collapse">
+          <table className="w-full text-left border-collapse table-fixed min-w-700px">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10 select-none">
                 {/* User */}
                 <th 
                   onClick={() => handleSort("depot_user")}
-                  className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[22%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>User</span>
@@ -505,7 +547,7 @@ export default function TerritoryManagement() {
                 {/* Role */}
                 <th 
                   onClick={() => handleSort("depot_user_role")}
-                  className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[14%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Role</span>
@@ -520,7 +562,7 @@ export default function TerritoryManagement() {
                 {/* Depot */}
                 <th 
                   onClick={() => handleSort("name")}
-                  className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[24%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Depot</span>
@@ -535,7 +577,7 @@ export default function TerritoryManagement() {
                 {/* Headquarter */}
                 <th 
                   onClick={() => handleSort("headquarters_name")}
-                  className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[20%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Headquarter</span>
@@ -550,7 +592,7 @@ export default function TerritoryManagement() {
                 {/* Active / Inactive Status */}
                 <th 
                   onClick={() => handleSort("is_active")}
-                  className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[10%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Status</span>
@@ -563,7 +605,7 @@ export default function TerritoryManagement() {
                 </th>
 
                 {/* Actions */}
-                <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">
+                <th className="w-[10%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">
                   Actions
                 </th>
               </tr>
@@ -585,48 +627,85 @@ export default function TerritoryManagement() {
               ) : (
                 paginatedDepots.map((depot) => {
                   const roleText = resolveUserRole(depot);
+                  const isEditing = editingId === depot.depot_id;
+                  const selectedUser = usersList.find(u => String(u.user_id) === String(editUserId));
+                  const displayRole = isEditing ? (selectedUser?.role || roleText) : roleText;
+
                   return (
                     <tr
                       key={depot.depot_id}
                       className={`transition-colors group ${!depot.is_active ? 'bg-slate-50/70 text-slate-400' : 'hover:bg-slate-50/50'}`}
                     >
-                      {/* User (Read-Only) */}
+                      {/* User Column */}
                       <td className="px-6 py-4">
-                        <div className="flex items-center gap-2">
-                          <UserIcon
-                            className={`w-4 h-4 ${!depot.depot_user || depot.depot_user === "Unassigned" ? "text-slate-300" : depot.is_active ? "text-[#004B87]" : "text-slate-400"}`}
-                          />
-                          <div>
-                            <span
-                              className={`text-xs font-bold block ${!depot.depot_user || depot.depot_user === "Unassigned" ? "text-slate-400 italic" : "text-slate-800"}`}
-                            >
-                              {depot.depot_user || "Unassigned"}
-                            </span>
-                            {depot.depot_user_email && (
-                              <span className="text-[10px] text-slate-400 font-medium block">
-                                {depot.depot_user_email}
+                        {isEditing ? (
+                          <select
+                            value={editUserId}
+                            onChange={(e) => setEditUserId(e.target.value)}
+                            className="w-full px-2.5 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#004B87]"
+                          >
+                            <option value="">Unassigned</option>
+                            {usersList.map((u) => (
+                              <option key={u.user_id} value={u.user_id}>
+                                {u.name} ({u.role || 'ASE'})
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <UserIcon
+                              className={`w-4 h-4 ${!depot.depot_user || depot.depot_user === "Unassigned" ? "text-slate-300" : depot.is_active ? "text-[#004B87]" : "text-slate-400"}`}
+                            />
+                            <div>
+                              <span
+                                className={`text-xs font-bold block ${!depot.depot_user || depot.depot_user === "Unassigned" ? "text-slate-400 italic" : "text-slate-800"}`}
+                              >
+                                {depot.depot_user || "Unassigned"}
                               </span>
-                            )}
+                              {depot.depot_user_email && (
+                                <span className="text-[10px] text-slate-400 font-medium block">
+                                  {depot.depot_user_email}
+                                </span>
+                              )}
+                            </div>
                           </div>
-                        </div>
+                        )}
                       </td>
 
                       {/* Employee's Role */}
                       <td className="px-6 py-4">
-                        <span className={`px-2.5 py-1 rounded border text-[10px] font-bold uppercase tracking-wider ${getRoleBadgeStyle(roleText)}`}>
-                          {roleText}
+                        <span className={`px-2.5 py-1 rounded border text-[10px] font-bold uppercase tracking-wider ${getRoleBadgeStyle(displayRole)}`}>
+                          {displayRole}
                         </span>
                       </td>
 
                       {/* Depot */}
                       <td className="px-6 py-4">
-                        {editingId === depot.depot_id ? (
-                          <input
-                            type="text"
-                            value={editName}
-                            onChange={(e) => setEditName(e.target.value)}
+                        {isEditing ? (
+                          <select
+                            value={editDepotId || editName}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setEditDepotId(val);
+                              const match = masterDepotsList.find(d => String(d.depot_id) === val || d.name === val);
+                              if (match) {
+                                setEditName(match.name);
+                                if (match.headquarters_id && (!editHqId || editHqId === "")) {
+                                  setEditHqId(match.headquarters_id);
+                                }
+                              } else {
+                                setEditName(val);
+                              }
+                            }}
                             className="w-full px-2.5 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#004B87]"
-                          />
+                          >
+                            <option value="">Unassigned</option>
+                            {masterDepotsList.map((d) => (
+                              <option key={d.depot_id} value={d.depot_id}>
+                                {d.name}
+                              </option>
+                            ))}
+                          </select>
                         ) : (
                           <div className="flex items-center gap-2">
                             <MapPin
@@ -643,10 +722,10 @@ export default function TerritoryManagement() {
 
                       {/* Headquarter */}
                       <td className="px-6 py-4">
-                        {editingId === depot.depot_id ? (
+                        {isEditing ? (
                           <select
                             value={editHqId}
-                            onChange={(e) => setEditHqId(e.target.value === "" ? "" : Number(e.target.value))}
+                            onChange={(e) => setEditHqId(e.target.value === "" ? "" : e.target.value)}
                             className="w-full px-2.5 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#004B87]"
                           >
                             <option value="">Unassigned</option>
@@ -670,24 +749,35 @@ export default function TerritoryManagement() {
                         )}
                       </td>
 
-                      {/* Status (Read-Only) */}
+                      {/* Status */}
                       <td className="px-6 py-4">
-                        <div className="flex items-center gap-1.5">
-                          <span className={`w-2 h-2 rounded-full ${depot.is_active ? "bg-emerald-500" : "bg-slate-300"}`}></span>
-                          <span className={`text-xs font-bold ${depot.is_active ? "text-emerald-700" : "text-slate-400"}`}>
-                            {depot.is_active ? "Active" : "Inactive"}
-                          </span>
-                        </div>
+                        {isEditing ? (
+                          <select
+                            value={editIsActive ? "active" : "inactive"}
+                            onChange={(e) => setEditIsActive(e.target.value === "active")}
+                            className="px-2.5 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#004B87]"
+                          >
+                            <option value="active">Active</option>
+                            <option value="inactive">Inactive</option>
+                          </select>
+                        ) : (
+                          <div className="flex items-center gap-1.5">
+                            <span className={`w-2 h-2 rounded-full ${depot.is_active ? "bg-emerald-500" : "bg-slate-300"}`}></span>
+                            <span className={`text-xs font-bold ${depot.is_active ? "text-emerald-700" : "text-slate-400"}`}>
+                              {depot.is_active ? "Active" : "Inactive"}
+                            </span>
+                          </div>
+                        )}
                       </td>
 
                       {/* Actions */}
                       <td className="px-6 py-4 text-right">
-                        {editingId === depot.depot_id ? (
+                        {isEditing ? (
                           <div className="flex items-center justify-end gap-2">
                             <button
-                              onClick={() => handleSave(depot.depot_id)}
+                              onClick={() => handleSave(depot)}
                               className="p-1.5 bg-emerald-50 text-emerald-600 rounded hover:bg-emerald-100 transition-colors"
-                              title="Save & Create New Active Record"
+                              title="Save Territory Changes"
                             >
                               <Check className="w-4 h-4" />
                             </button>
@@ -721,6 +811,7 @@ export default function TerritoryManagement() {
                   );
                 })
               )}
+
             </tbody>
           </table>
         </div>

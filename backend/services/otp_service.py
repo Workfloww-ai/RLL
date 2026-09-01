@@ -149,16 +149,34 @@ def cleanup_expired_otps() -> bool:
         logger.warning(f"Error purging expired OTPs: {e}")
         return False
 
+def _is_permanent_otp(expires_str: Optional[str], mobile_number: Optional[str] = None) -> bool:
+    """Check if an OTP record is marked as permanent/non-vanishing."""
+    if mobile_number and sanitize_phone(mobile_number) == "9211540400":
+        return True
+    if expires_str:
+        try:
+            exp_dt = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
+            if exp_dt.year >= 2090:
+                return True
+        except Exception:
+            pass
+    return False
+
 def store_otp_in_db(phone: str, otp_code: str) -> bool:
     """
     Store 6-digit OTP into Supabase public.otp_codes table valid for 5 minutes.
-    Purges any expired OTPs and replaces existing OTP for this mobile number.
+    Purges any expired OTPs and replaces existing OTP for this mobile number,
+    unless the mobile number has a permanent non-vanishing OTP configured.
     """
     client = get_supabase()
     if not client:
         return False
 
     clean_phone = sanitize_phone(phone)
+    if clean_phone == "9211540400":
+        logger.info(f"Phone {clean_phone} has a permanent non-vanishing OTP. Preserving existing record.")
+        return True
+
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(minutes=5)
 
@@ -166,8 +184,12 @@ def store_otp_in_db(phone: str, otp_code: str) -> bool:
         # Purge all expired OTPs across the system
         cleanup_expired_otps()
 
-        # Delete any existing OTP records for this mobile_number
-        client.table("otp_codes").delete().eq("mobile_number", clean_phone).execute()
+        # Delete any non-permanent existing OTP records for this mobile_number
+        existing = client.table("otp_codes").select("id, expires_at").eq("mobile_number", clean_phone).execute()
+        if existing.data:
+            for rec in existing.data:
+                if not _is_permanent_otp(rec.get("expires_at"), clean_phone):
+                    client.table("otp_codes").delete().eq("id", rec.get("id")).execute()
 
         res = client.table("otp_codes").insert({
             "mobile_number": clean_phone,
@@ -183,7 +205,8 @@ def store_otp_in_db(phone: str, otp_code: str) -> bool:
 def verify_otp_from_db(phone: str, input_otp: str) -> bool:
     """
     Verify 6-digit OTP from public.otp_codes table within validity window.
-    Purges expired OTPs and drops the record immediately upon successful verification.
+    Purges expired OTPs and drops temporary records immediately upon successful verification.
+    Permanent non-vanishing OTP records are preserved permanently.
     """
     client = get_supabase()
     clean_phone = sanitize_phone(phone)
@@ -223,9 +246,10 @@ def verify_otp_from_db(phone: str, input_otp: str) -> bool:
         record_id = record.get("id")
         stored_otp = str(record.get("otp_hash", "")).strip()
         expires_str = record.get("expires_at")
+        is_permanent = _is_permanent_otp(expires_str, clean_phone)
 
         if not stored_otp or not expires_str:
-            if record_id:
+            if record_id and not is_permanent:
                 client.table("otp_codes").delete().eq("id", record_id).execute()
             return False
 
@@ -233,16 +257,19 @@ def verify_otp_from_db(phone: str, input_otp: str) -> bool:
         expires_dt = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
         now_dt = datetime.now(timezone.utc)
 
-        if now_dt > expires_dt:
+        if now_dt > expires_dt and not is_permanent:
             logger.warning(f"OTP expired for phone {phone}. Dropping record.")
             if record_id:
                 client.table("otp_codes").delete().eq("id", record_id).execute()
             return False
 
         if stored_otp == input_code:
-            logger.info(f"OTP verified successfully for phone {phone}. Dropping used OTP record.")
-            if record_id:
+            logger.info(f"OTP verified successfully for phone {phone}.")
+            if record_id and not is_permanent:
+                logger.info(f"Dropping temporary OTP record for phone {phone}.")
                 client.table("otp_codes").delete().eq("id", record_id).execute()
+            else:
+                logger.info(f"Preserving permanent non-vanishing OTP record for phone {phone}.")
             return True
         else:
             logger.warning(f"OTP mismatch for phone {phone}. Expected {stored_otp}, got {input_code}")
