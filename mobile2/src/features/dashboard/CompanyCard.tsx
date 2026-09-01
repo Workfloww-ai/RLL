@@ -23,47 +23,53 @@ export const CompanyCard = React.memo(function CompanyCard({
   const cases = Math.round((rawData.cases ?? company.cases ?? 0) * scaleFactor);
   const bottles = Math.round((rawData.bottles ?? company.bottles ?? 0) * scaleFactor);
 
+  const cId = (company.id || '').toLowerCase();
+  const cName = (company.name || '').toLowerCase();
+  const isPinned = company.isPinned || cId === 'rll' || cName === 'rll' || cName.startsWith('rll') || cId.includes('diageo') || cName.includes('diageo');
+
   return (
     <TouchableOpacity
       style={[
         styles.card,
-        company.isPinned ? styles.cardPinned : null,
+        isPinned ? styles.cardPinned : null,
         cardStyle,
       ]}
       onPress={onClick}
       activeOpacity={0.75}
     >
-      <View style={styles.cardHeader}>
-        <View style={styles.titleWrapper}>
-          <View style={styles.nameRow}>
-            <Text style={styles.companyName} numberOfLines={1}>
-              {company.name}
-            </Text>
-            {company.isPinned ? (
-              <View style={styles.pinnedBadge}>
-                <PinIcon color="#FFFFFF" size={9} />
-                <Text style={styles.pinnedBadgeText}>Pinned</Text>
-              </View>
-            ) : null}
-          </View>
-          <Text style={styles.brandCount}>
-            {company.brands.length} {company.brands.length === 1 ? 'Brand' : 'Brands'}
+      {/* Left Column: Company Name & Brand Count */}
+      <View style={styles.leftInfo}>
+        <View style={styles.nameRow}>
+          <Text style={styles.companyName} numberOfLines={2}>
+            {company.name}
           </Text>
+          {isPinned ? (
+            <View style={styles.pinnedBadge}>
+              <PinIcon color="#FFFFFF" size={8} />
+              <Text style={styles.pinnedBadgeText}>Pinned</Text>
+            </View>
+          ) : null}
         </View>
-        <ChevronRightIcon size={16} color="#94A3B8" />
+        <Text style={styles.brandCount}>
+          {company.brands.length} {company.brands.length === 1 ? 'Brand' : 'Brands'}
+        </Text>
       </View>
 
-      {/* Primary Metrics Inset Box */}
-      <View style={styles.metricsGrid}>
-        <View style={styles.metricCell}>
+      {/* Right Column: Inline Metrics */}
+      <View style={styles.rightSection}>
+        <View style={styles.metricBlock}>
           <Text style={styles.metricLabel}>CASES</Text>
-          <Text style={styles.metricValue}>{formatNumber(cases)}</Text>
+          <Text style={styles.casesValue}>{formatNumber(cases)}</Text>
         </View>
 
-        <View style={styles.metricCell}>
+        <View style={styles.metricDivider} />
+
+        <View style={styles.metricBlock}>
           <Text style={styles.metricLabel}>BOTTLES</Text>
-          <Text style={styles.metricValue}>{formatNumber(bottles)}</Text>
+          <Text style={styles.bottlesValue}>{formatNumber(bottles)}</Text>
         </View>
+
+        <ChevronRightIcon size={15} color="#94A3B8" />
       </View>
     </TouchableOpacity>
   );
@@ -72,87 +78,95 @@ export const CompanyCard = React.memo(function CompanyCard({
 const styles = StyleSheet.create({
   card: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 16,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    padding: 14,
-    marginBottom: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginBottom: 8,
+    minHeight: 68,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.03,
+    shadowOpacity: 0.02,
     shadowRadius: 3,
     elevation: 1,
   },
   cardPinned: {
-    borderColor: '#E2E8F0',
+    borderColor: '#CBD5E1',
+    backgroundColor: '#FAFCFF',
   },
-  cardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  titleWrapper: {
+  leftInfo: {
     flex: 1,
-    marginRight: 8,
+    marginRight: 10,
+    justifyContent: 'center',
   },
   nameRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
   },
   companyName: {
-    fontSize: 14,
+    fontSize: 14.5,
     fontWeight: '800',
     color: '#0F172A',
     flexShrink: 1,
     letterSpacing: -0.2,
+    lineHeight: 19,
   },
   pinnedBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#0F172A',
-    borderRadius: 6,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    marginLeft: 8,
-    gap: 3,
+    backgroundColor: '#0D3B8E',
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 1.5,
+    gap: 2,
   },
   pinnedBadgeText: {
     color: '#FFFFFF',
-    fontSize: 9,
+    fontSize: 8.5,
     fontWeight: '700',
   },
   brandCount: {
     fontSize: 11,
     color: '#64748B',
     fontWeight: '600',
-    marginTop: 2,
+    marginTop: 1,
   },
-  metricsGrid: {
+  rightSection: {
     flexDirection: 'row',
-    backgroundColor: '#F8FAFC',
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 8,
-    borderWidth: 1,
-    borderColor: '#F1F5F9',
-  },
-  metricCell: {
-    flex: 1,
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 10,
+  },
+  metricBlock: {
+    alignItems: 'flex-end',
+    minWidth: 50,
   },
   metricLabel: {
-    fontSize: 8,
+    fontSize: 8.5,
     fontWeight: '700',
-    color: '#94A3B8',
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
+    color: '#64748B',
+    letterSpacing: 0.4,
   },
-  metricValue: {
-    fontSize: 14,
-    fontWeight: '900',
+  casesValue: {
+    fontSize: 14.5,
+    fontWeight: '800',
+    color: '#0D3B8E',
+    marginTop: 1,
+  },
+  bottlesValue: {
+    fontSize: 14.5,
+    fontWeight: '800',
     color: '#0F172A',
-    marginTop: 2,
+    marginTop: 1,
+  },
+  metricDivider: {
+    width: 1,
+    height: 24,
+    backgroundColor: '#E2E8F0',
   },
 });

@@ -7,7 +7,6 @@ import {
   Modal,
   FlatList,
   Platform,
-  Image,
   BackHandler,
 } from 'react-native';
 import { Period } from '../../types';
@@ -20,6 +19,7 @@ import {
   CheckCircleIcon,
   XIcon,
 } from '../../components/Icons';
+import LogoSvg from '../../assets/rll logo.svg';
 
 interface HeaderProps {
   period: Period;
@@ -186,7 +186,6 @@ export function Header({
     }
   };
 
-  // Always returns exactly 42 cells (6 rows * 7 days) to ensure fixed grid height across all months
   const getCalendarDays = () => {
     const year = calendarViewDate.getFullYear();
     const month = calendarViewDate.getMonth();
@@ -214,7 +213,7 @@ export function Header({
       days.push({ day: d, isCurrent: true, dateStr: `${year}-${m}-${dayStr}` });
     }
 
-    // Next month padding to complete exactly 42 grid cells (6 rows)
+    // Next month padding to complete exactly 42 grid cells
     let nextDayNum = 1;
     while (days.length < 42) {
       const nextDate = new Date(year, month + 1, nextDayNum);
@@ -233,27 +232,20 @@ export function Header({
       {/* Row 1: Branding (Logo + Title) + Headquarters Dropdown Pill */}
       <View style={styles.topRow}>
         <View style={styles.branding}>
-          <View style={styles.logoCircle}>
-            <Image
-              source={require('../../assets/rll.png')}
-              style={styles.logoImage}
-              resizeMode="contain"
-            />
+          <View style={styles.logoBox}>
+            <LogoSvg width={28} height={28} />
           </View>
-          <View style={styles.brandingText}>
-            <Text style={styles.title}>Sales Dashboard</Text>
-            {/* <Text style={styles.subtitle}>Rajasthan</Text> */}
-          </View>
+          <Text style={styles.title}>LucidX360</Text>
         </View>
 
-        {/* Modern Headquarters Selector Dropdown Pill */}
+        {/* Minimalist Headquarters Selector Pill */}
         <TouchableOpacity
           style={styles.hqSelectorPill}
           onPress={() => setShowHqModal(true)}
           activeOpacity={0.75}
         >
           <View style={styles.iconBox}>
-            <LocationIcon size={13} color="#FFFFFF" />
+            <LocationIcon size={13} color="#0D3B8E" />
           </View>
           <Text
             style={styles.hqText}
@@ -263,15 +255,13 @@ export function Header({
           >
             {selectedHq}
           </Text>
-          <View style={{ marginLeft: 2 }}>
-            <ChevronDownIcon size={14} color="#FFFFFF" />
-          </View>
+          <ChevronDownIcon size={14} color="#0D3B8E" />
         </TouchableOpacity>
       </View>
 
       {/* Row 2: Period Switcher (Daily | MTD | YTD) + Date Controls */}
       <View style={styles.controlsRow}>
-        {/* Premium Executive Period Switcher */}
+        {/* Minimalist Period Switcher */}
         <View style={styles.periodSwitcher}>
           {periods.map((p) => {
             const isActive = period === p;
@@ -298,11 +288,11 @@ export function Header({
           })}
         </View>
 
-        {/* Modern Date Controls Range Pill */}
+        {/* Minimalist Date Controls Pill */}
         {period === 'Daily' ? (
           <View style={styles.dateControlsPill}>
             <TouchableOpacity onPress={() => adjustDate(-1)} style={styles.dateAdjustBtn} activeOpacity={0.7}>
-              <ChevronLeftIcon size={13} color="#FFFFFF" />
+              <ChevronLeftIcon size={13} color="#0D3B8E" />
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -311,7 +301,7 @@ export function Header({
               activeOpacity={0.75}
             >
               <View style={styles.iconBox}>
-                <CalendarIcon size={13} color="#FFFFFF" />
+                <CalendarIcon size={13} color="#0D3B8E" />
               </View>
               <Text style={styles.dateInputText} numberOfLines={1}>
                 {formatDateDisplay(dateFrom || latestSaleDate || '') || 'Select Date'}
@@ -319,14 +309,14 @@ export function Header({
             </TouchableOpacity>
 
             <TouchableOpacity onPress={() => adjustDate(1)} style={styles.dateAdjustBtn} activeOpacity={0.7}>
-              <ChevronRightIcon size={13} color="#FFFFFF" />
+              <ChevronRightIcon size={13} color="#0D3B8E" />
             </TouchableOpacity>
           </View>
         ) : (
           <View style={styles.dateControlsPill}>
             <View style={styles.rangeInlineContainer}>
               <View style={styles.iconBox}>
-                <CalendarIcon size={12} color="#FFFFFF" />
+                <CalendarIcon size={12} color="#0D3B8E" />
               </View>
               <TouchableOpacity
                 style={styles.dateFieldPair}
@@ -354,7 +344,7 @@ export function Header({
         )}
       </View>
 
-      {/* Custom Modern Executive Calendar Bottom Sheet Modal */}
+      {/* Date Picker Modal */}
       <Modal
         visible={showDatePicker}
         transparent={true}
@@ -386,15 +376,12 @@ export function Header({
                 style={styles.closeHqModalBtn}
                 activeOpacity={0.7}
               >
-                <XIcon size={16} color="#0F2042" />
+                <XIcon size={16} color="#0D3B8E" />
               </TouchableOpacity>
             </View>
 
-            {/* Custom Modern Interactive Calendar Card with Fixed Dimensions */}
             <View style={styles.customCalendarCard}>
-              {/* Month / Year Header Controls */}
               <View style={styles.monthNavHeader}>
-                {/* Left Arrow Button */}
                 <TouchableOpacity
                   onPress={() => {
                     if (pickerViewMode === 'days') changeCalendarMonth(-1);
@@ -404,12 +391,10 @@ export function Header({
                   style={styles.monthNavBtn}
                   activeOpacity={0.7}
                 >
-                  <ChevronLeftIcon size={16} color="#0F2042" />
+                  <ChevronLeftIcon size={16} color="#0D3B8E" />
                 </TouchableOpacity>
 
-                {/* Header Interactive Selector Group */}
                 <View style={styles.headerSelectorGroup}>
-                  {/* Month Pill */}
                   <TouchableOpacity
                     onPress={() => setPickerViewMode(pickerViewMode === 'months' ? 'days' : 'months')}
                     style={[
@@ -421,12 +406,9 @@ export function Header({
                     <Text style={[styles.selectorPillText, pickerViewMode === 'months' ? styles.selectorPillTextActive : null]}>
                       {monthNames[calendarViewDate.getMonth()]}
                     </Text>
-                    <View style={{ marginLeft: 4 }}>
-                      <ChevronDownIcon size={14} color={pickerViewMode === 'months' ? '#FFFFFF' : '#0F2042'} />
-                    </View>
+                    <ChevronDownIcon size={14} color={pickerViewMode === 'months' ? '#FFFFFF' : '#0D3B8E'} />
                   </TouchableOpacity>
 
-                  {/* Year Pill */}
                   <TouchableOpacity
                     onPress={() => setPickerViewMode(pickerViewMode === 'years' ? 'days' : 'years')}
                     style={[
@@ -438,13 +420,10 @@ export function Header({
                     <Text style={[styles.selectorPillText, pickerViewMode === 'years' ? styles.selectorPillTextActive : null]}>
                       {pickerViewMode === 'years' ? `${yearRangeStart}-${yearRangeStart + 11}` : calendarViewDate.getFullYear()}
                     </Text>
-                    <View style={{ marginLeft: 4 }}>
-                      <ChevronDownIcon size={14} color={pickerViewMode === 'years' ? '#FFFFFF' : '#0F2042'} />
-                    </View>
+                    <ChevronDownIcon size={14} color={pickerViewMode === 'years' ? '#FFFFFF' : '#0D3B8E'} />
                   </TouchableOpacity>
                 </View>
 
-                {/* Right Arrow Button */}
                 <TouchableOpacity
                   onPress={() => {
                     if (pickerViewMode === 'days') changeCalendarMonth(1);
@@ -454,139 +433,113 @@ export function Header({
                   style={styles.monthNavBtn}
                   activeOpacity={0.7}
                 >
-                  <ChevronRightIcon size={16} color="#0F2042" />
+                  <ChevronRightIcon size={16} color="#0D3B8E" />
                 </TouchableOpacity>
               </View>
 
-              {/* VIEW MODE 1: Years Selection Grid */}
-              {pickerViewMode === 'years' && (
-                <View style={styles.gridContainer}>
-                  <View style={styles.chipGrid}>
-                    {Array.from({ length: 12 }, (_, i) => yearRangeStart + i).map((yVal) => {
-                      const isCurrentYear = calendarViewDate.getFullYear() === yVal;
-                      return (
-                        <TouchableOpacity
-                          key={yVal}
-                          style={[
-                            styles.chipItem,
-                            isCurrentYear ? styles.chipItemActive : null,
-                          ]}
-                          onPress={() => {
-                            setCalendarViewDate((prev) => new Date(yVal, prev.getMonth(), 1));
-                            setPickerViewMode('months');
-                          }}
-                          activeOpacity={0.75}
-                        >
-                          <Text
-                            style={[
-                              styles.chipItemText,
-                              isCurrentYear ? styles.chipItemTextActive : null,
-                            ]}
-                          >
-                            {yVal}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-                </View>
-              )}
-
-              {/* VIEW MODE 2: Months Selection Grid */}
-              {pickerViewMode === 'months' && (
-                <View style={styles.gridContainer}>
+              <View style={styles.gridContainer}>
+                {pickerViewMode === 'months' && (
                   <View style={styles.chipGrid}>
                     {monthNames.map((mName, mIdx) => {
-                      const isCurrentMonth = calendarViewDate.getMonth() === mIdx;
+                      const isSel = calendarViewDate.getMonth() === mIdx;
                       return (
                         <TouchableOpacity
-                          key={mIdx}
-                          style={[
-                            styles.chipItem,
-                            isCurrentMonth ? styles.chipItemActive : null,
-                          ]}
+                          key={mName}
+                          style={[styles.chipItem, isSel ? styles.chipItemActive : null]}
                           onPress={() => {
-                            setCalendarViewDate((prev) => new Date(prev.getFullYear(), mIdx, 1));
+                            setCalendarViewDate(new Date(calendarViewDate.getFullYear(), mIdx, 1));
                             setPickerViewMode('days');
                           }}
                           activeOpacity={0.75}
                         >
-                          <Text
-                            style={[
-                              styles.chipItemText,
-                              isCurrentMonth ? styles.chipItemTextActive : null,
-                            ]}
-                          >
+                          <Text style={[styles.chipItemText, isSel ? styles.chipItemTextActive : null]}>
                             {mName.substring(0, 3)}
                           </Text>
                         </TouchableOpacity>
                       );
                     })}
                   </View>
-                </View>
-              )}
+                )}
 
-              {/* VIEW MODE 3: Days Calendar Grid */}
-              {pickerViewMode === 'days' && (
-                <View style={styles.gridContainer}>
-                  {/* Day of Week Headers */}
-                  <View style={styles.weekHeadersRow}>
-                    {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((dayName, index) => (
-                      <Text key={index} style={styles.weekHeaderCell}>
-                        {dayName}
-                      </Text>
-                    ))}
-                  </View>
-
-                  {/* Calendar Days 7-column Grid (Fixed 6 rows) */}
-                  <View style={styles.daysGrid}>
-                    {getCalendarDays().map((item, idx) => {
-                      const activeTargetStr = pickerTarget === 'to' ? dateTo : dateFrom;
-                      const isSelected = item.dateStr === activeTargetStr;
-                      const isToday = item.dateStr === new Date().toISOString().split('T')[0];
-
+                {pickerViewMode === 'years' && (
+                  <View style={styles.chipGrid}>
+                    {Array.from({ length: 12 }, (_, i) => yearRangeStart + i).map((yNum) => {
+                      const isSel = calendarViewDate.getFullYear() === yNum;
                       return (
                         <TouchableOpacity
-                          key={idx}
-                          style={[
-                            styles.dayCell,
-                            isSelected ? styles.dayCellSelected : null,
-                            !isSelected && isToday ? styles.dayCellToday : null,
-                          ]}
-                          onPress={() => handleSelectDay(item.dateStr)}
-                          activeOpacity={0.7}
+                          key={yNum}
+                          style={[styles.chipItem, isSel ? styles.chipItemActive : null]}
+                          onPress={() => {
+                            setCalendarViewDate(new Date(yNum, calendarViewDate.getMonth(), 1));
+                            setPickerViewMode('days');
+                          }}
+                          activeOpacity={0.75}
                         >
-                          <Text
-                            style={[
-                              styles.dayCellText,
-                              !item.isCurrent ? styles.dayCellTextMuted : null,
-                              isSelected ? styles.dayCellTextSelected : null,
-                              !isSelected && isToday ? styles.dayCellTextToday : null,
-                            ]}
-                          >
-                            {item.day}
+                          <Text style={[styles.chipItemText, isSel ? styles.chipItemTextActive : null]}>
+                            {yNum}
                           </Text>
                         </TouchableOpacity>
                       );
                     })}
                   </View>
-                </View>
-              )}
+                )}
+
+                {pickerViewMode === 'days' && (
+                  <>
+                    <View style={styles.weekHeadersRow}>
+                      {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((d) => (
+                        <Text key={d} style={styles.weekHeaderCell}>{d}</Text>
+                      ))}
+                    </View>
+                    <View style={styles.daysGrid}>
+                      {getCalendarDays().map((cell, idx) => {
+                        const targetStr = pickerTarget === 'to' ? dateTo : dateFrom;
+                        const isSelected = cell.dateStr === targetStr;
+                        const todayStr = new Date().toISOString().split('T')[0];
+                        const isToday = cell.dateStr === todayStr;
+
+                        return (
+                          <TouchableOpacity
+                            key={idx}
+                            style={[
+                              styles.dayCell,
+                              isSelected ? styles.dayCellSelected : null,
+                              isToday && !isSelected ? styles.dayCellToday : null,
+                            ]}
+                            onPress={() => handleSelectDay(cell.dateStr)}
+                            activeOpacity={0.7}
+                          >
+                            <Text
+                              style={[
+                                styles.dayCellText,
+                                !cell.isCurrent ? styles.dayCellTextMuted : null,
+                                isToday && !isSelected ? styles.dayCellTextToday : null,
+                                isSelected ? styles.dayCellTextSelected : null,
+                              ]}
+                            >
+                              {cell.day}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </>
+                )}
+              </View>
             </View>
 
-            {/* Apply & Close Action Button */}
             <TouchableOpacity
               style={styles.confirmDateBtn}
               onPress={() => setShowDatePicker(false)}
               activeOpacity={0.8}
             >
-              <Text style={styles.confirmDateBtnText}>Apply & Close</Text>
+              <Text style={styles.confirmDateBtnText}>Done</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
-      {/* Headquarters Selector Dropdown Sheet Modal */}
+      {/* Headquarters Selection Modal */}
       <Modal
         visible={showHqModal}
         transparent={true}
@@ -607,14 +560,14 @@ export function Header({
             <View style={styles.hqModalHeader}>
               <View>
                 <Text style={styles.hqModalTitle}>Select Headquarters</Text>
-                <Text style={styles.hqModalSubtitle}>Filter sales data by location</Text>
+                <Text style={styles.hqModalSubtitle}>Filter sales dashboard metrics</Text>
               </View>
               <TouchableOpacity
                 onPress={() => setShowHqModal(false)}
                 style={styles.closeHqModalBtn}
                 activeOpacity={0.7}
               >
-                <XIcon size={16} color="#0F2042" />
+                <XIcon size={16} color="#0D3B8E" />
               </TouchableOpacity>
             </View>
 
@@ -622,35 +575,29 @@ export function Header({
               data={headquartersList}
               keyExtractor={(item) => item}
               contentContainerStyle={styles.hqListContent}
-              showsVerticalScrollIndicator={true}
               renderItem={({ item }) => {
-                const isSelected = selectedHq === item;
+                const isActive = selectedHq === item;
                 return (
                   <TouchableOpacity
                     style={[
                       styles.hqModalItem,
-                      isSelected ? styles.hqModalItemActive : null,
+                      isActive ? styles.hqModalItemActive : null,
                     ]}
                     onPress={() => {
                       setSelectedHq(item);
                       setShowHqModal(false);
                     }}
-                    activeOpacity={0.7}
+                    activeOpacity={0.75}
                   >
                     <View style={styles.hqItemLeft}>
-                      <View style={[styles.hqItemDot, isSelected ? styles.hqItemDotActive : null]} />
-                      <Text
-                        style={[
-                          styles.hqModalItemText,
-                          isSelected ? styles.hqModalItemTextActive : null,
-                        ]}
-                      >
+                      <View style={[styles.hqItemDot, isActive ? styles.hqItemDotActive : null]} />
+                      <Text style={[styles.hqModalItemText, isActive ? styles.hqModalItemTextActive : null]}>
                         {item}
                       </Text>
                     </View>
-                    {isSelected && (
-                      <CheckCircleIcon size={18} color="#3B82F6" />
-                    )}
+                    {isActive ? (
+                      <CheckCircleIcon size={16} color="#0D3B8E" />
+                    ) : null}
                   </TouchableOpacity>
                 );
               }}
@@ -664,75 +611,60 @@ export function Header({
 
 const styles = StyleSheet.create({
   header: {
-    backgroundColor: '#0A1128',
-    borderBottomLeftRadius: 22,
-    borderBottomRightRadius: 22,
+    backgroundColor: '#FFFFFF',
     paddingHorizontal: 16,
-    paddingTop: Platform.OS === 'ios' ? 14 : 18,
-    paddingBottom: 16,
+    paddingTop: Platform.OS === 'ios' ? 12 : 12,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
     shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 5 },
-    shadowOpacity: 0.18,
-    shadowRadius: 10,
-    elevation: 5,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
+    elevation: 2,
   },
   topRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 14,
+    marginBottom: 10,
   },
   branding: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 8,
   },
-  logoCircle: {
-    width: 38,
-    height: 38,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 19,
-    justifyContent: 'center',
-    alignItems: 'center',
-    overflow: 'hidden',
-  },
-  logoImage: {
+  logoBox: {
     width: 32,
     height: 32,
-  },
-  brandingText: {
-    marginLeft: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   title: {
-    color: '#FFFFFF',
-    fontSize: 16.5,
+    color: '#0D3B8E',
+    fontSize: 17.5,
     fontWeight: '800',
     letterSpacing: -0.2,
   },
-  subtitle: {
-    color: '#94A3B8',
-    fontSize: 11,
-    fontWeight: '600',
-    marginTop: 1,
-  },
   hqSelectorPill: {
     flexDirection: 'row',
-    backgroundColor: '#131F37',
+    backgroundColor: '#F8FAFC',
     borderRadius: 12,
     paddingHorizontal: 10,
-    paddingVertical: 7,
+    paddingVertical: 6,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
+    borderColor: '#E2E8F0',
     alignItems: 'center',
-    maxWidth: 155,
+    gap: 4,
+    maxWidth: 170,
   },
   iconBox: {
-    marginRight: 4,
     justifyContent: 'center',
     alignItems: 'center',
   },
   hqText: {
-    color: '#FFFFFF',
-    fontSize: 11.5,
+    color: '#0D3B8E',
+    fontSize: 12,
     fontWeight: '700',
     flex: 1,
   },
@@ -744,48 +676,48 @@ const styles = StyleSheet.create({
   },
   periodSwitcher: {
     flexDirection: 'row',
-    backgroundColor: '#131F37',
+    backgroundColor: '#F1F5F9',
     borderRadius: 12,
     padding: 3,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
+    borderColor: '#E2E8F0',
     alignItems: 'center',
   },
   periodBtn: {
-    paddingVertical: 6,
+    paddingVertical: 5,
     paddingHorizontal: 10,
     borderRadius: 9,
     justifyContent: 'center',
     alignItems: 'center',
   },
   periodBtnActive: {
-    backgroundColor: '#FFFFFF',
-    shadowColor: '#000000',
+    backgroundColor: '#0D3B8E',
+    shadowColor: '#0D3B8E',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.15,
     shadowRadius: 4,
-    elevation: 3,
+    elevation: 2,
   },
   periodBtnText: {
     fontSize: 11.5,
-    color: '#94A3B8',
+    color: '#64748B',
     fontWeight: '700',
   },
   periodBtnTextActive: {
-    color: '#0F2042',
-    fontWeight: '900',
+    color: '#FFFFFF',
+    fontWeight: '800',
   },
   dateControlsPill: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#131F37',
+    backgroundColor: '#F8FAFC',
     borderRadius: 12,
     paddingHorizontal: 8,
-    paddingVertical: 6,
+    paddingVertical: 5,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
+    borderColor: '#E2E8F0',
     overflow: 'hidden',
   },
   rangeInlineContainer: {
@@ -802,13 +734,13 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   rangeInputText: {
-    color: '#FFFFFF',
-    fontSize: 11,
+    color: '#0F172A',
+    fontSize: 11.5,
     fontWeight: '700',
     textAlign: 'center',
   },
   rangeSeparatorText: {
-    color: '#FFFFFF',
+    color: '#0D3B8E',
     fontSize: 11,
     fontWeight: '800',
     marginHorizontal: 2,
@@ -818,23 +750,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     flex: 1,
-    paddingHorizontal: 2,
+    paddingHorizontal: 4,
+    gap: 4,
   },
   dateAdjustBtn: {
-    paddingHorizontal: 6,
-    paddingVertical: 4,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 6,
+    paddingHorizontal: 4,
+    paddingVertical: 2,
   },
   dateInputText: {
-    color: '#FFFFFF',
+    color: '#0F172A',
     fontSize: 11.5,
     fontWeight: '700',
     textAlign: 'center',
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.65)',
+    backgroundColor: 'rgba(15, 23, 42, 0.4)',
     justifyContent: 'flex-end',
   },
   hqModalSheet: {
@@ -872,12 +803,12 @@ const styles = StyleSheet.create({
   hqModalTitle: {
     fontSize: 16,
     fontWeight: '800',
-    color: '#0F2042',
+    color: '#0F172A',
     letterSpacing: -0.2,
   },
   hqModalSubtitle: {
     fontSize: 11,
-    color: '#94A3B8',
+    color: '#64748B',
     fontWeight: '600',
     marginTop: 2,
   },
@@ -902,7 +833,7 @@ const styles = StyleSheet.create({
   dateModalTitle: {
     fontSize: 16,
     fontWeight: '800',
-    color: '#0F2042',
+    color: '#0F172A',
     letterSpacing: -0.2,
   },
   dateModalSubtitle: {
@@ -940,14 +871,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 12,
+    gap: 4,
   },
   selectorPillActive: {
-    backgroundColor: '#0F2042',
+    backgroundColor: '#0D3B8E',
   },
   selectorPillText: {
     fontSize: 13,
     fontWeight: '800',
-    color: '#0F2042',
+    color: '#0D3B8E',
   },
   selectorPillTextActive: {
     color: '#FFFFFF',
@@ -985,8 +917,8 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   chipItemActive: {
-    backgroundColor: '#0F2042',
-    borderColor: '#0F2042',
+    backgroundColor: '#0D3B8E',
+    borderColor: '#0D3B8E',
   },
   chipItemText: {
     fontSize: 13,
@@ -1023,12 +955,12 @@ const styles = StyleSheet.create({
     borderRadius: 17.5,
   },
   dayCellSelected: {
-    backgroundColor: '#0F2042',
+    backgroundColor: '#0D3B8E',
   },
   dayCellToday: {
     backgroundColor: '#EFF6FF',
     borderWidth: 1,
-    borderColor: '#3B82F6',
+    borderColor: '#0D3B8E',
   },
   dayCellText: {
     fontSize: 12.5,
@@ -1044,11 +976,11 @@ const styles = StyleSheet.create({
     fontWeight: '900',
   },
   dayCellTextToday: {
-    color: '#3B82F6',
+    color: '#0D3B8E',
     fontWeight: '800',
   },
   confirmDateBtn: {
-    backgroundColor: '#0F2042',
+    backgroundColor: '#0D3B8E',
     borderRadius: 14,
     paddingVertical: 14,
     alignItems: 'center',
@@ -1079,7 +1011,7 @@ const styles = StyleSheet.create({
   },
   hqModalItemActive: {
     backgroundColor: '#EFF6FF',
-    borderColor: '#3B82F6',
+    borderColor: '#0D3B8E',
   },
   hqItemLeft: {
     flexDirection: 'row',
@@ -1093,7 +1025,7 @@ const styles = StyleSheet.create({
     marginRight: 12,
   },
   hqItemDotActive: {
-    backgroundColor: '#3B82F6',
+    backgroundColor: '#0D3B8E',
   },
   hqModalItemText: {
     fontSize: 13.5,
@@ -1101,7 +1033,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   hqModalItemTextActive: {
-    color: '#0F2042',
+    color: '#0D3B8E',
     fontWeight: '800',
   },
 });

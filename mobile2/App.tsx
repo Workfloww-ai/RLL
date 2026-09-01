@@ -15,6 +15,7 @@ import {
   RefreshControl,
   NativeSyntheticEvent,
   NativeScrollEvent,
+  Keyboard,
 } from 'react-native';
 
 
@@ -44,6 +45,9 @@ import { TsmView } from './src/features/dashboard/TsmView';
 import { BrandModal } from './src/features/dashboard/BrandModal';
 import { LoginScreen } from './src/features/auth/LoginScreen';
 import { ProfileScreen } from './src/features/profile/ProfileScreen';
+import { SplashScreen } from './src/components/SplashScreen';
+import { SearchBar } from './src/components/SearchBar';
+import { SortModal, SortOptionItem } from './src/components/SortModal';
 import {
   XIcon,
   SearchIcon,
@@ -56,9 +60,26 @@ import {
   ChevronDownIcon,
 } from './src/components/Icons';
 
-export type CompanySortOption = 'default' | 'volume_desc' | 'volume_asc' | 'name_asc';
+export type CompanySortOption = 'name_asc' | 'volume_desc' | 'volume_asc' | 'name_desc';
 
 export default function App() {
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      () => setIsKeyboardVisible(true)
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => setIsKeyboardVisible(false)
+    );
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
   const [user, setUser] = useState<any>(null);
   const [loadingSession, setLoadingSession] = useState(true);
   const [period, setPeriod] = useState<Period>('Daily');
@@ -101,11 +122,9 @@ export default function App() {
     }
   }, [user, viewMode, period, dateFrom, dateTo, selectedHq]);
 
-  // Minimal Sort State & Floating Dropdown Position
-  const [sortBy, setSortBy] = useState<CompanySortOption>('default');
-  const [showSortDropdown, setShowSortDropdown] = useState<boolean>(false);
-  const [dropdownPos, setDropdownPos] = useState<{ top: number; right: number }>({ top: 190, right: 16 });
-  const sortBtnRef = useRef<View>(null);
+  // Sort State
+  const [sortBy, setSortBy] = useState<CompanySortOption>('name_asc');
+  const [showSortModal, setShowSortModal] = useState<boolean>(false);
 
   const handleTabChange = useCallback((newMode: ViewMode) => {
     setViewMode((currentMode) => {
@@ -120,8 +139,8 @@ export default function App() {
   // Hardware BackHandler for tab history & modals
   useEffect(() => {
     const onBackPress = () => {
-      if (showSortDropdown) {
-        setShowSortDropdown(false);
+      if (showSortModal) {
+        setShowSortModal(false);
         return true;
       }
       if (selectedCompany !== null) {
@@ -142,19 +161,20 @@ export default function App() {
     };
     const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => subscription.remove();
-  }, [showSortDropdown, selectedCompany, viewModeHistory]);
+  }, [showSortModal, selectedCompany, viewModeHistory]);
 
   const { height: windowHeight } = useWindowDimensions();
   const cardDimensions = useMemo(() => getDynamicCardDimensions(windowHeight), [windowHeight]);
   const scaleFactor = 1;
 
   useEffect(() => {
-    StatusBar.setBarStyle('light-content');
+    StatusBar.setBarStyle('dark-content');
   }, []);
 
-  // Load active session on mount
+  // Load active session on mount with smooth splash screen timing
   useEffect(() => {
     async function loadSession() {
+      const startTime = Date.now();
       try {
         logger.info('App: Checking for active user session in AsyncStorage...');
         await hydratePersistentCache();
@@ -169,7 +189,11 @@ export default function App() {
       } catch (e) {
         logger.error('App: Error reading auth session from AsyncStorage:', e);
       } finally {
-        setLoadingSession(false);
+        const elapsedTime = Date.now() - startTime;
+        const remaining = Math.max(0, 1200 - elapsedTime);
+        setTimeout(() => {
+          setLoadingSession(false);
+        }, remaining);
       }
     }
     loadSession();
@@ -323,9 +347,19 @@ export default function App() {
     });
   }, [searchQuery, apiData]);
 
-  // Sort companies cleanly
+  // Sort companies: Default A-Z view pins RLL (#1) & Diageo (#2) at top.
+  // Explicit sort modes (volume_desc, volume_asc, name_desc) sort ALL companies purely by metric.
   const sortedCompanies = useMemo(() => {
     const list = [...filteredCompanies];
+
+    const getPinnedRank = (c: Company) => {
+      const id = (c.id || '').toLowerCase();
+      const name = (c.name || '').toLowerCase();
+      if (id === 'rll' || name === 'rll' || name.startsWith('rll')) return 1;
+      if (id.includes('diageo') || name.includes('diageo')) return 2;
+      if (c.isPinned) return 3;
+      return 99;
+    };
 
     list.sort((a, b) => {
       if (sortBy === 'volume_desc') {
@@ -342,26 +376,18 @@ export default function App() {
         return a.name.localeCompare(b.name);
       }
 
-      if (sortBy === 'name_asc') {
-        return a.name.localeCompare(b.name);
+      if (sortBy === 'name_desc') {
+        return b.name.localeCompare(a.name);
       }
 
-      // Default sorting: Pinned first (RLL, Diageo first), then A-Z
-      const getPinnedRank = (c: Company) => {
-        const id = c.id.toLowerCase();
-        const name = c.name.toLowerCase();
-        if (id === 'rll' || name === 'rll') return 1;
-        if (id === 'diageo-inbrew' || name.includes('diageo')) return 2;
-        if (c.isPinned) return 3;
-        return 99;
-      };
-
+      // Default (Name A to Z): Pin RLL (#1), Diageo (#2), and pinned items at top
       const rankA = getPinnedRank(a);
       const rankB = getPinnedRank(b);
 
       if (rankA !== rankB) {
         return rankA - rankB;
       }
+
       return a.name.localeCompare(b.name);
     });
 
@@ -400,87 +426,19 @@ export default function App() {
     [period, scaleFactor, cardDimensions.cardPaddingVertical]
   );
 
-  const sortDropdownOptions = [
-    { key: 'default', label: 'Default Order', Icon: PinIcon },
-    { key: 'volume_desc', label: 'Top Sales (High → Low)', Icon: TrendingUpIcon },
-    { key: 'volume_asc', label: 'Lowest Sales (Low → High)', Icon: TrendingDownIcon },
-    { key: 'name_asc', label: 'Company Name (A → Z)', Icon: SortAlphabeticalIcon },
+  const companySortOptions: SortOptionItem<CompanySortOption>[] = [
+    { label: 'Name (A to Z)', value: 'name_asc' },
+    { label: 'Cases: High to Low', value: 'volume_desc' },
+    { label: 'Cases: Low to High', value: 'volume_asc' },
+    { label: 'Name (Z to A)', value: 'name_desc' },
   ];
 
   const getSortLabel = () => {
     if (sortBy === 'volume_desc') return 'Top Sales';
     if (sortBy === 'volume_asc') return 'Low Sales';
-    if (sortBy === 'name_asc') return 'A-Z';
-    return 'Sort';
+    if (sortBy === 'name_desc') return 'Z-A';
+    return 'A-Z';
   };
-
-  const toggleSortDropdown = () => {
-    if (!showSortDropdown && sortBtnRef.current) {
-      sortBtnRef.current.measureInWindow((x, y, width, height) => {
-        if (y && height) {
-          setDropdownPos({
-            top: y + height + 4,
-            right: 16,
-          });
-        }
-        setShowSortDropdown(true);
-      });
-    } else {
-      setShowSortDropdown(false);
-    }
-  };
-
-  const renderCompanyHeader = useCallback(
-    () => (
-      <View style={styles.headerControlsContainer}>
-        {/* Single Ultra-Compact 40px Control Bar */}
-        <View style={styles.searchAndFilterRow}>
-          {/* Search Box */}
-          <View style={styles.searchWrapper}>
-            <View style={{ marginRight: 6 }}>
-              <SearchIcon size={15} color="#94A3B8" />
-            </View>
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Search company or brand"
-              placeholderTextColor="#94A3B8"
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-            />
-            {searchQuery ? (
-              <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.clearBtn}>
-                <XIcon size={12} color="#94A3B8" />
-              </TouchableOpacity>
-            ) : null}
-          </View>
-
-          {/* Inline Dropdown Pill Button */}
-          <View ref={sortBtnRef} collapsable={false}>
-            <TouchableOpacity
-              style={[
-                styles.sortDropdownPill,
-                sortBy !== 'default' ? styles.sortDropdownPillActive : null,
-              ]}
-              onPress={toggleSortDropdown}
-              activeOpacity={0.75}
-            >
-              <SwapVertIcon size={15} color={sortBy !== 'default' ? '#FFFFFF' : '#0F2042'} />
-              <Text
-                style={[
-                  styles.sortDropdownPillText,
-                  sortBy !== 'default' ? styles.sortDropdownPillTextActive : null,
-                ]}
-              >
-                {getSortLabel()}
-              </Text>
-              <ChevronDownIcon size={14} color={sortBy !== 'default' ? '#FFFFFF' : '#0F2042'} />
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
-    ),
-    [searchQuery, sortBy, showSortDropdown]
-  );
 
   const renderCompanyEmpty = useCallback(
     () => {
@@ -494,7 +452,7 @@ export default function App() {
             style={styles.resetSearchBtn}
             onPress={() => {
               setSearchQuery('');
-              setSortBy('default');
+              setSortBy('name_asc');
             }}
           >
             <Text style={styles.resetSearchBtnText}>Reset Filter</Text>
@@ -506,17 +464,13 @@ export default function App() {
   );
 
   if (loadingSession) {
-    return (
-      <View style={[styles.appContainer, styles.center]}>
-        <Text style={styles.loadingText}>Loading Session...</Text>
-      </View>
-    );
+    return <SplashScreen />;
   }
 
   return (
     <SafeAreaProvider>
       <View style={styles.appContainer}>
-        <StatusBar />
+        <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
         
         {!user ? (
           <LoginScreen onLoginSuccess={setUser} />
@@ -559,27 +513,62 @@ export default function App() {
             {/* Scrollable layout contents */}
             <View style={styles.mainContent}>
               {viewMode === 'companies' && (
-                <FlatList
-                  data={loadingSalesData ? [] : sortedCompanies}
-                  renderItem={renderCompanyItem}
-                  keyExtractor={(item) => item.id}
-                  ListHeaderComponent={renderCompanyHeader}
-                  ListEmptyComponent={renderCompanyEmpty}
-                  style={styles.scrollList}
-                  contentContainerStyle={styles.scrollContent}
-                  initialNumToRender={10}
-                  maxToRenderPerBatch={10}
-                  windowSize={5}
-                  removeClippedSubviews={Platform.OS === 'android'}
-                  refreshControl={
-                    <RefreshControl
-                      refreshing={refreshing}
-                      onRefresh={handleRefresh}
-                      colors={['#0284C7', '#0F172A']}
-                      tintColor="#0284C7"
-                    />
-                  }
-                />
+                <View style={styles.companiesTabWrapper}>
+                  {/* Fixed Search & Sort Controls Bar */}
+                  <View style={styles.headerControlsContainer}>
+                    <View style={styles.searchAndFilterRow}>
+                      <SearchBar
+                        value={searchQuery}
+                        onChangeText={setSearchQuery}
+                        placeholder="Search company or brand"
+                        containerStyle={{ flex: 1 }}
+                      />
+
+                      {/* Sort Pill Button */}
+                      <TouchableOpacity
+                        style={[
+                          styles.sortDropdownPill,
+                          sortBy !== 'name_asc' ? styles.sortDropdownPillActive : null,
+                        ]}
+                        onPress={() => setShowSortModal(true)}
+                        activeOpacity={0.75}
+                      >
+                        <SwapVertIcon size={15} color={sortBy !== 'name_asc' ? '#FFFFFF' : '#0F2042'} />
+                        <Text
+                          style={[
+                            styles.sortDropdownPillText,
+                            sortBy !== 'name_asc' ? styles.sortDropdownPillTextActive : null,
+                          ]}
+                        >
+                          {getSortLabel()}
+                        </Text>
+                        <ChevronDownIcon size={14} color={sortBy !== 'name_asc' ? '#FFFFFF' : '#0F2042'} />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  <FlatList
+                    data={loadingSalesData ? [] : sortedCompanies}
+                    renderItem={renderCompanyItem}
+                    keyExtractor={(item) => item.id}
+                    ListEmptyComponent={renderCompanyEmpty}
+                    style={styles.scrollList}
+                    contentContainerStyle={styles.scrollContent}
+                    initialNumToRender={10}
+                    maxToRenderPerBatch={10}
+                    windowSize={5}
+                    removeClippedSubviews={Platform.OS === 'android'}
+                    keyboardShouldPersistTaps="handled"
+                    refreshControl={
+                      <RefreshControl
+                        refreshing={refreshing}
+                        onRefresh={handleRefresh}
+                        colors={['#0284C7', '#0F172A']}
+                        tintColor="#0284C7"
+                      />
+                    }
+                  />
+                </View>
               )}
 
               {/* View Mode: GROUPS */}
@@ -623,62 +612,21 @@ export default function App() {
               onClose={() => setSelectedCompany(null)}
             />
 
-            {/* Floating Inline Dropdown Card (Rendered in OS window layer via transparent Modal to ensure top zIndex) */}
-            <Modal
-              visible={showSortDropdown}
-              transparent={true}
-              animationType="none"
-              onRequestClose={() => setShowSortDropdown(false)}
-              statusBarTranslucent
-            >
-              <TouchableOpacity
-                style={styles.dropdownModalOverlay}
-                activeOpacity={1}
-                onPress={() => setShowSortDropdown(false)}
-              >
-                <View
-                  style={[
-                    styles.dropdownMenuCardModal,
-                    { top: dropdownPos.top, right: dropdownPos.right },
-                  ]}
-                >
-                  {sortDropdownOptions.map((opt) => {
-                    const isSelected = sortBy === opt.key;
-                    const IconComp = opt.Icon;
-                    return (
-                      <TouchableOpacity
-                        key={opt.key}
-                        style={[
-                          styles.dropdownMenuItem,
-                          isSelected ? styles.dropdownMenuItemActive : null,
-                        ]}
-                        onPress={() => {
-                          setSortBy(opt.key as CompanySortOption);
-                          setShowSortDropdown(false);
-                        }}
-                        activeOpacity={0.75}
-                      >
-                        <View style={styles.dropdownIconBox}>
-                          <IconComp size={15} color={isSelected ? '#0F2042' : '#64748B'} />
-                        </View>
-                        <Text
-                          style={[
-                            styles.dropdownMenuItemText,
-                            isSelected ? styles.dropdownMenuItemTextActive : null,
-                          ]}
-                        >
-                          {opt.label}
-                        </Text>
-                        {isSelected && <CheckCircleIcon size={16} color="#0F2042" />}
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              </TouchableOpacity>
-            </Modal>
+            {/* Reusable Sort Modal */}
+            <SortModal<CompanySortOption>
+              visible={showSortModal}
+              onClose={() => setShowSortModal(false)}
+              selectedOption={sortBy}
+              onSelectOption={(val) => setSortBy(val)}
+              options={companySortOptions}
+              scaleFactor={scaleFactor}
+              title="Sort Companies"
+            />
 
-            {/* Bottom nav tabs */}
-            <FooterNav viewMode={viewMode} setViewMode={handleTabChange} />
+            {/* Bottom nav tabs (hidden when keyboard is open) */}
+            {!isKeyboardVisible && (
+              <FooterNav viewMode={viewMode} setViewMode={handleTabChange} />
+            )}
           </SafeAreaView>
         )}
       </View>
@@ -689,7 +637,7 @@ export default function App() {
 const styles = StyleSheet.create({
   appContainer: {
     flex: 1,
-    backgroundColor: '#0A1128',
+    backgroundColor: '#FFFFFF',
   },
   center: {
     justifyContent: 'center',
@@ -722,7 +670,7 @@ const styles = StyleSheet.create({
     width: 7,
     height: 7,
     borderRadius: 4,
-    backgroundColor: '#2563EB',
+    backgroundColor: '#0D3B8E',
     marginRight: 8,
   },
   indicatorLabel: {
@@ -757,9 +705,13 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingTop: 2,
     paddingBottom: 24,
+  },
+  companiesTabWrapper: {
+    flex: 1,
+    paddingHorizontal: 16,
+    paddingTop: 10,
   },
   headerControlsContainer: {
     marginBottom: 8,
@@ -768,27 +720,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-  },
-  searchWrapper: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    height: 40,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 13,
-    color: '#0F172A',
-    fontWeight: '600',
-    paddingVertical: 0,
-  },
-  clearBtn: {
-    padding: 4,
   },
   sortDropdownPill: {
     flexDirection: 'row',

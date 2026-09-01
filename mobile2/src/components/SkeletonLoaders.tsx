@@ -34,26 +34,21 @@ export function CompanyCardSkeleton({ cardStyle }: { cardStyle?: object }) {
   const pulseAnim = usePulseAnim();
 
   return (
-    <Animated.View style={[styles.card, { opacity: pulseAnim }, cardStyle]}>
-      <View style={styles.cardHeader}>
-        <View style={styles.titleWrapper}>
-          <View style={styles.nameRow}>
-            <View style={styles.skeletonTitle} />
-            <View style={styles.skeletonBadge} />
-          </View>
-          <View style={styles.skeletonSubText} />
-        </View>
-        <View style={styles.skeletonChevron} />
+    <Animated.View style={[styles.cardCompact, { opacity: pulseAnim }, cardStyle]}>
+      <View style={{ flex: 1 }}>
+        <View style={{ width: 110, height: 16, backgroundColor: '#E2E8F0', borderRadius: 4, marginBottom: 4 }} />
+        <View style={{ width: 60, height: 12, backgroundColor: '#F1F5F9', borderRadius: 4 }} />
       </View>
 
-      <View style={styles.metricsGrid}>
-        <View style={styles.metricCell}>
-          <View style={styles.skeletonLabel} />
-          <View style={styles.skeletonValue} />
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+        <View style={{ alignItems: 'flex-end' }}>
+          <View style={{ width: 32, height: 9, backgroundColor: '#F1F5F9', borderRadius: 3, marginBottom: 4 }} />
+          <View style={{ width: 44, height: 14, backgroundColor: '#E2E8F0', borderRadius: 4 }} />
         </View>
-        <View style={styles.metricCell}>
-          <View style={styles.skeletonLabel} />
-          <View style={styles.skeletonValue} />
+        <View style={{ width: 1, height: 20, backgroundColor: '#E2E8F0' }} />
+        <View style={{ alignItems: 'flex-end' }}>
+          <View style={{ width: 36, height: 9, backgroundColor: '#F1F5F9', borderRadius: 3, marginBottom: 4 }} />
+          <View style={{ width: 40, height: 14, backgroundColor: '#E2E8F0', borderRadius: 4 }} />
         </View>
       </View>
     </Animated.View>
@@ -231,6 +226,19 @@ export function ProfileSkeleton() {
 const styles = StyleSheet.create({
   skeletonContainer: {
     width: '100%',
+  },
+  cardCompact: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    marginBottom: 8,
+    height: 70,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   card: {
     backgroundColor: '#FFFFFF',
