@@ -791,12 +791,23 @@ class ImportPipelineEngine:
         except Exception as exc:
 
             logger.exception(
-                "Upload batch %s failed.",
+                "Upload batch %s failed: %s",
                 batch_id,
+                exc,
             )
 
             # Rollback / cleanup any partial records inserted for this batch
             self._cleanup_failed_batch(batch_id)
+
+            local_batch = upload_batches_db.get(batch_id)
+
+            if local_batch:
+                local_batch.update({
+                    "status": "failed",
+                    "upload_status": "failed",
+                    "remarks": f"Pipeline failed: {str(exc)}. All partial records rolled back.",
+                    "processing_time_seconds": round(time.time() - start_time, 2),
+                })
 
             try:
                 self._update_batch(
@@ -808,15 +819,6 @@ class ImportPipelineEngine:
                     "Could not mark batch %s failed.",
                     batch_id,
                 )
-
-            local_batch = upload_batches_db.get(batch_id)
-
-            if local_batch:
-                local_batch.update({
-                    "upload_status": "failed",
-                    "remarks": f"Pipeline failed: {str(exc)}. All partial records rolled back.",
-                    "processing_time_seconds": round(time.time() - start_time, 2),
-                })
 
             try:
                 self._pipeline_log(
@@ -1171,16 +1173,30 @@ class ImportPipelineEngine:
         # ----------------------------------------------------
         # 1. EXCEL PARSING (.xlsx, .xls, .xlsb, etc.)
         # ----------------------------------------------------
-        excel_engines = ["calamine", "pyxlsb", "openpyxl", "xlrd"]
-        for engine in excel_engines:
+        # Direct Calamine fast Rust engine parser for Excel files (.xlsb, .xlsx, .xls)
+        if filename_lower.endswith((".xlsb", ".xlsx", ".xls")):
             try:
-                raw_dataframe = pd.read_excel(io.BytesIO(contents), header=None, engine=engine)
-                if raw_dataframe is not None and not raw_dataframe.empty and len(raw_dataframe) > 0:
-                    break
-            except Exception:
-                continue
+                from python_calamine import CalamineWorkbook
+                workbook = CalamineWorkbook.from_object(io.BytesIO(contents))
+                sheet_name = workbook.sheet_names[0]
+                rows = workbook.get_sheet_by_name(sheet_name).to_python()
+                if rows:
+                    raw_dataframe = pd.DataFrame(rows)
+                    logger.info(f"Successfully parsed '{filename}' using CalamineWorkbook ({len(rows)} rows).")
+            except Exception as e_calamine:
+                logger.warning(f"Direct CalamineWorkbook parsing failed for '{filename}': {e_calamine}")
 
-        # Dedicated pyxlsb engine parser for binary files (.xlsb)
+        if raw_dataframe is None or raw_dataframe.empty:
+            excel_engines = ["calamine", "pyxlsb", "openpyxl", "xlrd"]
+            for engine in excel_engines:
+                try:
+                    raw_dataframe = pd.read_excel(io.BytesIO(contents), header=None, engine=engine)
+                    if raw_dataframe is not None and not raw_dataframe.empty and len(raw_dataframe) > 0:
+                        break
+                except Exception:
+                    continue
+
+        # Dedicated pyxlsb engine fallback for binary files (.xlsb)
         if (raw_dataframe is None or raw_dataframe.empty) and filename_lower.endswith(".xlsb"):
             try:
                 # pyrefly: ignore [missing-import]
