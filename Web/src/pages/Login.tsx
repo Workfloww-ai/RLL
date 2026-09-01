@@ -184,49 +184,66 @@ export default function Login({ onLogin }: LoginProps) {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8 font-sans relative overflow-hidden">
-      {/* Background Soft Glow Accents */}
-      <div className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-blue-600/5 rounded-full blur-3xl pointer-events-none" />
+    <div className="min-h-screen bg-gradient-to-br from-slate-100 via-blue-50/50 to-slate-200/80 flex flex-col justify-center py-12 sm:px-6 lg:px-8 font-sans relative overflow-hidden selection:bg-[#0D3B8E] selection:text-white">
+      {/* High-Intensity Ambient Glassmorphism Background Orbs */}
+      <div className="absolute top-1/4 -left-32 w-[480px] h-[480px] bg-gradient-to-tr from-[#0D3B8E]/20 to-blue-400/15 rounded-full blur-[100px] pointer-events-none animate-pulse" style={{ animationDuration: '7s' }} />
+      <div className="absolute top-1/2 -right-32 -translate-y-1/2 w-[480px] h-[480px] bg-gradient-to-br from-indigo-500/15 to-[#0D3B8E]/20 rounded-full blur-[110px] pointer-events-none animate-pulse" style={{ animationDuration: '9s' }} />
+      <div className="absolute -bottom-32 left-1/3 w-[500px] h-[500px] bg-gradient-to-t from-sky-400/15 to-[#0D3B8E]/15 rounded-full blur-[120px] pointer-events-none animate-pulse" style={{ animationDuration: '11s' }} />
+
+      {/* Subtle Frosted Grid Lines Overlay */}
+      <div className="absolute inset-0 bg-[linear-gradient(to_right,#0d3b8e0a_1px,transparent_1px),linear-gradient(to_bottom,#0d3b8e0a_1px,transparent_1px)] bg-[size:3.5rem_3.5rem] [mask-image:radial-gradient(ellipse_70%_60%_at_50%_50%,#000_70%,transparent_100%)] pointer-events-none" />
 
       {/* Brand Header */}
       <motion.div 
-        initial={{ opacity: 0, y: -15 }}
+        initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
         className="sm:mx-auto sm:w-full sm:max-w-md text-center z-10"
       >
-        <div className="inline-flex p-3 bg-white rounded-3xl shadow-sm border border-slate-200/80 mb-3">
-          <img src="/images/rll logo.svg" alt="RLL Logo" className="w-28 h-28 object-contain" />
+        <div className="inline-flex p-4 bg-white/60 backdrop-blur-2xl rounded-3xl shadow-[0_12px_40px_rgba(13,59,142,0.08)] border border-white/80 mb-4 transition-all duration-300 hover:scale-105 hover:bg-white/80 hover:border-white">
+          <img src="/images/rll logo.svg" alt="RLL Logo" className="w-28 h-28 object-contain filter drop-shadow-xs" />
         </div>
-        <h1 className="text-xl font-bold tracking-tight text-slate-900">
+        <h1 className="text-2xl font-bold tracking-tight text-slate-900 drop-shadow-xs">
           RLL Admin Portal
         </h1>
-        <p className="mt-1 text-xs text-slate-500 font-medium">
+        <p className="mt-1.5 text-xs text-slate-500 font-medium tracking-wide">
           Rajasthan Liquor Limited Administrative Dashboard
         </p>
       </motion.div>
 
-      {/* Login Card */}
+      {/* Maximum Glassmorphism Auth Card */}
       <motion.div 
-        initial={{ opacity: 0, y: 15 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.08 }}
+        initial={{ opacity: 0, y: 25, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.5, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
         className="mt-6 sm:mx-auto sm:w-full sm:max-w-md relative z-10 px-4 sm:px-0"
       >
-        <div className="bg-white border border-slate-200/80 shadow-xl shadow-slate-200/50 rounded-2xl p-6 sm:p-8">
-          
+        <div className="bg-white/55 backdrop-blur-3xl border border-white/80 shadow-[0_20px_60px_rgba(13,59,142,0.12),0_0_30px_rgba(255,255,255,0.6)_inset] rounded-3xl p-6 sm:p-9 relative overflow-hidden">
+          {/* Glossy Top Border Specular Reflection Line */}
+          <div className="absolute inset-x-0 top-0 h-[1.5px] bg-gradient-to-r from-transparent via-white to-transparent pointer-events-none opacity-90" />
+          <div className="absolute -inset-x-20 top-0 h-32 bg-gradient-to-b from-white/30 via-transparent to-transparent pointer-events-none" />
+
           {/* Notifications */}
           {error && (
-            <div className="mb-5 p-3 rounded-xl text-xs font-medium bg-red-50 border border-red-200/80 text-red-700 flex items-start gap-2 leading-relaxed">
+            <motion.div 
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mb-5 p-3.5 rounded-2xl text-xs font-medium bg-red-50/80 border border-red-200/80 text-red-700 flex items-start gap-2.5 shadow-sm backdrop-blur-xl leading-relaxed"
+            >
               <AlertCircle className="w-4 h-4 shrink-0 text-red-600 mt-0.5" />
               <span>{error}</span>
-            </div>
+            </motion.div>
           )}
 
           {successMessage && (
-            <div className="mb-5 p-3 rounded-xl text-xs font-medium bg-emerald-50 border border-emerald-200/80 text-emerald-700 flex items-start gap-2 leading-relaxed">
+            <motion.div 
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mb-5 p-3.5 rounded-2xl text-xs font-medium bg-emerald-50/80 border border-emerald-200/80 text-emerald-700 flex items-start gap-2.5 shadow-sm backdrop-blur-xl leading-relaxed"
+            >
               <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600 mt-0.5" />
               <span>{successMessage}</span>
-            </div>
+            </motion.div>
           )}
 
           <AnimatePresence mode="wait">
@@ -234,19 +251,19 @@ export default function Login({ onLogin }: LoginProps) {
             {view === 'login' && (
               <motion.form 
                 key="login"
-                initial={{ opacity: 0, x: -8 }}
+                initial={{ opacity: 0, x: -12 }}
                 animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 8 }}
-                transition={{ duration: 0.15 }}
-                className="space-y-4" 
+                exit={{ opacity: 0, x: 12 }}
+                transition={{ duration: 0.2 }}
+                className="space-y-4.5" 
                 onSubmit={handleLoginSubmit}
               >
                 <div>
-                  <label htmlFor="email" className="block text-xs font-semibold text-slate-700 tracking-wide mb-1.5">
+                  <label htmlFor="email" className="block text-xs font-bold text-slate-700 tracking-wide mb-1.5">
                     Email Address
                   </label>
-                  <div className="relative">
-                    <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <div className="relative group">
+                    <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 transition-colors group-focus-within:text-[#0D3B8E]" />
                     <input
                       id="email"
                       name="email"
@@ -255,18 +272,18 @@ export default function Login({ onLogin }: LoginProps) {
                       required
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      className="block w-full rounded-xl border border-slate-200 pl-10 pr-4 py-2.5 text-xs font-medium text-slate-900 placeholder-slate-400 bg-slate-50/50 shadow-2xs focus:bg-white focus:border-[#0D3B8E] focus:outline-none focus:ring-2 focus:ring-[#0D3B8E]/15 transition-all"
+                      className="block w-full rounded-2xl border border-white/60 pl-10 pr-4 py-2.5 text-xs font-medium text-slate-900 placeholder-slate-400 bg-white/40 backdrop-blur-xl shadow-[inset_0_1px_2px_rgba(255,255,255,0.7)] focus:bg-white/80 focus:border-[#0D3B8E] focus:outline-none focus:ring-4 focus:ring-[#0D3B8E]/15 transition-all duration-200"
                       placeholder="admin@rll.gov.in"
                     />
                   </div>
                 </div>
 
                 <div>
-                  <label htmlFor="password" className="block text-xs font-semibold text-slate-700 tracking-wide mb-1.5">
+                  <label htmlFor="password" className="block text-xs font-bold text-slate-700 tracking-wide mb-1.5">
                     Password
                   </label>
-                  <div className="relative">
-                    <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <div className="relative group">
+                    <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 transition-colors group-focus-within:text-[#0D3B8E]" />
                     <input
                       id="password"
                       name="password"
@@ -275,13 +292,13 @@ export default function Login({ onLogin }: LoginProps) {
                       required
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      className="block w-full rounded-xl border border-slate-200 pl-10 pr-10 py-2.5 text-xs font-medium text-slate-900 placeholder-slate-400 bg-slate-50/50 shadow-2xs focus:bg-white focus:border-[#0D3B8E] focus:outline-none focus:ring-2 focus:ring-[#0D3B8E]/15 transition-all"
+                      className="block w-full rounded-2xl border border-white/60 pl-10 pr-10 py-2.5 text-xs font-medium text-slate-900 placeholder-slate-400 bg-white/40 backdrop-blur-xl shadow-[inset_0_1px_2px_rgba(255,255,255,0.7)] focus:bg-white/80 focus:border-[#0D3B8E] focus:outline-none focus:ring-4 focus:ring-[#0D3B8E]/15 transition-all duration-200"
                       placeholder="••••••••"
                     />
                     <button
                       type="button"
                       onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer p-1 rounded-lg hover:bg-white/50"
                       title={showPassword ? "Hide password" : "Show password"}
                     >
                       {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -297,9 +314,9 @@ export default function Login({ onLogin }: LoginProps) {
                       type="checkbox"
                       checked={rememberMe}
                       onChange={(e) => setRememberMe(e.target.checked)}
-                      className="h-4 w-4 rounded border-slate-300 text-[#0D3B8E] focus:ring-[#0D3B8E]/20 cursor-pointer"
+                      className="h-4 w-4 rounded-md border-slate-300 text-[#0D3B8E] focus:ring-[#0D3B8E]/20 cursor-pointer accent-[#0D3B8E]"
                     />
-                    <label htmlFor="remember-me" className="ml-2 text-xs font-medium text-slate-600 cursor-pointer">
+                    <label htmlFor="remember-me" className="ml-2 text-xs font-medium text-slate-600 cursor-pointer select-none">
                       Remember me
                     </label>
                   </div>
@@ -307,7 +324,7 @@ export default function Login({ onLogin }: LoginProps) {
                   <button 
                     type="button" 
                     onClick={() => { setView('forgot-password'); setError(null); setSuccessMessage(null); }} 
-                    className="text-xs font-semibold text-[#0D3B8E] hover:text-blue-800 transition-colors cursor-pointer"
+                    className="text-xs font-bold text-[#0D3B8E] hover:text-blue-800 hover:underline transition-all cursor-pointer"
                   >
                     Forgot password?
                   </button>
@@ -316,7 +333,7 @@ export default function Login({ onLogin }: LoginProps) {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full flex justify-center items-center gap-2 py-2.5 px-4 rounded-xl bg-[#0D3B8E] hover:bg-[#0A2F73] active:bg-[#082459] text-white text-xs font-bold shadow-md shadow-blue-900/10 transition-all mt-2 disabled:opacity-60 cursor-pointer"
+                  className="w-full flex justify-center items-center gap-2 py-3 px-4 rounded-2xl bg-gradient-to-r from-[#0D3B8E] to-[#0A2F73] hover:from-[#0B337D] hover:to-[#082459] active:scale-[0.99] text-white text-xs font-bold shadow-lg shadow-[#0D3B8E]/25 hover:shadow-xl hover:shadow-[#0D3B8E]/35 border border-white/30 backdrop-blur-xl transition-all duration-200 mt-2 disabled:opacity-60 cursor-pointer"
                 >
                   <LogIn className="w-4 h-4" />
                   {loading ? 'Authenticating...' : 'Sign In'}
@@ -328,35 +345,35 @@ export default function Login({ onLogin }: LoginProps) {
             {view === 'forgot-password' && (
               <motion.form
                 key="forgot-password"
-                initial={{ opacity: 0, x: 8 }}
+                initial={{ opacity: 0, x: 12 }}
                 animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -8 }}
-                transition={{ duration: 0.15 }}
-                className="space-y-4"
+                exit={{ opacity: 0, x: -12 }}
+                transition={{ duration: 0.2 }}
+                className="space-y-4.5"
                 onSubmit={handleSendResetLinkSubmit}
               >
                 <div>
                   <h3 className="text-sm font-bold text-slate-900">
                     Reset Password
                   </h3>
-                  <p className="text-xs text-slate-500 mt-0.5">
+                  <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
                     Enter your registered email address and we'll send you a password recovery link.
                   </p>
                 </div>
 
                 <div>
-                  <label htmlFor="reset-email" className="block text-xs font-semibold text-slate-700 tracking-wide mb-1.5">
+                  <label htmlFor="reset-email" className="block text-xs font-bold text-slate-700 tracking-wide mb-1.5">
                     Registered Email Address
                   </label>
-                  <div className="relative">
-                    <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <div className="relative group">
+                    <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 transition-colors group-focus-within:text-[#0D3B8E]" />
                     <input
                       id="reset-email"
                       type="email"
                       required
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      className="block w-full rounded-xl border border-slate-200 pl-10 pr-4 py-2.5 text-xs font-medium text-slate-900 placeholder-slate-400 bg-slate-50/50 shadow-2xs focus:bg-white focus:border-[#0D3B8E] focus:outline-none focus:ring-2 focus:ring-[#0D3B8E]/15 transition-all"
+                      className="block w-full rounded-2xl border border-white/60 pl-10 pr-4 py-2.5 text-xs font-medium text-slate-900 placeholder-slate-400 bg-white/40 backdrop-blur-xl shadow-[inset_0_1px_2px_rgba(255,255,255,0.7)] focus:bg-white/80 focus:border-[#0D3B8E] focus:outline-none focus:ring-4 focus:ring-[#0D3B8E]/15 transition-all duration-200"
                       placeholder="admin@rll.gov.in"
                     />
                   </div>
@@ -365,13 +382,13 @@ export default function Login({ onLogin }: LoginProps) {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full flex justify-center items-center gap-2 py-2.5 px-4 rounded-xl bg-[#0D3B8E] hover:bg-[#0A2F73] text-white text-xs font-bold shadow-md shadow-blue-900/10 transition-all cursor-pointer disabled:opacity-60"
+                  className="w-full flex justify-center items-center gap-2 py-3 px-4 rounded-2xl bg-gradient-to-r from-[#0D3B8E] to-[#0A2F73] hover:from-[#0B337D] hover:to-[#082459] active:scale-[0.99] text-white text-xs font-bold shadow-lg shadow-[#0D3B8E]/25 hover:shadow-xl hover:shadow-[#0D3B8E]/35 border border-white/30 backdrop-blur-xl transition-all duration-200 cursor-pointer disabled:opacity-60"
                 >
                   <Send className="w-3.5 h-3.5" />
                   {loading ? 'Sending Link...' : 'Send Reset Link'}
                 </button>
 
-                <div className="pt-2 flex items-center justify-between text-xs border-t border-slate-100">
+                <div className="pt-2 flex items-center justify-between text-xs border-t border-slate-100/80">
                   <button 
                     type="button" 
                     onClick={() => { setView('login'); setError(null); }} 
@@ -388,46 +405,46 @@ export default function Login({ onLogin }: LoginProps) {
             {view === 'reset-password' && (
               <motion.form
                 key="reset-password"
-                initial={{ opacity: 0, x: 8 }}
+                initial={{ opacity: 0, x: 12 }}
                 animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -8 }}
-                transition={{ duration: 0.15 }}
-                className="space-y-4"
+                exit={{ opacity: 0, x: -12 }}
+                transition={{ duration: 0.2 }}
+                className="space-y-4.5"
                 onSubmit={handleResetPasswordSubmit}
               >
                 <div>
                   <h3 className="text-sm font-bold text-slate-900">
                     Set New Password
                   </h3>
-                  <p className="text-xs text-slate-500 mt-0.5">
+                  <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
                     Enter your registered email and choose a new password.
                   </p>
                 </div>
 
                 <div>
-                  <label htmlFor="reset-email" className="block text-xs font-semibold text-slate-700 tracking-wide mb-1.5">
+                  <label htmlFor="reset-email" className="block text-xs font-bold text-slate-700 tracking-wide mb-1.5">
                     Registered Email Address
                   </label>
-                  <div className="relative">
-                    <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <div className="relative group">
+                    <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 transition-colors group-focus-within:text-[#0D3B8E]" />
                     <input
                       id="reset-email"
                       type="email"
                       required
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      className="block w-full rounded-xl border border-slate-200 pl-10 pr-4 py-2.5 text-xs font-medium text-slate-900 placeholder-slate-400 bg-slate-50/50 shadow-2xs focus:bg-white focus:border-[#0D3B8E] focus:outline-none focus:ring-2 focus:ring-[#0D3B8E]/15 transition-all"
+                      className="block w-full rounded-2xl border border-white/60 pl-10 pr-4 py-2.5 text-xs font-medium text-slate-900 placeholder-slate-400 bg-white/40 backdrop-blur-xl shadow-[inset_0_1px_2px_rgba(255,255,255,0.7)] focus:bg-white/80 focus:border-[#0D3B8E] focus:outline-none focus:ring-4 focus:ring-[#0D3B8E]/15 transition-all duration-200"
                       placeholder="admin@rll.gov.in"
                     />
                   </div>
                 </div>
 
                 <div>
-                  <label htmlFor="new-password" className="block text-xs font-semibold text-slate-700 tracking-wide mb-1.5">
+                  <label htmlFor="new-password" className="block text-xs font-bold text-slate-700 tracking-wide mb-1.5">
                     New Password
                   </label>
-                  <div className="relative">
-                    <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <div className="relative group">
+                    <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 transition-colors group-focus-within:text-[#0D3B8E]" />
                     <input
                       id="new-password"
                       type={showNewPassword ? "text" : "password"}
@@ -436,12 +453,12 @@ export default function Login({ onLogin }: LoginProps) {
                       value={newPassword}
                       onChange={(e) => setNewPassword(e.target.value)}
                       placeholder="At least 6 characters"
-                      className="block w-full rounded-xl border border-slate-200 pl-10 pr-10 py-2.5 text-xs font-medium text-slate-900 placeholder-slate-400 bg-slate-50/50 shadow-2xs focus:bg-white focus:border-[#0D3B8E] focus:outline-none focus:ring-2 focus:ring-[#0D3B8E]/15 transition-all"
+                      className="block w-full rounded-2xl border border-white/60 pl-10 pr-10 py-2.5 text-xs font-medium text-slate-900 placeholder-slate-400 bg-white/40 backdrop-blur-xl shadow-[inset_0_1px_2px_rgba(255,255,255,0.7)] focus:bg-white/80 focus:border-[#0D3B8E] focus:outline-none focus:ring-4 focus:ring-[#0D3B8E]/15 transition-all duration-200"
                     />
                     <button
                       type="button"
                       onClick={() => setShowNewPassword(!showNewPassword)}
-                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer p-1 rounded-lg hover:bg-white/50"
                       title={showNewPassword ? "Hide password" : "Show password"}
                     >
                       {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -452,12 +469,12 @@ export default function Login({ onLogin }: LoginProps) {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full flex justify-center items-center gap-2 py-2.5 px-4 rounded-xl bg-[#0D3B8E] hover:bg-[#0A2F73] text-white text-xs font-bold shadow-md shadow-blue-900/10 transition-all cursor-pointer disabled:opacity-60"
+                  className="w-full flex justify-center items-center gap-2 py-3 px-4 rounded-2xl bg-gradient-to-r from-[#0D3B8E] to-[#0A2F73] hover:from-[#0B337D] hover:to-[#082459] active:scale-[0.99] text-white text-xs font-bold shadow-lg shadow-[#0D3B8E]/25 hover:shadow-xl hover:shadow-[#0D3B8E]/35 border border-white/30 backdrop-blur-xl transition-all duration-200 cursor-pointer disabled:opacity-60"
                 >
                   {loading ? 'Resetting Password...' : 'Reset Password & Sign In'}
                 </button>
 
-                <div className="pt-2 text-center border-t border-slate-100">
+                <div className="pt-2 text-center border-t border-slate-100/80">
                   <button 
                     type="button" 
                     onClick={() => { setView('login'); setError(null); }} 
@@ -472,9 +489,9 @@ export default function Login({ onLogin }: LoginProps) {
           </AnimatePresence>
         </div>
 
-        {/* Security Footer Badge */}
-        <div className="mt-6 text-center text-[11px] text-slate-400 font-medium flex items-center justify-center gap-1.5">
-          <ShieldCheck className="w-3.5 h-3.5 text-slate-400" />
+        {/* Security Glass Badge */}
+        <div className="mt-6 text-center text-[11px] text-slate-600 font-medium flex items-center justify-center gap-1.5 backdrop-blur-md py-1.5 px-4 rounded-full bg-white/50 border border-white/70 mx-auto w-fit shadow-xs">
+          <ShieldCheck className="w-3.5 h-3.5 text-[#0D3B8E]" />
           <span>Rajasthan State Enterprise Portal • 256-Bit Encrypted</span>
         </div>
       </motion.div>

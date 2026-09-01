@@ -62,10 +62,10 @@ export default function StockUpload() {
   }, []);
 
   return (
-    <div className="max-w-7xl w-full space-y-6">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-slate-800">Sales Data Upload</h1>
-        <p className="text-slate-500 mt-1 text-sm font-medium">Upload the latest sales data for real-time outlet visibility.</p>
+    <div className="w-full space-y-6">
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Sales Data Upload</h1>
+        <p className="text-slate-500 mt-1 text-xs font-medium">Upload the latest sales data for real-time outlet visibility.</p>
       </div>
 
       <FileUpload 
@@ -79,25 +79,24 @@ export default function StockUpload() {
         onUploadComplete={() => fetchLatestBatch()}
       />
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-8">
-        <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-          <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Last Upload</h3>
-          <p className="text-lg font-bold text-slate-800">{latestUpload.lastUploadFormatted}</p>
-          <p className="text-[10px] text-slate-400 font-medium uppercase mt-1 truncate" title={latestUpload.uploaderInfo}>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+        <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-2xs hover:shadow-xs transition-shadow">
+          <h3 className="text-[10px] font-bold text-[#0D3B8E] uppercase tracking-wider mb-2">Last Upload</h3>
+          <p className="text-xl font-bold text-slate-900">{latestUpload.lastUploadFormatted}</p>
+          <p className="text-xs text-slate-400 font-medium mt-1 truncate" title={latestUpload.uploaderInfo}>
             {latestUpload.uploaderInfo}
           </p>
         </div>
-        <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-          <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Records Processed</h3>
-          <div className="flex items-center gap-2 mt-1">
-            <p className="text-lg font-bold text-slate-800">
-              {latestUpload.status === 'SUCCESS' && 'Successfully Processed'}
-              {latestUpload.status === 'PROCESSING' && 'Processing Data'}
-              {latestUpload.status === 'FAILED' && 'Processing Failed'}
-              {latestUpload.status === 'NONE' && 'No Upload Data'}
-            </p>
-          </div>
-          <p className="text-[10px] text-slate-400 font-medium uppercase mt-1 truncate">
+
+        <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-2xs hover:shadow-xs transition-shadow">
+          <h3 className="text-[10px] font-bold text-[#0D3B8E] uppercase tracking-wider mb-2">Records Processed</h3>
+          <p className="text-xl font-bold text-slate-900">
+            {latestUpload.status === 'SUCCESS' && 'Successfully Processed'}
+            {latestUpload.status === 'PROCESSING' && 'Processing Data'}
+            {latestUpload.status === 'FAILED' && 'Processing Failed'}
+            {latestUpload.status === 'NONE' && 'No Upload Data'}
+          </p>
+          <p className="text-xs text-slate-400 font-medium mt-1 truncate">
             {latestUpload.status === 'SUCCESS' ? 'All Records Verified & Saved' : latestUpload.remarksText}
           </p>
         </div>

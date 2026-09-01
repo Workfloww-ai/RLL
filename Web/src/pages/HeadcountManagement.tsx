@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import FileUpload from '../components/FileUpload';
-import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X, RefreshCw, Mail, Phone, Shield, RotateCcw, ChevronUp, ChevronDown, ArrowUpDown } from 'lucide-react';
+import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X, RefreshCw, Mail, Phone, Shield, RotateCcw, ChevronUp, ChevronDown, ArrowUpDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { User } from '../types';
 import { API_BASE_URL } from '../config';
 
@@ -335,47 +335,55 @@ export default function HeadcountManagement() {
     }
   };
 
-  return (
-    <div className="flex flex-col h-[calc(100vh-8rem)]">
-      <div className="mb-6 flex justify-between items-end shrink-0">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-800">User Management</h1>
-          <p className="text-slate-500 mt-1 text-sm font-medium">Manage employees, onboard new joiners, phone numbers, emails, and reporting managers.</p>
-        </div>
-        <div className="flex gap-3">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-3.5 h-3.5" />
-            <input 
-              type="text" 
-              placeholder="Search by name, number, email..." 
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 pr-4 py-2 bg-white border border-slate-200 rounded text-xs font-bold text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#004B87] w-72" 
-            />
-          </div>
-          <button 
-            onClick={() => setShowUpload(!showUpload)}
-            className="flex items-center gap-2 px-3 py-1.5 border border-slate-200 text-xs font-bold text-slate-600 rounded bg-white hover:bg-slate-50"
-          >
-            <UploadCloud className="w-3.5 h-3.5" /> Bulk Upload
-          </button>
-          <button 
-            onClick={() => setIsAdding(true)}
-            className="flex items-center gap-2 px-3 py-1.5 bg-[#004B87] text-white text-xs font-bold rounded shadow-sm hover:bg-blue-800 transition-colors"
-          >
-            <UserPlus className="w-3.5 h-3.5" /> Add Employee
-          </button>
-        </div>
-      </div>
+  const [currentPage, setCurrentPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
 
-      {/* Filter Panel (Always Visible) */}
-      <div className="mb-4 p-4 bg-slate-50 border border-slate-200 rounded-xl flex flex-wrap items-center gap-4 text-xs font-semibold text-slate-700 shrink-0">
-        <div className="flex items-center gap-2">
-          <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Status:</span>
+  // Reset page when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, roleFilter, statusFilter, managerFilter]);
+
+  const totalPages = Math.ceil(filteredUsers.length / rowsPerPage) || 1;
+  const paginatedUsers = useMemo(() => {
+    const start = (currentPage - 1) * rowsPerPage;
+    return filteredUsers.slice(start, start + rowsPerPage);
+  }, [filteredUsers, currentPage, rowsPerPage]);
+
+  return (
+    <div className="w-full h-full min-h-0 flex flex-col space-y-2.5">
+      {/* Integrated Control Toolbar */}
+      <div className="bg-white py-2 px-3 rounded-xl border border-slate-200/80 shadow-2xs flex flex-wrap items-center gap-3 text-xs shrink-0">
+        <div className="relative flex-1 min-w-[180px]">
+          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input 
+            type="text" 
+            placeholder="Search by name, email, phone, role, or manager..." 
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200/80 rounded-lg font-medium text-slate-900 focus:outline-none focus:border-[#0D3B8E] focus:bg-white transition-all text-xs placeholder:text-slate-400"
+          />
+        </div>
+
+        <div className="flex items-center gap-1.5">
+          <span className="text-slate-400 font-bold uppercase tracking-wider text-[9px]">Role:</span>
+          <select
+            value={roleFilter}
+            onChange={(e) => setRoleFilter(e.target.value)}
+            className="px-2.5 py-1 bg-slate-50 border border-slate-200/80 rounded-lg font-bold text-slate-700 text-xs focus:outline-none focus:border-[#0D3B8E]"
+          >
+            <option value="all">All Roles</option>
+            {uniqueRoles.map(r => (
+              <option key={r} value={r}>{r}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex items-center gap-1.5">
+          <span className="text-slate-400 font-bold uppercase tracking-wider text-[9px]">Status:</span>
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as any)}
-            className="px-3 py-1.5 bg-white border border-slate-200 rounded font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-[#004B87]"
+            className="px-2.5 py-1 bg-slate-50 border border-slate-200/80 rounded-lg font-bold text-slate-700 text-xs focus:outline-none focus:border-[#0D3B8E]"
           >
             <option value="all">All Statuses</option>
             <option value="active">Active Only</option>
@@ -383,159 +391,154 @@ export default function HeadcountManagement() {
           </select>
         </div>
 
-        <div className="flex items-center gap-2">
-          <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Role:</span>
-          <select
-            value={roleFilter}
-            onChange={(e) => setRoleFilter(e.target.value)}
-            className="px-3 py-1.5 bg-white border border-slate-200 rounded font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-[#004B87]"
-          >
-            <option value="all">All Roles</option>
-            {uniqueRoles.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Reporting Manager:</span>
+        <div className="flex items-center gap-1.5">
+          <span className="text-slate-400 font-bold uppercase tracking-wider text-[9px]">Manager:</span>
           <select
             value={managerFilter}
             onChange={(e) => setManagerFilter(e.target.value)}
-            className="px-3 py-1.5 bg-white border border-slate-200 rounded font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-[#004B87]"
+            className="px-2.5 py-1 bg-slate-50 border border-slate-200/80 rounded-lg font-bold text-slate-700 text-xs focus:outline-none focus:border-[#0D3B8E]"
           >
             <option value="all">All Managers</option>
-            {uniqueManagers.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
+            {uniqueManagers.map(m => (
+              <option key={m} value={m}>{m}</option>
             ))}
           </select>
         </div>
 
         <button
           onClick={resetFilters}
-          className="ml-auto flex items-center gap-1 text-[11px] font-bold text-slate-500 hover:text-slate-800 transition-colors"
+          className="flex items-center gap-1 text-[11px] font-bold text-slate-400 hover:text-slate-700 transition-colors cursor-pointer mr-1"
+          title="Reset Filters"
         >
-          <RotateCcw className="w-3 h-3" /> Reset Filters
+          <RotateCcw className="w-3 h-3" /> Reset
         </button>
+
+        <div className="h-4 w-px bg-slate-200 mx-0.5"></div>
+
+        {/* Action Buttons */}
+        <div className="flex items-center gap-2">
+          <button 
+            onClick={() => setShowUpload(!showUpload)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-colors cursor-pointer"
+          >
+            <UploadCloud className="w-3.5 h-3.5 text-[#0D3B8E]" />
+            Bulk Upload
+          </button>
+          <button 
+            onClick={() => setIsAdding(!isAdding)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#0D3B8E] hover:bg-[#0A2F73] text-white rounded-lg text-xs font-bold transition-all shadow-md shadow-[#0D3B8E]/15 cursor-pointer"
+          >
+            <UserPlus className="w-3.5 h-3.5" />
+            Add User
+          </button>
+        </div>
       </div>
 
-      {showUpload && (
-        <div className="mb-6 shrink-0">
-          <FileUpload 
-            title="Upload Headcount Roster"
-            uploadEndpoint={`${API_BASE_URL}/users/upload-roster`}
-            onUploadComplete={() => fetchUsers()}
-            instructions={[
-              "Ensure the file contains: Full Name, Phone Number, Email, Role, Reporting Manager.",
-              "Records are automatically mapped across users and reporting manager structures.",
-              "Use the main view to manage individual records after upload."
-            ]}
-          />
-        </div>
-      )}
-
+      {/* Add User Form Drawer */}
       {isAdding && (
-        <div className="mb-6 bg-white p-4 rounded-xl shadow-sm border border-[#004B87]/40 ring-2 ring-[#004B87]/10 flex flex-col gap-4 shrink-0">
-          <h3 className="font-bold text-slate-800 text-sm">Add New Employee</h3>
-          <div className="flex flex-wrap gap-4 items-end">
-            <div className="flex-1 min-w-140px space-y-1">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">First Name</label>
+        <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm mb-6">
+          <h3 className="text-sm font-bold text-slate-900 mb-4">Add New Personnel Record</h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">First Name</label>
               <input 
                 type="text" 
                 value={newUser.firstName}
                 onChange={(e) => setNewUser({...newUser, firstName: e.target.value})}
-                placeholder="e.g. Manoj"
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
+                placeholder="First Name"
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:border-[#0D3B8E]"
               />
             </div>
-            <div className="flex-1 min-w-140px space-y-1">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Last Name</label>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Last Name</label>
               <input 
                 type="text" 
                 value={newUser.lastName}
                 onChange={(e) => setNewUser({...newUser, lastName: e.target.value})}
-                placeholder="e.g. Tiwari"
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
+                placeholder="Last Name"
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:border-[#0D3B8E]"
               />
             </div>
-            <div className="flex-1 min-w-140px space-y-1">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Phone Number</label>
-              <input 
-                type="text" 
-                value={newUser.phoneNumber}
-                onChange={(e) => setNewUser({...newUser, phoneNumber: e.target.value})}
-                placeholder="e.g. +919876543210"
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
-              />
-            </div>
-            <div className="flex-1 min-w-180px space-y-1">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Email</label>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Email Address</label>
               <input 
                 type="email" 
                 value={newUser.email}
                 onChange={(e) => setNewUser({...newUser, email: e.target.value})}
-                placeholder="e.g. manoj.tiwari@rll.com"
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
+                placeholder="email@rll.com"
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:border-[#0D3B8E]"
               />
             </div>
-            <div className="flex-1 min-w-160px space-y-1">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Role</label>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Phone Number</label>
+              <input 
+                type="text" 
+                value={newUser.phoneNumber}
+                onChange={(e) => setNewUser({...newUser, phoneNumber: e.target.value})}
+                placeholder="+91 9876543210"
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:border-[#0D3B8E]"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Assigned Role</label>
               <select 
                 value={newUser.role}
-                onChange={(e) => setNewUser({...newUser, role: e.target.value as any})}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
+                onChange={(e) => setNewUser({...newUser, role: e.target.value})}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:border-[#0D3B8E]"
               >
                 {(availableRoles.length > 0 ? availableRoles.map(r => r.role_name) : ["ASE", "TSM", "Regional Supervisor", "Admin"]).map((rName) => (
                   <option key={rName} value={rName}>{rName}</option>
                 ))}
               </select>
             </div>
-            <div className="flex-1 min-w-160px space-y-1">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Reporting Manager</label>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Reporting Manager</label>
               <input 
                 type="text" 
                 value={newUser.reportingManager}
                 onChange={(e) => setNewUser({...newUser, reportingManager: e.target.value})}
                 placeholder="Manager Name"
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-bold text-slate-700 focus:outline-none focus:border-[#004B87]"
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:border-[#0D3B8E]"
               />
             </div>
-            <div className="flex gap-2">
-              <button 
-                onClick={handleAdd}
-                className="px-4 py-2 bg-[#004B87] text-white rounded text-xs font-bold hover:bg-blue-800 transition-colors"
-              >
-                Save
-              </button>
-              <button 
-                onClick={() => setIsAdding(false)}
-                className="px-4 py-2 border border-slate-200 text-slate-600 rounded text-xs font-bold hover:bg-slate-50 transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
+          </div>
+          <div className="flex gap-2 mt-4 justify-end">
+            <button 
+              onClick={() => setIsAdding(false)}
+              className="px-4 py-2 border border-slate-200 text-slate-600 rounded-xl text-xs font-bold hover:bg-slate-50 transition-colors cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button 
+              onClick={handleAdd}
+              className="px-5 py-2 bg-[#0D3B8E] text-white rounded-xl text-xs font-bold hover:bg-[#0A2F73] transition-colors cursor-pointer shadow-xs"
+            >
+              Save Record
+            </button>
           </div>
         </div>
       )}
 
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex-1 overflow-hidden flex flex-col">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse table-fixed min-w-800px">
+      {/* Table Card */}
+      <div className="bg-white rounded-2xl shadow-2xs border border-slate-200/80 flex-1 min-h-0 overflow-hidden flex flex-col">
+        <div className="overflow-x-auto flex-1">
+          <table className="w-full text-left border-collapse table-fixed min-w-[800px]">
             <thead>
-              <tr className="bg-slate-50 border-b border-slate-200 select-none">
+              <tr className="bg-slate-50/80 border-b border-slate-200/80 select-none">
+                {/* S.No Column */}
+                <th className="w-[6%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">
+                  #
+                </th>
+
                 {/* Name */}
                 <th 
                   onClick={() => handleSort('name')}
-                  className="w-[20%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[20%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Name</span>
                     {sortField === 'name' ? (
-                      sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#004B87]" /> : <ChevronDown className="w-3 h-3 text-[#004B87]" />
+                      sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#0D3B8E]" /> : <ChevronDown className="w-3 h-3 text-[#0D3B8E]" />
                     ) : (
                       <ArrowUpDown className="w-3 h-3 text-slate-300" />
                     )}
@@ -545,12 +548,12 @@ export default function HeadcountManagement() {
                 {/* Phone Number */}
                 <th 
                   onClick={() => handleSort('phoneNumber')}
-                  className="w-[15%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[15%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Phone Number</span>
                     {sortField === 'phoneNumber' ? (
-                      sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#004B87]" /> : <ChevronDown className="w-3 h-3 text-[#004B87]" />
+                      sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#0D3B8E]" /> : <ChevronDown className="w-3 h-3 text-[#0D3B8E]" />
                     ) : (
                       <ArrowUpDown className="w-3 h-3 text-slate-300" />
                     )}
@@ -560,12 +563,12 @@ export default function HeadcountManagement() {
                 {/* Email */}
                 <th 
                   onClick={() => handleSort('email')}
-                  className="w-[22%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[22%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Email</span>
                     {sortField === 'email' ? (
-                      sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#004B87]" /> : <ChevronDown className="w-3 h-3 text-[#004B87]" />
+                      sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#0D3B8E]" /> : <ChevronDown className="w-3 h-3 text-[#0D3B8E]" />
                     ) : (
                       <ArrowUpDown className="w-3 h-3 text-slate-300" />
                     )}
@@ -575,12 +578,12 @@ export default function HeadcountManagement() {
                 {/* Role */}
                 <th 
                   onClick={() => handleSort('role')}
-                  className="w-[14%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[13%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Role</span>
                     {sortField === 'role' ? (
-                      sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#004B87]" /> : <ChevronDown className="w-3 h-3 text-[#004B87]" />
+                      sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#0D3B8E]" /> : <ChevronDown className="w-3 h-3 text-[#0D3B8E]" />
                     ) : (
                       <ArrowUpDown className="w-3 h-3 text-slate-300" />
                     )}
@@ -590,12 +593,12 @@ export default function HeadcountManagement() {
                 {/* Reporting Manager */}
                 <th 
                   onClick={() => handleSort('reportingManager')}
-                  className="w-[17%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[16%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Reporting Manager</span>
                     {sortField === 'reportingManager' ? (
-                      sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#004B87]" /> : <ChevronDown className="w-3 h-3 text-[#004B87]" />
+                      sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#0D3B8E]" /> : <ChevronDown className="w-3 h-3 text-[#0D3B8E]" />
                     ) : (
                       <ArrowUpDown className="w-3 h-3 text-slate-300" />
                     )}
@@ -605,12 +608,12 @@ export default function HeadcountManagement() {
                 {/* Status */}
                 <th 
                   onClick={() => handleSort('isActive')}
-                  className="w-[10%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[10%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Status</span>
                     {sortField === 'isActive' ? (
-                      sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#004B87]" /> : <ChevronDown className="w-3 h-3 text-[#004B87]" />
+                      sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#0D3B8E]" /> : <ChevronDown className="w-3 h-3 text-[#0D3B8E]" />
                     ) : (
                       <ArrowUpDown className="w-3 h-3 text-slate-300" />
                     )}
@@ -618,18 +621,18 @@ export default function HeadcountManagement() {
                 </th>
 
                 {/* Actions */}
-                <th className="w-[12%] px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">
+                <th className="w-[10%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">
                   Actions
                 </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filteredUsers.length === 0 ? (
+              {paginatedUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-6 py-12 text-center text-sm font-medium text-slate-500">
+                  <td colSpan={8} className="px-6 py-12 text-center text-sm font-medium text-slate-500">
                     {loading ? (
                       <span className="inline-flex items-center gap-2 text-slate-600 font-semibold">
-                        <RefreshCw className="w-4 h-4 animate-spin text-[#004B87]" /> Loading personnel from database...
+                        <RefreshCw className="w-4 h-4 animate-spin text-[#0D3B8E]" /> Loading personnel from database...
                       </span>
                     ) : searchQuery ? (
                       "No records found matching your search query."
@@ -639,164 +642,208 @@ export default function HeadcountManagement() {
                   </td>
                 </tr>
               ) : (
-                filteredUsers.map(user => (
-                  <tr key={user.id} className="hover:bg-slate-50/50 transition-colors group">
-                    {/* Name */}
-                    <td className="px-6 py-4">
-                      {editingId === user.id ? (
-                        <input
-                          type="text"
-                          value={editName}
-                          onChange={(e) => setEditName(e.target.value)}
-                          className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#004B87]"
-                        />
-                      ) : (
-                        <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 rounded-full bg-[#004B87]/10 flex items-center justify-center text-[#004B87] font-bold text-xs">
-                            {user.name.charAt(0)}
+                paginatedUsers.map((user, idx) => {
+                  const serialNumber = (currentPage - 1) * rowsPerPage + idx + 1;
+                  return (
+                    <tr key={user.id} className="hover:bg-blue-50/20 transition-colors group">
+                      {/* S.No */}
+                      <td className="px-4 py-2.5 text-center text-xs font-bold text-slate-400">
+                        {serialNumber}
+                      </td>
+
+                      {/* Name */}
+                      <td className="px-4 py-2.5">
+                        {editingId === user.id ? (
+                          <input
+                            type="text"
+                            value={editName}
+                            onChange={(e) => setEditName(e.target.value)}
+                            className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
+                          />
+                        ) : (
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-7 h-7 rounded-full bg-[#0D3B8E]/10 flex items-center justify-center text-[#0D3B8E] font-bold text-xs shrink-0">
+                              {user.name.charAt(0)}
+                            </div>
+                            <p className="font-bold text-slate-900 text-xs truncate">{user.name}</p>
                           </div>
-                          <div>
-                            <p className="font-bold text-slate-800 text-sm">{user.name}</p>
+                        )}
+                      </td>
+
+                      {/* Phone Number */}
+                      <td className="px-4 py-2.5">
+                        {editingId === user.id ? (
+                          <input
+                            type="text"
+                            value={editPhone}
+                            onChange={(e) => setEditPhone(e.target.value)}
+                            className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
+                          />
+                        ) : (
+                          <div className="flex items-center gap-2 text-slate-600">
+                            <Phone className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                            <span className="text-xs font-bold truncate">{user.phoneNumber || 'N/A'}</span>
                           </div>
-                        </div>
-                      )}
-                    </td>
+                        )}
+                      </td>
 
-                    {/* Phone Number */}
-                    <td className="px-6 py-4">
-                      {editingId === user.id ? (
-                        <input
-                          type="text"
-                          value={editPhone}
-                          onChange={(e) => setEditPhone(e.target.value)}
-                          className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#004B87]"
-                        />
-                      ) : (
-                        <div className="flex items-center gap-2 text-slate-600">
-                          <Phone className="w-3.5 h-3.5 text-slate-400" />
-                          <span className="text-xs font-bold">{user.phoneNumber || 'N/A'}</span>
-                        </div>
-                      )}
-                    </td>
+                      {/* Email */}
+                      <td className="px-4 py-2.5">
+                        {editingId === user.id ? (
+                          <input
+                            type="email"
+                            value={editEmail}
+                            onChange={(e) => setEditEmail(e.target.value)}
+                            className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
+                          />
+                        ) : (
+                          <div className="flex items-center gap-2 text-slate-600">
+                            <Mail className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                            <span className="text-xs font-medium truncate">{user.email || 'N/A'}</span>
+                          </div>
+                        )}
+                      </td>
 
-                    {/* Email */}
-                    <td className="px-6 py-4">
-                      {editingId === user.id ? (
-                        <input
-                          type="email"
-                          value={editEmail}
-                          onChange={(e) => setEditEmail(e.target.value)}
-                          className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#004B87]"
-                        />
-                      ) : (
-                        <div className="flex items-center gap-2 text-slate-600">
-                          <Mail className="w-3.5 h-3.5 text-slate-400" />
-                          <span className="text-xs font-semibold">{user.email || 'N/A'}</span>
-                        </div>
-                      )}
-                    </td>
-
-                    {/* Role */}
-                    <td className="px-6 py-4">
-                      {editingId === user.id ? (
-                        <select
-                          value={editRole}
-                          onChange={(e) => setEditRole(e.target.value as any)}
-                          className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#004B87]"
-                        >
-                          {(availableRoles.length > 0 ? availableRoles.map(r => r.role_name) : ["ASE", "TSM", "Regional Supervisor", "Admin"]).map((rName) => (
-                            <option key={rName} value={rName}>{rName}</option>
-                          ))}
-                        </select>
-                      ) : (
-                        <span className={`px-2.5 py-1 rounded border text-[10px] font-bold uppercase tracking-wider ${getRoleColor(user.role)}`}>
-                          {user.role}
-                        </span>
-                      )}
-                    </td>
-
-                    {/* Reporting Manager */}
-                    <td className="px-6 py-4">
-                      {editingId === user.id ? (
-                        <input
-                          type="text"
-                          value={editReportingManager}
-                          onChange={(e) => setEditReportingManager(e.target.value)}
-                          className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#004B87]"
-                        />
-                      ) : (
-                        <p className={`text-xs font-bold ${!user.reportingManager || user.reportingManager === "Unassigned" ? "text-slate-400 italic" : "text-slate-700"}`}>
-                          {user.reportingManager || "Unassigned"}
-                        </p>
-                      )}
-                    </td>
-
-                    {/* Status */}
-                    <td className="px-6 py-4">
-                      {editingId === user.id ? (
-                        <select
-                          value={editIsActive ? "active" : "inactive"}
-                          onChange={(e) => setEditIsActive(e.target.value === "active")}
-                          className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#004B87]"
-                        >
-                          <option value="active">Active</option>
-                          <option value="inactive">Inactive</option>
-                        </select>
-                      ) : (
-                        <div className="flex items-center gap-1.5">
-                          <span className={`w-2 h-2 rounded-full ${user.isActive ? 'bg-emerald-500' : 'bg-slate-300'}`}></span>
-                          <span className={`text-xs font-bold ${user.isActive ? 'text-emerald-700' : 'text-slate-500'}`}>
-                            {user.isActive ? 'Active' : 'Inactive'}
+                      {/* Role */}
+                      <td className="px-4 py-2.5">
+                        {editingId === user.id ? (
+                          <select
+                            value={editRole}
+                            onChange={(e) => setEditRole(e.target.value as any)}
+                            className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
+                          >
+                            {(availableRoles.length > 0 ? availableRoles.map(r => r.role_name) : ["ASE", "TSM", "Regional Supervisor", "Admin"]).map((rName) => (
+                              <option key={rName} value={rName}>{rName}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span className={`px-2.5 py-1 rounded border text-[10px] font-bold uppercase tracking-wider ${getRoleColor(user.role)}`}>
+                            {user.role}
                           </span>
-                        </div>
-                      )}
-                    </td>
+                        )}
+                      </td>
 
-                    {/* Actions */}
-                    <td className="px-6 py-4 text-right">
-                      {editingId === user.id ? (
-                        <div className="flex items-center justify-end gap-2">
-                          <button
-                            onClick={() => handleSave(user.id)}
-                            className="p-1.5 bg-emerald-50 text-emerald-600 rounded hover:bg-emerald-100 transition-colors"
-                            title="Save Changes"
+                      {/* Reporting Manager */}
+                      <td className="px-4 py-2.5">
+                        {editingId === user.id ? (
+                          <input
+                            type="text"
+                            value={editReportingManager}
+                            onChange={(e) => setEditReportingManager(e.target.value)}
+                            className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
+                          />
+                        ) : (
+                          <p className={`text-xs font-bold truncate ${!user.reportingManager || user.reportingManager === "Unassigned" ? "text-slate-400 italic" : "text-slate-700"}`}>
+                            {user.reportingManager || "Unassigned"}
+                          </p>
+                        )}
+                      </td>
+
+                      {/* Status */}
+                      <td className="px-4 py-2.5">
+                        {editingId === user.id ? (
+                          <select
+                            value={editIsActive ? "active" : "inactive"}
+                            onChange={(e) => setEditIsActive(e.target.value === "active")}
+                            className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
                           >
-                            <Check className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={handleCancel}
-                            className="p-1.5 bg-slate-100 text-slate-600 rounded hover:bg-slate-200 transition-colors"
-                            title="Cancel"
-                          >
-                            <X className="w-4 h-4" />
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="flex items-center justify-end gap-2">
-                          <button
-                            onClick={() => handleEditClick(user)}
-                            className="px-3 py-1.5 border border-slate-200 rounded text-[10px] font-bold text-slate-600 hover:border-[#004B87] hover:text-[#004B87] transition-colors uppercase tracking-widest inline-flex items-center gap-1"
-                          >
-                            <Edit2 className="w-3 h-3" /> Edit
-                          </button>
-                          <button 
-                            onClick={() => handleDelete(user.id)}
-                            className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors inline-flex"
-                            title="Delete Record"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                ))
+                            <option value="active">Active</option>
+                            <option value="inactive">Inactive</option>
+                          </select>
+                        ) : (
+                          <div className="flex items-center gap-1.5">
+                            <span className={`w-2 h-2 rounded-full ${user.isActive ? 'bg-emerald-500' : 'bg-slate-300'}`}></span>
+                            <span className={`text-xs font-bold ${user.isActive ? 'text-emerald-700' : 'text-slate-500'}`}>
+                              {user.isActive ? 'Active' : 'Inactive'}
+                            </span>
+                          </div>
+                        )}
+                      </td>
+
+                      {/* Actions */}
+                      <td className="px-4 py-2.5 text-right">
+                        {editingId === user.id ? (
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              onClick={() => handleSave(user.id)}
+                              className="p-1 bg-emerald-50 text-emerald-600 rounded hover:bg-emerald-100 transition-colors"
+                              title="Save Changes"
+                            >
+                              <Check className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={handleCancel}
+                              className="p-1 bg-slate-100 text-slate-600 rounded hover:bg-slate-200 transition-colors"
+                              title="Cancel"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              onClick={() => handleEditClick(user)}
+                              className="px-2.5 py-1 border border-slate-200 rounded text-[10px] font-bold text-slate-600 hover:border-[#0D3B8E] hover:text-[#0D3B8E] transition-colors uppercase tracking-wider inline-flex items-center gap-1 cursor-pointer"
+                            >
+                              <Edit2 className="w-3 h-3" /> Edit
+                            </button>
+                            <button 
+                              onClick={() => handleDelete(user.id)}
+                              className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors inline-flex cursor-pointer"
+                              title="Delete Record"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
         </div>
-        <div className="mt-auto p-4 bg-slate-50 border-t border-slate-200 text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center justify-between">
-          <span>Showing {filteredUsers.length} total employees</span>
+
+        {/* Full Pagination Footer */}
+        <div className="p-4 bg-slate-50/80 border-t border-slate-200/80 text-xs font-semibold text-slate-600 flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="flex items-center gap-2">
+            <span>SHOWING {filteredUsers.length === 0 ? 0 : (currentPage - 1) * rowsPerPage + 1} TO {Math.min(currentPage * rowsPerPage, filteredUsers.length)} OF {filteredUsers.length} USER RECORDS</span>
+            <div className="flex items-center gap-1.5 ml-4">
+              <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400">ROWS:</span>
+              <select
+                value={rowsPerPage}
+                onChange={(e) => { setRowsPerPage(Number(e.target.value)); setCurrentPage(1); }}
+                className="px-2.5 py-1 bg-white border border-slate-200/80 rounded-lg text-xs font-bold text-slate-700 focus:outline-none focus:border-[#0D3B8E]"
+              >
+                <option value={10}>10</option>
+                <option value={15}>15</option>
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              disabled={currentPage <= 1}
+              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+              className="p-1.5 border border-slate-200 bg-white rounded-lg disabled:opacity-40 text-slate-600 hover:bg-slate-50 transition-colors cursor-pointer"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <span className="px-3 py-1 bg-white border border-slate-200/80 rounded-lg text-xs font-bold text-[#0D3B8E]">
+              Page {currentPage} of {totalPages}
+            </span>
+            <button
+              disabled={currentPage >= totalPages}
+              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+              className="p-1.5 border border-slate-200 bg-white rounded-lg disabled:opacity-40 text-slate-600 hover:bg-slate-50 transition-colors cursor-pointer"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       </div>
     </div>
