@@ -605,26 +605,26 @@ export async function fetchMobileCompanies(period: string = 'Daily', dateTo?: st
   logger.info(`fetchMobileCompanies: period=${period}, dateTo=${dateTo}, selectedHq=${selectedHq}`);
   const cacheKey = `rll_phone_cache_companies_${period}_${selectedHq}_${dateTo || 'latest'}`;
 
-  // 1. Try reading phone local AsyncStorage cache first for instant mounting
-  try {
-    const cachedStr = await AsyncStorage.getItem(cacheKey);
-    if (cachedStr) {
-      const cachedData = JSON.parse(cachedStr);
-      const comps = cachedData.companies || [];
-      if (comps.length > 0) {
-        logger.info(`fetchMobileCompanies: Phone cache HIT for ${cacheKey}`);
-        // Revalidate silently in background
-        setTimeout(() => {
-          fetchMobileCompaniesNetwork(period, dateTo, selectedHq, cacheKey).catch(() => {});
-        }, 50);
-        return comps;
+  // Only use phone disk cache when dateTo is empty (latest date mode)
+  if (!dateTo) {
+    try {
+      const cachedStr = await AsyncStorage.getItem(cacheKey);
+      if (cachedStr) {
+        const cachedData = JSON.parse(cachedStr);
+        const comps = cachedData.companies || [];
+        if (comps.length > 0) {
+          logger.info(`fetchMobileCompanies: Phone cache HIT for ${cacheKey}`);
+          setTimeout(() => {
+            fetchMobileCompaniesNetwork(period, dateTo, selectedHq, cacheKey).catch(() => {});
+          }, 50);
+          return comps;
+        }
       }
+    } catch (e) {
+      logger.warn(`fetchMobileCompanies: Phone cache read error: ${e}`);
     }
-  } catch (e) {
-    logger.warn(`fetchMobileCompanies: Phone cache read error: ${e}`);
   }
 
-  // 2. Cache miss: Fetch directly from network
   return fetchMobileCompaniesNetwork(period, dateTo, selectedHq, cacheKey);
 }
 

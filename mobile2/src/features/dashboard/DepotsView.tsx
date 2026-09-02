@@ -132,7 +132,9 @@ export function DepotsView({
         <DepotListSkeletonList count={5} />
       ) : filteredDepots.length === 0 ? (
         <View style={styles.emptyCard}>
-          <Text style={styles.emptyText}>No depots found</Text>
+          <Text style={styles.emptyText}>
+            {searchTerm.trim() ? 'No depots match your search' : 'No data found'}
+          </Text>
         </View>
       ) : (
         <FlatList
