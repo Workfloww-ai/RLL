@@ -580,7 +580,7 @@ export async function fetchLicenseeBrandSales(licenseeId: string, dateFrom?: str
 
 export async function fetchMobileCompanies(period: string = 'Daily', dateTo?: string, selectedHq: string = 'All Headquarters') {
   logger.info(`fetchMobileCompanies: period=${period}, dateTo=${dateTo}, selectedHq=${selectedHq}`);
-  const cacheKey = `rll_phone_cache_companies_${period}_${selectedHq}`;
+  const cacheKey = `rll_phone_cache_companies_${period}_${selectedHq}_${dateTo || 'latest'}`;
 
   // 1. Try reading phone local AsyncStorage cache first for instant mounting
   try {
