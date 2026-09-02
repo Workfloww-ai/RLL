@@ -112,6 +112,123 @@ def _fetch_fresh_master_lookups():
             }
     except Exception as e:
         logger.warning(f"Error fetching master depots: {e}")
+def _fetch_single_tsm_lookup(user_id: str) -> Optional[Dict[str, Any]]:
+    client = get_supabase()
+    if not client or not user_id:
+        return None
+    try:
+        u_res = client.table("users").select("user_id, first_name, last_name, email").eq("user_id", user_id).execute()
+        if not u_res.data:
+            return None
+        u = u_res.data[0]
+        full_name = f"{u.get('first_name', '')} {u.get('last_name', '')}".strip() or "TSM Manager"
+        tsm_obj = {
+            "id": str(user_id),
+            "name": full_name,
+            "hqLocation": "All Headquarters",
+            "depot_ids": set(),
+            "ase_ids": [],
+            "data": {
+                "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+            },
+            "companies_map": {},
+            "brands_map": {}
+        }
+        ud_res = client.table("user_depot").select("depot_id").eq("user_id", user_id).execute()
+        for ud in (ud_res.data or []):
+            if ud.get("depot_id"):
+                tsm_obj["depot_ids"].add(str(ud["depot_id"]))
+
+        atm_res = client.table("ase_tsm_mapping").select("ase_user_id").eq("tsm_user_id", user_id).execute()
+        ase_ids = [str(atm["ase_user_id"]) for atm in (atm_res.data or []) if atm.get("ase_user_id")]
+        tsm_obj["ase_ids"] = ase_ids
+
+        if ase_ids:
+            ase_ud_res = client.table("user_depot").select("depot_id").in_("user_id", ase_ids).execute()
+            for ud in (ase_ud_res.data or []):
+                if ud.get("depot_id"):
+                    tsm_obj["depot_ids"].add(str(ud["depot_id"]))
+
+        return tsm_obj
+    except Exception as e:
+        logger.warning(f"Error in _fetch_single_tsm_lookup for user_id={user_id}: {e}")
+        return None
+
+def _fetch_fresh_master_lookups():
+    client = get_supabase()
+    companies_lookup: Dict[str, str] = {}
+    try:
+        c_res = client.table("companies").select("company_id, company_name").execute()
+        for c in (c_res.data or []):
+            if c.get("company_id") and c.get("company_name"):
+                companies_lookup[str(c["company_id"])] = c["company_name"]
+    except Exception as e_c:
+        logger.warning(f"Error fetching companies_lookup: {e_c}")
+
+    brands_lookup: Dict[str, Dict[str, Any]] = {}
+    try:
+        b_res = client.table("brands").select("brand_id, brand_name, company_id").execute()
+        for b in (b_res.data or []):
+            if b.get("brand_id") and b.get("brand_name"):
+                brands_lookup[str(b["brand_id"])] = {
+                    "name": b["brand_name"],
+                    "company_id": str(b["company_id"]) if b.get("company_id") else None
+                }
+    except Exception as e_b:
+        logger.warning(f"Error fetching brands_lookup: {e_b}")
+
+    hq_lookup: Dict[str, str] = {}
+    try:
+        h_res = client.table("headquarters").select("headquarters_id, name").execute()
+        for h in (h_res.data or []):
+            if h.get("headquarters_id") and h.get("name"):
+                hq_lookup[str(h["headquarters_id"])] = h["name"]
+    except Exception as e_h:
+        logger.warning(f"Error fetching hq_lookup: {e_h}")
+
+    master_companies = {}
+    for c_id_raw, c_name in companies_lookup.items():
+        if not c_name or c_name == "Others":
+            continue
+        c_key = c_name.lower().replace(" ", "-").replace("/", "-")
+        master_companies[c_key] = {
+            "id": c_key,
+            "name": c_name,
+            "isPinned": c_key in ["rll", "diageo-inbrew"] or c_name.upper() == "RLL",
+            "hqLocation": "All Headquarters",
+            "data": {
+                "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+            },
+            "brands_map": {}
+        }
+
+    master_depots = {}
+    hq_name_lookup = {}
+    try:
+        d_res = client.table("depots").select("depot_id, name, headquarters_id").execute()
+        for d in (d_res.data or []):
+            d_id = str(d.get("depot_id"))
+            d_name = d.get("name")
+            hq_id = str(d.get("headquarters_id") or "")
+            hq_name = hq_lookup.get(hq_id, "Unassigned")
+            hq_name_lookup[d_id] = hq_name
+            master_depots[d_id] = {
+                "id": d_id,
+                "name": d_name,
+                "hqName": hq_name,
+                "data": {
+                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                    "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                    "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                },
+                "brands_map": {}
+            }
+    except Exception as e:
+        logger.warning(f"Error fetching master depots: {e}")
 
     master_tsms = {}
     tsm_depot_lookup = {}
@@ -120,13 +237,14 @@ def _fetch_fresh_master_lookups():
     ase_names_lookup = {}
     try:
         roles_res = client.table("roles").select("role_id, role_name").execute()
-        tsm_role_id = None
+        tsm_role_ids = []
         for r in (roles_res.data or []):
-            if str(r.get("role_name", "")).upper() == "TSM":
-                tsm_role_id = str(r["role_id"])
+            rname = str(r.get("role_name", "")).upper()
+            if "TSM" in rname or "TERRITORY" in rname:
+                tsm_role_ids.append(str(r["role_id"]))
 
-        if tsm_role_id:
-            ur_res = client.table("user_roles").select("user_id").eq("role_id", tsm_role_id).execute()
+        if tsm_role_ids:
+            ur_res = client.table("user_roles").select("user_id").in_("role_id", tsm_role_ids).execute()
             tsm_user_ids = [str(ur["user_id"]) for ur in (ur_res.data or []) if ur.get("user_id")]
             if tsm_user_ids:
                 u_res = client.table("users").select("user_id, first_name, last_name, email").in_("user_id", tsm_user_ids).execute()
@@ -206,10 +324,12 @@ def _fetch_fresh_master_lookups():
 def get_cached_master_lookups():
     now = time.time()
     if _MASTER_CACHE["data"] is not None and (now - _MASTER_CACHE["timestamp"]) < _MASTER_CACHE_TTL:
-        return copy.deepcopy(_MASTER_CACHE["data"])
+        if _MASTER_CACHE["data"].get("master_tsms"):
+            return copy.deepcopy(_MASTER_CACHE["data"])
     data = _fetch_fresh_master_lookups()
-    _MASTER_CACHE["data"] = data
-    _MASTER_CACHE["timestamp"] = now
+    if data.get("master_tsms") and data.get("master_companies"):
+        _MASTER_CACHE["data"] = data
+        _MASTER_CACHE["timestamp"] = now
     return copy.deepcopy(data)
 
 
@@ -871,7 +991,12 @@ async def get_mobile_sales(
             allowed_depots.update(master_tsms[user_id]["depot_ids"])
             master_tsms = {user_id: master_tsms[user_id]}
         else:
-            master_tsms = {}
+            single_tsm = _fetch_single_tsm_lookup(user_id)
+            if single_tsm:
+                master_tsms = {user_id: single_tsm}
+                allowed_depots.update(single_tsm.get("depot_ids", set()))
+            else:
+                master_tsms = {}
     elif user_role == "ase":
         allowed_depots = set(user_depots_map.get(user_id, []))
         master_tsms = {}
@@ -1380,11 +1505,13 @@ async def get_mobile_sales(
         "data": payload
     }
 
-    try:
-        from backend.services.cache_service import set_json_cache
-        await set_json_cache(f"rll:mobile:sales:{cache_key}", payload, ttl=900)
-    except Exception as e_redis_set:
-        logger.warning(f"Failed to store sales payload in Redis: {e_redis_set}")
+    # Guardrail: Do NOT cache empty TSM payload in Redis if raw SQL RPC returned active sales records
+    if len(formatted_tsms) > 0 or len(all_usf_records) == 0:
+        try:
+            from backend.services.cache_service import set_json_cache
+            await set_json_cache(f"rll:mobile:sales:{cache_key}", payload, ttl=900)
+        except Exception as e_redis_set:
+            logger.warning(f"Failed to store sales payload in Redis: {e_redis_set}")
 
     # J, K, L. Serialization & Response timing
     t_serialize_start = time.perf_counter()

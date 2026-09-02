@@ -62,8 +62,8 @@ export default function App() {
   const [user, setUser] = useState<any>(null);
   const [loadingSession, setLoadingSession] = useState(true);
   const [period, setPeriod] = useState<Period>('Daily');
-  const [dateFrom, setDateFrom] = useState<string>('2026-07-31');
-  const [dateTo, setDateTo] = useState<string>('2026-07-31');
+  const [dateFrom, setDateFrom] = useState<string>('');
+  const [dateTo, setDateTo] = useState<string>('');
   const [viewMode, setViewMode] = useState<ViewMode>('companies');
   const [viewModeHistory, setViewModeHistory] = useState<ViewMode[]>(['companies']);
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
@@ -215,7 +215,7 @@ export default function App() {
         if (res && isMounted) {
           const tStateStart = getNow();
           setApiData(res);
-          if (res.latest_sale_date && !dateFrom && !dateTo) {
+          if (res.latest_sale_date && (!dateFrom || !dateTo)) {
             setDateFrom(res.latest_sale_date);
             setDateTo(res.latest_sale_date);
           }
