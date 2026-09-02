@@ -25,38 +25,43 @@ def decode_access_token(token: str) -> Optional[dict]:
     except jwt.PyJWTError:
         return None
 
+import json
+from fastapi import Depends, HTTPException, status, Request
+from backend.db.redis_client import safe_get
+
 async def get_current_user(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ) -> dict:
-    if not credentials or not credentials.credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    token = credentials.credentials
-    if token.startswith("demo-token-") or token.startswith("google-token-"):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    session_token = request.cookies.get("rll_session")
+    email = None
+    user_id = None
+    role_name = None
 
-    payload = decode_access_token(token)
-    if not payload:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication token or token expired",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    email = payload.get("sub")
-    user_id = payload.get("user_id")
+    if session_token:
+        redis_session_raw = await safe_get(f"rll:session:{session_token}")
+        if redis_session_raw:
+            try:
+                session_data = json.loads(redis_session_raw)
+                email = session_data.get("email")
+                user_id = session_data.get("user_id")
+                role_name = session_data.get("role")
+            except Exception:
+                pass
+
+    if not email and credentials and credentials.credentials:
+        token = credentials.credentials
+        if not (token.startswith("demo-token-") or token.startswith("google-token-")):
+            payload = decode_access_token(token)
+            if payload:
+                email = payload.get("sub")
+                user_id = payload.get("user_id")
+                role_name = payload.get("role", "admin")
+
     if not email:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Malformed token payload",
+            detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -75,7 +80,8 @@ async def get_current_user(
                         headers={"WWW-Authenticate": "Bearer"},
                     )
                 
-                role_name = payload.get("role", "admin")
+                if not role_name:
+                    role_name = "admin"
                 try:
                     ur_res = client.table("user_roles").select("user_id, role_id, is_active, roles(role_id, role_name)").eq("user_id", db_user["user_id"]).execute()
                     if ur_res.data:
@@ -100,15 +106,37 @@ async def get_current_user(
                 }
         except HTTPException:
             raise
-        except Exception:
-            pass
+        except Exception as e_db:
+            if email and user_id:
+                user_info = {
+                    "user_id": str(user_id),
+                    "email": email,
+                    "first_name": email.split("@")[0].capitalize(),
+                    "last_name": "",
+                    "phone": "",
+                    "role_name": role_name or "admin",
+                    "role": role_name or "admin",
+                    "is_active": True
+                }
 
     if not user_info:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        if email and user_id:
+            user_info = {
+                "user_id": str(user_id),
+                "email": email,
+                "first_name": email.split("@")[0].capitalize(),
+                "last_name": "",
+                "phone": "",
+                "role_name": role_name or "admin",
+                "role": role_name or "admin",
+                "is_active": True
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
     return user_info
 

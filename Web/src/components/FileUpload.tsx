@@ -268,24 +268,23 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
-      <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex flex-col min-h-340px">
+      {/* Upload Dropzone Container */}
+      <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/80 shadow-2xs p-7 flex flex-col min-h-[360px]">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold text-slate-800">{title}</h2>
-          <div className="flex items-center gap-2">
-            {uploadState.status === 'success' && (
-              <span className="flex items-center gap-1 px-2.5 py-1 bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-bold rounded-full uppercase tracking-wider">
-                <Check size={11} /> Saved in DB
-              </span>
-            )}
-          </div>
+          <h2 className="text-sm font-bold text-slate-900 tracking-tight">{title}</h2>
+          {uploadState.status === 'success' && (
+            <span className="flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-700 text-[10px] font-bold rounded-full border border-emerald-200">
+              <Check size={12} /> Saved in DB
+            </span>
+          )}
         </div>
 
         <div 
-          className={`border-2 border-dashed rounded-xl flex-1 flex flex-col items-center justify-center p-6 transition-all duration-200 ${
-            uploadState.status === 'idle' ? 'border-slate-300 bg-slate-50/50 hover:bg-slate-100/60 hover:border-slate-400 cursor-pointer group' : 
-            uploadState.status === 'processing' ? 'border-amber-300 bg-amber-50/20' :
+          className={`border-2 border-dashed rounded-xl flex-1 flex flex-col items-center justify-center p-8 transition-all duration-200 ${
+            uploadState.status === 'idle' ? 'border-slate-200 bg-slate-50/50 hover:bg-blue-50/20 hover:border-[#0D3B8E] cursor-pointer group' : 
+            uploadState.status === 'processing' ? 'border-amber-300 bg-amber-50/30' :
             uploadState.status === 'success' ? 'border-emerald-300 bg-emerald-50/30' :
-            'border-rose-300 bg-rose-50/20'
+            'border-rose-300 bg-rose-50/30'
           }`}
           onDragOver={handleDragOver}
           onDrop={handleDrop}
@@ -303,54 +302,54 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
             {uploadState.status === 'idle' && (
               <motion.div 
                 key="idle"
-                initial={{ opacity: 0, y: 10 }}
+                initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95 }}
+                exit={{ opacity: 0, scale: 0.96 }}
                 className="flex flex-col items-center text-center"
               >
-                <div className="w-14 h-14 bg-blue-50 text-[#004B87] rounded-full flex items-center justify-center mb-3 group-hover:scale-110 transition-transform shadow-xs">
+                <div className="w-14 h-14 bg-[#0D3B8E]/8 text-[#0D3B8E] rounded-full flex items-center justify-center mb-3 group-hover:scale-110 group-hover:bg-[#0D3B8E] group-hover:text-white transition-all duration-200">
                   <UploadCloud className="w-7 h-7" />
                 </div>
-                <p className="text-sm text-slate-700 font-bold">Click to upload or drag Excel file</p>
-                <p className="text-xs text-slate-400 mt-1">Accepted formats: {accept}</p>
+                <p className="text-sm text-slate-800 font-bold">Click to upload or drag Excel file</p>
+                <p className="text-xs text-slate-400 mt-1 font-medium">Accepted formats: {accept}</p>
               </motion.div>
             )}
 
             {uploadState.status === 'uploading' && (
               <motion.div 
                 key="uploading"
-                initial={{ opacity: 0, scale: 0.95 }}
+                initial={{ opacity: 0, scale: 0.96 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0 }}
                 className="flex flex-col items-center w-full max-w-md mx-auto text-center"
               >
-                <div className="w-12 h-12 bg-indigo-50 text-[#004B87] rounded-full flex items-center justify-center mb-3 animate-pulse">
+                <div className="w-12 h-12 bg-[#0D3B8E]/10 text-[#0D3B8E] rounded-full flex items-center justify-center mb-3 animate-pulse">
                   <FileText size={24} />
                 </div>
-                <p className="text-sm text-slate-800 font-bold mb-1">Uploading {uploadState.fileName}...</p>
+                <p className="text-sm text-slate-900 font-bold mb-1">Uploading {uploadState.fileName}...</p>
                 <p className="text-xs text-slate-500 mb-3">{uploadState.statusMessage}</p>
-                <div className="w-full h-2.5 bg-slate-200 rounded-full overflow-hidden">
+                <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
                   <motion.div 
-                    className="h-full bg-[#004B87] rounded-full"
+                    className="h-full bg-[#0D3B8E] rounded-full"
                     initial={{ width: 0 }}
                     animate={{ width: `${uploadState.progress}%` }}
                     transition={{ duration: 0.3 }}
                   />
                 </div>
-                <p className="text-slate-500 text-xs mt-2 font-medium">{uploadState.progress}%</p>
+                <p className="text-slate-500 text-xs mt-2 font-bold">{uploadState.progress}%</p>
               </motion.div>
             )}
 
             {uploadState.status === 'processing' && (
               <motion.div 
                 key="processing"
-                initial={{ opacity: 0, scale: 0.95 }}
+                initial={{ opacity: 0, scale: 0.96 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0 }}
                 className="flex flex-col items-center w-full max-w-md mx-auto text-center py-2"
               >
                 <div className="relative mb-3">
-                  <div className="w-14 h-14 bg-amber-50 border border-amber-200 text-amber-600 rounded-2xl flex items-center justify-center shadow-xs">
+                  <div className="w-14 h-14 bg-amber-500/10 border border-amber-200 text-amber-600 rounded-2xl flex items-center justify-center">
                     <Database size={28} className="animate-pulse" />
                   </div>
                   <div className="absolute -bottom-1 -right-1 bg-amber-500 text-white rounded-full p-1 shadow-xs">
@@ -358,11 +357,12 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                   </div>
                 </div>
 
-                <h3 className="text-sm font-bold text-slate-800">Processing...</h3>
+                <h3 className="text-sm font-bold text-slate-900">Processing Data Ingestion...</h3>
+                <p className="text-xs text-slate-500 mt-1">{uploadState.statusMessage}</p>
 
-                <div className="w-full h-2.5 bg-slate-200 rounded-full overflow-hidden mt-4">
+                <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden mt-4">
                   <motion.div 
-                    className="h-full bg-amber-500 rounded-full bg-linear-to-r from-amber-500 to-indigo-600"
+                    className="h-full bg-[#0D3B8E] rounded-full"
                     initial={{ width: '30%' }}
                     animate={{ width: `${uploadState.progress}%` }}
                     transition={{ duration: 0.4 }}
@@ -374,31 +374,31 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
             {uploadState.status === 'success' && (
               <motion.div 
                 key="success"
-                initial={{ opacity: 0, scale: 0.95 }}
+                initial={{ opacity: 0, scale: 0.96 }}
                 animate={{ opacity: 1, scale: 1 }}
                 className="flex flex-col items-center w-full max-w-lg mx-auto"
               >
                 <div className="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mb-3">
                   <CheckCircle size={28} />
                 </div>
-                <h3 className="text-base font-bold text-emerald-900">Database Confirmation Received!</h3>
-                <p className="text-xs text-emerald-700 mt-0.5 font-medium">{uploadState.fileName} is fully saved in database.</p>
+                <h3 className="text-sm font-bold text-slate-900">Database Confirmation Received!</h3>
+                <p className="text-xs text-slate-500 mt-0.5 font-medium">{uploadState.fileName} is fully saved in database.</p>
 
-                <div className="mt-4 w-full grid grid-cols-3 gap-3 p-3 bg-white border border-emerald-200 rounded-xl shadow-xs text-center">
-                  <div className="p-2 bg-emerald-50/50 rounded-lg">
+                <div className="mt-4 w-full grid grid-cols-3 gap-3 p-3 bg-slate-50 border border-slate-200/80 rounded-xl text-center">
+                  <div className="p-2 bg-white rounded-lg border border-slate-100">
                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Saved Rows</p>
                     <p className="text-base font-bold text-emerald-700 mt-0.5">
                       {uploadState.importedRows ? uploadState.importedRows.toLocaleString() : '—'}
                     </p>
                   </div>
-                  <div className="p-2 bg-emerald-50/50 rounded-lg">
+                  <div className="p-2 bg-white rounded-lg border border-slate-100">
                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Time Taken</p>
                     <p className="text-base font-bold text-slate-700 mt-0.5 flex items-center justify-center gap-1">
                       <Clock size={12} className="text-slate-400" />
                       {uploadState.processingTimeSeconds ? `${uploadState.processingTimeSeconds}s` : '<1s'}
                     </p>
                   </div>
-                  <div className="p-2 bg-emerald-50/50 rounded-lg">
+                  <div className="p-2 bg-white rounded-lg border border-slate-100">
                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Batch ID</p>
                     <p className="text-base font-bold text-slate-700 mt-0.5">#{uploadState.batchId || 1}</p>
                   </div>
@@ -406,7 +406,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
 
                 <button 
                   onClick={(e) => { e.stopPropagation(); resetUpload(); }}
-                  className="mt-5 px-5 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition-colors text-xs font-bold shadow-xs cursor-pointer"
+                  className="mt-5 px-5 py-2.5 bg-[#0D3B8E] hover:bg-[#0A2F73] text-white rounded-xl transition-colors text-xs font-bold shadow-xs cursor-pointer"
                 >
                   Upload Another File
                 </button>
@@ -416,7 +416,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
             {uploadState.status === 'error' && (
               <motion.div 
                 key="error"
-                initial={{ opacity: 0, scale: 0.95 }}
+                initial={{ opacity: 0, scale: 0.96 }}
                 animate={{ opacity: 1, scale: 1 }}
                 className="flex flex-col items-center w-full max-w-lg mx-auto text-center"
               >
@@ -427,7 +427,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                 <p className="text-xs text-rose-700 mt-1 max-w-md font-medium">{uploadState.errorMessage}</p>
 
                 {uploadState.errorLogs && uploadState.errorLogs.length > 0 && (
-                  <div className="mt-3 w-full bg-rose-50 border border-rose-200 rounded-lg p-3 text-left max-h-32 overflow-y-auto">
+                  <div className="mt-3 w-full bg-rose-50 border border-rose-200 rounded-xl p-3 text-left max-h-32 overflow-y-auto">
                     <p className="text-[10px] font-bold text-rose-800 uppercase tracking-wider mb-1">Validation Errors:</p>
                     <ul className="list-disc list-inside text-xs text-rose-700 space-y-1">
                       {uploadState.errorLogs.slice(0, 5).map((log, i) => (
@@ -439,7 +439,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
 
                 <button 
                   onClick={(e) => { e.stopPropagation(); resetUpload(); }}
-                  className="mt-4 px-4 py-2 bg-rose-600 text-white rounded-lg hover:bg-rose-700 transition-colors text-xs font-bold cursor-pointer"
+                  className="mt-4 px-4 py-2 bg-rose-600 text-white rounded-xl hover:bg-rose-700 transition-colors text-xs font-bold cursor-pointer"
                 >
                   Try Uploading Again
                 </button>
@@ -449,19 +449,21 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
         </div>
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-        <h2 className="text-lg font-bold text-slate-800 mb-4">Upload Instructions</h2>
-        <ul className="space-y-3">
+      {/* Instructions Card */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-2xs p-7">
+        <h2 className="text-sm font-bold text-slate-900 mb-5 tracking-tight">Upload Instructions</h2>
+        <ul className="space-y-4">
           {instructions.map((inst, idx) => (
             <li key={idx} className="flex items-start gap-3">
-              <span className="w-5 h-5 bg-slate-100 rounded text-slate-600 shrink-0 flex items-center justify-center text-[10px] font-bold">
+              <span className="w-6 h-6 bg-slate-100 text-slate-600 rounded-lg shrink-0 flex items-center justify-center text-[10px] font-bold">
                 {String(idx + 1).padStart(2, '0')}
               </span>
-              <p className="text-xs text-slate-600 leading-relaxed pt-0.5">{inst}</p>
+              <p className="text-xs text-slate-600 leading-relaxed pt-0.5 font-medium">{inst}</p>
             </li>
           ))}
         </ul>
-        <button className="mt-6 w-full py-2.5 bg-slate-800 text-white rounded-lg text-sm font-bold flex items-center justify-center gap-2 hover:bg-slate-700 transition-colors cursor-pointer">
+
+        <button className="mt-7 w-full py-3 px-4 bg-[#0D3B8E] hover:bg-[#0A2F73] active:scale-[0.99] text-white rounded-xl text-xs font-bold shadow-md shadow-[#0D3B8E]/15 transition-all duration-200 cursor-pointer flex items-center justify-center gap-2">
           Download Template
         </button>
       </div>

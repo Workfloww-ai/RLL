@@ -10,7 +10,7 @@ export interface MetricItem {
 
 export interface MetricsCardProps {
   title: string;
-  subtitle?: string;
+  subtitle?: string | React.ReactNode;
   companyBadge?: string;
   titleIcon?: React.ReactNode;
   metrics: MetricItem[];
@@ -62,12 +62,16 @@ export function MetricsCard({
 
           {/* Subtitle Line or Badges */}
           {!!subtitle && (
-            <Text
-              style={[styles.subtitleText, { fontSize: scaledFontSize(12) }]}
-              numberOfLines={1}
-            >
-              {subtitle}
-            </Text>
+            typeof subtitle === 'string' ? (
+              <Text
+                style={[styles.subtitleText, { fontSize: scaledFontSize(12) }]}
+                numberOfLines={1}
+              >
+                {subtitle}
+              </Text>
+            ) : (
+              <View style={styles.subtitleRow}>{subtitle}</View>
+            )
           )}
 
           {/* Company Badge (for Brands) */}
@@ -185,6 +189,12 @@ const styles = StyleSheet.create({
     color: '#64748B',
     marginTop: 3,
     fontWeight: '500',
+  },
+  subtitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 3,
+    flexWrap: 'wrap',
   },
   companyBadgePill: {
     backgroundColor: '#F1F5F9',

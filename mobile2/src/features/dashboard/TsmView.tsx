@@ -353,7 +353,21 @@ export function TsmView({
                   key={item.id || index}
                   title={item.name}
                   titleIcon={<UserIcon size={18} color="#0F172A" />}
-                  subtitle={`👥 ${aseCount} ASE(s)  •  🏢 ${companyCount} Companies`}
+                  subtitle={
+                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <UsersIcon size={scaledFontSize(12)} color="#64748B" />
+                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500', marginLeft: 3 }}>
+                        {`${aseCount} ASE(s)`}
+                      </Text>
+                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500' }}>
+                        {'  •  '}
+                      </Text>
+                      <BuildingIcon size={scaledFontSize(12)} color="#64748B" />
+                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500', marginLeft: 3 }}>
+                        {`${companyCount} Companies`}
+                      </Text>
+                    </View>
+                  }
                   metrics={[
                     { label: 'Total Cases', value: cases },
                     { label: 'Total Bottles', value: bottles },
@@ -396,7 +410,6 @@ export function TsmView({
               const rawData = item.data?.[period] || { cases: 0, bottles: 0 };
               const cases = Math.round((rawData.cases || 0) * scaleFactor);
               const bottles = Math.round((rawData.bottles || 0) * scaleFactor);
-              const areaName = item.name.split(' ')[0] + ' North';
               const companyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.brands?.filter((b: any) => (b.data?.[period]?.cases || 0) > 0 || (b.data?.[period]?.bottles || 0) > 0).length || 0);
 
               return (
@@ -404,12 +417,18 @@ export function TsmView({
                   key={item.id || index}
                   title={item.name}
                   titleIcon={<UserIcon size={18} color="#0F172A" />}
-                  subtitle={`${areaName}  •  🏢 ${companyCount} Companies`}
+                  subtitle={
+                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <BuildingIcon size={scaledFontSize(12)} color="#64748B" />
+                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500', marginLeft: 3 }}>
+                        {`${companyCount} Companies`}
+                      </Text>
+                    </View>
+                  }
                   metrics={[
                     { label: 'Cases', value: cases },
                     { label: 'Bottles', value: bottles },
                   ]}
-                  locationPill={areaName}
                   pillTheme="blue"
                   onPress={() => handleSelectAse(item)}
                   scaleFactor={scaleFactor}
@@ -424,7 +443,6 @@ export function TsmView({
               const bottles = Math.round((rawData.bottles || item.total_bottles || 0) * scaleFactor);
               const compName = item.brandName || item.company_name || item.name || 'Company';
               const aseName = selectedAse?.name || 'ASE';
-              const areaName = selectedAse?.name?.split(' ')[0] + ' North';
 
               return (
                 <MetricsCard
@@ -435,7 +453,7 @@ export function TsmView({
                     { label: 'Cases', value: cases },
                     { label: 'Bottles', value: bottles },
                   ]}
-                  locationPill={`ASE: ${aseName} (${areaName})`}
+                  locationPill={`ASE: ${aseName}`}
                   pillTheme="red"
                   scaleFactor={scaleFactor}
                 />

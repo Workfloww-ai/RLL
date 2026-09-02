@@ -470,21 +470,30 @@ export function GroupsCascadingView({
               const bottles = Math.round(
                 Number(item.total_bottles ?? item.bottles ?? item.mtd_bottles ?? 0)
               );
-              const depotPill =
-                item.group_depots && item.group_depots.length > 0
-                  ? item.group_depots[0]
-                  : item.depot_name || 'R.S.B.C.L.';
 
               return (
                 <MetricsCard
                   key={item.group_id || index}
                   title={item.group_name}
-                  subtitle={`👥 ${item.total_licensees || 0} Licensee(s)  •  🍷 ${item.total_brands || 0} Brand(s)`}
+                  subtitle={
+                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <UsersIcon size={scaledFontSize(12)} color="#64748B" />
+                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500', marginLeft: 3 }}>
+                        {`${item.total_licensees || 0} Licensee(s)`}
+                      </Text>
+                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500' }}>
+                        {'  •  '}
+                      </Text>
+                      <WineIcon size={scaledFontSize(12)} color="#64748B" />
+                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500', marginLeft: 3 }}>
+                        {`${item.total_brands || 0} Brand(s)`}
+                      </Text>
+                    </View>
+                  }
                   metrics={[
                     { label: 'Cases', value: cases },
                     { label: 'Bottles', value: bottles },
                   ]}
-                  locationPill={depotPill}
                   pillTheme="blue"
                   onPress={() => handleSelectGroup(item)}
                   scaleFactor={scaleFactor}
@@ -496,7 +505,10 @@ export function GroupsCascadingView({
             if (level === 2 && activeGroupTab === 'brands') {
               const cases = Math.round(Number(item.total_cases ?? 0));
               const bottles = Math.round(Number(item.total_bottles ?? 0));
-              const depotPill = item.depot_name || 'R.S.B.C.L.';
+              const depotPill =
+                item.depot_name && item.depot_name !== 'Unassigned'
+                  ? item.depot_name
+                  : undefined;
 
               return (
                 <MetricsCard
@@ -524,13 +536,26 @@ export function GroupsCascadingView({
                   ? item.depot_name
                   : item.licensee_depots && item.licensee_depots.length > 0
                     ? item.licensee_depots[0]
-                    : 'R.S.B.C.L.';
+                    : undefined;
 
               return (
                 <MetricsCard
                   key={item.licensee_id || index}
                   title={item.licensee_name}
-                  subtitle={`Trade: ${item.trade || 'Off'}  •  🍷 ${item.total_brands || 0} Brand(s)`}
+                  subtitle={
+                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500' }}>
+                        {`Trade: ${item.trade || 'Off'}`}
+                      </Text>
+                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500' }}>
+                        {'  •  '}
+                      </Text>
+                      <WineIcon size={scaledFontSize(12)} color="#64748B" />
+                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500', marginLeft: 3 }}>
+                        {`${item.total_brands || 0} Brand(s)`}
+                      </Text>
+                    </View>
+                  }
                   metrics={[
                     { label: 'Cases', value: cases },
                     { label: 'Bottles', value: bottles },
@@ -552,7 +577,7 @@ export function GroupsCascadingView({
                   ? item.depot_name
                   : item.sales_depots && item.sales_depots.length > 0
                     ? item.sales_depots[0]
-                    : 'R.S.B.C.L.';
+                    : undefined;
 
               return (
                 <MetricsCard
