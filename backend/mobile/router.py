@@ -1013,8 +1013,10 @@ async def get_mobile_sales(
         latest_sale_date = datetime.utcnow().strftime("%Y-%m-%d")
 
     end_date = latest_sale_date
-    if date_to and date_to <= latest_sale_date:
-        end_date = date_to
+    if date_to and date_to.strip():
+        end_date = date_to.strip()
+    elif date_from and date_from.strip():
+        end_date = date_from.strip()
 
     try:
         end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()

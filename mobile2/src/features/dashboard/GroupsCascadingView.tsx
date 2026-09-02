@@ -458,7 +458,9 @@ export function GroupsCascadingView({
           <GroupListSkeletonList count={5} />
         ) : paginatedList.length === 0 ? (
           <View style={styles.emptyCard}>
-            <Text style={styles.emptyText}>No items found matching criteria</Text>
+            <Text style={styles.emptyText}>
+              {searchQuery.trim() ? 'No items match your search' : 'No data found'}
+            </Text>
           </View>
         ) : (
           paginatedList.map((item, index) => {
