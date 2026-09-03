@@ -509,6 +509,15 @@ async def send_mobile_otp(req: SendOTPRequest):
                 res_phone = client.table("users").select("user_id, email, phone, first_name, last_name, is_active").ilike("phone", f"%{clean_phone_10}%").limit(1).execute()
                 if res_phone.data:
                     db_user = res_phone.data[0]
+                else:
+                    # Fallback robust phone lookup: strip non-digits from db phones
+                    all_users_res = client.table("users").select("user_id, email, phone, first_name, last_name, is_active").execute()
+                    if all_users_res.data:
+                        for u in all_users_res.data:
+                            u_p = ''.join(c for c in (u.get("phone") or "") if c.isdigit())
+                            if u_p and (clean_phone_10 in u_p or u_p in clean_phone_10):
+                                db_user = u
+                                break
         except Exception as e:
             logger.warning(f"User lookup error in send_mobile_otp: {e}")
 
