@@ -129,7 +129,7 @@ export function Header({
 
   const handlePeriodChange = (p: Period) => {
     setPeriod(p);
-    const targetDate = latestSaleDate || '2026-07-31';
+    const targetDate = dateTo || latestSaleDate || '2026-07-31';
 
     if (p === 'Daily') {
       setDateFrom(targetDate);
@@ -304,7 +304,7 @@ export function Header({
                 <CalendarIcon size={13} color="#0D3B8E" />
               </View>
               <Text style={styles.dateInputText} numberOfLines={1}>
-                {formatDateDisplay(dateFrom || latestSaleDate || '') || 'Select Date'}
+                {formatDateDisplay(dateFrom || latestSaleDate || '2026-07-31') || '31 Jul 2026'}
               </Text>
             </TouchableOpacity>
 

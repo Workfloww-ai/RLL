@@ -58,7 +58,17 @@ export async function apiFetch(endpointPath: string, init?: RequestInit): Promis
   try {
     return await fetch(url, reqInit);
   } catch (err: any) {
-    if (err?.message && (err.message.includes('ConnectException') || err.message.includes('fetch failed') || err.message.includes('Network request failed'))) {
+    const isAbort =
+      err?.name === 'AbortError' ||
+      (err?.message && (
+        err.message.toLowerCase().includes('canceled') ||
+        err.message.toLowerCase().includes('cancelled') ||
+        err.message.toLowerCase().includes('aborted')
+      ));
+    if (isAbort) {
+      throw err;
+    }
+    if (err?.message && (err.message.includes('ConnectException') || err.message.includes('Network request failed'))) {
       throw new Error(`Cannot connect to server at ${BASE_URL}. Please ensure the backend server is running.`);
     }
     throw err;
@@ -358,6 +368,11 @@ export async function fetchMobileSales(
     const cacheStatus = res.headers.get('x-sales-cache-status') || 'MISS';
 
     const responseText = await res.text();
+    if (!responseText || !responseText.trim()) {
+      logger.warn(`fetchMobileSales: Received empty response body (0 bytes) from server.`);
+      return null;
+    }
+
     const responseBytes = responseText.length;
     const responseKb = (responseBytes / 1024).toFixed(2);
     const responseMb = (responseBytes / (1024 * 1024)).toFixed(2);
@@ -398,8 +413,16 @@ export async function fetchMobileSales(
 
     return data;
   } catch (error: any) {
-    if (error?.name === 'AbortError') {
-      logger.info('fetchMobileSales: Request aborted successfully.');
+    const isAbort =
+      error?.name === 'AbortError' ||
+      (error?.message && (
+        error.message.toLowerCase().includes('canceled') ||
+        error.message.toLowerCase().includes('cancelled') ||
+        error.message.toLowerCase().includes('aborted')
+      ));
+
+    if (isAbort) {
+      logger.info('fetchMobileSales: In-flight request canceled due to parameter change.');
       return null;
     }
     logger.error('fetchMobileSales: Exception while retrieving sales data', error);
@@ -580,28 +603,28 @@ export async function fetchLicenseeBrandSales(licenseeId: string, dateFrom?: str
 
 export async function fetchMobileCompanies(period: string = 'Daily', dateTo?: string, selectedHq: string = 'All Headquarters') {
   logger.info(`fetchMobileCompanies: period=${period}, dateTo=${dateTo}, selectedHq=${selectedHq}`);
-  const cacheKey = `rll_phone_cache_companies_${period}_${selectedHq}`;
+  const cacheKey = `rll_phone_cache_companies_${period}_${selectedHq}_${dateTo || 'latest'}`;
 
-  // 1. Try reading phone local AsyncStorage cache first for instant mounting
-  try {
-    const cachedStr = await AsyncStorage.getItem(cacheKey);
-    if (cachedStr) {
-      const cachedData = JSON.parse(cachedStr);
-      const comps = cachedData.companies || [];
-      if (comps.length > 0) {
-        logger.info(`fetchMobileCompanies: Phone cache HIT for ${cacheKey}`);
-        // Revalidate silently in background
-        setTimeout(() => {
-          fetchMobileCompaniesNetwork(period, dateTo, selectedHq, cacheKey).catch(() => {});
-        }, 50);
-        return comps;
+  // Only use phone disk cache when dateTo is empty (latest date mode)
+  if (!dateTo) {
+    try {
+      const cachedStr = await AsyncStorage.getItem(cacheKey);
+      if (cachedStr) {
+        const cachedData = JSON.parse(cachedStr);
+        const comps = cachedData.companies || [];
+        if (comps.length > 0) {
+          logger.info(`fetchMobileCompanies: Phone cache HIT for ${cacheKey}`);
+          setTimeout(() => {
+            fetchMobileCompaniesNetwork(period, dateTo, selectedHq, cacheKey).catch(() => {});
+          }, 50);
+          return comps;
+        }
       }
+    } catch (e) {
+      logger.warn(`fetchMobileCompanies: Phone cache read error: ${e}`);
     }
-  } catch (e) {
-    logger.warn(`fetchMobileCompanies: Phone cache read error: ${e}`);
   }
 
-  // 2. Cache miss: Fetch directly from network
   return fetchMobileCompaniesNetwork(period, dateTo, selectedHq, cacheKey);
 }
 
@@ -632,8 +655,16 @@ async function fetchMobileCompaniesNetwork(period: string, dateTo?: string, sele
     }
     return companies;
   } catch (error: any) {
-    if (error?.name === 'AbortError') {
-      logger.info('fetchMobileCompaniesNetwork: Request aborted successfully.');
+    const isAbort =
+      error?.name === 'AbortError' ||
+      (error?.message && (
+        error.message.toLowerCase().includes('canceled') ||
+        error.message.toLowerCase().includes('cancelled') ||
+        error.message.toLowerCase().includes('aborted')
+      ));
+
+    if (isAbort) {
+      logger.info('fetchMobileCompaniesNetwork: Request canceled successfully.');
       return [];
     }
     logger.error('fetchMobileCompaniesNetwork: Exception fetching companies:', error);

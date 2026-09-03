@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "360",
+    "name": "LucidX360",
     "slug": "rll",
-    "version": "1.0.2",
+    "version": "1.0.4",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "icon": "./src/assets/lucid_logo_nobg.png",
@@ -15,8 +15,7 @@
     ],
     "android": {
       "package": "com.workfloww.lucid360",
-      "versionCode": 3,
-      "softwareKeyboardLayoutMode": "pan",
+      "versionCode": 5,
       "adaptiveIcon": {
         "foregroundImage": "./src/assets/lucid_logo_nobg.png",
         "backgroundColor": "#FFFFFF"

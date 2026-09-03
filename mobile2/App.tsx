@@ -39,6 +39,7 @@ import {
 import { Header } from './src/features/dashboard/Header';
 import { FooterNav } from './src/features/dashboard/FooterNav';
 import { CompanyCard } from './src/features/dashboard/CompanyCard';
+import { NoDataModal } from './src/components/NoDataModal';
 import { CompanyListSkeletonList } from './src/features/dashboard/CompanyCardSkeleton';
 import { GroupsCascadingView } from './src/features/dashboard/GroupsCascadingView';
 import { TsmView } from './src/features/dashboard/TsmView';
@@ -94,6 +95,7 @@ export default function App() {
   const [apiData, setApiData] = useState<any>(null);
   const [loadingSalesData, setLoadingSalesData] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [showNoDataModal, setShowNoDataModal] = useState<boolean>(false);
 
   const handleRefresh = useCallback(async () => {
     if (!user) return;
@@ -182,6 +184,10 @@ export default function App() {
         const token = await AsyncStorage.getItem('rll_mobile_token');
         if (cachedUser && token) {
           logger.info(`App: Found active session for user: ${JSON.parse(cachedUser).email}`);
+          setPeriod('Daily');
+          setDateFrom('2026-07-31');
+          setDateTo('2026-07-31');
+          setViewMode('companies');
           setUser(JSON.parse(cachedUser));
         } else {
           logger.info('App: No active session found. Showing LoginScreen.');
@@ -239,9 +245,32 @@ export default function App() {
         if (res && isMounted) {
           const tStateStart = getNow();
           setApiData(res);
-          if (res.latest_sale_date && !dateFrom && !dateTo) {
+          if (res.latest_sale_date && (!dateFrom && !dateTo)) {
             setDateFrom(res.latest_sale_date);
             setDateTo(res.latest_sale_date);
+          }
+
+          const userHasExplicitDate = Boolean(dateFrom || dateTo);
+          const isEmptyData =
+            viewMode === 'companies'
+              ? (!res.companies || res.companies.length === 0 || res.companies.every((c: any) => {
+                  const pData = c.data?.[period] || c.data?.Daily || { cases: 0 };
+                  return (pData.cases || 0) === 0;
+                }))
+              : viewMode === 'tsm'
+              ? (!res.tsms || res.tsms.length === 0 || res.tsms.every((t: any) => {
+                  const pData = t.data?.[period] || t.data?.Daily || { cases: 0 };
+                  return (pData.cases || 0) === 0;
+                }))
+              : viewMode === 'depots'
+              ? (!res.depots || res.depots.length === 0 || res.depots.every((d: any) => {
+                  const pData = d.data?.[period] || d.data?.Daily || { cases: 0 };
+                  return (pData.cases || 0) === 0;
+                }))
+              : false;
+
+          if (userHasExplicitDate && isEmptyData) {
+            setShowNoDataModal(true);
           }
           const tStateEnd = getNow();
           const stateHydrationMs = Math.round(tStateEnd - tStateStart);
@@ -329,8 +358,9 @@ export default function App() {
     await clearAuthSession();
     setUser(null);
     setApiData(null);
-    setDateFrom('');
-    setDateTo('');
+    setPeriod('Daily');
+    setDateFrom('2026-07-31');
+    setDateTo('2026-07-31');
     setViewMode('companies');
   };
 
@@ -445,22 +475,27 @@ export default function App() {
       if (loadingSalesData || !apiData) {
         return <CompanyListSkeletonList count={5} />;
       }
+      const isSearching = searchQuery.trim().length > 0;
       return (
         <View style={styles.emptyCard}>
-          <Text style={styles.emptyText}>No companies match your search</Text>
+          <Text style={styles.emptyText}>
+            {isSearching ? 'No companies match your search' : 'No data found'}
+          </Text>
           <TouchableOpacity
             style={styles.resetSearchBtn}
             onPress={() => {
               setSearchQuery('');
               setSortBy('name_asc');
+              setDateFrom('2026-07-31');
+              setDateTo('2026-07-31');
             }}
           >
-            <Text style={styles.resetSearchBtnText}>Reset Filter</Text>
+            <Text style={styles.resetSearchBtnText}>Reset to Latest Date</Text>
           </TouchableOpacity>
         </View>
       );
     },
-    [loadingSalesData, apiData]
+    [loadingSalesData, apiData, searchQuery]
   );
 
   if (loadingSession) {
@@ -473,7 +508,15 @@ export default function App() {
         <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
         
         {!user ? (
-          <LoginScreen onLoginSuccess={setUser} />
+          <LoginScreen
+            onLoginSuccess={(loggedInUser) => {
+              setPeriod('Daily');
+              setDateFrom('2026-07-31');
+              setDateTo('2026-07-31');
+              setViewMode('companies');
+              setUser(loggedInUser);
+            }}
+          />
         ) : (
           <SafeAreaView style={styles.safeArea}>
             {/* Header section (HQ picker, period chooser, dates) */}
@@ -627,6 +670,20 @@ export default function App() {
             {!isKeyboardVisible && (
               <FooterNav viewMode={viewMode} setViewMode={handleTabChange} />
             )}
+            {/* Bottom nav tabs */}
+            <FooterNav viewMode={viewMode} setViewMode={handleTabChange} />
+
+            {/* No Data Found Centered Modal Popup */}
+            <NoDataModal
+              visible={showNoDataModal}
+              selectedDate={dateTo || dateFrom || undefined}
+              onReset={() => {
+                setDateFrom('2026-07-31');
+                setDateTo('2026-07-31');
+                setShowNoDataModal(false);
+              }}
+              onClose={() => setShowNoDataModal(false)}
+            />
           </SafeAreaView>
         )}
       </View>
