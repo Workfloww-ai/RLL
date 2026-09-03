@@ -57,7 +57,7 @@ import {
   ChevronDownIcon,
 } from './src/components/Icons';
 
-export type CompanySortOption = 'default' | 'volume_desc' | 'volume_asc' | 'name_asc';
+export type CompanySortOption = 'az' | 'za' | 'cases_desc' | 'cases_asc';
 
 export default function App() {
   const [user, setUser] = useState<any>(null);
@@ -103,11 +103,9 @@ export default function App() {
     }
   }, [user, viewMode, period, dateFrom, dateTo, selectedHq]);
 
-  // Minimal Sort State & Floating Dropdown Position
-  const [sortBy, setSortBy] = useState<CompanySortOption>('default');
-  const [showSortDropdown, setShowSortDropdown] = useState<boolean>(false);
-  const [dropdownPos, setDropdownPos] = useState<{ top: number; right: number }>({ top: 190, right: 16 });
-  const sortBtnRef = useRef<View>(null);
+  // Minimal Sort State & Modal Visibility
+  const [sortBy, setSortBy] = useState<CompanySortOption>('az');
+  const [showSortModal, setShowSortModal] = useState<boolean>(false);
 
   const handleTabChange = useCallback((newMode: ViewMode) => {
     setViewMode((currentMode) => {
@@ -122,8 +120,8 @@ export default function App() {
   // Hardware BackHandler for tab history & modals
   useEffect(() => {
     const onBackPress = () => {
-      if (showSortDropdown) {
-        setShowSortDropdown(false);
+      if (showSortModal) {
+        setShowSortModal(false);
         return true;
       }
       if (selectedCompany !== null) {
@@ -144,7 +142,7 @@ export default function App() {
     };
     const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => subscription.remove();
-  }, [showSortDropdown, selectedCompany, viewModeHistory]);
+  }, [showSortModal, selectedCompany, viewModeHistory]);
 
   const { height: windowHeight } = useWindowDimensions();
   const cardDimensions = useMemo(() => getDynamicCardDimensions(windowHeight), [windowHeight]);
@@ -230,20 +228,20 @@ export default function App() {
           const isEmptyData =
             viewMode === 'companies'
               ? (!res.companies || res.companies.length === 0 || res.companies.every((c: any) => {
-                  const pData = c.data?.[period] || c.data?.Daily || { cases: 0 };
-                  return (pData.cases || 0) === 0;
-                }))
+                const pData = c.data?.[period] || c.data?.Daily || { cases: 0 };
+                return (pData.cases || 0) === 0;
+              }))
               : viewMode === 'tsm'
-              ? (!res.tsms || res.tsms.length === 0 || res.tsms.every((t: any) => {
+                ? (!res.tsms || res.tsms.length === 0 || res.tsms.every((t: any) => {
                   const pData = t.data?.[period] || t.data?.Daily || { cases: 0 };
                   return (pData.cases || 0) === 0;
                 }))
-              : viewMode === 'depots'
-              ? (!res.depots || res.depots.length === 0 || res.depots.every((d: any) => {
-                  const pData = d.data?.[period] || d.data?.Daily || { cases: 0 };
-                  return (pData.cases || 0) === 0;
-                }))
-              : false;
+                : viewMode === 'depots'
+                  ? (!res.depots || res.depots.length === 0 || res.depots.every((d: any) => {
+                    const pData = d.data?.[period] || d.data?.Daily || { cases: 0 };
+                    return (pData.cases || 0) === 0;
+                  }))
+                  : false;
 
           if (userHasExplicitDate && isEmptyData) {
             setShowNoDataModal(true);
@@ -357,35 +355,59 @@ export default function App() {
   const sortedCompanies = useMemo(() => {
     const list = [...filteredCompanies];
 
+    const getPinnedRank = (c: Company) => {
+      const name = (c.name || '').toLowerCase().trim();
+      const id = (c.id || '').toLowerCase().trim();
+
+      // Rank 1: Rajasthan Liquors / RLL (matches all variations regardless of casing, spacing, or Excel naming)
+      if (
+        id === 'rll' ||
+        name === 'rll' ||
+        name.startsWith('rll ') ||
+        name.endsWith(' rll') ||
+        name.includes('rajasthan liquor') ||
+        name.includes('rajasthan liquors') ||
+        name.includes('rajasthan') ||
+        name.includes('RLL')
+      ) {
+        return 1;
+      }
+
+      // Rank 2: Diageo (matches all variations of Diageo)
+      if (
+        id.includes('diageo') ||
+        name.includes('diageo')
+      ) {
+        return 2;
+      }
+
+      if (c.isPinned) {
+        return 3;
+      }
+
+      return 99;
+    };
+
     list.sort((a, b) => {
-      if (sortBy === 'volume_desc') {
+      if (sortBy === 'cases_desc') {
         const casesA = a.data[period]?.cases || 0;
         const casesB = b.data[period]?.cases || 0;
         if (casesB !== casesA) return casesB - casesA;
         return a.name.localeCompare(b.name);
       }
 
-      if (sortBy === 'volume_asc') {
+      if (sortBy === 'cases_asc') {
         const casesA = a.data[period]?.cases || 0;
         const casesB = b.data[period]?.cases || 0;
         if (casesA !== casesB) return casesA - casesB;
         return a.name.localeCompare(b.name);
       }
 
-      if (sortBy === 'name_asc') {
-        return a.name.localeCompare(b.name);
+      if (sortBy === 'za') {
+        return b.name.localeCompare(a.name);
       }
 
-      // Default sorting: Pinned first (RLL, Diageo first), then A-Z
-      const getPinnedRank = (c: Company) => {
-        const id = c.id.toLowerCase();
-        const name = c.name.toLowerCase();
-        if (id === 'rll' || name === 'rll') return 1;
-        if (id === 'diageo-inbrew' || name.includes('diageo')) return 2;
-        if (c.isPinned) return 3;
-        return 99;
-      };
-
+      // Default / 'az': Pinned first (RLL rank 1, Diageo rank 2), then Alphabetical A to Z
       const rankA = getPinnedRank(a);
       const rankB = getPinnedRank(b);
 
@@ -430,34 +452,18 @@ export default function App() {
     [period, scaleFactor, cardDimensions.cardPaddingVertical]
   );
 
-  const sortDropdownOptions = [
-    { key: 'default', label: 'Default Order', Icon: PinIcon },
-    { key: 'volume_desc', label: 'Top Sales (High → Low)', Icon: TrendingUpIcon },
-    { key: 'volume_asc', label: 'Lowest Sales (Low → High)', Icon: TrendingDownIcon },
-    { key: 'name_asc', label: 'Company Name (A → Z)', Icon: SortAlphabeticalIcon },
+  const sortOptionsList = [
+    { key: 'az', label: 'Name (A to Z)' },
+    { key: 'za', label: 'Name (Z to A)' },
+    { key: 'cases_desc', label: 'Cases: (High to Low)' },
+    { key: 'cases_asc', label: 'Cases: (Low to High)' },
   ];
 
   const getSortLabel = () => {
-    if (sortBy === 'volume_desc') return 'Top Sales';
-    if (sortBy === 'volume_asc') return 'Low Sales';
-    if (sortBy === 'name_asc') return 'A-Z';
-    return 'Sort';
-  };
-
-  const toggleSortDropdown = () => {
-    if (!showSortDropdown && sortBtnRef.current) {
-      sortBtnRef.current.measureInWindow((x, y, width, height) => {
-        if (y && height) {
-          setDropdownPos({
-            top: y + height + 4,
-            right: 16,
-          });
-        }
-        setShowSortDropdown(true);
-      });
-    } else {
-      setShowSortDropdown(false);
-    }
+    if (sortBy === 'za') return 'Name (Z to A)';
+    if (sortBy === 'cases_desc') return 'Cases: (High to Low)';
+    if (sortBy === 'cases_asc') return 'Cases: (Low to High)';
+    return 'Name (A to Z)';
   };
 
   const renderCompanyHeader = useCallback(
@@ -472,7 +478,7 @@ export default function App() {
             </View>
             <TextInput
               style={styles.searchInput}
-              placeholder="Search company or brand"
+              placeholder="Search company"
               placeholderTextColor="#94A3B8"
               value={searchQuery}
               onChangeText={setSearchQuery}
@@ -484,32 +490,22 @@ export default function App() {
             ) : null}
           </View>
 
-          {/* Inline Dropdown Pill Button */}
-          <View ref={sortBtnRef} collapsable={false}>
-            <TouchableOpacity
-              style={[
-                styles.sortDropdownPill,
-                sortBy !== 'default' ? styles.sortDropdownPillActive : null,
-              ]}
-              onPress={toggleSortDropdown}
-              activeOpacity={0.75}
-            >
-              <SwapVertIcon size={15} color={sortBy !== 'default' ? '#FFFFFF' : '#0F2042'} />
-              <Text
-                style={[
-                  styles.sortDropdownPillText,
-                  sortBy !== 'default' ? styles.sortDropdownPillTextActive : null,
-                ]}
-              >
-                {getSortLabel()}
-              </Text>
-              <ChevronDownIcon size={14} color={sortBy !== 'default' ? '#FFFFFF' : '#0F2042'} />
-            </TouchableOpacity>
-          </View>
+          {/* Inline Sort Pill Button */}
+          <TouchableOpacity
+            style={styles.sortDropdownPill}
+            onPress={() => setShowSortModal(true)}
+            activeOpacity={0.75}
+          >
+            <SwapVertIcon size={14} color="#64748B" />
+            <Text style={styles.sortDropdownPillText} numberOfLines={1}>
+              {getSortLabel()}
+            </Text>
+            <ChevronDownIcon size={14} color="#94A3B8" />
+          </TouchableOpacity>
         </View>
       </View>
     ),
-    [searchQuery, sortBy, showSortDropdown]
+    [searchQuery, sortBy, showSortModal]
   );
 
   const renderCompanyEmpty = useCallback(
@@ -552,7 +548,7 @@ export default function App() {
     <SafeAreaProvider>
       <View style={styles.appContainer}>
         <StatusBar />
-        
+
         {!user ? (
           <LoginScreen
             onLoginSuccess={(loggedInUser) => {
@@ -602,27 +598,29 @@ export default function App() {
             {/* Scrollable layout contents */}
             <View style={styles.mainContent}>
               {viewMode === 'companies' && (
-                <FlatList
-                  data={loadingSalesData ? [] : sortedCompanies}
-                  renderItem={renderCompanyItem}
-                  keyExtractor={(item) => item.id}
-                  ListHeaderComponent={renderCompanyHeader}
-                  ListEmptyComponent={renderCompanyEmpty}
-                  style={styles.scrollList}
-                  contentContainerStyle={styles.scrollContent}
-                  initialNumToRender={10}
-                  maxToRenderPerBatch={10}
-                  windowSize={5}
-                  removeClippedSubviews={Platform.OS === 'android'}
-                  refreshControl={
-                    <RefreshControl
-                      refreshing={refreshing}
-                      onRefresh={handleRefresh}
-                      colors={['#0284C7', '#0F172A']}
-                      tintColor="#0284C7"
-                    />
-                  }
-                />
+                <View style={{ flex: 1 }}>
+                  {renderCompanyHeader()}
+                  <FlatList
+                    data={loadingSalesData ? [] : sortedCompanies}
+                    renderItem={renderCompanyItem}
+                    keyExtractor={(item) => item.id}
+                    ListEmptyComponent={renderCompanyEmpty}
+                    style={styles.scrollList}
+                    contentContainerStyle={styles.scrollContent}
+                    initialNumToRender={10}
+                    maxToRenderPerBatch={10}
+                    windowSize={5}
+                    removeClippedSubviews={Platform.OS === 'android'}
+                    refreshControl={
+                      <RefreshControl
+                        refreshing={refreshing}
+                        onRefresh={handleRefresh}
+                        colors={['#0284C7', '#0F172A']}
+                        tintColor="#0284C7"
+                      />
+                    }
+                  />
+                </View>
               )}
 
               {/* View Mode: GROUPS */}
@@ -666,57 +664,65 @@ export default function App() {
               onClose={() => setSelectedCompany(null)}
             />
 
-            {/* Floating Inline Dropdown Card (Rendered in OS window layer via transparent Modal to ensure top zIndex) */}
+            {/* Sort By Centered Dialog Modal (Matching Image 1 Design) */}
             <Modal
-              visible={showSortDropdown}
+              visible={showSortModal}
               transparent={true}
-              animationType="none"
-              onRequestClose={() => setShowSortDropdown(false)}
+              animationType="fade"
+              onRequestClose={() => setShowSortModal(false)}
               statusBarTranslucent
             >
               <TouchableOpacity
-                style={styles.dropdownModalOverlay}
+                style={styles.sortModalOverlay}
                 activeOpacity={1}
-                onPress={() => setShowSortDropdown(false)}
+                onPress={() => setShowSortModal(false)}
               >
-                <View
-                  style={[
-                    styles.dropdownMenuCardModal,
-                    { top: dropdownPos.top, right: dropdownPos.right },
-                  ]}
+                <TouchableOpacity
+                  activeOpacity={1}
+                  style={styles.sortModalCard}
+                  onPress={(e) => e.stopPropagation()}
                 >
-                  {sortDropdownOptions.map((opt) => {
+                  {/* Header */}
+                  <View style={styles.sortModalHeader}>
+                    <Text style={styles.sortModalTitle}>Sort By</Text>
+                    <TouchableOpacity
+                      style={styles.sortModalCloseBtn}
+                      onPress={() => setShowSortModal(false)}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    >
+                      <XIcon size={18} color="#64748B" />
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Options */}
+                  {sortOptionsList.map((opt) => {
                     const isSelected = sortBy === opt.key;
-                    const IconComp = opt.Icon;
                     return (
                       <TouchableOpacity
                         key={opt.key}
                         style={[
-                          styles.dropdownMenuItem,
-                          isSelected ? styles.dropdownMenuItemActive : null,
+                          styles.sortOptionItem,
+                          isSelected ? styles.sortOptionItemActive : null,
                         ]}
                         onPress={() => {
                           setSortBy(opt.key as CompanySortOption);
-                          setShowSortDropdown(false);
+                          setShowSortModal(false);
                         }}
-                        activeOpacity={0.75}
+                        activeOpacity={0.7}
                       >
-                        <View style={styles.dropdownIconBox}>
-                          <IconComp size={15} color={isSelected ? '#0F2042' : '#64748B'} />
-                        </View>
                         <Text
                           style={[
-                            styles.dropdownMenuItemText,
-                            isSelected ? styles.dropdownMenuItemTextActive : null,
+                            styles.sortOptionText,
+                            isSelected ? styles.sortOptionTextActive : null,
                           ]}
                         >
                           {opt.label}
                         </Text>
-                        {isSelected && <CheckCircleIcon size={16} color="#0F2042" />}
+                        {isSelected && <View style={styles.activeDotIndicator} />}
                       </TouchableOpacity>
                     );
                   })}
-                </View>
+                </TouchableOpacity>
               </TouchableOpacity>
             </Modal>
 
@@ -868,49 +874,68 @@ const styles = StyleSheet.create({
   sortDropdownPillTextActive: {
     color: '#FFFFFF',
   },
-  dropdownModalOverlay: {
+  sortModalOverlay: {
     flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  sortModalCard: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    paddingVertical: 20,
+    paddingHorizontal: 20,
+    elevation: 8,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+  },
+  sortModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+    paddingHorizontal: 4,
+  },
+  sortModalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  sortModalCloseBtn: {
+    padding: 4,
+  },
+  sortOptionItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    marginVertical: 4,
     backgroundColor: 'transparent',
   },
-  dropdownMenuCardModal: {
-    position: 'absolute',
-    width: 220,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    paddingVertical: 6,
-    paddingHorizontal: 4,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.18,
-    shadowRadius: 10,
-    elevation: 15,
+  sortOptionItemActive: {
+    backgroundColor: '#E0F2FE',
   },
-  dropdownMenuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 9,
-    paddingHorizontal: 10,
-    borderRadius: 10,
-  },
-  dropdownMenuItemActive: {
-    backgroundColor: '#EFF6FF',
-  },
-  dropdownIconBox: {
-    width: 20,
-    alignItems: 'center',
-    marginRight: 6,
-  },
-  dropdownMenuItemText: {
-    fontSize: 12,
-    fontWeight: '600',
+  sortOptionText: {
+    fontSize: 15,
+    fontWeight: '500',
     color: '#334155',
-    flex: 1,
   },
-  dropdownMenuItemTextActive: {
-    color: '#0F2042',
-    fontWeight: '800',
+  sortOptionTextActive: {
+    fontWeight: '700',
+    color: '#0284C7',
+  },
+  activeDotIndicator: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#0284C7',
   },
   emptyCard: {
     backgroundColor: '#FFFFFF',
