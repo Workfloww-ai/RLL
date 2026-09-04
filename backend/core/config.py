@@ -12,7 +12,12 @@ class Settings(BaseSettings):
     
     # Supabase credentials
     SUPABASE_URL: str = ""
+    NEXT_PUBLIC_SUPABASE_URL: str = ""
+    SUPABASE_PROJECT_URL: str = ""
+    
     SUPABASE_KEY: str = ""
+    SUPABASE_ANON_KEY: str = ""
+    NEXT_PUBLIC_SUPABASE_ANON_KEY: str = ""
     SUPABASE_SECRET_KEY: str = ""
     NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: str = ""
     SUPABASE_SERVICE_ROLE_KEY: str = ""
@@ -47,8 +52,10 @@ class Settings(BaseSettings):
     )
 
     def model_post_init(self, __context: Any) -> None:
+        if not self.SUPABASE_URL:
+            self.SUPABASE_URL = self.NEXT_PUBLIC_SUPABASE_URL or self.SUPABASE_PROJECT_URL
         if not self.SUPABASE_KEY:
-            self.SUPABASE_KEY = self.SUPABASE_SECRET_KEY or self.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+            self.SUPABASE_KEY = self.SUPABASE_SECRET_KEY or self.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY or self.SUPABASE_ANON_KEY or self.NEXT_PUBLIC_SUPABASE_ANON_KEY
         if not self.SUPABASE_SERVICE_ROLE_KEY:
             self.SUPABASE_SERVICE_ROLE_KEY = self.SUPABASE_SECRET_KEY or self.SUPABASE_KEY
         if not self.JWT_SECRET:

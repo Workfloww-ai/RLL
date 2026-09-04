@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
   View,
   Text,
+  TextInput,
   StyleSheet,
   ScrollView,
   Modal,
@@ -22,13 +23,13 @@ import {
 } from '../../lib/api';
 import { MetricsCard } from '../../components/MetricsCard';
 import { SegmentedTabs, GroupTabType } from '../../components/SegmentedTabs';
-import { SearchBar } from '../../components/SearchBar';
 import { PaginationBar } from '../../components/PaginationBar';
 import { SortModal, SortOptionValue } from '../../components/SortModal';
 import {
   SwapVertIcon,
   ChevronDownIcon,
   XIcon,
+  SearchIcon,
   ChevronLeftIcon,
   WineIcon,
   UsersIcon,
@@ -198,7 +199,7 @@ export function GroupsCascadingView({
     }
   };
 
-  // Sync Level 1 on mount or date/period changes
+  // Sync Level 1 on mount or date/period/HQ changes
   useEffect(() => {
     if (level === 1) {
       loadGroups(true);
@@ -207,7 +208,7 @@ export function GroupsCascadingView({
     } else if (level === 3 && selectedLicensee) {
       loadLicenseeBrands(selectedLicensee.licensee_id);
     }
-  }, [dateFrom, dateTo, period]);
+  }, [dateFrom, dateTo, period, selectedHq]);
 
   // Selection handlers
   const handleSelectGroup = (g: any) => {
@@ -385,28 +386,43 @@ export function GroupsCascadingView({
         </View>
       )}
 
-      {/* Filter Row: SearchBar & Sort Pill */}
+      {/* Filter Row: Search Bar & Sort Pill (Matching Company Screen Design) */}
       <View style={styles.searchControlsRow}>
-        <View style={{ flex: 1, marginRight: 8 }}>
-          <SearchBar
+        <View style={styles.searchWrapper}>
+          <View style={{ marginRight: 6 }}>
+            <SearchIcon size={15} color="#94A3B8" />
+          </View>
+          <TextInput
+            style={styles.searchInput}
+            placeholder={searchPlaceholder}
+            placeholderTextColor="#94A3B8"
             value={searchQuery}
             onChangeText={(text) => {
               setSearchQuery(text);
               setCurrentPage(1);
             }}
-            placeholder={searchPlaceholder}
-            scaleFactor={scaleFactor}
           />
+          {searchQuery ? (
+            <TouchableOpacity
+              onPress={() => {
+                setSearchQuery('');
+                setCurrentPage(1);
+              }}
+              style={styles.clearBtn}
+            >
+              <XIcon size={12} color="#94A3B8" />
+            </TouchableOpacity>
+          ) : null}
         </View>
 
-        {/* Sort Pill Dropdown */}
+        {/* Sort Pill Button */}
         <TouchableOpacity
           style={styles.sortPillBtn}
           onPress={() => setShowSortModal(true)}
           activeOpacity={0.75}
         >
           <SwapVertIcon size={14} color="#64748B" />
-          <Text style={styles.sortText}>
+          <Text style={styles.sortText} numberOfLines={1}>
             {sortOption === 'az'
               ? 'Name (A to Z)'
               : sortOption === 'za'
@@ -416,28 +432,6 @@ export function GroupsCascadingView({
                   : 'Cases: (Low to High)'}
           </Text>
           <ChevronDownIcon size={14} color="#94A3B8" />
-        </TouchableOpacity>
-      </View>
-
-      {/* Showing Items & Per Page Limit Info Row */}
-      <View style={styles.showingInfoRow}>
-        <Text style={[styles.showingText, { fontSize: scaledFontSize(12) }]}>
-          Showing {totalItems === 0 ? 0 : startIndex + 1}-{endIndex} of {totalItems} item(s)
-        </Text>
-        <TouchableOpacity
-          style={styles.perPageTrigger}
-          onPress={() => setShowPerPageModal(true)}
-          activeOpacity={0.75}
-        >
-          <Text style={[styles.perPageLabelText, { fontSize: scaledFontSize(12) }]}>
-            Per page:
-          </Text>
-          <View style={styles.perPagePill}>
-            <Text style={[styles.perPageValueText, { fontSize: scaledFontSize(12) }]}>
-              {perPage}
-            </Text>
-            <ChevronDownIcon size={12} color="#64748B" />
-          </View>
         </TouchableOpacity>
       </View>
 
@@ -713,27 +707,49 @@ const styles = StyleSheet.create({
   searchControlsRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 8,
+    backgroundColor: 'transparent',
+  },
+  searchWrapper: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: '#FFFFFF',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    height: 40,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#0F172A',
+    paddingVertical: 0,
+    margin: 0,
+  },
+  clearBtn: {
+    padding: 4,
   },
   sortPillBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 10,
-    height: 42,
-    borderRadius: 10,
+    backgroundColor: '#FFFFFF',
     borderWidth: 1,
     borderColor: '#E2E8F0',
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    height: 40,
     gap: 4,
   },
   sortText: {
-    color: '#0F172A',
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '700',
+    color: '#0F2042',
   },
   showingInfoRow: {
     flexDirection: 'row',
