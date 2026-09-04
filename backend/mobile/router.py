@@ -78,6 +78,7 @@ def _fetch_fresh_master_lookups():
         c_key = c_name.lower().replace(" ", "-").replace("/", "-")
         master_companies[c_key] = {
             "id": c_key,
+            "company_id": str(c_id_raw),
             "name": c_name,
             "isPinned": c_key in ["rll", "diageo-inbrew"] or c_name.upper() == "RLL",
             "hqLocation": "All Headquarters",
@@ -195,6 +196,7 @@ def _fetch_fresh_master_lookups():
         c_key = c_name.lower().replace(" ", "-").replace("/", "-")
         master_companies[c_key] = {
             "id": c_key,
+            "company_id": str(c_id_raw),
             "name": c_name,
             "isPinned": c_key in ["rll", "diageo-inbrew"] or c_name.upper() == "RLL",
             "hqLocation": "All Headquarters",
@@ -1653,6 +1655,44 @@ async def get_licensee_brand_sales_endpoint(
     """
     from backend.services.mobile_cascading_service import get_licensee_brand_sales
     return get_licensee_brand_sales(licensee_id=licensee_id, date_from=date_from, date_to=date_to, period=period, depot_name=depot_name)
+
+
+@router.get("/cascading/company-brands")
+def get_company_brands_endpoint(
+    company_id: str = Query(..., description="Target Company UUID"),
+    date_from: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    date_to: str = Query(..., description="End date (YYYY-MM-DD)"),
+    hq_name: Optional[str] = Query(None, description="Optional Headquarter filter"),
+):
+    """
+    Mobile endpoint: Fetch brand sales breakdown for a selected company.
+    """
+    from backend.services.company_cascading_service import get_company_brands_sales_service
+    return get_company_brands_sales_service(
+        company_id=company_id,
+        date_from=date_from,
+        date_to=date_to,
+        hq_name=hq_name,
+    )
+
+
+@router.get("/cascading/brand-licensees")
+def get_brand_licensees_endpoint(
+    brand_id: str = Query(..., description="Target Brand UUID"),
+    date_from: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    date_to: str = Query(..., description="End date (YYYY-MM-DD)"),
+    hq_name: Optional[str] = Query(None, description="Optional Headquarter filter"),
+):
+    """
+    Mobile endpoint: Fetch licensee sales breakdown for a selected brand.
+    """
+    from backend.services.company_cascading_service import get_brand_licensees_sales_service
+    return get_brand_licensees_sales_service(
+        brand_id=brand_id,
+        date_from=date_from,
+        date_to=date_to,
+        hq_name=hq_name,
+    )
 
 
 

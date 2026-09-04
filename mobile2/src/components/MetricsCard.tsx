@@ -99,7 +99,9 @@ export function MetricsCard({
                 ]}
                 numberOfLines={1}
               >
-                {locationPill.startsWith('Headquarter:') ? locationPill : `Headquarter: ${locationPill}`}
+                {locationPill.startsWith('Headquarter:') || locationPill.startsWith('Depot:') || locationPill.startsWith('HQ:')
+                  ? locationPill
+                  : `Headquarter: ${locationPill}`}
               </Text>
             </View>
           )}

@@ -946,3 +946,106 @@ def call_mobile_tsm_sales_json_rpc(
     except Exception as e:
         logger.error(f"call_mobile_tsm_sales_json_rpc error (target={target_date}, mtd={mtd_start}, ytd={ytd_start}): {e}")
         return []
+
+
+import re
+
+_UUID_REGEX = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+
+def resolve_company_id_uuid(client: Any, target_company: str) -> str:
+    if not target_company:
+        return target_company
+    target_str = str(target_company).strip()
+    if _UUID_REGEX.match(target_str):
+        return target_str
+
+    try:
+        res = client.table("companies").select("company_id, company_name").execute()
+        data = res.data or []
+        t_low = target_str.lower()
+        cleaned = t_low.replace("-", " ").replace("_", " ")
+
+        # 1. Acronym & Synonym mappings
+        for c in data:
+            cname = c.get("company_name", "").strip().lower()
+            cid = str(c.get("company_id"))
+            if t_low in ["rll", "rajasthan", "rajasthan liquor", "rajasthan liquors"] and ("rajasthan" in cname or "rll" in cname):
+                return cid
+            if t_low in ["diageo", "diageo-inbrew"] and "diageo" in cname:
+                return cid
+
+        # 2. Exact or substring match
+        for c in data:
+            cname = c.get("company_name", "").strip().lower()
+            cid = str(c.get("company_id"))
+            if cname == t_low or cname in cleaned or cleaned in cname:
+                return cid
+    except Exception as e:
+        logger.warning(f"Error resolving company UUID for '{target_company}': {e}")
+
+    return target_str
+
+
+def fetch_company_brand_sales_db(
+    company_id: str,
+    date_from: str,
+    date_to: str,
+    hq_name: Optional[str] = None,
+    exclude_company: str = "Others"
+) -> List[Dict[str, Any]]:
+    """
+    Calls get_company_brand_sales_summary RPC in Supabase PostgreSQL.
+    Returns brand sales summary for a selected company, excluding 'Others'.
+    Automatically resolves slug/name company identifiers to UUIDs.
+    """
+    client = get_supabase_client()
+    if not client:
+        return []
+
+    resolved_company_uuid = resolve_company_id_uuid(client, company_id)
+
+    try:
+        rpc_params = {
+            "p_company_id": resolved_company_uuid,
+            "p_date_from": date_from,
+            "p_date_to": date_to,
+            "p_exclude_company": exclude_company,
+        }
+        if hq_name and hq_name.strip() and hq_name.strip() != "All Headquarters":
+            rpc_params["p_hq_name"] = hq_name.strip()
+        res = client.rpc("get_company_brand_sales_summary", rpc_params).execute()
+        return res.data or []
+    except Exception as e:
+        logger.error(f"fetch_company_brand_sales_db error for company {company_id} (resolved: {resolved_company_uuid}): {e}")
+        return []
+
+
+def fetch_brand_licensees_sales_db(
+    brand_id: str,
+    date_from: str,
+    date_to: str,
+    hq_name: Optional[str] = None,
+    exclude_company: str = "Others"
+) -> List[Dict[str, Any]]:
+    """
+    Calls get_brand_licensees_summary RPC in Supabase PostgreSQL.
+    Returns licensee sales summary for a selected brand, excluding 'Others'.
+    """
+    client = get_supabase_client()
+    if not client:
+        return []
+
+    try:
+        rpc_params = {
+            "p_brand_id": brand_id,
+            "p_date_from": date_from,
+            "p_date_to": date_to,
+            "p_exclude_company": exclude_company,
+        }
+        if hq_name and hq_name.strip() and hq_name.strip() != "All Headquarters":
+            rpc_params["p_hq_name"] = hq_name.strip()
+        res = client.rpc("get_brand_licensees_summary", rpc_params).execute()
+        return res.data or []
+    except Exception as e:
+        logger.error(f"fetch_brand_licensees_sales_db error: {e}")
+        return []
