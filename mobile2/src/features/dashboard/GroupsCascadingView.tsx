@@ -502,7 +502,7 @@ export function GroupsCascadingView({
                     { label: 'Bottles', value: bottles },
                   ]}
                   locationPill={depotPill}
-                  pillTheme="red"
+                  pillTheme="blue"
                   scaleFactor={scaleFactor}
                 />
               );
@@ -557,7 +557,7 @@ export function GroupsCascadingView({
                     { label: 'Bottles', value: bottles },
                   ]}
                   locationPill={depotPill}
-                  pillTheme="red"
+                  pillTheme="blue"
                   scaleFactor={scaleFactor}
                 />
               );

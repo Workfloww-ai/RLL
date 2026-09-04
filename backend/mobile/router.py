@@ -42,34 +42,101 @@ _SALES_RESPONSE_TTL = 1
 def _fetch_fresh_master_lookups():
     client = get_supabase()
     companies_lookup: Dict[str, str] = {}
+    brands_lookup: Dict[str, Dict[str, Any]] = {}
+    hq_lookup: Dict[str, str] = {}
+    master_depots = {}
+    hq_name_lookup = {}
+
     try:
-        c_res = client.table("companies").select("company_id, company_name").execute()
-        for c in (c_res.data or []):
+        rpc_res = client.rpc("get_master_lookups_json").execute()
+        master_json = rpc_res.data or {}
+        raw_companies = master_json.get("companies") or []
+        raw_brands = master_json.get("brands") or []
+        raw_hqs = master_json.get("headquarters") or []
+        raw_depots = master_json.get("depots") or []
+
+        for c in raw_companies:
             if c.get("company_id") and c.get("company_name"):
                 companies_lookup[str(c["company_id"])] = c["company_name"]
-    except Exception as e_c:
-        logger.warning(f"Error fetching companies_lookup: {e_c}")
 
-    brands_lookup: Dict[str, Dict[str, Any]] = {}
-    try:
-        b_res = client.table("brands").select("brand_id, brand_name, company_id").execute()
-        for b in (b_res.data or []):
+        for b in raw_brands:
             if b.get("brand_id") and b.get("brand_name"):
                 brands_lookup[str(b["brand_id"])] = {
                     "name": b["brand_name"],
                     "company_id": str(b["company_id"]) if b.get("company_id") else None
                 }
-    except Exception as e_b:
-        logger.warning(f"Error fetching brands_lookup: {e_b}")
 
-    hq_lookup: Dict[str, str] = {}
-    try:
-        h_res = client.table("headquarters").select("headquarters_id, name").execute()
-        for h in (h_res.data or []):
+        for h in raw_hqs:
             if h.get("headquarters_id") and h.get("name"):
                 hq_lookup[str(h["headquarters_id"])] = h["name"]
-    except Exception as e_h:
-        logger.warning(f"Error fetching hq_lookup: {e_h}")
+
+        for d in raw_depots:
+            d_id = str(d.get("depot_id"))
+            d_name = d.get("name")
+            hq_id = str(d.get("headquarters_id") or "")
+            hq_name = hq_lookup.get(hq_id, "Unassigned")
+            hq_name_lookup[d_id] = hq_name
+            master_depots[d_id] = {
+                "id": d_id,
+                "name": d_name,
+                "hqName": hq_name,
+                "data": {
+                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                    "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                    "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                },
+                "brands_map": {}
+            }
+    except Exception as e_rpc:
+        logger.warning(f"Error fetching get_master_lookups_json RPC: {e_rpc}, falling back to table queries...")
+        try:
+            c_res = client.table("companies").select("company_id, company_name").execute()
+            for c in (c_res.data or []):
+                if c.get("company_id") and c.get("company_name"):
+                    companies_lookup[str(c["company_id"])] = c["company_name"]
+        except Exception as e_c:
+            logger.warning(f"Error fetching companies_lookup: {e_c}")
+
+        try:
+            b_res = client.table("brands").select("brand_id, brand_name, company_id").execute()
+            for b in (b_res.data or []):
+                if b.get("brand_id") and b.get("brand_name"):
+                    brands_lookup[str(b["brand_id"])] = {
+                        "name": b["brand_name"],
+                        "company_id": str(b["company_id"]) if b.get("company_id") else None
+                    }
+        except Exception as e_b:
+            logger.warning(f"Error fetching brands_lookup: {e_b}")
+
+        try:
+            h_res = client.table("headquarters").select("headquarters_id, name").execute()
+            for h in (h_res.data or []):
+                if h.get("headquarters_id") and h.get("name"):
+                    hq_lookup[str(h["headquarters_id"])] = h["name"]
+        except Exception as e_h:
+            logger.warning(f"Error fetching hq_lookup: {e_h}")
+
+        try:
+            d_res = client.table("depots").select("depot_id, name, headquarters_id").execute()
+            for d in (d_res.data or []):
+                d_id = str(d.get("depot_id"))
+                d_name = d.get("name")
+                hq_id = str(d.get("headquarters_id") or "")
+                hq_name = hq_lookup.get(hq_id, "Unassigned")
+                hq_name_lookup[d_id] = hq_name
+                master_depots[d_id] = {
+                    "id": d_id,
+                    "name": d_name,
+                    "hqName": hq_name,
+                    "data": {
+                        "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                        "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                        "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                    },
+                    "brands_map": {}
+                }
+        except Exception as e:
+            logger.warning(f"Error fetching master depots: {e}")
 
     master_companies = {}
     for c_id_raw, c_name in companies_lookup.items():
@@ -89,30 +156,6 @@ def _fetch_fresh_master_lookups():
             },
             "brands_map": {}
         }
-
-    master_depots = {}
-    hq_name_lookup = {}
-    try:
-        d_res = client.table("depots").select("depot_id, name, headquarters_id").execute()
-        for d in (d_res.data or []):
-            d_id = str(d.get("depot_id"))
-            d_name = d.get("name")
-            hq_id = str(d.get("headquarters_id") or "")
-            hq_name = hq_lookup.get(hq_id, "Unassigned")
-            hq_name_lookup[d_id] = hq_name
-            master_depots[d_id] = {
-                "id": d_id,
-                "name": d_name,
-                "hqName": hq_name,
-                "data": {
-                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                },
-                "brands_map": {}
-            }
-    except Exception as e:
-        logger.warning(f"Error fetching master depots: {e}")
 def _fetch_single_tsm_lookup(user_id: str) -> Optional[Dict[str, Any]]:
     client = get_supabase()
     if not client or not user_id:
@@ -897,24 +940,6 @@ async def get_mobile_sales(
     else:
         selected_period = "Daily"
 
-    # C. Master cache lookup timing
-    t_master_start = time.perf_counter()
-    master_cache_hit = _MASTER_CACHE["data"] is not None and (time.time() - _MASTER_CACHE["timestamp"]) < _MASTER_CACHE_TTL
-    master_cache = get_cached_master_lookups()
-    t_master_end = time.perf_counter()
-    master_cache_duration_ms = round((t_master_end - t_master_start) * 1000, 2)
-
-    companies_lookup = master_cache["companies_lookup"]
-    brands_lookup = master_cache["brands_lookup"]
-    hq_lookup = master_cache["hq_lookup"]
-    master_companies = master_cache["master_companies"]
-    master_depots = master_cache["master_depots"]
-    master_tsms = master_cache["master_tsms"]
-    tsm_depot_lookup = master_cache["tsm_depot_lookup"]
-    user_depots_map = master_cache["user_depots_map"]
-    tsm_ase_lookup = master_cache["tsm_ase_lookup"]
-    ase_names_lookup = master_cache["ase_names_lookup"]
-
     cache_key = f"{selected_period}:{selected_hq}:{date_from}:{date_to}:{user_role}:{user_id}:{test_limit or 'all'}"
     
     # D. Sales response cache timing
@@ -944,7 +969,7 @@ async def get_mobile_sales(
                 f"BACKEND\n"
                 f"--------------------------------------------------\n"
                 f"Authentication:         {auth_duration_ms:.1f} ms\n"
-                f"Master cache:          {master_cache_duration_ms:.1f} ms ({'HIT' if master_cache_hit else 'MISS'})\n"
+                f"Master cache:          0.0 ms (CACHED)\n"
                 f"Sales cache:           {sales_cache_duration_ms:.1f} ms (HIT)\n"
                 f"Supabase RPC:          0.0 ms (CACHED)\n"
                 f"RPC payload:           0.0 KB / 0.00 MB\n"
@@ -995,6 +1020,24 @@ async def get_mobile_sales(
 
     t_sales_cache_end = time.perf_counter()
     sales_cache_duration_ms = round((t_sales_cache_end - t_sales_cache_start) * 1000, 2)
+
+    # C. Master cache lookup timing
+    t_master_start = time.perf_counter()
+    master_cache_hit = _MASTER_CACHE["data"] is not None and (time.time() - _MASTER_CACHE["timestamp"]) < _MASTER_CACHE_TTL
+    master_cache = get_cached_master_lookups()
+    t_master_end = time.perf_counter()
+    master_cache_duration_ms = round((t_master_end - t_master_start) * 1000, 2)
+
+    companies_lookup = master_cache["companies_lookup"]
+    brands_lookup = master_cache["brands_lookup"]
+    hq_lookup = master_cache["hq_lookup"]
+    master_companies = master_cache["master_companies"]
+    master_depots = master_cache["master_depots"]
+    master_tsms = master_cache["master_tsms"]
+    tsm_depot_lookup = master_cache["tsm_depot_lookup"]
+    user_depots_map = master_cache["user_depots_map"]
+    tsm_ase_lookup = master_cache["tsm_ase_lookup"]
+    ase_names_lookup = master_cache["ase_names_lookup"]
 
     allowed_depots = set()
     if user_role == "tsm":
@@ -1086,6 +1129,29 @@ async def get_mobile_sales(
     }
 
     grouped_comp_rows = {}
+    for cid_raw, cname_raw in companies_lookup.items():
+        if not cname_raw or cname_raw.lower() == "others":
+            continue
+        norm_name = COMPANY_ALIASES.get(cname_raw.lower(), cname_raw)
+        comp_id = norm_name.lower().replace(" ", "-").replace("/", "-")
+        if comp_id not in grouped_comp_rows:
+            grouped_comp_rows[comp_id] = {
+                "id": comp_id,
+                "name": norm_name,
+                "isPinned": comp_id in ["rll", "diageo-inbrew"] or norm_name.upper() == "RLL",
+                "hqLocation": selected_hq or "All Headquarters",
+                "company_ids": [str(cid_raw)],
+                "data": {
+                    "Daily": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+                    "MTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+                    "YTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+                },
+                "brands_map": {}
+            }
+        else:
+            if str(cid_raw) not in grouped_comp_rows[comp_id]["company_ids"]:
+                grouped_comp_rows[comp_id]["company_ids"].append(str(cid_raw))
+
     for row in company_records:
         cid = str(row.get("company_id") or "")
         cname = str(row.get("company_name") or "").strip()
@@ -1101,7 +1167,7 @@ async def get_mobile_sales(
                 "name": norm_name,
                 "isPinned": comp_id in ["rll", "diageo-inbrew"] or norm_name.upper() == "RLL",
                 "hqLocation": selected_hq or "All Headquarters",
-                "company_ids": [],
+                "company_ids": [cid] if cid else [],
                 "data": {
                     "Daily": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
                     "MTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
@@ -1109,9 +1175,11 @@ async def get_mobile_sales(
                 },
                 "brands_map": {}
             }
+        else:
+            if cid and cid not in grouped_comp_rows[comp_id]["company_ids"]:
+                grouped_comp_rows[comp_id]["company_ids"].append(cid)
 
         g = grouped_comp_rows[comp_id]
-        g["company_ids"].append(cid)
         g["data"]["Daily"]["cases"] += float(row.get("daily_cases") or 0.0)
         g["data"]["Daily"]["bottles"] += float(row.get("daily_bottles") or 0.0)
         g["data"]["Daily"]["bl"] += float(row.get("daily_bl") or 0.0)
@@ -1122,10 +1190,35 @@ async def get_mobile_sales(
         g["data"]["YTD"]["bottles"] += float(row.get("ytd_bottles") or 0.0)
         g["data"]["YTD"]["bl"] += float(row.get("ytd_bl") or 0.0)
 
-    # For each grouped company, fetch Brand summaries using get_mobile_company_brands_summary RPC
+    # Collect all company UUIDs across grouped companies to fetch brand summaries in a SINGLE RPC call
+    all_company_ids = []
+    raw_to_comp_id = {}
     for comp_id, g in grouped_comp_rows.items():
+        for cid in g["company_ids"]:
+            all_company_ids.append(cid)
+            raw_to_comp_id[cid] = comp_id
+
+    # Pre-populate brands_map with ALL master registered brands for each company (so 0-sale brands are counted and listed)
+    for bid, binfo in brands_lookup.items():
+        b_comp_id = binfo.get("company_id")
+        if b_comp_id and b_comp_id in raw_to_comp_id:
+            comp_id = raw_to_comp_id[b_comp_id]
+            if comp_id in grouped_comp_rows:
+                g = grouped_comp_rows[comp_id]
+                if bid not in g["brands_map"]:
+                    g["brands_map"][bid] = {
+                        "id": bid,
+                        "name": binfo.get("name") or "Generic Brand",
+                        "data": {
+                            "Daily": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+                            "MTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+                            "YTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+                        }
+                    }
+
+    if all_company_ids:
         brand_params = {
-            "p_company_ids": g["company_ids"],
+            "p_company_ids": all_company_ids,
             "p_target_date": end_date,
             "p_mtd_start": mtd_start,
             "p_ytd_start": ytd_start,
@@ -1137,10 +1230,16 @@ async def get_mobile_sales(
             brand_res = client.rpc("get_mobile_company_brands_summary", brand_params).execute()
             brands_data = brand_res.data or []
         except Exception as e_brands:
-            logger.error(f"Error calling get_mobile_company_brands_summary RPC for {g['name']}: {e_brands}")
+            logger.error(f"Error calling get_mobile_company_brands_summary RPC: {e_brands}")
             brands_data = []
 
         for b in brands_data:
+            raw_cid = str(b.get("company_id") or "")
+            comp_id = raw_to_comp_id.get(raw_cid)
+            if not comp_id or comp_id not in grouped_comp_rows:
+                continue
+
+            g = grouped_comp_rows[comp_id]
             bid = str(b.get("brand_id") or "")
             bname = str(b.get("brand_name") or "Generic Brand").strip()
             

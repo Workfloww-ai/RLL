@@ -410,20 +410,25 @@ export function CompanyCascadingView({
 
   return (
     <View style={styles.container}>
+      {/* Top Header Bar for Level 2 & Level 3: Back Button */}
+      {level > 1 && (
+        <View style={styles.topHeaderBar}>
+          <TouchableOpacity
+            style={styles.backBtn}
+            onPress={handleGoBack}
+            activeOpacity={0.75}
+          >
+            <ChevronLeftIcon size={16} color="#0F172A" />
+            <Text style={styles.backBtnText}>
+              {level === 2 ? 'Brands' : 'Licensees'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Level 2 or Level 3 Header Banner */}
       {level > 1 && headerMetrics && (
         <View style={styles.headerCard}>
-          <TouchableOpacity
-            style={styles.backButton}
-            onPress={handleGoBack}
-            activeOpacity={0.7}
-          >
-            <ChevronLeftIcon size={18} color="#0F172A" />
-            <Text style={styles.backButtonText}>
-              {level === 3 ? selectedCompany?.name || 'Back' : 'All Companies'}
-            </Text>
-          </TouchableOpacity>
-
           <View style={styles.headerTitleRow}>
             <View style={styles.headerTitleWrapper}>
               <Text style={styles.headerTitle} numberOfLines={1}>
@@ -566,7 +571,7 @@ export function CompanyCascadingView({
               <MetricsCard
                 key={item.licensee_id || index}
                 title={item.licensee_name || 'Licensee'}
-                subtitle={item.group_name ? `Group: ${item.group_name}` : item.shop_name || 'Licensee Detail'}
+                // subtitle={item.group_name ? `Group: ${item.group_name}` : item.shop_name || 'Licensee Detail'}
                 locationPill={depotLocationPill}
                 pillTheme="blue"
                 metrics={[
@@ -610,6 +615,36 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#F8FAFC',
+  },
+  topHeaderBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+  },
+  backBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    gap: 4,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  backBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0F172A',
   },
   headerCard: {
     backgroundColor: '#FFFFFF',

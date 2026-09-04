@@ -75,7 +75,39 @@ def get_companies_summary(
         "william grants & sons": "William Grants"
     }
 
+    # 2. Fetch all registered master companies to ensure all companies are shown irrespective of HQ sales
     grouped_companies = {}
+    try:
+        mc_res = client.table("companies").select("company_id, company_name").execute()
+        for mc in (mc_res.data or []):
+            cid = str(mc.get("company_id") or "")
+            cname = str(mc.get("company_name") or "").strip()
+            if not cname or cname.lower() == "others":
+                continue
+            norm_name = COMPANY_ALIASES.get(cname.lower(), cname)
+            norm_key = norm_name.lower().replace(" ", "-").replace("/", "-")
+            if norm_key not in grouped_companies:
+                grouped_companies[norm_key] = {
+                    "id": norm_key,
+                    "name": norm_name,
+                    "isPinned": norm_key in ("rll", "diageo-inbrew") or norm_name.upper() == "RLL",
+                    "hqLocation": selected_hq or "All Headquarters",
+                    "company_ids": [],
+                    "daily_cases": 0.0,
+                    "daily_bottles": 0.0,
+                    "daily_bl": 0.0,
+                    "mtd_cases": 0.0,
+                    "mtd_bottles": 0.0,
+                    "mtd_bl": 0.0,
+                    "ytd_cases": 0.0,
+                    "ytd_bottles": 0.0,
+                    "ytd_bl": 0.0,
+                }
+            if cid and cid not in grouped_companies[norm_key]["company_ids"]:
+                grouped_companies[norm_key]["company_ids"].append(cid)
+    except Exception as e_mc:
+        logger.warning(f"Error fetching master companies: {e_mc}")
+
     for row in comp_summary_data:
         cid = str(row.get("company_id") or "")
         cname = str(row.get("company_name") or "").strip()
@@ -91,7 +123,7 @@ def get_companies_summary(
                 "name": norm_name,
                 "isPinned": norm_key in ("rll", "diageo-inbrew") or norm_name.upper() == "RLL",
                 "hqLocation": selected_hq or "All Headquarters",
-                "company_ids": [],
+                "company_ids": [cid] if cid else [],
                 "daily_cases": 0.0,
                 "daily_bottles": 0.0,
                 "daily_bl": 0.0,
@@ -102,9 +134,11 @@ def get_companies_summary(
                 "ytd_bottles": 0.0,
                 "ytd_bl": 0.0,
             }
+        else:
+            if cid and cid not in grouped_companies[norm_key]["company_ids"]:
+                grouped_companies[norm_key]["company_ids"].append(cid)
 
         g = grouped_companies[norm_key]
-        g["company_ids"].append(cid)
         g["daily_cases"] += float(row.get("daily_cases") or 0.0)
         g["daily_bottles"] += float(row.get("daily_bottles") or 0.0)
         g["daily_bl"] += float(row.get("daily_bl") or 0.0)
@@ -115,7 +149,21 @@ def get_companies_summary(
         g["ytd_bottles"] += float(row.get("ytd_bottles") or 0.0)
         g["ytd_bl"] += float(row.get("ytd_bl") or 0.0)
 
-    # 3. For each company, fetch Brand summaries and construct final list
+    # 3. Fetch master brands per company to ensure 0-sale brands are included in brand count and drilldown
+    master_brands_by_company = {}
+    try:
+        mb_res = client.table("brands").select("brand_id, brand_name, company_id").execute()
+        for mb in (mb_res.data or []):
+            cid = str(mb.get("company_id") or "")
+            bid = str(mb.get("brand_id") or "")
+            bname = str(mb.get("brand_name") or "Generic Brand").strip()
+            if cid and bid:
+                if cid not in master_brands_by_company:
+                    master_brands_by_company[cid] = []
+                master_brands_by_company[cid].append({"brand_id": bid, "brand_name": bname})
+    except Exception as e_mb:
+        logger.warning(f"Error fetching master_brands_by_company: {e_mb}")
+
     response_list = []
     for norm_key, g in grouped_companies.items():
         brand_params = {
@@ -134,7 +182,24 @@ def get_companies_summary(
             logger.error(f"Error calling get_mobile_company_brands_summary RPC for {g['name']}: {e_brands}")
             brands_data = []
 
-        comp_brands = []
+        comp_brands_map = {}
+        # Pre-populate with all master registered brands for this company (cases = 0)
+        for cid in g["company_ids"]:
+            for mb in master_brands_by_company.get(cid, []):
+                bid = mb["brand_id"]
+                if bid not in comp_brands_map:
+                    comp_brands_map[bid] = {
+                        "id": bid,
+                        "name": mb["brand_name"],
+                        "cases": 0.0,
+                        "bottles": 0.0,
+                        "data": {
+                            "Daily": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+                            "MTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+                            "YTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+                        }
+                    }
+
         for b in brands_data:
             bid = str(b.get("brand_id") or "")
             bname = str(b.get("brand_name") or "Generic Brand").strip()
@@ -161,18 +226,33 @@ def get_companies_summary(
                 b_cases = round(b_ytd_cases, 2)
                 b_btls = round(b_ytd_bottles, 2)
 
-            comp_brands.append({
-                "id": bid,
-                "name": bname,
-                "cases": b_cases,
-                "bottles": b_btls,
-                "data": {
-                    "Daily": {"cases": round(b_daily_cases, 2), "bottles": round(b_daily_bottles, 2), "bl": round(b_daily_bl, 2)},
-                    "MTD": {"cases": round(b_mtd_cases, 2), "bottles": round(b_mtd_bottles, 2), "bl": round(b_mtd_bl, 2)},
-                    "YTD": {"cases": round(b_ytd_cases, 2), "bottles": round(b_ytd_bottles, 2), "bl": round(b_ytd_bl, 2)},
+            if bid not in comp_brands_map:
+                comp_brands_map[bid] = {
+                    "id": bid,
+                    "name": bname,
+                    "cases": b_cases,
+                    "bottles": b_btls,
+                    "data": {
+                        "Daily": {"cases": round(b_daily_cases, 2), "bottles": round(b_daily_bottles, 2), "bl": round(b_daily_bl, 2)},
+                        "MTD": {"cases": round(b_mtd_cases, 2), "bottles": round(b_mtd_bottles, 2), "bl": round(b_mtd_bl, 2)},
+                        "YTD": {"cases": round(b_ytd_cases, 2), "bottles": round(b_ytd_bottles, 2), "bl": round(b_ytd_bl, 2)},
+                    }
                 }
-            })
+            else:
+                entry = comp_brands_map[bid]
+                entry["cases"] += b_cases
+                entry["bottles"] += b_btls
+                entry["data"]["Daily"]["cases"] += round(b_daily_cases, 2)
+                entry["data"]["Daily"]["bottles"] += round(b_daily_bottles, 2)
+                entry["data"]["Daily"]["bl"] += round(b_daily_bl, 2)
+                entry["data"]["MTD"]["cases"] += round(b_mtd_cases, 2)
+                entry["data"]["MTD"]["bottles"] += round(b_mtd_bottles, 2)
+                entry["data"]["MTD"]["bl"] += round(b_mtd_bl, 2)
+                entry["data"]["YTD"]["cases"] += round(b_ytd_cases, 2)
+                entry["data"]["YTD"]["bottles"] += round(b_ytd_bottles, 2)
+                entry["data"]["YTD"]["bl"] += round(b_ytd_bl, 2)
 
+        comp_brands = list(comp_brands_map.values())
         comp_brands.sort(key=lambda x: x["cases"], reverse=True)
 
         if clean_period == "Daily":

@@ -605,8 +605,8 @@ export async function fetchMobileCompanies(period: string = 'Daily', dateTo?: st
   logger.info(`fetchMobileCompanies: period=${period}, dateTo=${dateTo}, selectedHq=${selectedHq}`);
   const cacheKey = `rll_phone_cache_companies_${period}_${selectedHq}_${dateTo || 'latest'}`;
 
-  // Only use phone disk cache when dateTo is empty (latest date mode)
-  if (!dateTo) {
+  // Only use phone disk cache when dateTo is empty AND selectedHq is 'All Headquarters'
+  if (!dateTo && selectedHq === 'All Headquarters') {
     try {
       const cachedStr = await AsyncStorage.getItem(cacheKey);
       if (cachedStr) {
