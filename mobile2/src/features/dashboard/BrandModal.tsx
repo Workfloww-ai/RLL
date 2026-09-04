@@ -278,15 +278,20 @@ export function BrandModal({
 
               return (
                 <View style={styles.brandCard}>
-                  <Text style={styles.brandName}>{item.name}</Text>
-                  <View style={styles.brandMetrics}>
-                    <View style={styles.brandMetricItem}>
-                      <Text style={styles.brandMetricLabel}>CASES</Text>
-                      <Text style={styles.brandMetricValPrimary}>{formatNumber(bCases)}</Text>
+                  <View style={styles.brandMainRow}>
+                    <View style={styles.brandTitleWrapper}>
+                      <Text style={styles.brandName}>{item.name}</Text>
                     </View>
-                    <View style={styles.brandMetricItem}>
-                      <Text style={styles.brandMetricLabel}>BOTTLES</Text>
-                      <Text style={styles.brandMetricValSecondary}>{formatNumber(bBottles)}</Text>
+
+                    <View style={styles.metricsRightRow}>
+                      <View style={styles.metricCell}>
+                        <Text style={styles.brandMetricValPrimary}>{formatNumber(bCases)}</Text>
+                        <Text style={styles.brandMetricLabel}>CASES</Text>
+                      </View>
+                      <View style={styles.metricCell}>
+                        <Text style={styles.brandMetricValSecondary}>{formatNumber(bBottles)}</Text>
+                        <Text style={styles.brandMetricLabel}>BOTTLES</Text>
+                      </View>
                     </View>
                   </View>
                 </View>
@@ -565,53 +570,55 @@ const styles = StyleSheet.create({
   },
   brandCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 16,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    padding: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     marginBottom: 10,
     shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.03,
+    shadowRadius: 3,
+    elevation: 1,
+  },
+  brandMainRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  brandTitleWrapper: {
+    flex: 1,
+    marginRight: 10,
   },
   brandName: {
     fontSize: 14,
     fontWeight: '800',
     color: '#0F172A',
-    marginBottom: 8,
   },
-  brandMetrics: {
+  metricsRightRow: {
     flexDirection: 'row',
-    backgroundColor: '#F8FAFC',
-    borderRadius: 10,
-    paddingVertical: 8,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  brandMetricItem: {
-    flex: 1,
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 12,
+  },
+  metricCell: {
+    alignItems: 'flex-end',
   },
   brandMetricLabel: {
-    fontSize: 8.5,
+    fontSize: 9,
     fontWeight: '700',
-    color: '#64748B',
+    color: '#94A3B8',
     letterSpacing: 0.5,
-    textTransform: 'uppercase',
+    marginTop: 1,
   },
   brandMetricValPrimary: {
     fontSize: 14,
     fontWeight: '900',
     color: '#0F172A',
-    marginTop: 1,
   },
   brandMetricValSecondary: {
     fontSize: 14,
     fontWeight: '800',
-    color: '#475569',
-    marginTop: 1,
+    color: '#334155',
   },
 });

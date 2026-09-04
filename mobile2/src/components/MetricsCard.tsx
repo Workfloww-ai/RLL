@@ -42,15 +42,13 @@ export function MetricsCard({
       disabled={!onPress}
       activeOpacity={0.75}
     >
-      {/* Header Row: Title, Badges & Chevron */}
-      <View style={styles.headerRow}>
+      <View style={styles.cardMainRow}>
+        {/* Left Column: Title (Row 1), Subtitle (Row 2), Location Pill (Row 3) */}
         <View style={styles.titleContainer}>
+          {/* Row 1: Name + Pinned Badge */}
           <View style={styles.titleBadgeRow}>
             {titleIcon && <View style={styles.iconWrapper}>{titleIcon}</View>}
-            <Text
-              style={[styles.titleText, { fontSize: scaledFontSize(15) }]}
-              numberOfLines={1}
-            >
+            <Text style={[styles.titleText, { fontSize: scaledFontSize(14) }]} numberOfLines={1}>
               {title}
             </Text>
             {isPinned && (
@@ -60,89 +58,75 @@ export function MetricsCard({
             )}
           </View>
 
-          {/* Subtitle Line or Badges */}
-          {!!subtitle && (
-            typeof subtitle === 'string' ? (
-              <Text
-                style={[styles.subtitleText, { fontSize: scaledFontSize(12) }]}
-                numberOfLines={1}
-              >
-                {subtitle}
-              </Text>
-            ) : (
-              <View style={styles.subtitleRow}>{subtitle}</View>
-            )
-          )}
+          {/* Row 2: Subtitle & Company Badge */}
+          <View style={styles.subtextContainer}>
+            {!!subtitle && (
+              typeof subtitle === 'string' ? (
+                <Text style={[styles.subtitleText, { fontSize: scaledFontSize(11) }]} numberOfLines={1}>
+                  {subtitle}
+                </Text>
+              ) : (
+                subtitle
+              )
+            )}
 
-          {/* Company Badge (for Brands) */}
-          {!!companyBadge && (
-            <View style={styles.companyBadgePill}>
+            {!!companyBadge && (
+              <View style={styles.companyBadgePill}>
+                <Text style={[styles.companyBadgeText, { fontSize: scaledFontSize(10) }]} numberOfLines={1}>
+                  {companyBadge}
+                </Text>
+              </View>
+            )}
+          </View>
+
+          {/* Row 3: Dedicated Headquarter Location Pill */}
+          {!!locationPill && (
+            <View
+              style={[
+                styles.locationPillContainerRow3,
+                pillTheme === 'red' ? styles.redPillContainer : styles.bluePillContainer,
+              ]}
+            >
+              <LocationIcon
+                size={scaledFontSize(9)}
+                color={pillTheme === 'red' ? '#DC2626' : '#0284C7'}
+              />
               <Text
                 style={[
-                  styles.companyBadgeText,
-                  { fontSize: scaledFontSize(11) },
+                  styles.locationPillText,
+                  { fontSize: scaledFontSize(10) },
+                  pillTheme === 'red' ? styles.redPillText : styles.bluePillText,
                 ]}
+                numberOfLines={1}
               >
-                {companyBadge}
+                {locationPill.startsWith('Headquarter:') ? locationPill : `Headquarter: ${locationPill}`}
               </Text>
             </View>
           )}
         </View>
 
-        {!!onPress && (
-          <View style={styles.chevronContainer}>
-            <ChevronRightIcon size={scaledFontSize(18)} color="#94A3B8" />
-          </View>
-        )}
-      </View>
-
-      {/* Metrics Grid */}
-      <View style={styles.metricsBox}>
-        {metrics.map((item, idx) => (
-          <React.Fragment key={`${item.label}-${idx}`}>
-            {idx > 0 && <View style={styles.metricDivider} />}
-            <View style={styles.metricItem}>
-              <Text
-                style={[styles.metricLabel, { fontSize: scaledFontSize(10) }]}
-              >
-                {item.label.toUpperCase()}
-              </Text>
-              <Text
-                style={[styles.metricValue, { fontSize: scaledFontSize(15) }]}
-              >
+        {/* Right Column: Inline Metrics & Chevron */}
+        <View style={styles.metricsRightRow}>
+          {metrics.map((item, idx) => (
+            <View key={`${item.label}-${idx}`} style={styles.metricCell}>
+              <Text style={[styles.metricValue, { fontSize: scaledFontSize(14) }]}>
                 {typeof item.value === 'number'
                   ? formatNumber(item.value)
                   : item.value}
               </Text>
+              <Text style={[styles.metricLabel, { fontSize: scaledFontSize(9) }]}>
+                {item.label.toUpperCase()}
+              </Text>
             </View>
-          </React.Fragment>
-        ))}
-      </View>
+          ))}
 
-      {/* Location Pill */}
-      {!!locationPill && (
-        <View
-          style={[
-            styles.locationPillContainer,
-            pillTheme === 'red' ? styles.redPillContainer : styles.bluePillContainer,
-          ]}
-        >
-          <LocationIcon
-            size={scaledFontSize(12)}
-            color={pillTheme === 'red' ? '#DC2626' : '#0284C7'}
-          />
-          <Text
-            style={[
-              styles.locationPillText,
-              { fontSize: scaledFontSize(11) },
-              pillTheme === 'red' ? styles.redPillText : styles.bluePillText,
-            ]}
-            numberOfLines={1}
-          >
-            {locationPill}
-          </Text>
+          {!!onPress && (
+            <View style={styles.chevronContainer}>
+              <ChevronRightIcon size={scaledFontSize(16)} color="#94A3B8" />
+            </View>
+          )}
         </View>
-      )}
+      </View>
     </TouchableOpacity>
   );
 }
@@ -150,31 +134,30 @@ export function MetricsCard({
 const styles = StyleSheet.create({
   card: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 12,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 8,
     borderWidth: 1,
     borderColor: '#E2E8F0',
     shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.03,
+    shadowRadius: 2,
+    elevation: 1,
   },
-  headerRow: {
+  cardMainRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 10,
   },
   titleContainer: {
     flex: 1,
-    marginRight: 8,
+    marginRight: 10,
   },
   titleBadgeRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
   },
   iconWrapper: {
     marginRight: 6,
@@ -183,26 +166,24 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#0F172A',
     marginRight: 6,
+    letterSpacing: -0.2,
     flexShrink: 1,
   },
-  subtitleText: {
-    color: '#64748B',
-    marginTop: 3,
-    fontWeight: '500',
-  },
-  subtitleRow: {
+  subtextContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     marginTop: 3,
-    flexWrap: 'wrap',
+  },
+  subtitleText: {
+    color: '#64748B',
+    fontWeight: '500',
   },
   companyBadgePill: {
     backgroundColor: '#F1F5F9',
-    alignSelf: 'flex-start',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-    marginTop: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    marginLeft: 4,
   },
   companyBadgeText: {
     color: '#475569',
@@ -210,57 +191,47 @@ const styles = StyleSheet.create({
   },
   pinnedTag: {
     backgroundColor: '#1E293B',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
     borderRadius: 4,
+    marginRight: 4,
   },
   pinnedText: {
     color: '#FFFFFF',
-    fontSize: 10,
-    fontWeight: '600',
+    fontSize: 9,
+    fontWeight: '700',
+  },
+  metricsRightRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  metricCell: {
+    alignItems: 'flex-end',
+  },
+  metricLabel: {
+    color: '#94A3B8',
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    marginTop: 1,
+  },
+  metricValue: {
+    fontWeight: '900',
+    color: '#0F172A',
   },
   chevronContainer: {
     justifyContent: 'center',
     alignItems: 'center',
+    marginLeft: 2,
   },
-  metricsBox: {
-    flexDirection: 'row',
-    backgroundColor: '#F8FAFC',
-    borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    alignItems: 'center',
-    justifyContent: 'space-around',
-    borderWidth: 1,
-    borderColor: '#F1F5F9',
-  },
-  metricItem: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  metricDivider: {
-    width: 1,
-    height: 24,
-    backgroundColor: '#CBD5E1',
-  },
-  metricLabel: {
-    color: '#64748B',
-    fontWeight: '600',
-    letterSpacing: 0.5,
-    marginBottom: 2,
-  },
-  metricValue: {
-    fontWeight: '800',
-    color: '#0F172A',
-  },
-  locationPillContainer: {
+  locationPillContainerRow3: {
     flexDirection: 'row',
     alignItems: 'center',
     alignSelf: 'flex-start',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 20,
-    marginTop: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    marginTop: 4,
     borderWidth: 1,
   },
   bluePillContainer: {
@@ -273,7 +244,7 @@ const styles = StyleSheet.create({
   },
   locationPillText: {
     fontWeight: '600',
-    marginLeft: 4,
+    marginLeft: 3,
   },
   bluePillText: {
     color: '#0284C7',

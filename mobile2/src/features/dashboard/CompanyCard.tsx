@@ -33,10 +33,11 @@ export const CompanyCard = React.memo(function CompanyCard({
       onPress={onClick}
       activeOpacity={0.75}
     >
-      <View style={styles.cardHeader}>
+      <View style={styles.cardMainRow}>
+        {/* Left Section: Company Name, Pinned Badge & Subtitle */}
         <View style={styles.titleWrapper}>
           <View style={styles.nameRow}>
-            <Text style={styles.companyName} numberOfLines={1}>
+            <Text style={styles.companyName}>
               {company.name}
             </Text>
             {company.isPinned ? (
@@ -46,23 +47,27 @@ export const CompanyCard = React.memo(function CompanyCard({
               </View>
             ) : null}
           </View>
-          <Text style={styles.brandCount}>
-            {company.brands.length} {company.brands.length === 1 ? 'Brand' : 'Brands'}
-          </Text>
-        </View>
-        <ChevronRightIcon size={16} color="#94A3B8" />
-      </View>
 
-      {/* Primary Metrics Inset Box */}
-      <View style={styles.metricsGrid}>
-        <View style={styles.metricCell}>
-          <Text style={styles.metricLabel}>CASES</Text>
-          <Text style={styles.metricValue}>{formatNumber(cases)}</Text>
+          <View style={styles.subtextRow}>
+            <Text style={styles.subtext}>
+              {company.brands.length} {company.brands.length === 1 ? 'Brand' : 'Brands'}
+            </Text>
+          </View>
         </View>
 
-        <View style={styles.metricCell}>
-          <Text style={styles.metricLabel}>BOTTLES</Text>
-          <Text style={styles.metricValue}>{formatNumber(bottles)}</Text>
+        {/* Right Section: Metrics (Cases & Bottles) + Chevron Arrow */}
+        <View style={styles.metricsRightRow}>
+          <View style={styles.metricCell}>
+            <Text style={styles.metricValue}>{formatNumber(cases)}</Text>
+            <Text style={styles.metricLabel}>CASES</Text>
+          </View>
+
+          <View style={styles.metricCell}>
+            <Text style={styles.metricValue}>{formatNumber(bottles)}</Text>
+            <Text style={styles.metricLabel}>BOTTLES</Text>
+          </View>
+
+          <ChevronRightIcon size={16} color="#94A3B8" />
         </View>
       </View>
     </TouchableOpacity>
@@ -72,10 +77,11 @@ export const CompanyCard = React.memo(function CompanyCard({
 const styles = StyleSheet.create({
   card: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 16,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    padding: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     marginBottom: 10,
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 1 },
@@ -86,25 +92,24 @@ const styles = StyleSheet.create({
   cardPinned: {
     borderColor: '#E2E8F0',
   },
-  cardHeader: {
+  cardMainRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
+    justifyContent: 'space-between',
   },
   titleWrapper: {
     flex: 1,
-    marginRight: 8,
+    marginRight: 10,
   },
   nameRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'wrap',
   },
   companyName: {
     fontSize: 14,
     fontWeight: '800',
     color: '#0F172A',
-    flexShrink: 1,
     letterSpacing: -0.2,
   },
   pinnedBadge: {
@@ -114,7 +119,7 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     paddingHorizontal: 6,
     paddingVertical: 2,
-    marginLeft: 8,
+    marginLeft: 6,
     gap: 3,
   },
   pinnedBadgeText: {
@@ -122,37 +127,51 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: '700',
   },
-  brandCount: {
+  subtextRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+    flexWrap: 'wrap',
+  },
+  subtext: {
     fontSize: 11,
     color: '#64748B',
     fontWeight: '600',
-    marginTop: 2,
   },
-  metricsGrid: {
+  subtextDot: {
+    fontSize: 11,
+    color: '#94A3B8',
+    fontWeight: '600',
+  },
+  hqPill: {
+    backgroundColor: '#F1F5F9',
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+  },
+  hqPillText: {
+    fontSize: 10,
+    color: '#475569',
+    fontWeight: '600',
+  },
+  metricsRightRow: {
     flexDirection: 'row',
-    backgroundColor: '#F8FAFC',
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 8,
-    borderWidth: 1,
-    borderColor: '#F1F5F9',
+    alignItems: 'center',
+    gap: 12,
   },
   metricCell: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: 'flex-end',
   },
   metricLabel: {
-    fontSize: 8,
+    fontSize: 9,
     fontWeight: '700',
     color: '#94A3B8',
     letterSpacing: 0.5,
-    textTransform: 'uppercase',
+    marginTop: 1,
   },
   metricValue: {
     fontSize: 14,
     fontWeight: '900',
     color: '#0F172A',
-    marginTop: 2,
   },
 });

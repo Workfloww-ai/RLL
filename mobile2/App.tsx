@@ -523,7 +523,7 @@ export default function App() {
             style={styles.resetSearchBtn}
             onPress={() => {
               setSearchQuery('');
-              setSortBy('default');
+              setSortBy('az');
               setDateFrom('2026-07-31');
               setDateTo('2026-07-31');
             }}
@@ -818,16 +818,18 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingHorizontal: 12,
+    paddingTop: 0,
     paddingBottom: 24,
   },
   headerControlsContainer: {
-    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
   searchAndFilterRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     gap: 8,
   },
   searchWrapper: {

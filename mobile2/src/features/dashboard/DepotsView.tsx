@@ -80,7 +80,7 @@ export function DepotsView({
           onPress={() => setActiveDepot(depot)}
           activeOpacity={0.7}
         >
-          <View style={styles.depotHeader}>
+          <View style={styles.depotMainRow}>
             <View style={styles.depotTitleWrapper}>
               <Text style={styles.depotName}>{depot.name}</Text>
               <View style={styles.hqSubtextRow}>
@@ -88,16 +88,17 @@ export function DepotsView({
                 <Text style={styles.hqSubtext}>HQ: {depot.hqName}</Text>
               </View>
             </View>
-            <ChevronRightIcon size={16} color="#94A3B8" />
-          </View>
-          <View style={styles.metricsGrid}>
-            <View style={styles.metricCell}>
-              <Text style={styles.metricLabel}>CASES</Text>
-              <Text style={styles.metricValuePrimary}>{formatNumber(cases)}</Text>
-            </View>
-            <View style={styles.metricCell}>
-              <Text style={styles.metricLabel}>BOTTLES</Text>
-              <Text style={styles.metricValueSecondary}>{formatNumber(bottles)}</Text>
+
+            <View style={styles.metricsRightRow}>
+              <View style={styles.metricCell}>
+                <Text style={styles.metricValuePrimary}>{formatNumber(cases)}</Text>
+                <Text style={styles.metricLabel}>CASES</Text>
+              </View>
+              <View style={styles.metricCell}>
+                <Text style={styles.metricValueSecondary}>{formatNumber(bottles)}</Text>
+                <Text style={styles.metricLabel}>BOTTLES</Text>
+              </View>
+              <ChevronRightIcon size={16} color="#94A3B8" />
             </View>
           </View>
         </TouchableOpacity>
@@ -200,15 +201,19 @@ export function DepotsView({
 
                   return (
                     <View style={styles.brandSalesItem}>
-                      <Text style={styles.brandName}>{item.brandName}</Text>
-                      <View style={styles.modalMetricsGrid}>
-                        <View style={styles.modalMetricCell}>
-                          <Text style={styles.modalMetricLabel}>CASES</Text>
-                          <Text style={styles.modalMetricValPrimary}>{formatNumber(bCases)}</Text>
+                      <View style={styles.depotMainRow}>
+                        <View style={styles.depotTitleWrapper}>
+                          <Text style={styles.brandName}>{item.brandName}</Text>
                         </View>
-                        <View style={styles.modalMetricCell}>
-                          <Text style={styles.modalMetricLabel}>BOTTLES</Text>
-                          <Text style={styles.modalMetricValSecondary}>{formatNumber(bBottles)}</Text>
+                        <View style={styles.metricsRightRow}>
+                          <View style={styles.metricCell}>
+                            <Text style={styles.metricValuePrimary}>{formatNumber(bCases)}</Text>
+                            <Text style={styles.metricLabel}>CASES</Text>
+                          </View>
+                          <View style={styles.metricCell}>
+                            <Text style={styles.metricValueSecondary}>{formatNumber(bBottles)}</Text>
+                            <Text style={styles.metricLabel}>BOTTLES</Text>
+                          </View>
                         </View>
                       </View>
                     </View>
@@ -285,10 +290,11 @@ const styles = StyleSheet.create({
   },
   depotCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 16,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    padding: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     marginBottom: 10,
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 1 },
@@ -296,15 +302,14 @@ const styles = StyleSheet.create({
     shadowRadius: 3,
     elevation: 1,
   },
-  depotHeader: {
+  depotMainRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
+    justifyContent: 'space-between',
   },
   depotTitleWrapper: {
     flex: 1,
-    marginRight: 8,
+    marginRight: 10,
   },
   depotName: {
     fontSize: 14,
@@ -322,40 +327,30 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#64748B',
   },
-  arrowIcon: {
-    fontSize: 12,
-    color: '#CBD5E1',
-  },
-  metricsGrid: {
+  metricsRightRow: {
     flexDirection: 'row',
-    backgroundColor: '#F8FAFC',
-    borderRadius: 10,
-    paddingVertical: 8,
-    borderWidth: 1,
-    borderColor: '#F1F5F9',
+    alignItems: 'center',
+    gap: 12,
   },
   metricCell: {
-    flex: 1,
-    alignItems: 'center',
+    alignItems: 'flex-end',
   },
   metricLabel: {
-    fontSize: 8,
+    fontSize: 9,
     fontWeight: '700',
     color: '#94A3B8',
     letterSpacing: 0.5,
-    textTransform: 'uppercase',
+    marginTop: 1,
   },
   metricValuePrimary: {
     fontSize: 14,
     fontWeight: '900',
     color: '#0F172A',
-    marginTop: 2,
   },
   metricValueSecondary: {
     fontSize: 14,
     fontWeight: '800',
     color: '#334155',
-    marginTop: 2,
   },
   modalOverlay: {
     flex: 1,
