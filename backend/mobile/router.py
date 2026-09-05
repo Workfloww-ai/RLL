@@ -841,7 +841,7 @@ async def get_mobile_companies(
         return cached_payload
 
     try:
-        companies_list = get_companies_summary(
+        companies_list, resolved_date = get_companies_summary(
             period=clean_period,
             date_to=date_to,
             selected_hq=selected_hq
@@ -850,9 +850,13 @@ async def get_mobile_companies(
             "status": "success",
             "period": clean_period,
             "count": len(companies_list),
+            "latest_sale_date": resolved_date,
             "companies": companies_list
         }
-        await set_json_cache(redis_key, payload, ttl=900)  # 15 minutes TTL
+        if len(companies_list) > 0:
+            await set_json_cache(redis_key, payload, ttl=900)  # 15 minutes TTL
+        else:
+            logger.warning(f"get_mobile_companies: Skipping Redis cache set for {redis_key} due to empty companies list.")
         return payload
     except Exception as e:
         logger.error(f"Error fetching mobile companies analytics: {e}", exc_info=True)

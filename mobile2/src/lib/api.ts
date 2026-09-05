@@ -611,13 +611,12 @@ export async function fetchMobileCompanies(period: string = 'Daily', dateTo?: st
       const cachedStr = await AsyncStorage.getItem(cacheKey);
       if (cachedStr) {
         const cachedData = JSON.parse(cachedStr);
-        const comps = cachedData.companies || [];
-        if (comps.length > 0) {
+        if (cachedData && Array.isArray(cachedData.companies) && cachedData.companies.length > 0) {
           logger.info(`fetchMobileCompanies: Phone cache HIT for ${cacheKey}`);
           setTimeout(() => {
             fetchMobileCompaniesNetwork(period, dateTo, selectedHq, cacheKey).catch(() => {});
           }, 50);
-          return comps;
+          return cachedData;
         }
       }
     } catch (e) {
@@ -645,15 +644,17 @@ async function fetchMobileCompaniesNetwork(period: string, dateTo?: string, sele
     const res = await apiFetch(`/mobile/companies?${params.toString()}`, { signal });
     if (!res.ok) {
       logger.warn(`fetchMobileCompaniesNetwork: API status ${res.status}`);
-      return [];
+      return null;
     }
     const data = await res.json();
-    const companies = data?.companies || [];
+    if (!data || !Array.isArray(data.companies)) {
+      return null;
+    }
 
-    if (cacheKey && companies.length > 0) {
+    if (cacheKey && data.companies.length > 0) {
       AsyncStorage.setItem(cacheKey, JSON.stringify(data)).catch(() => {});
     }
-    return companies;
+    return data;
   } catch (error: any) {
     const isAbort =
       error?.name === 'AbortError' ||
@@ -665,10 +666,10 @@ async function fetchMobileCompaniesNetwork(period: string, dateTo?: string, sele
 
     if (isAbort) {
       logger.info('fetchMobileCompaniesNetwork: Request canceled successfully.');
-      return [];
+      return null;
     }
     logger.error('fetchMobileCompaniesNetwork: Exception fetching companies:', error);
-    return [];
+    return null;
   }
 }
 

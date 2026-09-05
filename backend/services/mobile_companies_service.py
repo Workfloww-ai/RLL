@@ -1,5 +1,5 @@
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from backend.db.supabase_client import get_supabase_client
 
@@ -9,7 +9,7 @@ def get_companies_summary(
     period: str = "Daily",
     date_to: Optional[str] = None,
     selected_hq: Optional[str] = None
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], str]:
     """
     Period-specific Companies sales analytics service.
     Excludes company 'Others' strictly.
@@ -19,7 +19,7 @@ def get_companies_summary(
     client = get_supabase_client()
     if not client:
         logger.error("get_companies_summary: Supabase client unavailable.")
-        return []
+        return [], target_date or datetime.utcnow().strftime("%Y-%m-%d")
 
     clean_period = period.strip() if period else "Daily"
     if clean_period not in ("Daily", "MTD", "YTD"):
@@ -66,7 +66,7 @@ def get_companies_summary(
         comp_summary_data = comp_summary_res.data or []
     except Exception as e:
         logger.error(f"Error calling get_mobile_companies_summary RPC: {e}")
-        return []
+        return [], target_date
 
     # 2. Company Aliases Normalization (Willam vs William)
     COMPANY_ALIASES = {
@@ -282,4 +282,4 @@ def get_companies_summary(
         })
 
     response_list.sort(key=lambda x: (not x["isPinned"], -x["cases"]))
-    return response_list
+    return response_list, target_date

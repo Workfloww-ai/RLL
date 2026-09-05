@@ -83,8 +83,10 @@ export default function App() {
     try {
       await clearAllPhoneCaches();
       if (viewMode === 'companies') {
-        const comps = await fetchMobileCompanies(period, dateTo, selectedHq);
-        setApiData((prev: any) => ({ ...(prev || {}), companies: comps }));
+        const compRes = await fetchMobileCompanies(period, dateTo, selectedHq);
+        if (compRes && Array.isArray(compRes.companies)) {
+          setApiData((prev: any) => ({ ...(prev || {}), ...compRes }));
+        }
       } else {
         const res = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq);
         if (res) setApiData(res);
@@ -200,6 +202,13 @@ export default function App() {
     });
   }, [Boolean(user)]);
 
+  const prevFiltersRef = useRef({
+    dateFrom: '2026-07-31',
+    dateTo: '2026-07-31',
+    period: 'Daily',
+    selectedHq: 'All Headquarters',
+  });
+
   // Fetch sales data with microsecond performance instrumentation
   useEffect(() => {
     if (!user) return;
@@ -208,18 +217,46 @@ export default function App() {
     const fetchSalesData = async () => {
       const getNow = () => Date.now();
       const tMobileStart = getNow();
-      setLoadingSalesData(true);
+
+      const prev = prevFiltersRef.current;
+      const filtersChanged =
+        prev.dateFrom !== dateFrom ||
+        prev.dateTo !== dateTo ||
+        prev.period !== period ||
+        prev.selectedHq !== selectedHq;
+
+      prevFiltersRef.current = { dateFrom, dateTo, period, selectedHq };
+
+      const hasDataForTab =
+        viewMode === 'companies'
+          ? Boolean(apiData && Array.isArray(apiData.companies) && apiData.companies.length > 0)
+          : viewMode === 'tsm'
+            ? Boolean(apiData && Array.isArray(apiData.tsms) && apiData.tsms.length > 0)
+            : viewMode === 'depots'
+              ? Boolean(apiData && Array.isArray(apiData.depots) && apiData.depots.length > 0)
+              : true;
+
+      // When date/HQ/period filter changes OR when target tab data is missing in memory, show Skeleton Loaders
+      if (filtersChanged || !hasDataForTab) {
+        setLoadingSalesData(true);
+        if (filtersChanged) {
+          setApiData(null); // Clear previous date payload so screen shows fresh Skeleton Loaders for new date
+        }
+      }
+
       try {
         let res: any = null;
         if (viewMode === 'companies') {
-          const comps = await fetchMobileCompanies(period, dateTo, selectedHq);
-          res = { companies: comps };
+          const compRes = await fetchMobileCompanies(period, dateTo, selectedHq);
+          if (compRes && Array.isArray(compRes.companies)) {
+            res = compRes;
+          }
         } else {
           res = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq);
         }
         if (res && isMounted) {
           const tStateStart = getNow();
-          setApiData(res);
+          setApiData((prevData: any) => ({ ...(prevData || {}), ...res }));
           if (res.latest_sale_date && (!dateFrom && !dateTo)) {
             setDateFrom(res.latest_sale_date);
             setDateTo(res.latest_sale_date);
@@ -722,10 +759,29 @@ export default function App() {
             <NoDataModal
               visible={showNoDataModal}
               selectedDate={dateTo || dateFrom || undefined}
-              onReset={() => {
-                setDateFrom('2026-07-31');
-                setDateTo('2026-07-31');
+              onReset={async () => {
                 setShowNoDataModal(false);
+                const targetLatest = apiData?.latest_sale_date || '2026-07-31';
+                setDateFrom(targetLatest);
+                setDateTo(targetLatest);
+                setSelectedHq('All Headquarters');
+                await clearAllPhoneCaches();
+                setLoadingSalesData(true);
+                try {
+                  if (viewMode === 'companies') {
+                    const compRes = await fetchMobileCompanies(period, targetLatest, 'All Headquarters');
+                    if (compRes && Array.isArray(compRes.companies)) {
+                      setApiData(compRes);
+                    }
+                  } else {
+                    const res = await fetchMobileSales(targetLatest, targetLatest, period, 'All Headquarters');
+                    if (res) setApiData(res);
+                  }
+                } catch (e) {
+                  logger.error('Error resetting to latest date:', e);
+                } finally {
+                  setLoadingSalesData(false);
+                }
               }}
               onClose={() => setShowNoDataModal(false)}
             />

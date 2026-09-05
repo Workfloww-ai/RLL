@@ -92,6 +92,14 @@ export function TsmView({
     setCurrentPage(1);
   };
 
+  // Reset drilldown level on period or HQ filter change
+  useEffect(() => {
+    setLevel(1);
+    setSelectedTsm(null);
+    setSelectedAse(null);
+    resetFilters();
+  }, [period, selectedHq]);
+
   // Selection Handlers
   const handleSelectTsm = (tsm: TSM) => {
     setSelectedTsm(tsm);
