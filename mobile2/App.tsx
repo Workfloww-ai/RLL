@@ -44,6 +44,7 @@ import { FooterNav } from './src/features/dashboard/FooterNav';
 import { CompanyCard } from './src/features/dashboard/CompanyCard';
 import { NoDataModal } from './src/components/NoDataModal';
 import { CompanyListSkeletonList } from './src/features/dashboard/CompanyCardSkeleton';
+import { CompanyCascadingView } from './src/features/dashboard/CompanyCascadingView';
 import { GroupsCascadingView } from './src/features/dashboard/GroupsCascadingView';
 import { TsmView } from './src/features/dashboard/TsmView';
 import { BrandModal } from './src/features/dashboard/BrandModal';
@@ -652,27 +653,15 @@ export default function App() {
             {/* Scrollable layout contents */}
             <View style={styles.mainContent}>
               {viewMode === 'companies' && (
-                <View style={{ flex: 1 }}>
-                  {renderCompanyHeader()}
-                  <FlatList
-                    data={loadingSalesData ? [] : sortedCompanies}
-                    renderItem={renderCompanyItem}
-                    keyExtractor={(item) => item.id}
-                    ListEmptyComponent={renderCompanyEmpty}
-                    style={styles.scrollList}
-                    contentContainerStyle={styles.scrollContent}
-                    initialNumToRender={10}
-                    maxToRenderPerBatch={10}
-                    windowSize={5}
-                    removeClippedSubviews={Platform.OS === 'android'}
-                    refreshControl={
-                      <RefreshControl
-                        refreshing={refreshing}
-                        onRefresh={handleRefresh}
-                        colors={['#0284C7', '#0F172A']}
-                        tintColor="#0284C7"
-                      />
-                    }
+                <View style={styles.tabViewWrapper}>
+                  <CompanyCascadingView
+                    period={period}
+                    dateFrom={dateFrom}
+                    dateTo={dateTo}
+                    scaleFactor={scaleFactor}
+                    selectedHq={selectedHq}
+                    companies={sortedCompanies}
+                    loading={loadingSalesData}
                   />
                 </View>
               )}
@@ -874,7 +863,8 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    paddingTop: 2,
+    paddingHorizontal: 12,
+    paddingTop: 0,
     paddingBottom: 24,
   },
   companiesTabWrapper: {
@@ -883,11 +873,13 @@ const styles = StyleSheet.create({
     paddingTop: 10,
   },
   headerControlsContainer: {
-    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
   searchAndFilterRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     gap: 8,
   },
   searchWrapper: {

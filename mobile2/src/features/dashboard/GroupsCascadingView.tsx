@@ -471,21 +471,7 @@ export function GroupsCascadingView({
                 <MetricsCard
                   key={item.group_id || index}
                   title={item.group_name}
-                  subtitle={
-                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
-                      <UsersIcon size={scaledFontSize(12)} color="#64748B" />
-                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500', marginLeft: 3 }}>
-                        {`${item.total_licensees || 0} Licensee(s)`}
-                      </Text>
-                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500' }}>
-                        {'  •  '}
-                      </Text>
-                      <WineIcon size={scaledFontSize(12)} color="#64748B" />
-                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500', marginLeft: 3 }}>
-                        {`${item.total_brands || 0} Brand(s)`}
-                      </Text>
-                    </View>
-                  }
+                  subtitle={`${item.total_licensees || 0} Licensee(s)  •  ${item.total_brands || 0} Brand(s)`}
                   metrics={[
                     { label: 'Cases', value: cases },
                     { label: 'Bottles', value: bottles },
@@ -510,14 +496,13 @@ export function GroupsCascadingView({
                 <MetricsCard
                   key={item.brand_id || index}
                   title={item.brand_name}
-                  titleIcon={<WineIcon size={16} color="#0F172A" />}
                   companyBadge={item.company_name || 'Brand Product'}
                   metrics={[
                     { label: 'Cases', value: cases },
                     { label: 'Bottles', value: bottles },
                   ]}
                   locationPill={depotPill}
-                  pillTheme="red"
+                  pillTheme="blue"
                   scaleFactor={scaleFactor}
                 />
               );
@@ -538,20 +523,7 @@ export function GroupsCascadingView({
                 <MetricsCard
                   key={item.licensee_id || index}
                   title={item.licensee_name}
-                  subtitle={
-                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
-                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500' }}>
-                        {`Trade: ${item.trade || 'Off'}`}
-                      </Text>
-                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500' }}>
-                        {'  •  '}
-                      </Text>
-                      <WineIcon size={scaledFontSize(12)} color="#64748B" />
-                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500', marginLeft: 3 }}>
-                        {`${item.total_brands || 0} Brand(s)`}
-                      </Text>
-                    </View>
-                  }
+                  subtitle={`Trade: ${item.trade || 'Off'}  •  ${item.total_brands || 0} Brand(s)`}
                   metrics={[
                     { label: 'Cases', value: cases },
                     { label: 'Bottles', value: bottles },
@@ -579,14 +551,13 @@ export function GroupsCascadingView({
                 <MetricsCard
                   key={item.brand_id || index}
                   title={item.brand_name}
-                  titleIcon={<WineIcon size={16} color="#0F172A" />}
                   companyBadge={item.company_name || 'Brand'}
                   metrics={[
                     { label: 'Cases', value: cases },
                     { label: 'Bottles', value: bottles },
                   ]}
                   locationPill={depotPill}
-                  pillTheme="red"
+                  pillTheme="blue"
                   scaleFactor={scaleFactor}
                 />
               );

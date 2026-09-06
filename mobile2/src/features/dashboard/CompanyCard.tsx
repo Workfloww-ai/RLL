@@ -37,39 +37,42 @@ export const CompanyCard = React.memo(function CompanyCard({
       onPress={onClick}
       activeOpacity={0.75}
     >
-      {/* Left Column: Company Name & Brand Count */}
-      <View style={styles.leftInfo}>
-        <View style={styles.nameRow}>
-          <Text style={styles.companyName} numberOfLines={2}>
-            {company.name}
-          </Text>
-          {isPinned ? (
-            <View style={styles.pinnedBadge}>
-              <PinIcon color="#FFFFFF" size={8} />
-              <Text style={styles.pinnedBadgeText}>Pinned</Text>
-            </View>
-          ) : null}
-        </View>
-        <Text style={styles.brandCount}>
-          {company.brands.length} {company.brands.length === 1 ? 'Brand' : 'Brands'}
-        </Text>
-      </View>
+      <View style={styles.cardMainRow}>
+        {/* Left Section: Company Name, Pinned Badge & Subtitle */}
+        <View style={styles.titleWrapper}>
+          <View style={styles.nameRow}>
+            <Text style={styles.companyName}>
+              {company.name}
+            </Text>
+            {company.isPinned ? (
+              <View style={styles.pinnedBadge}>
+                <PinIcon color="#FFFFFF" size={9} />
+                <Text style={styles.pinnedBadgeText}>Pinned</Text>
+              </View>
+            ) : null}
+          </View>
 
-      {/* Right Column: Inline Metrics */}
-      <View style={styles.rightSection}>
-        <View style={styles.metricBlock}>
-          <Text style={styles.metricLabel}>CASES</Text>
-          <Text style={styles.casesValue}>{formatNumber(cases)}</Text>
+          <View style={styles.subtextRow}>
+            <Text style={styles.subtext}>
+              {company.brands.length} {company.brands.length === 1 ? 'Brand' : 'Brands'}
+            </Text>
+          </View>
         </View>
 
-        <View style={styles.metricDivider} />
+        {/* Right Section: Metrics (Cases & Bottles) + Chevron Arrow */}
+        <View style={styles.metricsRightRow}>
+          <View style={styles.metricCell}>
+            <Text style={styles.casesValue}>{formatNumber(cases)}</Text>
+            <Text style={styles.metricLabel}>CASES</Text>
+          </View>
 
-        <View style={styles.metricBlock}>
-          <Text style={styles.metricLabel}>BOTTLES</Text>
-          <Text style={styles.bottlesValue}>{formatNumber(bottles)}</Text>
+          <View style={styles.metricCell}>
+            <Text style={styles.bottlesValue}>{formatNumber(bottles)}</Text>
+            <Text style={styles.metricLabel}>BOTTLES</Text>
+          </View>
+
+          <ChevronRightIcon size={16} color="#94A3B8" />
         </View>
-
-        <ChevronRightIcon size={15} color="#94A3B8" />
       </View>
     </TouchableOpacity>
   );
@@ -81,13 +84,9 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     paddingVertical: 12,
-    marginBottom: 8,
-    minHeight: 68,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    marginBottom: 10,
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.02,
@@ -98,59 +97,83 @@ const styles = StyleSheet.create({
     borderColor: '#CBD5E1',
     backgroundColor: '#FAFCFF',
   },
-  leftInfo: {
+  cardMainRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  titleWrapper: {
     flex: 1,
     marginRight: 10,
-    justifyContent: 'center',
   },
   nameRow: {
     flexDirection: 'row',
     alignItems: 'center',
     flexWrap: 'wrap',
-    gap: 6,
   },
   companyName: {
     fontSize: 14.5,
     fontWeight: '800',
     color: '#0F172A',
-    flexShrink: 1,
     letterSpacing: -0.2,
     lineHeight: 19,
   },
   pinnedBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#0D3B8E',
-    borderRadius: 4,
-    paddingHorizontal: 5,
-    paddingVertical: 1.5,
-    gap: 2,
+    backgroundColor: '#0F172A',
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginLeft: 6,
+    gap: 3,
   },
   pinnedBadgeText: {
     color: '#FFFFFF',
     fontSize: 8.5,
     fontWeight: '700',
   },
-  brandCount: {
+  subtextRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+    flexWrap: 'wrap',
+  },
+  subtext: {
     fontSize: 11,
     color: '#64748B',
     fontWeight: '600',
-    marginTop: 1,
   },
-  rightSection: {
+  subtextDot: {
+    fontSize: 11,
+    color: '#94A3B8',
+    fontWeight: '600',
+  },
+  hqPill: {
+    backgroundColor: '#F1F5F9',
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+  },
+  hqPillText: {
+    fontSize: 10,
+    color: '#475569',
+    fontWeight: '600',
+  },
+  metricsRightRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
   },
-  metricBlock: {
+  metricCell: {
     alignItems: 'flex-end',
-    minWidth: 50,
   },
   metricLabel: {
-    fontSize: 8.5,
+    fontSize: 9,
     fontWeight: '700',
-    color: '#64748B',
-    letterSpacing: 0.4,
+    color: '#94A3B8',
+    letterSpacing: 0.5,
+    marginTop: 1,
   },
   casesValue: {
     fontSize: 14.5,
@@ -162,11 +185,5 @@ const styles = StyleSheet.create({
     fontSize: 14.5,
     fontWeight: '800',
     color: '#0F172A',
-    marginTop: 1,
-  },
-  metricDivider: {
-    width: 1,
-    height: 24,
-    backgroundColor: '#E2E8F0',
   },
 });

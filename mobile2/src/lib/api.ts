@@ -619,8 +619,8 @@ export async function fetchMobileCompanies(period: string = 'Daily', dateTo?: st
   logger.info(`fetchMobileCompanies: period=${period}, dateTo=${dateTo}, selectedHq=${selectedHq}`);
   const cacheKey = `rll_phone_cache_companies_${period}_${selectedHq}_${dateTo || 'latest'}`;
 
-  // Only use phone disk cache when dateTo is empty (latest date mode)
-  if (!dateTo) {
+  // Only use phone disk cache when dateTo is empty AND selectedHq is 'All Headquarters'
+  if (!dateTo && selectedHq === 'All Headquarters') {
     try {
       const cachedStr = await AsyncStorage.getItem(cacheKey);
       if (cachedStr) {
@@ -682,6 +682,56 @@ async function fetchMobileCompaniesNetwork(period: string, dateTo?: string, sele
       return [];
     }
     logger.error('fetchMobileCompaniesNetwork: Exception fetching companies:', error);
+    return [];
+  }
+}
+
+export async function fetchCompanyBrands(companyId: string, dateFrom?: string, dateTo?: string, selectedHq?: string) {
+  logger.info(`fetchCompanyBrands: Fetching brand sales for company ${companyId} (dateFrom: ${dateFrom}, dateTo: ${dateTo}, hq: ${selectedHq})`);
+  try {
+    const params = new URLSearchParams();
+    params.append('company_id', companyId);
+    if (dateFrom) params.append('date_from', dateFrom);
+    if (dateTo) params.append('date_to', dateTo);
+    if (selectedHq && selectedHq !== 'All Headquarters') params.append('hq_name', selectedHq);
+
+    const token = await getAuthToken();
+    const res = await apiFetch(`/mobile/cascading/company-brands?${params.toString()}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      logger.warn(`fetchCompanyBrands status error ${res.status}`);
+      return [];
+    }
+    const data = await res.json();
+    return data || [];
+  } catch (error) {
+    logger.error(`fetchCompanyBrands error for company ${companyId}:`, error);
+    return [];
+  }
+}
+
+export async function fetchBrandLicensees(brandId: string, dateFrom?: string, dateTo?: string, selectedHq?: string) {
+  logger.info(`fetchBrandLicensees: Fetching licensee sales for brand ${brandId} (dateFrom: ${dateFrom}, dateTo: ${dateTo}, hq: ${selectedHq})`);
+  try {
+    const params = new URLSearchParams();
+    params.append('brand_id', brandId);
+    if (dateFrom) params.append('date_from', dateFrom);
+    if (dateTo) params.append('date_to', dateTo);
+    if (selectedHq && selectedHq !== 'All Headquarters') params.append('hq_name', selectedHq);
+
+    const token = await getAuthToken();
+    const res = await apiFetch(`/mobile/cascading/brand-licensees?${params.toString()}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      logger.warn(`fetchBrandLicensees status error ${res.status}`);
+      return [];
+    }
+    const data = await res.json();
+    return data || [];
+  } catch (error) {
+    logger.error(`fetchBrandLicensees error for brand ${brandId}:`, error);
     return [];
   }
 }

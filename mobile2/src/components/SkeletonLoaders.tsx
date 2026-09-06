@@ -34,21 +34,26 @@ export function CompanyCardSkeleton({ cardStyle }: { cardStyle?: object }) {
   const pulseAnim = usePulseAnim();
 
   return (
-    <Animated.View style={[styles.cardCompact, { opacity: pulseAnim }, cardStyle]}>
-      <View style={{ flex: 1 }}>
-        <View style={{ width: 110, height: 16, backgroundColor: '#E2E8F0', borderRadius: 4, marginBottom: 4 }} />
-        <View style={{ width: 60, height: 12, backgroundColor: '#F1F5F9', borderRadius: 4 }} />
-      </View>
-
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-        <View style={{ alignItems: 'flex-end' }}>
-          <View style={{ width: 32, height: 9, backgroundColor: '#F1F5F9', borderRadius: 3, marginBottom: 4 }} />
-          <View style={{ width: 44, height: 14, backgroundColor: '#E2E8F0', borderRadius: 4 }} />
+    <Animated.View style={[styles.card, { opacity: pulseAnim }, cardStyle]}>
+      <View style={styles.cardMainRow}>
+        <View style={styles.titleWrapper}>
+          <View style={styles.nameRow}>
+            <View style={styles.skeletonTitle} />
+            <View style={styles.skeletonBadge} />
+          </View>
+          <View style={styles.skeletonSubText} />
         </View>
-        <View style={{ width: 1, height: 20, backgroundColor: '#E2E8F0' }} />
-        <View style={{ alignItems: 'flex-end' }}>
-          <View style={{ width: 36, height: 9, backgroundColor: '#F1F5F9', borderRadius: 3, marginBottom: 4 }} />
-          <View style={{ width: 40, height: 14, backgroundColor: '#E2E8F0', borderRadius: 4 }} />
+
+        <View style={styles.metricsRightRow}>
+          <View style={styles.metricCell}>
+            <View style={styles.skeletonValue} />
+            <View style={styles.skeletonLabel} />
+          </View>
+          <View style={styles.metricCell}>
+            <View style={styles.skeletonValue} />
+            <View style={styles.skeletonLabel} />
+          </View>
+          <View style={styles.skeletonChevron} />
         </View>
       </View>
     </Animated.View>
@@ -73,25 +78,25 @@ export function GroupCardSkeleton() {
 
   return (
     <Animated.View style={[styles.card, { opacity: pulseAnim }]}>
-      <View style={styles.cardHeader}>
+      <View style={styles.cardMainRow}>
         <View style={{ flex: 1 }}>
-          <View style={{ width: 150, height: 16, backgroundColor: '#CBD5E1', borderRadius: 6, marginBottom: 6 }} />
+          <View style={{ width: 140, height: 16, backgroundColor: '#CBD5E1', borderRadius: 6, marginBottom: 6 }} />
           <View style={{ flexDirection: 'row', gap: 6 }}>
-            <View style={{ width: 60, height: 14, backgroundColor: '#E2E8F0', borderRadius: 4 }} />
-            <View style={{ width: 80, height: 14, backgroundColor: '#E2E8F0', borderRadius: 4 }} />
+            <View style={{ width: 60, height: 12, backgroundColor: '#E2E8F0', borderRadius: 4 }} />
+            <View style={{ width: 70, height: 12, backgroundColor: '#E2E8F0', borderRadius: 4 }} />
           </View>
         </View>
-        <View style={styles.skeletonChevron} />
-      </View>
 
-      <View style={styles.metricsGrid}>
-        <View style={styles.metricCell}>
-          <View style={styles.skeletonLabel} />
-          <View style={styles.skeletonValue} />
-        </View>
-        <View style={styles.metricCell}>
-          <View style={styles.skeletonLabel} />
-          <View style={styles.skeletonValue} />
+        <View style={styles.metricsRightRow}>
+          <View style={styles.metricCell}>
+            <View style={styles.skeletonValue} />
+            <View style={styles.skeletonLabel} />
+          </View>
+          <View style={styles.metricCell}>
+            <View style={styles.skeletonValue} />
+            <View style={styles.skeletonLabel} />
+          </View>
+          <View style={styles.skeletonChevron} />
         </View>
       </View>
     </Animated.View>
@@ -116,23 +121,25 @@ export function TsmCardSkeleton() {
 
   return (
     <Animated.View style={[styles.card, { opacity: pulseAnim }]}>
-      <View style={styles.cardHeader}>
-        <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: '#E2E8F0', marginRight: 10 }} />
-        <View style={{ flex: 1 }}>
-          <View style={{ width: 130, height: 16, backgroundColor: '#CBD5E1', borderRadius: 6, marginBottom: 4 }} />
-          <View style={{ width: 85, height: 12, backgroundColor: '#E2E8F0', borderRadius: 4 }} />
+      <View style={styles.cardMainRow}>
+        <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}>
+          <View style={{ width: 28, height: 28, borderRadius: 8, backgroundColor: '#E2E8F0', marginRight: 8 }} />
+          <View style={{ flex: 1 }}>
+            <View style={{ width: 120, height: 16, backgroundColor: '#CBD5E1', borderRadius: 6, marginBottom: 4 }} />
+            <View style={{ width: 80, height: 12, backgroundColor: '#E2E8F0', borderRadius: 4 }} />
+          </View>
         </View>
-        <View style={styles.skeletonChevron} />
-      </View>
 
-      <View style={styles.metricsGrid}>
-        <View style={styles.metricCell}>
-          <View style={styles.skeletonLabel} />
-          <View style={styles.skeletonValue} />
-        </View>
-        <View style={styles.metricCell}>
-          <View style={styles.skeletonLabel} />
-          <View style={styles.skeletonValue} />
+        <View style={styles.metricsRightRow}>
+          <View style={styles.metricCell}>
+            <View style={styles.skeletonValue} />
+            <View style={styles.skeletonLabel} />
+          </View>
+          <View style={styles.metricCell}>
+            <View style={styles.skeletonValue} />
+            <View style={styles.skeletonLabel} />
+          </View>
+          <View style={styles.skeletonChevron} />
         </View>
       </View>
     </Animated.View>
@@ -157,22 +164,22 @@ export function DepotCardSkeleton() {
 
   return (
     <Animated.View style={[styles.card, { opacity: pulseAnim }]}>
-      <View style={styles.cardHeader}>
+      <View style={styles.cardMainRow}>
         <View style={{ flex: 1 }}>
-          <View style={{ width: 140, height: 16, backgroundColor: '#CBD5E1', borderRadius: 6, marginBottom: 4 }} />
-          <View style={{ width: 90, height: 12, backgroundColor: '#E2E8F0', borderRadius: 4 }} />
+          <View style={{ width: 130, height: 16, backgroundColor: '#CBD5E1', borderRadius: 6, marginBottom: 4 }} />
+          <View style={{ width: 85, height: 12, backgroundColor: '#E2E8F0', borderRadius: 4 }} />
         </View>
-        <View style={styles.skeletonChevron} />
-      </View>
 
-      <View style={styles.metricsGrid}>
-        <View style={styles.metricCell}>
-          <View style={styles.skeletonLabel} />
-          <View style={styles.skeletonValue} />
-        </View>
-        <View style={styles.metricCell}>
-          <View style={styles.skeletonLabel} />
-          <View style={styles.skeletonValue} />
+        <View style={styles.metricsRightRow}>
+          <View style={styles.metricCell}>
+            <View style={styles.skeletonValue} />
+            <View style={styles.skeletonLabel} />
+          </View>
+          <View style={styles.metricCell}>
+            <View style={styles.skeletonValue} />
+            <View style={styles.skeletonLabel} />
+          </View>
+          <View style={styles.skeletonChevron} />
         </View>
       </View>
     </Animated.View>
@@ -245,7 +252,8 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    padding: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     marginBottom: 10,
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 1 },
@@ -253,15 +261,14 @@ const styles = StyleSheet.create({
     shadowRadius: 3,
     elevation: 1,
   },
-  cardHeader: {
+  cardMainRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
+    justifyContent: 'space-between',
   },
   titleWrapper: {
     flex: 1,
-    marginRight: 8,
+    marginRight: 10,
   },
   nameRow: {
     flexDirection: 'row',
@@ -292,32 +299,27 @@ const styles = StyleSheet.create({
     height: 14,
     borderRadius: 7,
     backgroundColor: '#E2E8F0',
+    marginLeft: 4,
   },
-  metricsGrid: {
+  metricsRightRow: {
     flexDirection: 'row',
-    backgroundColor: '#F8FAFC',
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 8,
-    borderWidth: 1,
-    borderColor: '#F1F5F9',
+    alignItems: 'center',
+    gap: 12,
   },
   metricCell: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: 'flex-end',
   },
   skeletonLabel: {
-    width: 40,
+    width: 35,
     height: 8,
     backgroundColor: '#CBD5E1',
     borderRadius: 3,
-    marginBottom: 4,
+    marginTop: 4,
   },
   skeletonValue: {
-    width: 55,
-    height: 16,
+    width: 50,
+    height: 14,
     backgroundColor: '#94A3B8',
-    borderRadius: 5,
+    borderRadius: 4,
   },
 });
