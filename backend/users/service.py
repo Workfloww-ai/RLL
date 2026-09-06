@@ -186,14 +186,13 @@ class UserService:
             return self.in_memory_users
 
     def _resolve_role_id(self, client: Any, role_name: str) -> Optional[str]:
-        """Resolve role_id (UUID) from public.roles, inserting if absent."""
+        """Resolve role_id (UUID) from public.roles, restricting automatic creation."""
         try:
             res = client.table("roles").select("role_id").ilike("role_name", role_name.strip()).limit(1).execute()
             if res.data and len(res.data) > 0:
                 return str(res.data[0]["role_id"])
-            ins = client.table("roles").insert({"role_name": role_name.strip(), "description": f"{role_name.strip()} Role", "is_active": True}).execute()
-            if ins.data:
-                return str(ins.data[0]["role_id"])
+            logger.warning(f"Role '{role_name}' does not exist in the database. Rejecting automatic creation.")
+            return None
         except Exception as e:
             logger.warning(f"Failed to resolve role_id for '{role_name}': {e}")
         return None
@@ -224,9 +223,11 @@ class UserService:
 
         # 3. Fallback to Supabase Auth Admin API
         try:
+            import secrets
+            secure_temp_password = secrets.token_urlsafe(32)
             auth_user = client.auth.admin.create_user({
                 "email": email_clean,
-                "password": "TempPassword123!",
+                "password": secure_temp_password,
                 "email_confirm": True,
                 "user_metadata": {"first_name": first_name, "last_name": last_name}
             })
@@ -910,7 +911,7 @@ class UserService:
         client = get_supabase()
         if client:
             try:
-                res = client.table("roles").select("role_id, role_name, description, is_active").eq("is_active", True).execute()
+                res = client.table("roles").select("role_id, role_name, description, is_active").execute()
                 if res.data and len(res.data) > 0:
                     return [
                         {
@@ -930,6 +931,75 @@ class UserService:
             {"role_id": "3", "role_name": "Regional Supervisor", "description": "Regional Sales Supervisor"},
             {"role_id": "4", "role_name": "Admin", "description": "System Administrator with full access"}
         ]
+
+    def create_role(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        client = get_supabase()
+        if not client:
+            raise ValueError("Database connection unavailable")
+            
+        role_name = payload.get("role_name", "").strip()
+        description = payload.get("description", "").strip()
+        is_active = payload.get("is_active", True)
+        
+        if not role_name:
+            raise ValueError("Role name is required")
+            
+        res = client.table("roles").select("role_id").ilike("role_name", role_name).execute()
+        if res.data:
+            raise ValueError(f"Role '{role_name}' already exists")
+            
+        ins = client.table("roles").insert({
+            "role_name": role_name,
+            "description": description or f"{role_name} Role",
+            "is_active": is_active
+        }).execute()
+        
+        if ins.data:
+            r = ins.data[0]
+            return {
+                "role_id": str(r["role_id"]),
+                "role_name": r["role_name"],
+                "description": r.get("description"),
+                "is_active": r.get("is_active", True)
+            }
+        return payload
+
+    def update_role(self, role_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        client = get_supabase()
+        if not client:
+            raise ValueError("Database connection unavailable")
+            
+        update_data = {}
+        if "role_name" in payload:
+            update_data["role_name"] = payload["role_name"].strip()
+        if "description" in payload:
+            update_data["description"] = payload["description"].strip()
+        if "is_active" in payload:
+            update_data["is_active"] = payload["is_active"]
+            
+        if not update_data:
+            return {"role_id": role_id}
+            
+        res = client.table("roles").update(update_data).eq("role_id", role_id).execute()
+        if res.data:
+            r = res.data[0]
+            return {
+                "role_id": str(r["role_id"]),
+                "role_name": r["role_name"],
+                "description": r.get("description"),
+                "is_active": r.get("is_active", True)
+            }
+        raise ValueError(f"Failed to update role {role_id}")
+
+    def delete_role(self, role_id: str) -> bool:
+        client = get_supabase()
+        if not client:
+            return False
+        try:
+            client.table("roles").update({"is_active": False}).eq("role_id", role_id).execute()
+        except Exception:
+            client.table("roles").delete().eq("role_id", role_id).execute()
+        return True
 
     def get_hierarchy(self) -> List[Dict[str, Any]]:
         """

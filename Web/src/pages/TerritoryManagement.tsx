@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { API_BASE_URL } from "../lib/api";
+import { useToast } from "../contexts/ToastContext";
 import { 
   Search, Filter, Edit2, Check, X, MapPin, Trash2, RefreshCw, 
   ChevronLeft, ChevronRight, ArrowUpDown, ChevronUp, ChevronDown, RotateCcw,
@@ -66,15 +67,7 @@ export default function TerritoryManagement() {
   const [editUserId, setEditUserId] = useState<string>("");
   const [editIsActive, setEditIsActive] = useState<boolean>(true);
 
-  // Toast notification state
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
-
-  const showToast = (message: string, type: 'success' | 'info' | 'error' = 'success') => {
-    setToast({ message, type });
-    setTimeout(() => {
-      setToast(null);
-    }, 4000);
-  };
+  const { showToast } = useToast();
 
   const token = localStorage.getItem("token");
 
@@ -372,6 +365,43 @@ export default function TerritoryManagement() {
     setEditingId(null);
   };
 
+  const handleToggleDepotStatus = async (depot: DepotRecord) => {
+    const newActiveState = !depot.is_active;
+    const targetDepotId = depot.real_depot_id || depot.depot_id;
+    
+    // Optimistic Update
+    const previousState = depot.is_active;
+    setDepots(depots.map(d => d.depot_id === depot.depot_id ? { ...d, is_active: newActiveState } : d));
+    
+    showToast(`Territory "${depot.name}" set to ${newActiveState ? 'ACTIVE' : 'INACTIVE'}!`, "success");
+
+    try {
+      const payload = {
+        name: depot.name,
+        headquarters_id: depot.headquarters_id,
+        is_active: newActiveState,
+        assigned_user_id: depot.assigned_user_id || null
+      };
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE_URL}/master-data/depots/${targetDepotId}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) {
+        throw new Error('Failed to update status');
+      }
+    } catch (e) {
+      console.error(e);
+      // Revert Optimistic Update
+      setDepots(depots.map(d => d.depot_id === depot.depot_id ? { ...d, is_active: previousState } : d));
+      showToast(`Error updating status for ${depot.name}`, "error");
+    }
+  };
+
   const handleDelete = async (depotId: string | number) => {
     if (!confirm("Are you sure you want to delete this depot record?")) return;
 
@@ -404,6 +434,13 @@ export default function TerritoryManagement() {
     setSortDirection("asc");
   };
 
+  const getSortDirection = (field: SortField) => {
+    if (sortField === field) {
+      return sortDirection === "asc" ? "desc" : "asc";
+    }
+    return "asc";
+  };
+
   const getRoleBadgeStyle = (role?: string) => {
     switch (role) {
       case 'TSM':
@@ -422,27 +459,6 @@ export default function TerritoryManagement() {
 
   return (
     <div className="flex flex-col h-full min-h-0 relative">
-      {/* Top Right Toast Notification */}
-      {toast && (
-        <div className={`fixed top-6 right-6 z-50 flex items-center gap-3 px-4 py-3 text-xs font-semibold rounded-xl shadow-2xl border transition-all duration-300 ${
-          toast.type === 'success' 
-            ? 'bg-slate-900 text-white border-emerald-500/40 ring-1 ring-emerald-500/20' 
-            : toast.type === 'error'
-            ? 'bg-red-950 text-red-100 border-red-500/40 ring-1 ring-red-500/20'
-            : 'bg-slate-900 text-white border-sky-500/40 ring-1 ring-sky-500/20'
-        }`}>
-          {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
-          {toast.type === 'error' && <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />}
-          {toast.type === 'info' && <Info className="w-4 h-4 text-sky-400 shrink-0" />}
-          <span>{toast.message}</span>
-          <button 
-            onClick={() => setToast(null)}
-            className="ml-2 text-slate-400 hover:text-white p-0.5 rounded-full hover:bg-slate-800 transition-colors"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      )}
       {/* Integrated Control Toolbar */}
       <div className="py-2 px-3 bg-white border border-slate-200/80 rounded-xl flex flex-wrap items-center gap-3 text-xs font-semibold text-slate-700 shrink-0 shadow-2xs">
         <div className="relative flex-1 min-w-[200px]">
@@ -751,21 +767,49 @@ export default function TerritoryManagement() {
                       {/* Status */}
                       <td className="px-4 py-2.5">
                         {isEditing ? (
-                          <select
-                            value={editIsActive ? "active" : "inactive"}
-                            onChange={(e) => setEditIsActive(e.target.value === "active")}
-                            className="w-full px-2.5 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
+                          <button
+                            type="button"
+                            onClick={() => setEditIsActive(!editIsActive)}
+                            className="flex items-center gap-2 cursor-pointer group select-none"
+                            title={`Click to switch to ${editIsActive ? 'Inactive' : 'Active'}`}
                           >
-                            <option value="active">Active</option>
-                            <option value="inactive">Inactive</option>
-                          </select>
-                        ) : (
-                          <div className="flex items-center gap-1.5">
-                            <span className={`w-2 h-2 rounded-full ${depot.is_active ? "bg-emerald-500" : "bg-slate-300"}`}></span>
-                            <span className={`text-xs font-bold ${depot.is_active ? "text-emerald-700" : "text-slate-400"}`}>
-                              {depot.is_active ? "Active" : "Inactive"}
+                            <div
+                              className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
+                                editIsActive ? 'bg-emerald-500' : 'bg-slate-300'
+                              }`}
+                            >
+                              <span
+                                className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
+                                  editIsActive ? 'translate-x-4' : 'translate-x-0'
+                                }`}
+                              />
+                            </div>
+                            <span className={`text-xs font-extrabold ${editIsActive ? 'text-emerald-700' : 'text-slate-500'}`}>
+                              {editIsActive ? 'Active' : 'Inactive'}
                             </span>
-                          </div>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleToggleDepotStatus(depot)}
+                            className="flex items-center gap-2 cursor-pointer group select-none"
+                            title={`Click to ${depot.is_active ? 'deactivate territory' : 'reactivate territory'}`}
+                          >
+                            <div
+                              className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
+                                depot.is_active ? 'bg-emerald-500' : 'bg-slate-300'
+                              }`}
+                            >
+                              <span
+                                className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
+                                  depot.is_active ? 'translate-x-4' : 'translate-x-0'
+                                }`}
+                              />
+                            </div>
+                            <span className={`text-xs font-bold ${depot.is_active ? 'text-emerald-700' : 'text-slate-500'}`}>
+                              {depot.is_active ? 'Active' : 'Inactive'}
+                            </span>
+                          </button>
                         )}
                       </td>
 

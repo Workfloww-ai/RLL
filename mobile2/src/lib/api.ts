@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { logger } from './logger';
+import { secureStorage } from './secureStorage';
 
 function formatBaseUrl(url: string): string {
   let formatted = url.trim();
@@ -16,16 +17,9 @@ function formatBaseUrl(url: string): string {
 }
 
 export function getApiBaseUrl(): string {
-  // 1. Native Expo public environment variable
-  const envUrl = process.env.EXPO_PUBLIC_API_URL;
-  if (envUrl && envUrl !== 'undefined' && envUrl.trim() !== '') {
-    return formatBaseUrl(envUrl);
-  }
-
-  // Configurable backend port (defaults to 8000 if not specified)
   const port = process.env.EXPO_PUBLIC_API_PORT || process.env.EXPO_PUBLIC_PORT || '8000';
 
-  // 2. Automatically derive computer's host IP from Metro bundler hostUri (works for physical devices & emulators)
+  // 1. Automatically derive computer's active Wi-Fi IP from Metro bundler (works on physical devices & emulators across any Wi-Fi)
   const hostUri = Constants.expoConfig?.hostUri || Constants.manifest2?.extra?.expoGo?.developer?.tool;
   if (hostUri) {
     const hostIp = hostUri.split(':')[0];
@@ -34,11 +28,23 @@ export function getApiBaseUrl(): string {
     }
   }
 
+  // 2. Native Expo public environment variable override
+  const envUrl = process.env.EXPO_PUBLIC_API_URL;
+  if (envUrl && envUrl !== 'undefined' && envUrl.trim() !== '' && !envUrl.includes('localhost') && !envUrl.includes('127.0.0.1')) {
+    return formatBaseUrl(envUrl);
+  }
+
   // 3. Fallback to localhost (for ADB reverse tcp or iOS Simulator)
   return `http://localhost:${port}/api/v1`;
 }
 
 export const BASE_URL = getApiBaseUrl();
+
+let _onSessionRevokedCallback: (() => void) | null = null;
+
+export function registerSessionRevokedListener(callback: () => void) {
+  _onSessionRevokedCallback = callback;
+}
 
 export async function apiFetch(endpointPath: string, init?: RequestInit): Promise<Response> {
   const cleanPath = endpointPath.startsWith('/') ? endpointPath : `/${endpointPath}`;
@@ -56,7 +62,15 @@ export async function apiFetch(endpointPath: string, init?: RequestInit): Promis
 
   logger.info(`apiFetch: ${reqInit.method || 'GET'} ${url}`);
   try {
-    return await fetch(url, reqInit);
+    const res = await fetch(url, reqInit);
+    if (res.status === 401 || res.status === 403) {
+      logger.warn(`apiFetch: Received status ${res.status} for ${endpointPath}. Session may be revoked or expired. Wiping credentials.`);
+      await clearAuthSession();
+      if (_onSessionRevokedCallback) {
+        _onSessionRevokedCallback();
+      }
+    }
+    return res;
   } catch (err: any) {
     const isAbort =
       err?.name === 'AbortError' ||
@@ -76,12 +90,12 @@ export async function apiFetch(endpointPath: string, init?: RequestInit): Promis
 }
 
 // ── Auth Token Cache ────────────────────────────────────────────────────────
-// Avoids repeated AsyncStorage disk reads on every API call after first load.
+// Avoids repeated secureStorage disk reads on every API call after first load.
 let _cachedToken: string | null = null;
 
 export async function getAuthToken(): Promise<string | null> {
   if (_cachedToken !== null) return _cachedToken;
-  _cachedToken = await AsyncStorage.getItem('rll_mobile_token');
+  _cachedToken = await secureStorage.getItem('rll_mobile_token');
   return _cachedToken;
 }
 
@@ -254,8 +268,8 @@ export async function verifyMobileOTP(phone: string, otp: string, email: string 
 
     const data = await res.json();
     if (data.access_token) {
-      await AsyncStorage.setItem('rll_mobile_token', data.access_token);
-      await AsyncStorage.setItem('rll_mobile_user', JSON.stringify(data.user));
+      await secureStorage.setItem('rll_mobile_token', data.access_token);
+      await secureStorage.setItem('rll_mobile_user', JSON.stringify(data.user));
       seedCachedToken(data.access_token);
     }
     logger.info(`verifyMobileOTP: Success. Token acquired for phone: ${phone}`);
@@ -286,8 +300,8 @@ export async function loginMobileUser(email: string, password: string) {
 
     const data = await res.json();
     if (data.access_token) {
-      await AsyncStorage.setItem('rll_mobile_token', data.access_token);
-      await AsyncStorage.setItem('rll_mobile_user', JSON.stringify(data.user));
+      await secureStorage.setItem('rll_mobile_token', data.access_token);
+      await secureStorage.setItem('rll_mobile_user', JSON.stringify(data.user));
       seedCachedToken(data.access_token);
     }
     logger.info(`loginMobileUser: Success. Session loaded for email: ${email}`);
@@ -501,9 +515,9 @@ export async function clearAllPhoneCaches() {
 }
 
 export async function clearAuthSession() {
-  logger.info('clearAuthSession: Clearing user auth tokens and profiles from AsyncStorage.');
-  await AsyncStorage.removeItem('rll_mobile_token');
-  await AsyncStorage.removeItem('rll_mobile_user');
+  logger.info('clearAuthSession: Clearing user auth tokens and profiles from encrypted secureStorage.');
+  await secureStorage.removeItem('rll_mobile_token');
+  await secureStorage.removeItem('rll_mobile_user');
   await clearAllPhoneCaches();
   clearCachedToken();
   invalidateApiCache();

@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
     PORT: int = 8000
+    ENVIRONMENT: str = "development"
     
     # Supabase credentials
     SUPABASE_URL: str = ""

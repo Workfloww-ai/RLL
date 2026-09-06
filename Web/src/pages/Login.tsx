@@ -488,12 +488,6 @@ export default function Login({ onLogin }: LoginProps) {
             )}
           </AnimatePresence>
         </div>
-
-        {/* Security Glass Badge */}
-        <div className="mt-6 text-center text-[11px] text-slate-600 font-medium flex items-center justify-center gap-1.5 backdrop-blur-md py-1.5 px-4 rounded-full bg-white/50 border border-white/70 mx-auto w-fit shadow-xs">
-          <ShieldCheck className="w-3.5 h-3.5 text-[#0D3B8E]" />
-          <span>Rajasthan State Enterprise Portal • 256-Bit Encrypted</span>
-        </div>
       </motion.div>
     </div>
   );

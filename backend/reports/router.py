@@ -2,8 +2,13 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from backend.analytics.service import analytics_service
+from backend.core.security import get_current_user
 
-router = APIRouter(prefix="/reports", tags=["Reporting Service"])
+router = APIRouter(
+    prefix="/reports", 
+    tags=["Reporting Service"],
+    dependencies=[Depends(get_current_user)]
+)
 
 
 @router.get("/summary")

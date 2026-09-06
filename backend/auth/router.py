@@ -15,8 +15,29 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
+import secrets
+import hashlib
+from backend.core.security import create_access_token, get_current_user, validate_password_complexity, RoleChecker
+
+
 @router.post("/login", response_model=TokenResponse)
-async def login(credentials: LoginRequest, response: Response):
+async def login(credentials: LoginRequest, request: Request, response: Response):
+    client_ip = request.client.host if request.client else "unknown"
+    redis_key = f"rll:ratelimit:login:{client_ip}"
+    
+    attempts = await safe_get(redis_key)
+    if attempts:
+        attempts_count = int(attempts)
+        if attempts_count >= 5:
+            logger.warning(f"Rate limit exceeded for IP {client_ip}")
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many login attempts. Please try again later."
+            )
+        await safe_set(redis_key, str(attempts_count + 1), ttl=3600)
+    else:
+        await safe_set(redis_key, "1", ttl=3600)
+
     email = credentials.email.lower().strip()
     password = credentials.password
     logger.info(f"Web login attempt initiated for user: {email}")
@@ -68,6 +89,11 @@ async def login(credentials: LoginRequest, response: Response):
             detail="User account is deactivated"
         )
 
+    user_id_str = str(db_user["user_id"])
+
+    # Clear any previous revocation flag upon fresh successful login
+    await safe_delete(f"rll:revoked:{user_id_str}")
+
     # 3. Fetch user roles dynamically from public.user_roles
     active_roles = []
     role_name = "admin"
@@ -81,7 +107,6 @@ async def login(credentials: LoginRequest, response: Response):
                     if rname:
                         active_roles.append(rname)
             
-            # Prioritize Admin / Super_Admin / Leader roles for Web dashboard
             preferred_role = next((r for r in active_roles if r.lower() in ["admin", "super_admin", "super admin", "leader"]), None)
             if preferred_role:
                 role_name = preferred_role
@@ -90,7 +115,7 @@ async def login(credentials: LoginRequest, response: Response):
     except Exception as r_err:
         logger.warning(f"Error resolving roles for user {email}: {r_err}")
 
-    # 4. Guardrail: Enforce Web-only roles
+    # Guardrail: Enforce Web-only roles
     if role_name.lower() not in ["admin", "super_admin", "super admin", "leader"]:
         logger.warning(f"Web login access denied for user {email} (role '{role_name}' lacks Web permissions)")
         raise HTTPException(
@@ -99,7 +124,7 @@ async def login(credentials: LoginRequest, response: Response):
         )
 
     user_data = {
-        "user_id": str(db_user.get("user_id")),
+        "user_id": user_id_str,
         "email": db_user.get("email"),
         "first_name": db_user.get("first_name", email.split("@")[0].capitalize()),
         "last_name": db_user.get("last_name", ""),
@@ -113,7 +138,7 @@ async def login(credentials: LoginRequest, response: Response):
 
     token = create_access_token(data={"sub": user_data["email"], "role": user_data.get("role_name", "admin"), "user_id": user_data["user_id"]})
 
-    # Create Redis Session & Set HttpOnly Cookie
+    # Create Redis Session & Set HttpOnly Cookie (24h Web Admin vs 30d Mobile)
     session_token = str(uuid.uuid4())
     remember_me = bool(credentials.remember_me)
     ttl = 30 * 86400 if remember_me else 86400  # 30 days vs 24 hours
@@ -129,13 +154,16 @@ async def login(credentials: LoginRequest, response: Response):
 
     await safe_set(f"rll:session:{session_token}", session_payload, ttl=ttl)
 
+    # Dynamic environment secure flag check
+    is_secure = settings.ENVIRONMENT.lower() in ["production", "prod"]
+
     response.set_cookie(
         key="rll_session",
         value=session_token,
         max_age=ttl,
         httponly=True,
         samesite="lax",
-        secure=False
+        secure=is_secure
     )
 
     return {
@@ -148,63 +176,70 @@ async def login(credentials: LoginRequest, response: Response):
 @router.post("/forgot-password")
 async def forgot_password(req: ForgotPasswordRequest):
     """
-    Initiate password recovery by sending a reset link to the registered email.
+    Initiate password recovery using Supabase Auth built-in email dispatch.
     """
     email = req.email.lower().strip()
     if not email:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email address is required")
 
     client = get_supabase()
-    db_user = None
     if client:
         try:
-            res = client.table("users").select("user_id, email, is_active").ilike("email", email).execute()
-            if res.data:
-                db_user = res.data[0]
+            # Supabase handles sending the email
+            client.auth.reset_password_for_email(email)
+            logger.info(f"📧 Supabase password reset email requested for {email}")
         except Exception as e:
-            logger.warning(f"User lookup error in forgot_password: {e}")
-
-    if not db_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This email address is not registered in the system."
-        )
-
-    if not db_user.get("is_active", True):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User account is deactivated."
-        )
-
-    try:
-        if client:
-            temp_client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
-            temp_client.auth.reset_password_for_email(email)
-            logger.info(f"📧 Recovery email sent successfully to {email}")
-    except Exception as e:
-        logger.error(f"Supabase auth reset password email error: {e}")
-
-    logger.info(f"📧 Password reset link sent to registered email: {email}")
+            logger.warning(f"Error requesting password reset email for {email}: {e}")
 
     return {
         "success": True,
-        "message": f"Password reset link dispatched to registered email {email}. Check your inbox."
+        "message": f"If an account exists for {email}, a password reset link has been sent."
     }
 
 
 @router.post("/reset-password")
 async def reset_password(req: ResetPasswordRequest):
     """
-    Directly update user password in Supabase Auth for registered email.
+    Verify 6-digit OTP and securely update user password.
     """
     email = req.email.lower().strip()
+    otp = req.otp.strip()
     new_password = req.new_password.strip()
 
-    if not email or not new_password:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Registered email and new password are required")
+    if not email or not otp or not new_password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email, OTP, and new password are required")
 
-    if len(new_password) < 6:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Password must be at least 6 characters long")
+    # Validate password complexity (6+ chars, uppercase, number, special char)
+    validate_password_complexity(new_password)
+
+    from backend.db.redis_client import safe_get
+    stored_otp_raw = await safe_get(f"rll:otp:{email}")
+    if not stored_otp_raw:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired OTP code. Please request a new password reset code."
+        )
+
+    try:
+        stored_data = json.loads(stored_otp_raw)
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP state.")
+
+    if stored_data.get("attempts", 0) >= 3:
+        await safe_delete(f"rll:otp:{email}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Maximum OTP verification attempts exceeded. Please request a new code."
+        )
+
+    provided_hash = hashlib.sha256(otp.encode()).hexdigest()
+    if provided_hash != stored_data.get("hash"):
+        stored_data["attempts"] = stored_data.get("attempts", 0) + 1
+        await safe_set(f"rll:otp:{email}", json.dumps(stored_data), ttl=600)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Incorrect OTP code. {3 - stored_data['attempts']} attempt(s) remaining."
+        )
 
     client = get_supabase()
     db_user = None
@@ -222,15 +257,11 @@ async def reset_password(req: ResetPasswordRequest):
             detail="This email address is not registered in the system."
         )
 
-    if not db_user.get("is_active", True):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User account is deactivated."
-        )
-
     user_id = str(db_user["user_id"])
     try:
         client.auth.admin.update_user_by_id(user_id, {"password": new_password})
+        # Clear consumed OTP from Redis
+        await safe_delete(f"rll:otp:{email}")
         logger.info(f"Password updated successfully in Supabase Auth for {email}")
     except Exception as e:
         logger.error(f"Error updating user password in Supabase Auth: {e}")
@@ -242,6 +273,23 @@ async def reset_password(req: ResetPasswordRequest):
     return {
         "success": True,
         "message": "Password reset successfully. You can now log in with your new password."
+    }
+
+
+@router.post("/revoke-user/{target_user_id}")
+async def revoke_user_sessions(
+    target_user_id: str,
+    current_user: dict = Depends(RoleChecker(["admin", "super_admin"]))
+):
+    """
+    Instantly revoke all active sessions for a target user (Admin only).
+    Forces active mobile and web users to be logged out immediately.
+    """
+    await safe_set(f"rll:revoked:{target_user_id}", "true", ttl=86400 * 30)
+    logger.info(f"Admin {current_user.get('email')} revoked all sessions for user {target_user_id}")
+    return {
+        "success": True,
+        "message": f"User session for {target_user_id} revoked successfully."
     }
 
 

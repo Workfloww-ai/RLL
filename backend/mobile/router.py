@@ -881,6 +881,17 @@ async def get_mobile_sales(
     t_auth_start = time.perf_counter()
     user_role = (current_user.get("role_name") or current_user.get("role") or "").lower()
     user_id = current_user.get("user_id")
+    
+    # Apply Data Visibility Toggle
+    from backend.db.redis_client import safe_get
+    restriction_setting = await safe_get("rll:setting:tsm_ase_data_restriction_enabled")
+    is_restricted = str(restriction_setting).strip().lower() != "false" # Defaults to true
+    
+    if not is_restricted and user_role in ["tsm", "ase", "territory executive"]:
+        # When restriction is OFF, TSM/ASE behave like Leaders
+        logger.info(f"Data restriction OFF: Upgrading role of {user_id} from {user_role} to leader")
+        user_role = "leader"
+        
     t_auth_end = time.perf_counter()
     auth_duration_ms = round((t_auth_end - t_auth_start) * 1000, 2)
 

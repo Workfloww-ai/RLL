@@ -21,7 +21,9 @@ import {
 
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { AppState, AppStateStatus } from 'react-native';
 import { logger } from './src/lib/logger';
+import { secureStorage } from './src/lib/secureStorage';
 
 import { Company, Period, ViewMode } from './src/types';
 import { formatNumber } from './src/lib/utils';
@@ -34,6 +36,7 @@ import {
   clearAuthSession,
   clearAllPhoneCaches,
   hydratePersistentCache,
+  registerSessionRevokedListener,
 } from './src/lib/api';
 
 import { Header } from './src/features/dashboard/Header';
@@ -173,15 +176,42 @@ export default function App() {
     StatusBar.setBarStyle('dark-content');
   }, []);
 
+  // Register central session revocation callback (forces instant exit on 401/403)
+  useEffect(() => {
+    registerSessionRevokedListener(() => {
+      logger.warn('App: Session revoked listener triggered. Resetting user state to null.');
+      setUser(null);
+    });
+  }, []);
+
+  // Monitor AppState to perform background -> foreground session health-check
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
+      if (nextAppState === 'active' && user) {
+        logger.info('App: Foregrounded. Validating session health with server...');
+        fetchUserProfile().then((profile) => {
+          if (!profile) {
+            logger.warn('App: Foreground health-check failed (session revoked/expired). Resetting user state.');
+            setUser(null);
+          }
+        });
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [user]);
+
   // Load active session on mount with smooth splash screen timing
   useEffect(() => {
     async function loadSession() {
       const startTime = Date.now();
       try {
-        logger.info('App: Checking for active user session in AsyncStorage...');
+        logger.info('App: Checking for active user session in hardware-backed secureStorage...');
         await hydratePersistentCache();
-        const cachedUser = await AsyncStorage.getItem('rll_mobile_user');
-        const token = await AsyncStorage.getItem('rll_mobile_token');
+        const cachedUser = await secureStorage.getItem('rll_mobile_user');
+        const token = await secureStorage.getItem('rll_mobile_token');
         if (cachedUser && token) {
           logger.info(`App: Found active session for user: ${JSON.parse(cachedUser).email}`);
           setPeriod('Daily');
@@ -193,7 +223,7 @@ export default function App() {
           logger.info('App: No active session found. Showing LoginScreen.');
         }
       } catch (e) {
-        logger.error('App: Error reading auth session from AsyncStorage:', e);
+        logger.error('App: Error reading auth session from secureStorage:', e);
       } finally {
         const elapsedTime = Date.now() - startTime;
         const remaining = Math.max(0, 1200 - elapsedTime);
