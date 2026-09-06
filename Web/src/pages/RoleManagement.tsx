@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Shield, Plus, Trash2, CheckCircle, XCircle } from 'lucide-react';
+import { Shield, Plus, Edit2, Trash2, CheckCircle2, Save, X } from 'lucide-react';
 import { API_BASE_URL } from '../config';
 import { useToast } from '../contexts/ToastContext';
+import { secureFetch } from '../lib/apiClient';
 
 interface Role {
   role_id: string;
@@ -26,7 +27,7 @@ export default function RoleManagement() {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`${API_BASE_URL}/users/roles`, {
+      const res = await secureFetch(`${API_BASE_URL}/users/roles`, {
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
       if (res.ok) {
@@ -47,7 +48,7 @@ export default function RoleManagement() {
     
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`${API_BASE_URL}/users/roles/${role.role_id}`, {
+      const res = await secureFetch(`${API_BASE_URL}/users/roles/${role.role_id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -73,7 +74,7 @@ export default function RoleManagement() {
     
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`${API_BASE_URL}/users/roles/${roleId}`, {
+      const res = await secureFetch(`${API_BASE_URL}/users/roles/${roleId}`, {
         method: 'DELETE',
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
@@ -93,7 +94,7 @@ export default function RoleManagement() {
     e.preventDefault();
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`${API_BASE_URL}/users/roles`, {
+      const res = await secureFetch(`${API_BASE_URL}/users/roles`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

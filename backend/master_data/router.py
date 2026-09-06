@@ -9,13 +9,14 @@ from backend.master_data.schemas import (
 )
 from backend.db.redis_client import safe_get, safe_set, safe_delete
 from backend.core.security import get_current_user, RoleChecker
+from backend.core.route import EncryptedRoute
 
 logger = logging.getLogger(__name__)
 
 admin_only = RoleChecker(["admin", "super_admin"])
 authenticated = Depends(get_current_user)
 
-router = APIRouter(prefix="/master-data", tags=["Master Data"], dependencies=[authenticated])
+router = APIRouter(prefix="/master-data", tags=["Master Data"], dependencies=[authenticated], route_class=EncryptedRoute)
 
 
 async def invalidate_master_and_user_caches():

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { LogIn, Mail, ArrowLeft, CheckCircle2, Lock, Send, KeyRound, Eye, EyeOff, ShieldCheck, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { API_BASE_URL } from '../config';
+import { secureFetch } from '../lib/apiClient';
 
 interface LoginProps {
   onLogin: (userName: string) => void;
@@ -63,7 +64,7 @@ export default function Login({ onLogin }: LoginProps) {
     const fallbackName = formattedName || 'User';
 
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/login`, {
+      const response = await secureFetch(`${API_BASE_URL}/auth/login`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -111,7 +112,7 @@ export default function Login({ onLogin }: LoginProps) {
     setSuccessMessage(null);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/forgot-password`, {
+      const response = await secureFetch(`${API_BASE_URL}/auth/forgot-password`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -155,7 +156,7 @@ export default function Login({ onLogin }: LoginProps) {
     setSuccessMessage(null);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/reset-password`, {
+      const response = await secureFetch(`${API_BASE_URL}/auth/reset-password`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

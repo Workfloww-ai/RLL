@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
+import CryptoJS from 'crypto-js';
 import { logger } from './logger';
 import { secureStorage } from './secureStorage';
 
@@ -734,5 +735,94 @@ export async function fetchBrandLicensees(brandId: string, dateFrom?: string, da
     logger.error(`fetchBrandLicensees error for brand ${brandId}:`, error);
     return [];
   }
+}
+
+const ENVIRONMENT = process.env.EXPO_PUBLIC_ENVIRONMENT || 'development';
+const ENCRYPTION_KEY = process.env.EXPO_PUBLIC_PAYLOAD_ENCRYPTION_KEY || '';
+
+export function encryptPayload(data: string): string {
+    if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length !== 64) {
+        logger.error("Invalid EXPO_PUBLIC_PAYLOAD_ENCRYPTION_KEY length.");
+        return data;
+    }
+    try {
+        const key = CryptoJS.enc.Hex.parse(ENCRYPTION_KEY);
+        const iv = CryptoJS.lib.WordArray.random(16);
+        const encrypted = CryptoJS.AES.encrypt(data, key, {
+            iv: iv,
+            mode: CryptoJS.mode.CBC,
+            padding: CryptoJS.pad.Pkcs7
+        });
+        const ivAndCiphertext = iv.clone().concat(encrypted.ciphertext);
+        return CryptoJS.enc.Base64.stringify(ivAndCiphertext);
+    } catch (e) {
+        logger.error("Encryption failed", e);
+        return data;
+    }
+}
+
+export function decryptPayload(encryptedB64: string): string {
+    if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length !== 64) {
+        return encryptedB64;
+    }
+    try {
+        const key = CryptoJS.enc.Hex.parse(ENCRYPTION_KEY);
+        const encryptedWords = CryptoJS.enc.Base64.parse(encryptedB64);
+        
+        const iv = CryptoJS.lib.WordArray.create(encryptedWords.words.slice(0, 4), 16);
+        const ciphertext = CryptoJS.lib.WordArray.create(encryptedWords.words.slice(4), encryptedWords.sigBytes - 16);
+        const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: ciphertext });
+        
+        const decrypted = CryptoJS.AES.decrypt(cipherParams, key, {
+            iv: iv,
+            mode: CryptoJS.mode.CBC,
+            padding: CryptoJS.pad.Pkcs7
+        });
+        return decrypted.toString(CryptoJS.enc.Utf8);
+    } catch (e) {
+        logger.error("Decryption failed", e);
+        return encryptedB64;
+    }
+}
+
+export async function secureApiFetch(endpointPath: string, init?: RequestInit): Promise<Response> {
+    const isProduction = ENVIRONMENT === 'production';
+    const reqInit: RequestInit = { ...(init || {}) };
+    
+    if (isProduction && reqInit.body && typeof reqInit.body === 'string') {
+        const encrypted = encryptPayload(reqInit.body);
+        reqInit.body = JSON.stringify({ encrypted_data: encrypted });
+        
+        const headers = new Headers(reqInit.headers || {});
+        headers.set('Content-Type', 'application/json');
+        reqInit.headers = headers;
+    }
+
+    const response = await apiFetch(endpointPath, reqInit);
+
+    if (isProduction && response.ok) {
+        const contentType = response.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+            const responseClone = response.clone();
+            const text = await responseClone.text();
+            
+            try {
+                const json = JSON.parse(text);
+                if (json.encrypted_data) {
+                    const decryptedStr = decryptPayload(json.encrypted_data);
+                    
+                    return new Response(decryptedStr, {
+                        status: response.status,
+                        statusText: response.statusText,
+                        headers: response.headers
+                    });
+                }
+            } catch (e) {
+                logger.warn("Failed to parse or decrypt response", e);
+            }
+        }
+    }
+
+    return response;
 }
 

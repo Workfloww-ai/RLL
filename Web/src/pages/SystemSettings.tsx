@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Shield, Eye, AlertTriangle, CheckCircle, RefreshCw } from 'lucide-react';
 import { API_BASE_URL } from '../config';
 import { useToast } from '../contexts/ToastContext';
+import { secureFetch } from '../lib/apiClient';
 
 export default function SystemSettings() {
   const [dataRestrictionEnabled, setDataRestrictionEnabled] = useState<boolean | null>(null);
@@ -30,7 +31,7 @@ export default function SystemSettings() {
     try {
       const token = localStorage.getItem('token');
       const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
-      const res = await fetch(`${API_BASE_URL}/master-data/settings`, { 
+      const res = await secureFetch(`${API_BASE_URL}/master-data/settings`, { 
         headers,
         signal: controller.signal
       });
@@ -63,7 +64,7 @@ export default function SystemSettings() {
 
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`${API_BASE_URL}/master-data/settings`, {
+      const res = await secureFetch(`${API_BASE_URL}/master-data/settings`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',

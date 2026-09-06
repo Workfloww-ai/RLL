@@ -5,14 +5,15 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends, status, Response, Request
 from backend.core.security import create_access_token, get_current_user
 from backend.db.client import get_supabase
-from backend.db.redis_client import safe_set, safe_delete
+from backend.db.redis_client import safe_get, safe_set, safe_delete
 from backend.core.config import settings
 from backend.auth.schemas import LoginRequest, TokenResponse, ForgotPasswordRequest, ResetPasswordRequest
 from supabase import create_client
+from backend.core.route import EncryptedRoute
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/auth", tags=["Authentication"])
+router = APIRouter(prefix="/auth", tags=["Authentication"], route_class=EncryptedRoute)
 
 
 import secrets

@@ -5,6 +5,7 @@ from fastapi import APIRouter, File, UploadFile, HTTPException, Depends
 from backend.users.service import user_service
 from backend.db.redis_client import safe_get, safe_set, safe_delete
 from backend.core.security import RoleChecker, get_current_user
+from backend.core.route import EncryptedRoute
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +14,8 @@ admin_only = RoleChecker(["admin", "super_admin"])
 router = APIRouter(
     prefix="/users", 
     tags=["Users & Role Management"],
-    dependencies=[Depends(admin_only)]
+    dependencies=[Depends(admin_only)],
+    route_class=EncryptedRoute
 )
 
 async def invalidate_user_and_territory_caches():

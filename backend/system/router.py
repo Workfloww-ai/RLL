@@ -1,13 +1,13 @@
-from fastapi import APIRouter, Depends, Request, HTTPException
+import logging
 from typing import Optional, Dict, Any
+from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
-from db.supabase_client import get_supabase_client
-from core.security import get_current_user_optional
-from utils.logger import get_logger
+from backend.db.client import get_supabase
+from backend.core.route import EncryptedRoute
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/system", tags=["System"])
+router = APIRouter(prefix="/system", tags=["System"], route_class=EncryptedRoute)
 
 class ErrorLogRequest(BaseModel):
     source: str
@@ -18,14 +18,26 @@ class ErrorLogRequest(BaseModel):
 @router.post("/log-error")
 async def log_error(
     payload: ErrorLogRequest,
-    current_user: Optional[dict] = Depends(get_current_user_optional)
+    request: Request
 ):
     """
     Logs frontend or system errors to the error_logs table in Supabase.
     """
     try:
         client = get_supabase_client()
-        user_id = current_user.get("user_id") if current_user else None
+        user_id = None
+        
+        # Manually extract user_id from token if present, to avoid 401 on anonymous logs
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+            try:
+                import jwt
+                from core.config import settings
+                payload = jwt.decode(token, settings.JWT_SECRET, algorithms=["HS256"], options={"verify_signature": False})
+                user_id = payload.get("user_id") or payload.get("sub")
+            except Exception:
+                pass
         
         insert_data = {
             "source": payload.source,
