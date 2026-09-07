@@ -8,9 +8,12 @@ import DashboardLayout from './components/DashboardLayout';
 import StockUpload from './pages/StockUpload';
 import TerritoryManagement from './pages/TerritoryManagement';
 import HeadcountManagement from './pages/HeadcountManagement';
+import RoleManagement from './pages/RoleManagement';
+import SystemSettings from './pages/SystemSettings';
 import Login from './pages/Login';
 import { ViewState } from './types';
 import { API_BASE_URL } from './config';
+import { logErrorToBackend } from './lib/logger';
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -33,6 +36,12 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     console.error('ErrorBoundary caught an error:', error, errorInfo);
+    logErrorToBackend({
+      source: 'frontend',
+      error_message: error.toString(),
+      stack_trace: errorInfo.componentStack || error.stack,
+      context: { context_source: 'error_boundary' }
+    });
   }
 
   render() {
@@ -72,9 +81,15 @@ export default function App() {
 
   useEffect(() => {
     async function verifySession() {
+      const token = localStorage.getItem('token');
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
       try {
         const res = await fetch(`${API_BASE_URL}/auth/me`, {
           method: 'GET',
+          headers,
           credentials: 'include',
         });
         if (res.ok) {
@@ -87,6 +102,11 @@ export default function App() {
             setIsAuthenticated(true);
             localStorage.setItem('user_name', displayName);
           }
+        } else if (res.status === 401) {
+          setIsAuthenticated(false);
+          setUserName(null);
+          localStorage.removeItem('token');
+          localStorage.removeItem('user_name');
         }
       } catch (err) {
         console.debug('Session verification notice:', err);
@@ -137,6 +157,8 @@ export default function App() {
         {currentView === 'stock' && <StockUpload />}
         {currentView === 'territory' && <TerritoryManagement />}
         {currentView === 'headcount' && <HeadcountManagement />}
+        {currentView === 'roles' && <RoleManagement />}
+        {currentView === 'settings' && <SystemSettings />}
       </DashboardLayout>
     </ErrorBoundary>
   );

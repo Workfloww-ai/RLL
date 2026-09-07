@@ -21,7 +21,9 @@ export default function StockUpload() {
 
   const fetchLatestBatch = async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/uploads/latest`);
+      const token = localStorage.getItem('token');
+      const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+      const res = await fetch(`${API_BASE_URL}/uploads/latest`, { headers });
       if (res.ok) {
         const data = await res.json();
         if (data && data.batch_id) {

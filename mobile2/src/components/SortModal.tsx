@@ -9,37 +9,39 @@ import {
 } from 'react-native';
 import { XIcon } from './Icons';
 
-export type SortOptionValue = 'az' | 'za' | 'cases_desc' | 'cases_asc';
+export type SortOptionValue = string;
 
-export interface SortOptionItem {
+export interface SortOptionItem<T = string> {
   label: string;
-  value: SortOptionValue;
+  value: T;
 }
 
-export interface SortModalProps {
+export interface SortModalProps<T = string> {
   visible: boolean;
   onClose: () => void;
-  selectedOption: SortOptionValue;
-  onSelectOption: (option: SortOptionValue) => void;
-  options?: SortOptionItem[];
+  selectedOption: T;
+  onSelectOption: (option: T) => void;
+  options?: SortOptionItem<T>[];
   scaleFactor?: number;
+  title?: string;
 }
 
-export const DEFAULT_SORT_OPTIONS: SortOptionItem[] = [
+export const DEFAULT_SORT_OPTIONS: SortOptionItem<string>[] = [
   { label: 'Name (A to Z)', value: 'az' },
   { label: 'Name (Z to A)', value: 'za' },
   { label: 'Cases: (High to Low)', value: 'cases_desc' },
   { label: 'Cases: (Low to High)', value: 'cases_asc' },
 ];
 
-export function SortModal({
+export function SortModal<T extends string = string>({
   visible,
   onClose,
   selectedOption,
   onSelectOption,
-  options = DEFAULT_SORT_OPTIONS,
+  options = DEFAULT_SORT_OPTIONS as SortOptionItem<T>[],
   scaleFactor = 1,
-}: SortModalProps) {
+  title = 'Sort By',
+}: SortModalProps<T>) {
   const scaledFontSize = (base: number) => Math.round(base * scaleFactor);
 
   return (
@@ -55,9 +57,9 @@ export function SortModal({
             <View style={styles.modalCard}>
               <View style={styles.header}>
                 <Text style={[styles.headerTitle, { fontSize: scaledFontSize(16) }]}>
-                  Sort By
+                  {title}
                 </Text>
-                <TouchableOpacity onPress={onClose} activeOpacity={0.7}>
+                <TouchableOpacity onPress={onClose} activeOpacity={0.7} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                   <XIcon size={scaledFontSize(18)} color="#64748B" />
                 </TouchableOpacity>
               </View>
@@ -66,7 +68,7 @@ export function SortModal({
                 const isSelected = selectedOption === opt.value;
                 return (
                   <TouchableOpacity
-                    key={opt.value}
+                    key={String(opt.value)}
                     style={[
                       styles.optionRow,
                       isSelected && styles.selectedOptionRow,
@@ -75,7 +77,7 @@ export function SortModal({
                       onSelectOption(opt.value);
                       onClose();
                     }}
-                    activeOpacity={0.7}
+                    activeOpacity={0.75}
                   >
                     <Text
                       style={[
@@ -141,20 +143,20 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   selectedOptionRow: {
-    backgroundColor: '#F0F9FF',
+    backgroundColor: '#EFF6FF',
   },
   optionText: {
     color: '#334155',
     fontWeight: '500',
   },
   selectedOptionText: {
-    color: '#0284C7',
+    color: '#0D3B8E',
     fontWeight: '700',
   },
   radioDot: {
     width: 10,
     height: 10,
     borderRadius: 5,
-    backgroundColor: '#0284C7',
+    backgroundColor: '#0D3B8E',
   },
 });

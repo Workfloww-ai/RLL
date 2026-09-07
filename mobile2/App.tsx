@@ -15,12 +15,15 @@ import {
   RefreshControl,
   NativeSyntheticEvent,
   NativeScrollEvent,
+  Keyboard,
 } from 'react-native';
 
 
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { AppState, AppStateStatus } from 'react-native';
 import { logger } from './src/lib/logger';
+import { secureStorage } from './src/lib/secureStorage';
 
 import { Company, Period, ViewMode } from './src/types';
 import { formatNumber } from './src/lib/utils';
@@ -33,6 +36,7 @@ import {
   clearAuthSession,
   clearAllPhoneCaches,
   hydratePersistentCache,
+  registerSessionRevokedListener,
 } from './src/lib/api';
 
 import { Header } from './src/features/dashboard/Header';
@@ -46,6 +50,9 @@ import { TsmView } from './src/features/dashboard/TsmView';
 import { BrandModal } from './src/features/dashboard/BrandModal';
 import { LoginScreen } from './src/features/auth/LoginScreen';
 import { ProfileScreen } from './src/features/profile/ProfileScreen';
+import { SplashScreen } from './src/components/SplashScreen';
+import { SearchBar } from './src/components/SearchBar';
+import { SortModal, SortOptionItem } from './src/components/SortModal';
 import {
   XIcon,
   SearchIcon,
@@ -61,6 +68,23 @@ import {
 export type CompanySortOption = 'az' | 'za' | 'cases_desc' | 'cases_asc';
 
 export default function App() {
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      () => setIsKeyboardVisible(true)
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => setIsKeyboardVisible(false)
+    );
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
   const [user, setUser] = useState<any>(null);
   const [loadingSession, setLoadingSession] = useState(true);
   const [period, setPeriod] = useState<Period>('Daily');
@@ -152,17 +176,45 @@ export default function App() {
   const scaleFactor = 1;
 
   useEffect(() => {
-    StatusBar.setBarStyle('light-content');
+    StatusBar.setBarStyle('dark-content');
   }, []);
 
-  // Load active session on mount
+  // Register central session revocation callback (forces instant exit on 401/403)
+  useEffect(() => {
+    registerSessionRevokedListener(() => {
+      logger.warn('App: Session revoked listener triggered. Resetting user state to null.');
+      setUser(null);
+    });
+  }, []);
+
+  // Monitor AppState to perform background -> foreground session health-check
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
+      if (nextAppState === 'active' && user) {
+        logger.info('App: Foregrounded. Validating session health with server...');
+        fetchUserProfile().then((profile) => {
+          if (!profile) {
+            logger.warn('App: Foreground health-check failed (session revoked/expired). Resetting user state.');
+            setUser(null);
+          }
+        });
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [user]);
+
+  // Load active session on mount with smooth splash screen timing
   useEffect(() => {
     async function loadSession() {
+      const startTime = Date.now();
       try {
-        logger.info('App: Checking for active user session in AsyncStorage...');
+        logger.info('App: Checking for active user session in hardware-backed secureStorage...');
         await hydratePersistentCache();
-        const cachedUser = await AsyncStorage.getItem('rll_mobile_user');
-        const token = await AsyncStorage.getItem('rll_mobile_token');
+        const cachedUser = await secureStorage.getItem('rll_mobile_user');
+        const token = await secureStorage.getItem('rll_mobile_token');
         if (cachedUser && token) {
           logger.info(`App: Found active session for user: ${JSON.parse(cachedUser).email}`);
           setPeriod('Daily');
@@ -174,9 +226,13 @@ export default function App() {
           logger.info('App: No active session found. Showing LoginScreen.');
         }
       } catch (e) {
-        logger.error('App: Error reading auth session from AsyncStorage:', e);
+        logger.error('App: Error reading auth session from secureStorage:', e);
       } finally {
-        setLoadingSession(false);
+        const elapsedTime = Date.now() - startTime;
+        const remaining = Math.max(0, 1200 - elapsedTime);
+        setTimeout(() => {
+          setLoadingSession(false);
+        }, remaining);
       }
     }
     loadSession();
@@ -389,7 +445,8 @@ export default function App() {
     });
   }, [searchQuery, apiData]);
 
-  // Sort companies cleanly
+  // Sort companies: Default A-Z view pins RLL (#1) & Diageo (#2) at top.
+  // Explicit sort modes (volume_desc, volume_asc, name_desc) sort ALL companies purely by metric.
   const sortedCompanies = useMemo(() => {
     const list = [...filteredCompanies];
 
@@ -452,6 +509,7 @@ export default function App() {
       if (rankA !== rankB) {
         return rankA - rankB;
       }
+
       return a.name.localeCompare(b.name);
     });
 
@@ -575,11 +633,7 @@ export default function App() {
   );
 
   if (loadingSession) {
-    return (
-      <View style={[styles.appContainer, styles.center]}>
-        <Text style={styles.loadingText}>Loading Session...</Text>
-      </View>
-    );
+    return <SplashScreen />;
   }
 
   return (
@@ -752,8 +806,10 @@ export default function App() {
               </TouchableOpacity>
             </Modal>
 
-            {/* Bottom nav tabs */}
-            <FooterNav viewMode={viewMode} setViewMode={handleTabChange} />
+            {/* Bottom nav tabs (hidden when keyboard is open) */}
+            {!isKeyboardVisible && (
+              <FooterNav viewMode={viewMode} setViewMode={handleTabChange} />
+            )}
 
             {/* No Data Found Centered Modal Popup */}
             <NoDataModal
@@ -795,7 +851,7 @@ export default function App() {
 const styles = StyleSheet.create({
   appContainer: {
     flex: 1,
-    backgroundColor: '#0A1128',
+    backgroundColor: '#FFFFFF',
   },
   center: {
     justifyContent: 'center',
@@ -828,7 +884,7 @@ const styles = StyleSheet.create({
     width: 7,
     height: 7,
     borderRadius: 4,
-    backgroundColor: '#2563EB',
+    backgroundColor: '#0D3B8E',
     marginRight: 8,
   },
   indicatorLabel: {
@@ -867,6 +923,11 @@ const styles = StyleSheet.create({
     paddingTop: 0,
     paddingBottom: 24,
   },
+  companiesTabWrapper: {
+    flex: 1,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+  },
   headerControlsContainer: {
     paddingHorizontal: 12,
     paddingVertical: 8,
@@ -891,9 +952,10 @@ const styles = StyleSheet.create({
   searchInput: {
     flex: 1,
     fontSize: 13,
+    fontWeight: '500',
     color: '#0F172A',
-    fontWeight: '600',
     paddingVertical: 0,
+    margin: 0,
   },
   clearBtn: {
     padding: 4,

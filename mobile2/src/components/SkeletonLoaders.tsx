@@ -234,6 +234,19 @@ const styles = StyleSheet.create({
   skeletonContainer: {
     width: '100%',
   },
+  cardCompact: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    marginBottom: 8,
+    height: 70,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
   card: {
     backgroundColor: '#FFFFFF',
     borderRadius: 16,

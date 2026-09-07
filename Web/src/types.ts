@@ -1,4 +1,4 @@
-export type ViewState = 'stock' | 'territory' | 'headcount';
+export type ViewState = 'stock' | 'territory' | 'headcount' | 'roles' | 'settings';
 
 export interface FileUploadState {
   status: 'idle' | 'uploading' | 'processing' | 'success' | 'error';

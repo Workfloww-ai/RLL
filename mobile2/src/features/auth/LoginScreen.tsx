@@ -9,18 +9,16 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  Image,
 } from 'react-native';
 import {
-  KeyIcon,
   RefreshIcon,
   EditIcon,
   CheckCircleIcon,
+  ShieldAlertIcon,
   ArrowRightIcon,
 } from '../../components/Icons';
 
 import LogoSvg from '../../assets/rll logo.svg';
-
 import { sendMobileOTP, verifyMobileOTP } from '../../lib/api';
 import { logger } from '../../lib/logger';
 
@@ -35,6 +33,8 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  const [phoneFocused, setPhoneFocused] = useState(false);
+  const [focusedOtpIndex, setFocusedOtpIndex] = useState<number | null>(null);
 
   const inputRefs = [
     useRef<any>(null),
@@ -60,6 +60,11 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
       return;
     }
 
+    if (phone.trim().length < 10) {
+      setError('Please enter a valid 10-digit phone number');
+      return;
+    }
+
     setLoading(true);
     setError('');
     setSuccessMessage('');
@@ -70,7 +75,7 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
       if (res && res.success) {
         logger.info(`LoginScreen: OTP requested successfully. Advancing to verification step.`);
         setStep('otp');
-        setSuccessMessage(`6-digit OTP sent to ${phone.trim()}`);
+        setSuccessMessage(`6-digit code sent to +91 ${phone.trim()}`);
       } else {
         logger.warn(`LoginScreen: Server response success false on OTP request: ${res.message}`);
         setError(res.message || 'Failed to send OTP verification code');
@@ -119,7 +124,7 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         onLoginSuccess(res.user);
       } else {
         logger.warn('LoginScreen: Verification response does not contain user profile details.');
-        setError('Invalid OTP verification code');
+        setError('Invalid OTP verification code. Please try again.');
       }
     } catch (err: any) {
       logger.error('LoginScreen: Exception during OTP verification:', err);
@@ -137,156 +142,169 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
       >
         <View style={styles.container}>
-          {/* Top Branding Header */}
+          {/* Header Branding */}
           <View style={styles.brandingHeader}>
-            <LogoSvg
-              width={80}
-              height={80}
-              style={styles.logoImage}
-            />
-            <Text style={styles.titleText}>RLL Sales Dashboard</Text>
-            <Text style={styles.subtitleText}>Rajasthan Liquor Limited</Text>
+            <LogoSvg width={76} height={76} style={styles.logoImage} />
+            <Text style={styles.titleText}>LucidX360</Text>
+            <Text style={styles.subtitleText}>RAJASTHAN LIQUOR LIMITED</Text>
           </View>
 
-          {/* STEP 1: Phone Input Form */}
-          {step === 'credentials' && (
-            <View style={styles.formCard}>
-              <View style={styles.formHeader}>
-                <Text style={styles.formTitle}>Sign In</Text>
-                {/* <Text style={styles.formBadge}>SMS OTP Auth</Text> */}
-              </View>
+          {/* Minimalist Card Box */}
+          <View style={styles.cardBox}>
+            {/* STEP 1: Phone Input */}
+            {step === 'credentials' && (
+              <View style={styles.stepBlock}>
+                <Text style={styles.stepTitle}>Sign In</Text>
+                <Text style={styles.stepSubtitle}>Enter your registered mobile number</Text>
 
-              {error ? (
-                <View style={styles.errorBanner}>
-                  <Text style={styles.errorText}>{error}</Text>
-                </View>
-              ) : null}
-
-              <View style={styles.inputGroup}>
-                <Text style={styles.label}>Mobile Phone Number</Text>
-                <View style={styles.inputWrapper}>
-                  <TextInput
-                    style={styles.textInput}
-                    placeholder="Enter Mobile Number"
-                    placeholderTextColor="#94A3B8"
-                    keyboardType="phone-pad"
-                    value={phone}
-                    onChangeText={setPhone}
-                  />
-                </View>
-              </View>
-
-              <TouchableOpacity
-                style={styles.button}
-                onPress={handleSendOTP}
-                disabled={loading}
-              >
-                {loading ? (
-                  <ActivityIndicator color="#FFFFFF" size="small" />
-                ) : (
-                  <View style={styles.buttonInner}>
-                    <Text style={styles.buttonText}>Get OTP</Text>
-                    <ArrowRightIcon color="#FFFFFF" size={14} />
+                {error ? (
+                  <View style={styles.errorBanner}>
+                    <ShieldAlertIcon size={15} color="#DC2626" />
+                    <Text style={styles.errorText}>{error}</Text>
                   </View>
-                )}
-              </TouchableOpacity>
-            </View>
-          )}
+                ) : null}
 
-          {/* STEP 2: 6-Digit OTP Verification Form */}
-          {step === 'otp' && (
-            <View style={styles.formCard}>
-              <View style={styles.otpHeader}>
-                {/* <View style={styles.otpIconCircle}>
-                  <KeyIcon color="#F59E0B" size={24} />
-                </View> */}
-                <Text style={styles.otpTitle}>Enter Verification Code</Text>
-                <Text style={styles.otpSubtitle}>
-                  OTP sent to <Text style={styles.highlightPhone}>{phone}</Text>
-                </Text>
-                <View style={styles.validBadge}>
-                  {/* <CheckCircleIcon color="#10B981" size={12} /> */}
-                  <Text style={styles.validText}>Valid for 5 minutes</Text>
-                </View>
-              </View>
-
-              {error ? (
-                <View style={styles.errorBanner}>
-                  <Text style={styles.errorText}>{error}</Text>
-                </View>
-              ) : null}
-
-              {successMessage ? (
-                <View style={styles.successBanner}>
-                  <Text style={styles.successText}>{successMessage}</Text>
-                </View>
-              ) : null}
-
-              {/* 6-Digit Input Box Grid */}
-              <View style={styles.otpGrid}>
-                {otpDigits.map((digit, index) => (
-                  <TextInput
-                    key={index}
-                    ref={inputRefs[index]}
-                    style={styles.otpInput}
-                    keyboardType="numeric"
-                    maxLength={1}
-                    value={digit}
-                    onChangeText={(val) => handleOtpChange(index, val)}
-                    onKeyPress={({ nativeEvent }) => handleKeyPress(index, nativeEvent.key)}
-                  />
-                ))}
-              </View>
-
-              <TouchableOpacity
-                style={[
-                  styles.button,
-                  otpDigits.join('').length !== 6 ? styles.buttonDisabled : null,
-                ]}
-                onPress={handleVerifyOTP}
-                disabled={loading || otpDigits.join('').length !== 6}
-              >
-                {loading ? (
-                  <ActivityIndicator color="#FFFFFF" size="small" />
-                ) : (
-                  <View style={styles.buttonInner}>
-                    <Text style={styles.buttonText}>Verify OTP & Sign In</Text>
-                    <ArrowRightIcon color="#FFFFFF" size={14} />
+                <View style={styles.inputGroup}>
+                  <Text style={styles.label}>MOBILE NUMBER</Text>
+                  <View
+                    style={[
+                      styles.inputWrapper,
+                      phoneFocused ? styles.inputWrapperFocused : null,
+                    ]}
+                  >
+                    <View style={styles.prefixPill}>
+                      <Text style={styles.prefixText}>+91</Text>
+                    </View>
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="98765 43210"
+                      placeholderTextColor="#94A3B8"
+                      keyboardType="phone-pad"
+                      maxLength={10}
+                      value={phone}
+                      onChangeText={setPhone}
+                      onFocus={() => setPhoneFocused(true)}
+                      onBlur={() => setPhoneFocused(false)}
+                    />
                   </View>
-                )}
-              </TouchableOpacity>
+                </View>
 
-              <View style={styles.otpActions}>
+                <TouchableOpacity
+                  style={[
+                    styles.submitButton,
+                    (!phone.trim() || phone.trim().length < 10) ? styles.submitButtonDisabled : null,
+                  ]}
+                  onPress={handleSendOTP}
+                  disabled={loading || !phone.trim() || phone.trim().length < 10}
+                  activeOpacity={0.8}
+                >
+                  {loading ? (
+                    <ActivityIndicator color="#FFFFFF" size="small" />
+                  ) : (
+                    <View style={styles.buttonInner}>
+                      <Text style={styles.buttonText}>Get OTP</Text>
+                      <ArrowRightIcon color="#FFFFFF" size={14} />
+                    </View>
+                  )}
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* STEP 2: OTP Input (Non-Redundant Modern UI) */}
+            {step === 'otp' && (
+              <View style={styles.stepBlock}>
+                <Text style={styles.stepTitle}>Verification Code</Text>
+                
+                {/* Single Combined Phone Line with Inline Edit */}
+                <View style={styles.phoneLineRow}>
+                  <Text style={styles.phoneLineText}>Sent to +91 {phone}</Text>
+                  <TouchableOpacity
+                    onPress={() => {
+                      setStep('credentials');
+                      setOtpDigits(['', '', '', '', '', '']);
+                      setError('');
+                      setSuccessMessage('');
+                    }}
+                    style={styles.inlineEditBtn}
+                    activeOpacity={0.7}
+                  >
+                    <EditIcon size={12} color="#0D3B8E" />
+                    <Text style={styles.inlineEditText}>Edit</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {error ? (
+                  <View style={styles.errorBanner}>
+                    <ShieldAlertIcon size={15} color="#DC2626" />
+                    <Text style={styles.errorText}>{error}</Text>
+                  </View>
+                ) : null}
+
+                {/* 6-Digit OTP Box Grid */}
+                <View style={styles.otpGrid}>
+                  {otpDigits.map((digit, index) => {
+                    const isFocused = focusedOtpIndex === index;
+                    const isFilled = Boolean(digit);
+                    return (
+                      <TextInput
+                        key={index}
+                        ref={inputRefs[index]}
+                        style={[
+                          styles.otpBox,
+                          isFilled ? styles.otpBoxFilled : null,
+                          isFocused ? styles.otpBoxFocused : null,
+                        ]}
+                        keyboardType="numeric"
+                        maxLength={1}
+                        value={digit}
+                        onChangeText={(val) => handleOtpChange(index, val)}
+                        onKeyPress={({ nativeEvent }) => handleKeyPress(index, nativeEvent.key)}
+                        onFocus={() => setFocusedOtpIndex(index)}
+                        onBlur={() => setFocusedOtpIndex(null)}
+                      />
+                    );
+                  })}
+                </View>
+
+                <TouchableOpacity
+                  style={[
+                    styles.submitButton,
+                    otpDigits.join('').length !== 6 ? styles.submitButtonDisabled : null,
+                  ]}
+                  onPress={handleVerifyOTP}
+                  disabled={loading || otpDigits.join('').length !== 6}
+                  activeOpacity={0.8}
+                >
+                  {loading ? (
+                    <ActivityIndicator color="#FFFFFF" size="small" />
+                  ) : (
+                    <View style={styles.buttonInner}>
+                      <Text style={styles.buttonText}>Verify OTP</Text>
+                      <ArrowRightIcon color="#FFFFFF" size={14} />
+                    </View>
+                  )}
+                </TouchableOpacity>
+
+                {/* Streamlined Resend Button */}
                 <TouchableOpacity
                   onPress={handleSendOTP}
-                  style={styles.actionBtn}
+                  disabled={loading}
+                  style={styles.resendLinkBtn}
+                  activeOpacity={0.7}
                 >
-                  <RefreshIcon color="#0F2042" size={12} />
-                  <Text style={styles.actionText}>Resend OTP</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  onPress={() => {
-                    setStep('credentials');
-                    setOtpDigits(['', '', '', '', '', '']);
-                    setError('');
-                    setSuccessMessage('');
-                  }}
-                  style={styles.actionBtn}
-                >
-                  {/* <EditIcon color="#0F2042" size={12} /> */}
-                  <Text style={styles.actionText}>Edit Phone</Text>
+                  <RefreshIcon color="#0D3B8E" size={12} />
+                  <Text style={styles.resendLinkText}>Resend Code</Text>
                 </TouchableOpacity>
               </View>
-            </View>
-          )}
+            )}
+          </View>
 
-          {/* Footer Info */}
+          {/* Minimalist Footer */}
           <View style={styles.footer}>
             <Text style={styles.footerText}>Powered by Workfloww.ai</Text>
-            {/* <Text style={styles.footerVersion}>v1.0 Enterprise Mobile Release</Text> */}
           </View>
         </View>
       </ScrollView>
@@ -297,7 +315,7 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
 const styles = StyleSheet.create({
   keyboardContainer: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#FAFAFA',
   },
   scrollContent: {
     flexGrow: 1,
@@ -306,239 +324,210 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     justifyContent: 'space-between',
-    padding: 24,
+    paddingHorizontal: 24,
     paddingTop: Platform.OS === 'ios' ? 60 : 40,
-    paddingBottom: 20,
+    paddingBottom: 24,
   },
   brandingHeader: {
     alignItems: 'center',
-    marginTop: 20,
+    marginTop: 12,
+    marginBottom: 8,
   },
   logoImage: {
-    width: 80,
-    height: 80,
     marginBottom: 12,
   },
   titleText: {
-    fontSize: 20,
-    fontWeight: '900',
-    color: '#0F2042',
-    letterSpacing: -0.5,
+    fontSize: 26,
+    fontWeight: '800',
+    color: '#0D3B8E',
+    letterSpacing: -0.3,
   },
   subtitleText: {
-    fontSize: 12,
+    fontSize: 10,
+    fontWeight: '600',
     color: '#64748B',
+    letterSpacing: 2,
     marginTop: 4,
     textAlign: 'center',
   },
-  formCard: {
+  cardBox: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 24,
+    borderRadius: 20,
     padding: 24,
-    marginVertical: 24,
+    marginVertical: 16,
     borderWidth: 1,
-    borderColor: '#F1F5F9',
-    shadowColor: '#0F2042',
-    shadowOffset: { width: 0, height: 8 },
+    borderColor: '#E2E8F0',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.03,
-    shadowRadius: 16,
-    elevation: 2,
+    shadowRadius: 12,
   },
-  formHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
-    paddingBottom: 12,
+  stepBlock: {
+    width: '100%',
+  },
+  stepTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  stepSubtitle: {
+    fontSize: 13,
+    color: '#64748B',
+    marginTop: 4,
     marginBottom: 20,
   },
-  formTitle: {
-    fontSize: 13,
-    fontWeight: 'bold',
-    color: '#0F2042',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
+  phoneLineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 4,
+    marginBottom: 20,
   },
-  formBadge: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: '#F59E0B',
+  phoneLineText: {
+    fontSize: 13,
+    color: '#64748B',
+  },
+  inlineEditBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: '#F0F4FF',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  inlineEditText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#0D3B8E',
   },
   errorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     backgroundColor: '#FEF2F2',
     borderColor: '#FCA5A5',
     borderWidth: 1,
-    borderRadius: 12,
-    padding: 10,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     marginBottom: 16,
   },
   errorText: {
-    color: '#991B1B',
+    color: '#DC2626',
     fontSize: 12,
-    textAlign: 'center',
     fontWeight: '500',
-  },
-  successBanner: {
-    backgroundColor: '#ECFDF5',
-    borderColor: '#A7F3D0',
-    borderWidth: 1,
-    borderRadius: 12,
-    padding: 10,
-    marginBottom: 16,
-  },
-  successText: {
-    color: '#065F46',
-    fontSize: 12,
-    textAlign: 'center',
-    fontWeight: '500',
+    flex: 1,
   },
   inputGroup: {
     marginBottom: 20,
   },
   label: {
     fontSize: 11,
-    fontWeight: 'bold',
+    fontWeight: '700',
     color: '#64748B',
-    textTransform: 'uppercase',
-    marginBottom: 6,
-    letterSpacing: 0.5,
+    letterSpacing: 0.8,
+    marginBottom: 8,
   },
   inputWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#F8FAFC',
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    borderRadius: 14,
-    paddingHorizontal: 16,
-    height: 52,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    height: 48,
+  },
+  inputWrapperFocused: {
+    borderColor: '#0D3B8E',
+    backgroundColor: '#FFFFFF',
+  },
+  prefixPill: {
+    paddingRight: 8,
+    borderRightWidth: 1,
+    borderRightColor: '#CBD5E1',
+    marginRight: 10,
+  },
+  prefixText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0D3B8E',
   },
   textInput: {
     flex: 1,
-    color: '#0F2042',
-    fontSize: 15,
-    fontWeight: '500',
+    color: '#0F172A',
+    fontSize: 16,
+    fontWeight: '600',
     height: '100%',
+    paddingVertical: 0,
   },
-  button: {
-    backgroundColor: '#0F2042',
-    borderRadius: 14,
-    height: 52,
+  submitButton: {
+    backgroundColor: '#0D3B8E',
+    borderRadius: 12,
+    height: 48,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 12,
   },
-  buttonDisabled: {
+  submitButtonDisabled: {
     opacity: 0.5,
   },
   buttonInner: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 6,
   },
   buttonText: {
     color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: 'bold',
-    marginRight: 6,
-  },
-  otpHeader: {
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  otpIconCircle: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: '#FEF3C7',
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 10,
-  },
-  otpTitle: {
-    fontSize: 15,
-    fontWeight: 'bold',
-    color: '#0F2042',
-  },
-  otpSubtitle: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 4,
-  },
-  highlightPhone: {
-    fontWeight: 'bold',
-    color: '#0F2042',
-  },
-  validBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#ECFDF5',
-    borderColor: '#A7F3D0',
-    borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    marginTop: 8,
-  },
-  validText: {
-    color: '#059669',
-    fontSize: 10,
-    fontWeight: '600',
-    marginLeft: 4,
+    fontSize: 14,
+    fontWeight: '700',
   },
   otpGrid: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 24,
+    marginBottom: 20,
   },
-  otpInput: {
-    width: 44,
-    height: 52,
+  otpBox: {
+    width: 42,
+    height: 48,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    borderRadius: 12,
-    backgroundColor: '#FFFFFF',
-    color: '#0F2042',
+    borderRadius: 10,
+    backgroundColor: '#F8FAFC',
+    color: '#0F172A',
     fontSize: 18,
-    fontWeight: '600',
+    fontWeight: '800',
     textAlign: 'center',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.02,
-    shadowRadius: 4,
-    elevation: 1,
   },
-  otpActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
-    paddingTop: 16,
-    marginTop: 16,
+  otpBoxFilled: {
+    borderColor: '#0D3B8E',
+    backgroundColor: '#F0F4FF',
+    color: '#0D3B8E',
   },
-  actionBtn: {
+  otpBoxFocused: {
+    borderColor: '#0D3B8E',
+    backgroundColor: '#FFFFFF',
+  },
+  resendLinkBtn: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    marginTop: 16,
+    paddingVertical: 4,
   },
-  actionText: {
-    color: '#0F2042',
-    fontSize: 11,
-    fontWeight: '600',
-    marginLeft: 4,
+  resendLinkText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0D3B8E',
   },
   footer: {
     alignItems: 'center',
+    marginTop: 8,
   },
   footerText: {
     color: '#94A3B8',
-    fontSize: 10,
-  },
-  footerVersion: {
-    color: '#CBD5E1',
-    fontSize: 9,
-    marginTop: 2,
+    fontSize: 11,
+    fontWeight: '500',
   },
 });

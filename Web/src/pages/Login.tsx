@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { LogIn, Mail, ArrowLeft, CheckCircle2, Lock, Send, KeyRound, Eye, EyeOff, ShieldCheck, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { API_BASE_URL } from '../config';
+import { secureFetch } from '../lib/apiClient';
 
 interface LoginProps {
   onLogin: (userName: string) => void;
@@ -63,7 +64,7 @@ export default function Login({ onLogin }: LoginProps) {
     const fallbackName = formattedName || 'User';
 
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/login`, {
+      const response = await secureFetch(`${API_BASE_URL}/auth/login`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -111,7 +112,7 @@ export default function Login({ onLogin }: LoginProps) {
     setSuccessMessage(null);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/forgot-password`, {
+      const response = await secureFetch(`${API_BASE_URL}/auth/forgot-password`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -155,7 +156,7 @@ export default function Login({ onLogin }: LoginProps) {
     setSuccessMessage(null);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/reset-password`, {
+      const response = await secureFetch(`${API_BASE_URL}/auth/reset-password`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -487,12 +488,6 @@ export default function Login({ onLogin }: LoginProps) {
               </motion.form>
             )}
           </AnimatePresence>
-        </div>
-
-        {/* Security Glass Badge */}
-        <div className="mt-6 text-center text-[11px] text-slate-600 font-medium flex items-center justify-center gap-1.5 backdrop-blur-md py-1.5 px-4 rounded-full bg-white/50 border border-white/70 mx-auto w-fit shadow-xs">
-          <ShieldCheck className="w-3.5 h-3.5 text-[#0D3B8E]" />
-          <span>Rajasthan State Enterprise Portal • 256-Bit Encrypted</span>
         </div>
       </motion.div>
     </div>

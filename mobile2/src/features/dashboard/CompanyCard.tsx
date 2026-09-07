@@ -23,11 +23,15 @@ export const CompanyCard = React.memo(function CompanyCard({
   const cases = Math.round((rawData.cases ?? company.cases ?? 0) * scaleFactor);
   const bottles = Math.round((rawData.bottles ?? company.bottles ?? 0) * scaleFactor);
 
+  const cId = (company.id || '').toLowerCase();
+  const cName = (company.name || '').toLowerCase();
+  const isPinned = company.isPinned || cId === 'rll' || cName === 'rll' || cName.startsWith('rll') || cId.includes('diageo') || cName.includes('diageo');
+
   return (
     <TouchableOpacity
       style={[
         styles.card,
-        company.isPinned ? styles.cardPinned : null,
+        isPinned ? styles.cardPinned : null,
         cardStyle,
       ]}
       onPress={onClick}
@@ -58,12 +62,12 @@ export const CompanyCard = React.memo(function CompanyCard({
         {/* Right Section: Metrics (Cases & Bottles) + Chevron Arrow */}
         <View style={styles.metricsRightRow}>
           <View style={styles.metricCell}>
-            <Text style={styles.metricValue}>{formatNumber(cases)}</Text>
+            <Text style={styles.casesValue}>{formatNumber(cases)}</Text>
             <Text style={styles.metricLabel}>CASES</Text>
           </View>
 
           <View style={styles.metricCell}>
-            <Text style={styles.metricValue}>{formatNumber(bottles)}</Text>
+            <Text style={styles.bottlesValue}>{formatNumber(bottles)}</Text>
             <Text style={styles.metricLabel}>BOTTLES</Text>
           </View>
 
@@ -85,12 +89,13 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.03,
+    shadowOpacity: 0.02,
     shadowRadius: 3,
     elevation: 1,
   },
   cardPinned: {
-    borderColor: '#E2E8F0',
+    borderColor: '#CBD5E1',
+    backgroundColor: '#FAFCFF',
   },
   cardMainRow: {
     flexDirection: 'row',
@@ -107,10 +112,11 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
   },
   companyName: {
-    fontSize: 14,
+    fontSize: 14.5,
     fontWeight: '800',
     color: '#0F172A',
     letterSpacing: -0.2,
+    lineHeight: 19,
   },
   pinnedBadge: {
     flexDirection: 'row',
@@ -124,7 +130,7 @@ const styles = StyleSheet.create({
   },
   pinnedBadgeText: {
     color: '#FFFFFF',
-    fontSize: 9,
+    fontSize: 8.5,
     fontWeight: '700',
   },
   subtextRow: {
@@ -169,9 +175,15 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     marginTop: 1,
   },
-  metricValue: {
-    fontSize: 14,
-    fontWeight: '900',
+  casesValue: {
+    fontSize: 14.5,
+    fontWeight: '800',
+    color: '#0D3B8E',
+    marginTop: 1,
+  },
+  bottlesValue: {
+    fontSize: 14.5,
+    fontWeight: '800',
     color: '#0F172A',
   },
 });

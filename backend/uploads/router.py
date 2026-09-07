@@ -8,9 +8,13 @@ from backend.uploads.schemas import UploadBatchResponse, UploadLogResponse
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/uploads", tags=["Excel Upload & Import Pipeline"])
-
 admin_only = RoleChecker(["admin"])
+
+router = APIRouter(
+    prefix="/uploads", 
+    tags=["Excel Upload & Import Pipeline"],
+    dependencies=[Depends(admin_only)]
+)
 
 
 @router.post("/", response_model=UploadBatchResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -26,10 +30,27 @@ async def upload_excel(
     and bulk Supabase inserts in a non-blocking background thread.
     """
     user_id = current_user.get("user_id")
-    filename = file.filename
+    filename = file.filename or "upload.xlsx"
     logger.info(f"Excel upload request initiated by user: {user_id} for file: {filename}")
+
+    # 1. File Extension Validation (.xlsx, .xls, .xlsb, .xlsm, .csv)
+    allowed_extensions = {".xlsx", ".xls", ".xlsb", ".xlsm", ".csv"}
+    file_ext = "." + filename.split(".")[-1].lower() if "." in filename else ""
+    if file_ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file format '{file_ext}'. Allowed formats: {', '.join(sorted(allowed_extensions))}"
+        )
+
+    # 2. File Size Limit Validation (250 MB Limit)
+    MAX_FILE_SIZE = 250 * 1024 * 1024  # 250 MB
     try:
         contents = await file.read()
+        if len(contents) > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File size exceeds maximum allowed limit of 250 MB (Received: {len(contents) / (1024*1024):.2f} MB)."
+            )
 
         batch_record = import_pipeline.create_initial_batch(filename, user_id)
 

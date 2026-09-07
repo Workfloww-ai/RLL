@@ -38,6 +38,7 @@ from backend.dashboard.router import router as dashboard_router
 from backend.analytics.router import router as analytics_router
 from backend.reports.router import router as reports_router
 from backend.mobile.router import router as mobile_router
+from backend.system.router import router as system_router
 
 from contextlib import asynccontextmanager
 from backend.db.redis_client import init_redis, close_redis
@@ -73,22 +74,39 @@ from fastapi.middleware.gzip import GZipMiddleware
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
+allowed_origins = [
+    "https://lucidx360.workfloww.ai",
+    "https://rll-backend-414899512001.asia-south2.run.app",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
-    allow_origin_regex=r"https?://.*",
+    allow_origins=allowed_origins,
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|lucidx360\.workfloww\.ai|rll-backend-414899512001\.asia-south2\.run\.app)(:\d+)?",
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
 import time
 from fastapi import Request
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self' https://rll-backend-414899512001.asia-south2.run.app https://lucidx360.workfloww.ai https://*.supabase.co;"
+    )
+    if settings.ENVIRONMENT.lower() in ["production", "prod"]:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -112,6 +130,7 @@ app.include_router(uploads_router)
 app.include_router(dashboard_router, prefix=settings.API_V1_STR)
 app.include_router(analytics_router, prefix=settings.API_V1_STR)
 app.include_router(reports_router, prefix=settings.API_V1_STR)
+app.include_router(system_router, prefix=settings.API_V1_STR)
 
 @app.get("/")
 def read_root():

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Package, Map, Users, LogOut, Settings } from 'lucide-react';
+import { Package, Map, Users, LogOut, Settings, Shield } from 'lucide-react';
 import { ViewState } from '../types';
 
 interface DashboardLayoutProps {
@@ -17,6 +17,8 @@ export default function DashboardLayout({ currentView, onViewChange, onLogout, u
     { id: 'stock' as ViewState, label: 'Sales Upload', icon: Package },
     { id: 'territory' as ViewState, label: 'Territory Management', icon: Map },
     { id: 'headcount' as ViewState, label: 'User Management', icon: Users },
+    { id: 'roles' as ViewState, label: 'Role Management', icon: Shield },
+    { id: 'settings' as ViewState, label: 'Security & Settings', icon: Settings },
   ];
 
   return (
