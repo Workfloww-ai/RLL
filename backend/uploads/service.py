@@ -2101,50 +2101,8 @@ class ImportPipelineEngine:
         user_id: str,
         imported_rows: int,
     ):
-
-        client = get_supabase()
-
-        if not client:
-            return
-
-        record = {
-
-            "table_name":
-                "sales_fact",
-
-            "record_id":
-                str(batch_id),
-
-            "action":
-                "INSERT",
-
-            "old_data":
-                None,
-
-            "new_data": {
-                "batch_id":
-                    batch_id,
-
-                "imported_rows":
-                    imported_rows,
-            },
-
-            "changed_by":
-                user_id,
-        }
-
-        try:
-            client.table("audit_logs").insert(record).execute()
-        except Exception:
-            try:
-                record.pop("changed_by", None)
-                client.table("audit_logs").insert(record).execute()
-            except Exception as exc:
-                logger.warning(
-                    "Could not create audit log for batch %s: %s",
-                    batch_id,
-                    exc,
-                )
+        """No-op: audit_logs table has been removed from database schema."""
+        return
 
     def _sync_user_hierarchy(self, s_ase: pd.Series, s_asm: pd.Series, s_depot: pd.Series, depot_cache: Dict[str, str]):
         """

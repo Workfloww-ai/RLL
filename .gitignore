@@ -42,8 +42,6 @@ backend/venv_sys/
 
 .agents/*
 /Users/khwaish/Desktop/RLL/RLL/backend/test_folder
-
-
 scratch
 implementation_plan.md
 IMFL Ind. May-26.xlsb
@@ -53,5 +51,5 @@ PRIVACY_POLICY.md
 approach.md
 BUSINESS_LOGIC_SPEC.md
 UI_IOS_IMPLEMENTATION_PLAN.md
-
 RLL_ENTERPRISE_SECURITY_ROBUSTNESS_REPORT.md
+OFFLINE_DATA_IMPLEMENTATION_PLAN.md

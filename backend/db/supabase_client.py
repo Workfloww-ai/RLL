@@ -67,18 +67,6 @@ def create_upload_batch(
         res = client.table("upload_batches").insert(data).execute()
         if res.data:
             return res.data[0]["batch_id"]
-            batch_id = res.data[0]["batch_id"]
-            try:
-                client.table("audit_logs").insert({
-                    "table_name": "upload_batches",
-                    "record_id": str(batch_id),
-                    "action": "UPLOAD_BATCH_CREATED",
-                    "new_data": data,
-                    "changed_by": user_fk,
-                }).execute()
-            except Exception as e:
-                logger.warning(f"Audit log failed for batch creation: {e}")
-            return batch_id
     except Exception as e:
         logger.error(f"create_upload_batch error: {e}")
         raise
@@ -274,49 +262,8 @@ def upsert_licensees(licensee_rows: List[Dict[str, Any]]) -> Dict[str, int]:
 # Sales Fact Helpers
 # ---------------------------------------------------------------------------
 def ensure_calendar_dates(dates: List[str]) -> bool:
-    """Ensures dim_calendar contains rows for the supplied sale dates."""
-    normalized_dates = sorted({str(d).strip() for d in dates if str(d).strip()})
-    if not normalized_dates:
-        return True
-    client = get_supabase_client()
-    if not client:
-        logger.info(f"[Mock] ensure_calendar_dates count={len(normalized_dates)}")
-        return True
-    try:
-        from datetime import datetime
-        rows = []
-        for d in normalized_dates:
-            try:
-                dt = datetime.strptime(d, "%Y-%m-%d")
-                m = dt.month
-                y = dt.year
-                fy_start = y if m >= 4 else y - 1
-                fy_label = f"{fy_start}-{str(fy_start + 1)[-2:]}"
-                fy_month = (m - 3) if m >= 4 else (m + 9)
-
-                rows.append({
-                    "date_id": d,
-                    "year": y,
-                    "quarter": (m - 1) // 3 + 1,
-                    "month": m,
-                    "month_name": dt.strftime("%B"),
-                    "day": dt.day,
-                    "day_of_week": dt.isoweekday(),
-                    "day_name": dt.strftime("%A"),
-                    "is_weekend": dt.isoweekday() in (6, 7),
-                    "financial_year_start": fy_start,
-                    "financial_year_label": fy_label,
-                    "financial_month": fy_month,
-                    "is_active": True,
-                })
-            except Exception:
-                continue
-        if rows:
-            client.table("dim_calendar").upsert(rows, on_conflict="date_id").execute()
-        return True
-    except Exception as e:
-        logger.warning(f"ensure_calendar_dates error (non-fatal): {e}")
-        return False
+    """No-op: dim_calendar table has been removed from database schema."""
+    return True
 def bulk_insert_sales_fact(records: List[Dict[str, Any]]) -> bool:
     """Bulk-inserts resolved rows into sales_fact."""
     if not records:

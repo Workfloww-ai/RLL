@@ -86,18 +86,15 @@ async def upload_excel_async(
     covers_start: Optional[str] = Form(None, description="Start date YYYY-MM-DD (auto-detected if omitted)"),
     covers_end: Optional[str] = Form(None, description="End date YYYY-MM-DD (auto-detected if omitted)"),
     uploaded_by: Optional[str] = Form(None, description="UUID of the uploading user"),
-    uploaded_by: Optional[str] = Form(None, description="UUID of the uploading user (optional if Bearer token present)"),
     chunk_size: int = Form(2500, description="Rows per insert chunk (default 2500)"),
     current_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """
-    Accepts the Excel file, creates an upload_batches record, saves the file
-    to disk, and immediately returns a batch_id while ETL runs in the background.
+    Accepts the Excel file, creates an upload_batches record with user FK and browser/IP metadata,
+    and immediately returns a batch_id while ETL runs in the background.
     `covers_start` and `covers_end` are **optional** — if omitted, the system
     automatically detects the date range from the file's date column.
     Poll `GET /uploads/batch/{batch_id}` to check progress.
-    Accepts the Excel file, creates an upload_batches record with user FK and browser/IP metadata,
-    and immediately returns a batch_id while ETL runs in the background.
     """
     from backend.auth.deps import extract_client_metadata
     meta = extract_client_metadata(request)
@@ -109,14 +106,12 @@ async def upload_excel_async(
     if not user_uuid and current_user:
         user_uuid = current_user.get("user_id")
     # Resolve date coverage (auto-detect if not supplied)
-    temp_path = _validate_and_save_temp(file)
     covers_start, covers_end = _resolve_dates(temp_path, covers_start, covers_end)
     batch_id = create_upload_batch(
         source_file=file.filename or "upload",
         load_type=load_type,
         covers_start=covers_start,
         covers_end=covers_end,
-        uploaded_by=_sanitize_uuid(uploaded_by),
         uploaded_by=user_uuid,
         created_by=user_uuid,
         browser_info=meta["browser_info"],
