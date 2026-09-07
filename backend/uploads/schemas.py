@@ -25,6 +25,12 @@ class UploadBatchBase(BaseModel):
     failed_rows: Optional[int] = 0
     duplicate_rows: Optional[int] = 0
     processing_time_seconds: Optional[float] = 0.0
+    chunk_count: Optional[int] = 0
+    failed_chunks: Optional[int] = 0
+    affected_dates_count: Optional[int] = 0
+    write_stats: Optional[Dict[str, Any]] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
 
 
 class UploadBatchCreate(UploadBatchBase):

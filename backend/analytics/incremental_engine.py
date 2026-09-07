@@ -16,13 +16,44 @@ class IncrementalAnalyticsEngine:
     dates and financial months. Guarantees 100% idempotency, transaction safety, and Redis cache invalidation.
     """
 
+    def purge_batch_facts(self, batch_id: Union[int, str]) -> bool:
+        """
+        Phase 3 Batch-Scoped Replacement:
+        Safely purges sales facts belonging strictly to batch_id from sales_fact and user_sales_fact,
+        leaving facts from other upload batches completely untouched.
+        """
+        client = get_supabase()
+        if not client or not batch_id:
+            return True
+
+        batch_id_str = str(batch_id).strip()
+        # Schema guard: Ensure batch_id is valid 36-char UUID format before querying PostgreSQL UUID column
+        if len(batch_id_str) != 36 and "-" not in batch_id_str:
+            logger.info(f"[ANALYTICS] Non-UUID batch_id '{batch_id_str}' passed; skipping live DB deletion.")
+            return True
+
+        try:
+            client.table("sales_fact").delete().eq("batch_id", batch_id_str).execute()
+            try:
+                client.table("user_sales_fact").delete().eq("batch_id", batch_id_str).execute()
+            except Exception as e_usf:
+                logger.debug(f"[ANALYTICS] user_sales_fact purge notice for batch {batch_id_str}: {e_usf}")
+            logger.info(f"[ANALYTICS] Batch-scoped fact purge completed for batch_id={batch_id_str}.")
+            return True
+        except Exception as e:
+            logger.error(f"[ANALYTICS] Failed batch-scoped fact purge for batch_id={batch_id_str}: {e}")
+            return False
+
     def process_batch_incremental_aggregation(
         self,
         batch_id: Optional[Union[int, str]],
-        sale_dates: List[Union[str, date]]
+        sale_dates: List[Union[str, date]],
+        enable_legacy_rpcs: bool = False,
     ) -> Dict[str, Any]:
         """
         Executes incremental aggregation for all dates and financial months affected by a sales batch.
+        Phase 6 Optimized: Bypasses duplicate legacy summary table RPC calls by default, relying
+        strictly on set-based refresh_sales_daily_summary_for_date and refresh_sales_monthly_summary_for_month.
         """
         t_start = time.perf_counter()
         if not sale_dates:
@@ -92,19 +123,20 @@ class IncrementalAnalyticsEngine:
         for s_date in sorted_dates:
             t0 = time.perf_counter()
             try:
-                # Primary Physical Summary Table Refresh
+                # Primary Physical Summary Table Refresh (Set-Based)
                 client.rpc("refresh_sales_daily_summary_for_date", {"p_sale_date": s_date}).execute()
                 
-                # Backward Compatibility Refresh Calls
-                try:
-                    client.rpc("refresh_dashboard_daily", {"p_sale_date": s_date}).execute()
-                except Exception as e_leg:
-                    logger.debug(f"[ANALYTICS] Legacy refresh_dashboard_daily notice: {e_leg}")
+                # Phase 6 Rollback Guard: Execute legacy RPCs only if explicitly requested
+                if enable_legacy_rpcs:
+                    try:
+                        client.rpc("refresh_dashboard_daily", {"p_sale_date": s_date}).execute()
+                    except Exception as e_leg:
+                        logger.debug(f"[ANALYTICS] Legacy refresh_dashboard_daily notice: {e_leg}")
 
-                try:
-                    client.rpc("refresh_company_sales_summary", {"p_sale_date": s_date}).execute()
-                except Exception as e_comp:
-                    logger.debug(f"[ANALYTICS] Legacy refresh_company_sales_summary notice: {e_comp}")
+                    try:
+                        client.rpc("refresh_company_sales_summary", {"p_sale_date": s_date}).execute()
+                    except Exception as e_comp:
+                        logger.debug(f"[ANALYTICS] Legacy refresh_company_sales_summary notice: {e_comp}")
 
                 t1 = time.perf_counter()
                 d_ms = (t1 - t0) * 1000
@@ -123,11 +155,12 @@ class IncrementalAnalyticsEngine:
                     "p_month_start": m_start
                 }).execute()
                 
-                # Backward Compatibility Refresh Calls
-                try:
-                    client.rpc("refresh_dashboard_monthly", {"p_date": m_start}).execute()
-                except Exception as e_mleg:
-                    logger.debug(f"[ANALYTICS] Legacy refresh_dashboard_monthly notice: {e_mleg}")
+                # Phase 6 Rollback Guard: Execute legacy RPCs only if explicitly requested
+                if enable_legacy_rpcs:
+                    try:
+                        client.rpc("refresh_dashboard_monthly", {"p_date": m_start}).execute()
+                    except Exception as e_mleg:
+                        logger.debug(f"[ANALYTICS] Legacy refresh_dashboard_monthly notice: {e_mleg}")
 
                 t1 = time.perf_counter()
                 m_ms = (t1 - t0) * 1000

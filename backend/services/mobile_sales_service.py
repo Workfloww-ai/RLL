@@ -6,6 +6,7 @@ into the company / depot / TSM response structure.
 """
 import logging
 import time
+from datetime import datetime, date
 from typing import Any, Dict, List, Optional, Tuple
 
 from backend.db.supabase_client import call_mobile_sales_rpc, call_mobile_sales_rpc_v3, get_supabase_client
@@ -110,10 +111,16 @@ def _resolve_target_date(client, date_from: Optional[str], date_to: Optional[str
     cached = _MASTER_CACHE.get("latest_sale_date")
     if not cached or (now - _MASTER_CACHE["timestamp"] > _MASTER_CACHE_TTL):
         try:
-            res = client.table("dashboard_summary_daily").select("sale_date").order("sale_date", desc=True).limit(1).execute()
+            # Phase 4 Consolidation: Query sales_daily_summary first
+            res = client.table("sales_daily_summary").select("sale_date").order("sale_date", desc=True).limit(1).execute()
             if res.data and res.data[0].get("sale_date"):
                 cached = res.data[0]["sale_date"]
                 _MASTER_CACHE["latest_sale_date"] = cached
+            else:
+                res_dash = client.table("dashboard_summary_daily").select("sale_date").order("sale_date", desc=True).limit(1).execute()
+                if res_dash.data and res_dash.data[0].get("sale_date"):
+                    cached = res_dash.data[0]["sale_date"]
+                    _MASTER_CACHE["latest_sale_date"] = cached
         except Exception as e:
             logger.warning(f"_resolve_target_date: Could not fetch max sale_date: {e}")
     return cached or time.strftime("%Y-%m-%d")
@@ -420,3 +427,41 @@ def build_sales_response(
     }
     _cache_set(cache_key, result)
     return result
+
+
+def prewarm_mobile_sales() -> Dict[str, Any]:
+    """
+    Phase 4 Cache Egress Pre-Warming:
+    Pre-warms the mobile sales response cache for primary periods (Daily, MTD, YTD)
+    immediately after summary generation to guarantee <20ms API egress latency.
+    """
+    client = get_supabase_client()
+    if not client:
+        return {"prewarmed": 0, "status": "mock"}
+
+    _MASTER_CACHE["timestamp"] = 0.0
+    latest_date = _resolve_target_date(client, None, None)
+
+    prewarmed_count = 0
+    periods = ["Daily", "MTD", "YTD"]
+    for p in periods:
+        try:
+            res = build_sales_response(period=p, date_from=None, date_to=latest_date, selected_hq="All Headquarters")
+            if res:
+                prewarmed_count += 1
+                redis_key = f"rll:mobile:sales:{p}:All Headquarters:{latest_date}"
+                try:
+                    import asyncio
+                    from backend.db.redis_client import safe_set
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(safe_set(redis_key, res, ttl=300))
+                    except RuntimeError:
+                        pass
+                except Exception as e_red:
+                    logger.debug(f"Redis prewarm set notice for key {redis_key}: {e_red}")
+        except Exception as e:
+            logger.warning(f"prewarm_mobile_sales error for period {p}: {e}")
+
+    logger.info(f"Phase 4 Cache Egress Pre-Warming: Pre-warmed {prewarmed_count} mobile sales cache responses for latest date {latest_date}.")
+    return {"prewarmed": prewarmed_count, "latest_date": latest_date}

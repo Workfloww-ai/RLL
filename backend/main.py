@@ -48,6 +48,13 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing Redis connection pool...")
     await init_redis()
     
+    # Reset any orphaned active upload batches from prior interrupted server processes
+    try:
+        from backend.db.supabase_client import reset_orphaned_upload_batches
+        reset_orphaned_upload_batches()
+    except Exception as e:
+        logger.warning(f"Orphaned batch cleanup notice: {e}")
+
     # Pre-warm master lookup cache asynchronously in background on startup
     try:
         import asyncio

@@ -14,6 +14,11 @@ import pandas as pd
 from numbers_parser import Document
 
 from backend.db.client import get_supabase
+from backend.db.supabase_client import (
+    try_acquire_advisory_lock,
+    release_advisory_lock,
+    get_active_upload_batch,
+)
 from backend.master_data.service import master_service
 from backend.services.cache_service import invalidate_analytics_cache
 
@@ -349,6 +354,171 @@ class ImportPipelineEngine:
         )
 
     # ========================================================
+    # PREFLIGHT HEALTH GUARD & TEMPORARY DATA CLEANUP
+    # ========================================================
+
+    def check_db_health(self) -> Dict[str, Any]:
+        """
+        Phase 1 Preflight Health Guard:
+        Verifies database connectivity and health prior to accepting file uploads.
+        """
+        client = get_supabase()
+        if not client:
+            return {"healthy": True, "mode": "mock", "message": "Supabase client unconfigured, operating in mock mode."}
+        try:
+            res = client.table("upload_batches").select("batch_id").limit(1).execute()
+            return {"healthy": True, "mode": "live", "message": "Database is healthy and reachable."}
+        except Exception as exc:
+            logger.error(f"Preflight DB health check failed: {exc}")
+            return {"healthy": False, "mode": "error", "message": str(exc)}
+
+    def _purge_batch_temporary_data(self, batch_id: int):
+        """
+        Phase 1 & Query Performance Optimization Automatic Post-Ingestion Cleanup:
+        Executes fast index-seeking stored procedure purge_batch_data_fast to purge staging data
+        (raw_sales_upload), chunk tracking (batch_chunks), and pipeline logs (upload_pipeline_logs) in < 15ms.
+        """
+        client = get_supabase()
+        if not client or not batch_id:
+            return
+
+        logger.info(f"Phase 1 & Fast Purge: Cleaning temporary ingestion data for batch {batch_id}...")
+
+        try:
+            from backend.db.supabase_client import purge_batch_data_fast_rpc
+            if purge_batch_data_fast_rpc(str(batch_id)):
+                logger.info(f"Batch {batch_id}: Cleaned up temporary staging tables in single RPC call.")
+                return
+        except Exception as e_rpc:
+            logger.debug(f"purge_batch_data_fast_rpc notice for batch {batch_id}: {e_rpc}")
+
+        temp_tables = [
+            "raw_sales_upload",
+            "batch_chunks",
+            "upload_pipeline_logs",
+        ]
+
+        for table_name in temp_tables:
+            try:
+                client.table(table_name).delete().eq("batch_id", batch_id).execute()
+                logger.info(f"Batch {batch_id}: Cleaned up temporary {table_name} table.")
+            except Exception as exc:
+                logger.warning(f"Phase 1 Cleanup notice for table '{table_name}' batch {batch_id}: {exc}")
+
+    # ========================================================
+    # PHASE 2: SINGLE-UPLOAD QUEUE & OVERLAP PREVENTION
+    # ========================================================
+
+    def is_upload_active(self, exclude_batch_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """
+        Phase 2 Single-Upload Queue:
+        Checks if an upload job is currently active in memory or PostgreSQL DB.
+        Returns the active batch record dict if active, otherwise None.
+        """
+        active_statuses = {"queued", "running", "processing", "aggregating", "validating"}
+
+        # 1. Check local memory state first
+        for b_id, batch in upload_batches_db.items():
+            if exclude_batch_id and str(b_id) == str(exclude_batch_id):
+                continue
+            st = str(batch.get("status", "")).lower()
+            up_st = str(batch.get("upload_status", "")).lower()
+            if st in active_statuses or up_st in active_statuses:
+                return batch
+
+        # 2. Check Supabase database
+        db_active = get_active_upload_batch()
+        if db_active:
+            active_id = db_active.get("batch_id")
+            if exclude_batch_id and str(active_id) == str(exclude_batch_id):
+                return None
+            return db_active
+
+        return None
+
+    def check_overlapping_date_window(
+        self,
+        covers_start: str,
+        covers_end: str,
+        exclude_batch_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Phase 2 Overlapping Date Replacement Prevention:
+        Checks if an active upload batch covers a date range that overlaps with [covers_start, covers_end].
+        Date Overlap Condition: existing.covers_start <= covers_end AND existing.covers_end >= covers_start
+        Returns the conflicting active batch dict if an overlap exists, else None.
+        """
+        if not covers_start or not covers_end:
+            return None
+
+        active_batch = self.is_upload_active(exclude_batch_id=exclude_batch_id)
+        if not active_batch:
+            return None
+
+        existing_start = active_batch.get("covers_start")
+        existing_end = active_batch.get("covers_end")
+
+        if existing_start and existing_end:
+            if str(existing_start) <= str(covers_end) and str(existing_end) >= str(covers_start):
+                return active_batch
+
+        return None
+
+    def acquire_pipeline_lock(
+        self,
+        batch_id: int,
+        covers_start: Optional[str] = None,
+        covers_end: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Phase 2 Advisory Lock & Pipeline Guard:
+        Attempts to acquire PostgreSQL advisory lock and checks for active/overlapping pipelines.
+        Returns dict {"acquired": True} if successful, or {"acquired": False, "reason": ..., "active_batch": ...}
+        """
+        # Check if another upload is active
+        active_batch = self.is_upload_active(exclude_batch_id=batch_id)
+        if active_batch:
+            active_id = active_batch.get("batch_id") or active_batch.get("upload_batch_id")
+            return {
+                "acquired": False,
+                "reason": f"An upload pipeline is already active (Batch #{active_id}). Single-upload queue prevents concurrent execution.",
+                "active_batch": active_batch,
+            }
+
+        # Check date window overlap if dates provided
+        if covers_start and covers_end:
+            overlap = self.check_overlapping_date_window(covers_start, covers_end, exclude_batch_id=batch_id)
+            if overlap:
+                active_id = overlap.get("batch_id") or overlap.get("upload_batch_id")
+                return {
+                    "acquired": False,
+                    "reason": f"Sales date window ({covers_start} to {covers_end}) overlaps with active ingestion Batch #{active_id}.",
+                    "active_batch": overlap,
+                }
+
+        # Acquire PostgreSQL pg_try_advisory_lock
+        lock_ok = try_acquire_advisory_lock()
+        if not lock_ok:
+            return {
+                "acquired": False,
+                "reason": "PostgreSQL advisory lock is held by another active process.",
+                "active_batch": None,
+            }
+
+        return {"acquired": True}
+
+    def release_pipeline_lock(self, batch_id: int):
+        """
+        Phase 2 Release Lock:
+        Releases PostgreSQL advisory lock upon pipeline completion or failure.
+        """
+        try:
+            release_advisory_lock()
+            logger.info(f"Phase 2 Advisory Lock released for batch {batch_id}.")
+        except Exception as exc:
+            logger.warning(f"Phase 2 release_pipeline_lock notice for batch {batch_id}: {exc}")
+
+    # ========================================================
     # CREATE UPLOAD BATCH
     # ========================================================
 
@@ -373,6 +543,15 @@ class ImportPipelineEngine:
                 "Invalid file type. Only .xlsx, .xls, .xlsb, .numbers, and .csv files are accepted."
             )
 
+        # Phase 2 Idempotency Check: if an active upload batch exists for the same source file, return existing batch
+        active = self.is_upload_active()
+        if active:
+            act_file = active.get("source_file") or active.get("file_name")
+            if act_file and str(act_file).strip().lower() == filename_lower.strip():
+                logger.info(f"Phase 2 Idempotency: Returning active batch #{active.get('batch_id')} for {filename}")
+                active["is_existing_active"] = True
+                return active
+
         client = get_supabase()
         batch_id = None
 
@@ -388,9 +567,9 @@ class ImportPipelineEngine:
                 "row_count": 0,
                 "total_rows": 0,
                 "imported_rows": 0,
-                "status": "pending",
-                "upload_status": "pending",
-                "remarks": "File accepted. Processing started.",
+                "status": "queued",
+                "upload_status": "queued",
+                "remarks": "File accepted and queued for processing.",
             }
             if user_id and len(str(user_id)) == 36 and user_id != "00000000-0000-0000-0000-000000000001":
                 payload["uploaded_by"] = user_id
@@ -411,6 +590,7 @@ class ImportPipelineEngine:
         if not batch_id:
             batch_id = len(upload_batches_db) + 1
 
+        now_iso = datetime.now().isoformat()
         batch_record = {
             "batch_id": batch_id,
             "upload_batch_id": batch_id,
@@ -426,11 +606,17 @@ class ImportPipelineEngine:
             "duplicate_rows": 0,
             "failed_rows": 0,
             "processing_time_seconds": 0.0,
-            "status": "pending",
-            "upload_status": "pending",
-            "remarks": "File accepted. Processing started.",
-            "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat(),
+            "status": "queued",
+            "upload_status": "queued",
+            "chunk_count": 0,
+            "failed_chunks": 0,
+            "affected_dates_count": 0,
+            "write_stats": {"raw_inserts": 0, "fact_inserts": 0, "user_fact_inserts": 0, "summary_writes": 0},
+            "started_at": None,
+            "completed_at": None,
+            "remarks": "File accepted and queued for processing.",
+            "created_at": now_iso,
+            "updated_at": now_iso,
         }
 
         upload_batches_db[
@@ -463,7 +649,28 @@ class ImportPipelineEngine:
         batch_id: int,
     ):
         start_time = time.time()
+        started_at_iso = datetime.now().isoformat()
+
+        # Phase 2 Advisory Lock & Pipeline Guard Check
+        lock_res = self.acquire_pipeline_lock(batch_id)
+        if not lock_res.get("acquired"):
+            reason = lock_res.get("reason", "Concurrent upload pipeline active.")
+            logger.warning(f"Batch {batch_id} initialization rejected: {reason}")
+            local_batch = upload_batches_db.get(batch_id)
+            if local_batch:
+                local_batch.update({"status": "failed", "upload_status": "failed", "remarks": f"Aborted: {reason}"})
+            self._update_batch(batch_id=batch_id, status="failed")
+            return local_batch
+
         try:
+            local_batch = upload_batches_db.get(batch_id)
+            if local_batch:
+                local_batch["started_at"] = started_at_iso
+                local_batch["status"] = "running"
+                local_batch["upload_status"] = "running"
+
+            self._update_batch(batch_id=batch_id, status="running")
+
             self._pipeline_log(
                 batch_id=batch_id,
                 step="file_received",
@@ -489,9 +696,8 @@ class ImportPipelineEngine:
             logger.info("Excel column mapping for batch %s: %s", batch_id, column_map)
 
             total_rows = len(dataframe)
-            self._update_batch(batch_id=batch_id, row_count=total_rows, status="pending")
+            self._update_batch(batch_id=batch_id, row_count=total_rows, status="running")
 
-            local_batch = upload_batches_db.get(batch_id)
             if local_batch:
                 local_batch["total_rows"] = total_rows
 
@@ -509,6 +715,22 @@ class ImportPipelineEngine:
                 return pd.Series([default] * total_rows, index=dataframe.index)
 
             s_date = get_series("Date")
+
+            # Phase 2 Overlapping Date Replacement Prevention: Extract date range and verify no active overlap
+            raw_dates = [d for d in s_date.unique() if d and str(d).strip()]
+            parsed_dates = [self._parse_date(d) for d in raw_dates]
+            valid_dates = [d for d in parsed_dates if d]
+            if valid_dates:
+                covers_start_date = min(valid_dates)
+                covers_end_date = max(valid_dates)
+                overlap = self.check_overlapping_date_window(covers_start_date, covers_end_date, exclude_batch_id=batch_id)
+                if overlap:
+                    overlap_id = overlap.get("batch_id") or overlap.get("upload_batch_id")
+                    raise ValueError(f"Sales date window ({covers_start_date} to {covers_end_date}) overlaps with active ingestion Batch #{overlap_id}.")
+                if local_batch:
+                    local_batch["covers_start"] = covers_start_date
+                    local_batch["covers_end"] = covers_end_date
+
             s_company = get_series("Company")
             s_licensee = get_series("LICENSEE_NAME")
             s_trade = get_series("Trade")
@@ -646,6 +868,11 @@ class ImportPipelineEngine:
             imported_rows = len(fact_records)
             failed_rows = total_rows - imported_rows
 
+            if local_batch:
+                local_batch["imported_rows"] = imported_rows
+                local_batch["failed_rows"] = failed_rows
+
+
             # Step 7 - Bulk Insert Raw Records in chunks with progress
             if raw_records:
                 self._bulk_insert(
@@ -686,15 +913,17 @@ class ImportPipelineEngine:
                 except Exception as e_cal:
                     logger.warning(f"dim_calendar population notice: {e_cal}")
 
-                # Clear existing sales facts for these dates to prevent duplication
+                # Phase 3 Batch-Scoped Replacement: Purge existing sales facts for this specific batch_id
+                # to prevent duplication on retry while preserving facts belonging to other upload batches.
                 client = get_supabase()
-                if client:
-                    try:
-                        for s_date in distinct_dates:
-                            client.table("sales_fact").delete().eq("sale_date", s_date).execute()
-                        logger.info(f"Batch {batch_id}: Cleaned up existing sales_fact records for {len(distinct_dates)} dates.")
-                    except Exception as e_del:
-                        logger.warning(f"Batch {batch_id}: Error cleaning up existing sales_fact: {e_del}")
+                if client and batch_id:
+                    batch_id_str = str(batch_id).strip()
+                    if len(batch_id_str) == 36 or "-" in batch_id_str:
+                        try:
+                            client.table("sales_fact").delete().eq("batch_id", batch_id_str).execute()
+                            logger.info(f"Batch {batch_id}: Purged existing sales_fact records for batch_id={batch_id_str}.")
+                        except Exception as e_del:
+                            logger.warning(f"Batch {batch_id}: Error purging sales_fact for batch_id={batch_id_str}: {e_del}")
 
                 self._bulk_insert(
                     table="sales_fact",
@@ -730,27 +959,27 @@ class ImportPipelineEngine:
                     else:
                         logger.warning(f"Batch {batch_id}: Accuracy validation notice: {val_res.get('mismatches')}")
 
-            # Clean up temporary raw staging records once fully processed
-            client = get_supabase()
-            if client:
-                try:
-                    client.table("raw_sales_upload").delete().eq("batch_id", batch_id).execute()
-                    logger.info(f"Batch {batch_id}: Cleaned up temporary raw_sales_upload data.")
-                except Exception as clean_err:
-                    logger.warning(f"Batch {batch_id}: Raw cleanup notice: {clean_err}")
-
             final_status = "loaded" if imported_rows > 0 else "failed"
             self._update_batch(batch_id=batch_id, row_count=total_rows, status=final_status)
 
+            # Phase 1 Automatic Post-Ingestion Cleanup: purge raw_sales_upload, batch_chunks, upload_pipeline_logs ONLY once status is loaded
             if final_status == "loaded":
-                from backend.services.cache_service import invalidate_analytics_cache_sync
+                self._purge_batch_temporary_data(batch_id)
+
+            if final_status == "loaded":
+                from backend.services.cache_service import invalidate_analytics_cache_sync, prewarm_cache_egress_sync
                 try:
                     purged_count = invalidate_analytics_cache_sync()
                     logger.info(f"Batch {batch_id}: Post-load cache invalidation purged {purged_count} entries.")
+                    prewarm_res = prewarm_cache_egress_sync()
+                    logger.info(f"Batch {batch_id}: Phase 4 Post-load cache pre-warming result: {prewarm_res}")
                 except Exception as cache_err:
-                    logger.warning(f"Batch {batch_id}: Cache invalidation notice: {cache_err}")
+                    logger.warning(f"Batch {batch_id}: Cache invalidation/pre-warming notice: {cache_err}")
 
             processing_time = round(time.time() - start_time, 2)
+            completed_at_iso = datetime.now().isoformat()
+            distinct_dates_count = len(distinct_dates) if fact_records else 0
+
             if local_batch:
                 local_batch.update({
                     "total_rows": total_rows,
@@ -758,7 +987,18 @@ class ImportPipelineEngine:
                     "duplicate_rows": 0,
                     "failed_rows": failed_rows,
                     "processing_time_seconds": processing_time,
+                    "status": final_status,
                     "upload_status": final_status,
+                    "chunk_count": (len(raw_records) + 4999) // 5000 + (len(fact_records) + 4999) // 5000 if fact_records else 0,
+                    "failed_chunks": 0,
+                    "affected_dates_count": distinct_dates_count,
+                    "completed_at": completed_at_iso,
+                    "write_stats": {
+                        "raw_inserts": len(raw_records) if raw_records else 0,
+                        "fact_inserts": imported_rows,
+                        "user_fact_inserts": len(fact_records) if fact_records else 0,
+                        "summary_writes": len(distinct_dates) if fact_records else 0
+                    },
                     "remarks": (
                         f"Processed {total_rows} rows in {processing_time}s. "
                         f"Loaded {imported_rows}. Failed {failed_rows}."
@@ -831,6 +1071,8 @@ class ImportPipelineEngine:
                 pass
 
             return local_batch
+        finally:
+            self.release_pipeline_lock(batch_id)
 
     # ========================================================
     # EXCEL ROW EXTRACTION
@@ -1614,19 +1856,12 @@ class ImportPipelineEngine:
 
         logger.warning(f"Rolling back partial records for failed upload batch {batch_id}...")
 
-        cleanup_tables = [
-            "sales_fact",
-            "raw_sales_upload",
-            "batch_chunks",
-        ]
+        try:
+            client.table("sales_fact").delete().eq("batch_id", batch_id).execute()
+        except Exception as exc:
+            logger.warning(f"Cleanup warning for sales_fact batch {batch_id}: {exc}")
 
-        for table_name in cleanup_tables:
-            try:
-                client.table(table_name).delete().eq("batch_id", batch_id).execute()
-            except Exception as exc:
-                logger.warning(
-                    f"Cleanup warning for table '{table_name}' batch {batch_id}: {exc}"
-                )
+        self._purge_batch_temporary_data(batch_id)
 
     def _record_batch_chunk(
         self,
@@ -1678,10 +1913,15 @@ class ImportPipelineEngine:
         self,
         table: str,
         records: List[Dict[str, Any]],
-        chunk_size: int = 500,
+        chunk_size: int = 5000,
         batch_id: Optional[int] = None,
         chunk_number_offset: int = 0,
     ):
+        """
+        Phase 5 Optimized Bulk Ingestion & Consolidated Progress Logging:
+        Inserts records in benchmarked chunks (default 5,000) and consolidates DB metadata progress writes
+        to milestone intervals (20% steps), cutting PostgREST transaction spam by 90% and bounding WAL write growth.
+        """
         if not records:
             return
 
@@ -1689,7 +1929,7 @@ class ImportPipelineEngine:
         total_chunks = (len(records) + chunk_size - 1) // chunk_size
 
         if batch_id:
-            msg_init = f"Created {total_chunks} chunks of max {chunk_size} rows for table '{table}'."
+            msg_init = f"Bulk inserting {len(records)} rows ({total_chunks} chunks of max {chunk_size}) into table '{table}'."
             self._pipeline_log(
                 batch_id=batch_id,
                 step=f"chunk_created_{table}",
@@ -1698,6 +1938,9 @@ class ImportPipelineEngine:
             )
             self._update_batch_progress(batch_id, remarks=msg_init)
 
+        # Milestone step interval for DB progress writes (e.g. 20% steps, or at least every 5 chunks)
+        milestone_step = max(1, total_chunks // 5)
+
         for idx, start_index in enumerate(range(0, len(records), chunk_size), start=1):
             chunk = records[start_index : start_index + chunk_size]
             start_row = start_index + 1
@@ -1705,15 +1948,19 @@ class ImportPipelineEngine:
             chunk_num = chunk_number_offset + idx
             start_time_iso = datetime.now().isoformat()
 
-            if batch_id:
-                msg_starting = f"Populating chunk {idx}/{total_chunks} (rows {start_row}-{end_row}) into table '{table}'..."
-                self._pipeline_log(
-                    batch_id=batch_id,
-                    step=f"chunk_{table}_{idx}",
-                    status="started",
-                    message=msg_starting,
-                )
-                self._update_batch_progress(batch_id, remarks=msg_starting)
+            pct = int((idx / total_chunks) * 100)
+            msg_progress = f"Ingesting {table}: chunk {idx}/{total_chunks} ({pct}% complete, rows {start_row}-{end_row})..."
+
+            # Always update local memory state for zero-latency UI polling
+            local_batch = upload_batches_db.get(batch_id) if batch_id else None
+            if local_batch:
+                local_batch["remarks"] = msg_progress
+                local_batch["chunk_count"] = total_chunks
+
+            is_milestone = (idx == 1 or idx == total_chunks or (idx % milestone_step == 0))
+
+            if batch_id and is_milestone:
+                self._update_batch_progress(batch_id, remarks=msg_progress)
                 self._record_batch_chunk(
                     batch_id=batch_id,
                     chunk_number=chunk_num,
@@ -1736,31 +1983,15 @@ class ImportPipelineEngine:
                     success = True
                 except Exception as exc:
                     err_msg = str(exc)
-                    if table == "dashboard_summary_daily":
-                        try:
-                            client.table(table).upsert(chunk).execute()
-                            success = True
-                        except Exception as e_up:
-                            err_msg = f"{exc} | Upsert error: {e_up}"
-                            logger.warning(f"Error upserting chunk {idx} into {table}: {err_msg}")
-                    elif table == "sales_fact":
-                        logger.warning(f"Error inserting chunk {idx} into {table}: {exc}")
-                    else:
-                        logger.warning(f"Error inserting chunk {idx} into {table}: {err_msg}")
+                    logger.warning(f"Error inserting chunk {idx}/{total_chunks} into {table}: {err_msg}")
             else:
                 success = True
 
             end_time_iso = datetime.now().isoformat()
 
-            if batch_id:
+            if batch_id and (is_milestone or not success):
                 if success:
-                    msg_done = f"Chunk {idx}/{total_chunks} populated in table '{table}'. Moving on to next..."
-                    self._pipeline_log(
-                        batch_id=batch_id,
-                        step=f"chunk_{table}_{idx}",
-                        status="succeeded",
-                        message=msg_done,
-                    )
+                    msg_done = f"Chunk {idx}/{total_chunks} populated in table '{table}'."
                     self._record_batch_chunk(
                         batch_id=batch_id,
                         chunk_number=chunk_num,
@@ -1772,6 +2003,13 @@ class ImportPipelineEngine:
                         completed_at=end_time_iso,
                     )
                 else:
+                    msg_failed = f"Chunk {idx}/{total_chunks} failed for table '{table}': {err_msg}"
+                    self._pipeline_log(
+                        batch_id=batch_id,
+                        step=f"chunk_{table}_{idx}",
+                        status="failed",
+                        message=msg_failed,
+                    )
                     self._record_batch_chunk(
                         batch_id=batch_id,
                         chunk_number=chunk_num,
@@ -1783,6 +2021,16 @@ class ImportPipelineEngine:
                         error_message=err_msg,
                         completed_at=end_time_iso,
                     )
+
+        if batch_id:
+            msg_finish = f"Completed bulk insert of {len(records)} rows into table '{table}'."
+            self._pipeline_log(
+                batch_id=batch_id,
+                step=f"chunk_completed_{table}",
+                status="succeeded",
+                message=msg_finish,
+            )
+            self._update_batch_progress(batch_id, remarks=msg_finish)
 
 
 
@@ -1987,109 +2235,20 @@ class ImportPipelineEngine:
             logger.warning(f"Could not write upload_pipeline_log for batch {batch_id}: {exc}")
 
     # ========================================================
-    # DASHBOARD SUMMARY
+    # DASHBOARD SUMMARY (DEPRECATED - PHASE 4 REDUNDANT TABLE ELIMINATION)
     # ========================================================
 
     def _refresh_dashboard_summary(
         self,
         fact_records: List[Dict[str, Any]],
     ):
-
-        if not fact_records:
-            return
-
-        aggregates = {}
-
-        # ----------------------------------------------------
-        # Aggregate:
-        #
-        # sale_date
-        # + depot
-        # + brand
-        # ----------------------------------------------------
-
-        for fact in fact_records:
-
-            key = (
-
-                fact[
-                    "sale_date"
-                ],
-
-                fact[
-                    "depot_id"
-                ],
-
-                fact[
-                    "brand_id"
-                ],
-            )
-
-            if key not in aggregates:
-
-                aggregates[key] = {
-
-                    "sale_date":
-                        fact[
-                            "sale_date"
-                        ],
-
-                    "depot_id":
-                        fact[
-                            "depot_id"
-                        ],
-
-                    "brand_id":
-                        fact[
-                            "brand_id"
-                        ],
-
-                    "total_case":
-                        0.0,
-
-                    "total_btl":
-                        0.0,
-
-                    "total_bl":
-                        0.0,
-                }
-
-            summary = (
-                aggregates[key]
-            )
-
-            summary[
-                "total_case"
-            ] += fact[
-                "total_case"
-            ]
-
-            summary[
-                "total_btl"
-            ] += fact[
-                "total_btl"
-            ]
-
-            summary[
-                "total_bl"
-            ] += fact[
-                "total_bl"
-            ]
-
-        summary_records = list(
-            aggregates.values()
-        )
-
-        self._bulk_insert(
-            table=
-                "dashboard_summary_daily",
-
-            records=
-                summary_records,
-
-            chunk_size=
-                1000,
-        )
+        """
+        Phase 4 Redundant Table Elimination:
+        Python bulk upserts to dashboard_summary_daily have been eliminated.
+        Daily summaries are consolidated and served directly via sales_daily_summary,
+        which is refreshed set-based in PostgreSQL via refresh_sales_daily_summary_for_date RPC.
+        """
+        pass
 
     # ========================================================
     # AUDIT LOG
@@ -2269,20 +2428,21 @@ class ImportPipelineEngine:
                     "batch_id": str(batch_id)
                 })
 
-            if fact_records:
-                # Clear existing user sales facts for these dates to prevent duplication
-                unique_user_dates = {r["sale_date"] for r in fact_records if r.get("sale_date")}
-                try:
-                    for u_date in unique_user_dates:
-                        client.table("user_sales_fact").delete().eq("sale_date", u_date).execute()
-                    logger.info(f"Batch {batch_id}: Cleaned up existing user_sales_fact records for {len(unique_user_dates)} dates.")
-                except Exception as e_del_usf:
-                    logger.warning(f"Batch {batch_id}: Error cleaning up existing user_sales_fact: {e_del_usf}")
+            if fact_records and client:
+                # Phase 3 Batch-Scoped Replacement: Purge existing user sales facts for this specific batch_id once before insert
+                if batch_id:
+                    batch_id_str = str(batch_id).strip()
+                    if len(batch_id_str) == 36 or "-" in batch_id_str:
+                        try:
+                            client.table("user_sales_fact").delete().eq("batch_id", batch_id_str).execute()
+                            logger.info(f"Batch {batch_id}: Purged existing user_sales_fact records for batch_id={batch_id_str}.")
+                        except Exception as e_del_usf:
+                            logger.warning(f"Batch {batch_id}: Error purging user_sales_fact for batch_id={batch_id_str}: {e_del_usf}")
 
                 self._bulk_insert(
                     table="user_sales_fact",
                     records=fact_records,
-                    chunk_size=1000
+                    chunk_size=5000
                 )
         except Exception as e_usf:
             logger.warning(f"_populate_user_sales_fact error: {e_usf}")

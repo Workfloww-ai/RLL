@@ -33,6 +33,27 @@ async def upload_excel(
     filename = file.filename or "upload.xlsx"
     logger.info(f"Excel upload request initiated by user: {user_id} for file: {filename}")
 
+    # 0. Preflight Database Health Guard
+    db_health = import_pipeline.check_db_health()
+    if not db_health.get("healthy"):
+        logger.error(f"Upload rejected due to unhealthy database state: {db_health.get('message')}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Database is currently unreachable or unhealthy ({db_health.get('message')}). Upload deferred."
+        )
+
+    # 0b. Phase 2 Single-Upload Queue & Concurrency Guard (HTTP 409 Conflict)
+    active_batch = import_pipeline.is_upload_active()
+    if active_batch:
+        active_id = active_batch.get("batch_id") or active_batch.get("upload_batch_id")
+        active_file = active_batch.get("source_file") or active_batch.get("file_name") or "unknown"
+        if active_file.strip().lower() != filename.strip().lower():
+            logger.warning(f"Upload rejected (HTTP 409): Active pipeline Batch #{active_id} ({active_file}) in progress.")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"An upload pipeline is currently active (Batch #{active_id}: '{active_file}'). Single-upload queue prevents concurrent execution."
+            )
+
     # 1. File Extension Validation (.xlsx, .xls, .xlsb, .xlsm, .csv)
     allowed_extensions = {".xlsx", ".xls", ".xlsb", ".xlsm", ".csv"}
     file_ext = "." + filename.split(".")[-1].lower() if "." in filename else ""
@@ -53,6 +74,11 @@ async def upload_excel(
             )
 
         batch_record = import_pipeline.create_initial_batch(filename, user_id)
+
+        # Phase 2 Idempotent Retry: If returning existing active batch, do not add duplicate background task
+        if batch_record.get("is_existing_active"):
+            logger.info(f"Idempotent upload endpoint call: returning active batch #{batch_record.get('batch_id')} without duplicate queue.")
+            return batch_record
 
         background_tasks.add_task(
             import_pipeline.process_file_upload_async,

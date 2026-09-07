@@ -26,6 +26,97 @@ def get_supabase_client() -> Optional[Client]:
         logger.error(f"Failed to initialize Supabase client: {e}")
         return None
 # ---------------------------------------------------------------------------
+# Database Advisory Lock & Concurrency Control Helpers
+# ---------------------------------------------------------------------------
+UPLOAD_ADVISORY_LOCK_ID = 428989  # Distinct 64-bit ID for RLL Excel Upload Advisory Lock
+
+def try_acquire_advisory_lock(lock_id: int = UPLOAD_ADVISORY_LOCK_ID) -> bool:
+    """
+    Attempts to acquire a PostgreSQL advisory lock using pg_try_advisory_lock.
+    Returns True if lock acquired (or in mock/unsupported environment), False if another process holds the lock.
+    """
+    client = get_supabase_client()
+    if not client:
+        return True
+    try:
+        res = client.rpc("pg_try_advisory_lock", {"key": lock_id}).execute()
+        if res.data is not None:
+            return bool(res.data)
+    except Exception as e:
+        logger.debug(f"pg_try_advisory_lock RPC fallback attempt: {e}")
+        try:
+            res = client.rpc("try_acquire_advisory_lock", {"p_lock_id": lock_id}).execute()
+            if res.data is not None:
+                return bool(res.data)
+        except Exception as e2:
+            logger.debug(f"try_acquire_advisory_lock RPC fallback attempt: {e2}")
+    return True
+
+def release_advisory_lock(lock_id: int = UPLOAD_ADVISORY_LOCK_ID) -> bool:
+    """
+    Releases PostgreSQL advisory lock using pg_advisory_unlock.
+    """
+    client = get_supabase_client()
+    if not client:
+        return True
+    try:
+        res = client.rpc("pg_advisory_unlock", {"key": lock_id}).execute()
+        if res.data is not None:
+            return bool(res.data)
+    except Exception as e:
+        logger.debug(f"pg_advisory_unlock RPC fallback attempt: {e}")
+        try:
+            res = client.rpc("release_advisory_lock", {"p_lock_id": lock_id}).execute()
+            if res.data is not None:
+                return bool(res.data)
+        except Exception as e2:
+            logger.debug(f"release_advisory_lock RPC fallback attempt: {e2}")
+    return True
+
+def get_active_upload_batch() -> Optional[Dict[str, Any]]:
+    """
+    Checks Supabase DB for any upload_batch currently in active status (queued/running/processing/aggregating/validating).
+    Returns the first matching batch dict, or None.
+    """
+    client = get_supabase_client()
+    if not client:
+        return None
+    try:
+        active_statuses = ["queued", "running", "processing", "aggregating", "validating"]
+        res = client.table("upload_batches").select(
+            "batch_id, source_file, file_name, covers_start, covers_end, status, upload_status, created_at"
+        ).in_("status", active_statuses).limit(1).execute()
+        if res.data:
+            return res.data[0]
+    except Exception as e:
+        logger.warning(f"get_active_upload_batch error: {e}")
+    return None
+
+def reset_orphaned_upload_batches() -> int:
+    """
+    On server startup, reset any upload_batches left in active status
+    (queued/running/processing/aggregating/validating) from a prior interrupted server process.
+    """
+    client = get_supabase_client()
+    if not client:
+        return 0
+    try:
+        active_statuses = ["queued", "running", "processing", "aggregating", "validating"]
+        res = client.table("upload_batches").update({
+            "status": "failed",
+            "upload_status": "failed",
+            "remarks": "Interrupted: Server process restarted during upload execution.",
+        }).in_("status", active_statuses).execute()
+        count = len(res.data) if res.data else 0
+        if count > 0:
+            logger.warning(f"Reset {count} orphaned active upload batch(es) to failed status on startup.")
+        return count
+    except Exception as e:
+        logger.warning(f"reset_orphaned_upload_batches notice: {e}")
+        return 0
+
+
+# ---------------------------------------------------------------------------
 # Upload Batch Helpers
 # ---------------------------------------------------------------------------
 def create_upload_batch(
@@ -112,19 +203,27 @@ def log_validation_errors(errors: List[Dict[str, Any]]):
         logger.error(f"log_validation_errors error: {e}")
 def bulk_insert_raw_sales(records: List[Dict[str, Any]]) -> bool:
     """Bulk-inserts cleaned rows into raw_sales_upload in optimized batches."""
+    return bulk_insert_records("raw_sales_upload", records, chunk_size=5000)
+
+def bulk_insert_records(table: str, records: List[Dict[str, Any]], chunk_size: int = 5000) -> bool:
+    """
+    Phase 5 Optimized Bulk Ingestion:
+    Inserts records into target table in benchmarked chunks (default 5,000 rows) to minimize
+    PostgREST HTTP transaction overhead and bounded WAL write amplification.
+    """
     if not records:
         return True
     client = get_supabase_client()
     if not client:
-        logger.info(f"[Mock] bulk_insert_raw_sales count={len(records)}")
+        logger.info(f"[Mock] bulk_insert_records table={table} count={len(records)}")
         return True
     try:
-        # Sub-chunk in batches of 5000 to avoid PostgREST payload limits
-        for i in range(0, len(records), 5000):
-            client.table("raw_sales_upload").insert(records[i:i + 5000]).execute()
+        for i in range(0, len(records), chunk_size):
+            chunk = records[i:i + chunk_size]
+            client.table(table).insert(chunk).execute()
         return True
     except Exception as e:
-        logger.error(f"bulk_insert_raw_sales error: {e}")
+        logger.error(f"bulk_insert_records error for table '{table}': {e}")
         raise
 def execute_in_db_resolution(batch_id: int) -> Optional[Dict[str, Any]]:
     """Calls stored procedure process_upload_batch_in_db for fast server-side set-based resolution."""
@@ -137,6 +236,36 @@ def execute_in_db_resolution(batch_id: int) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.warning(f"execute_in_db_resolution RPC failed, falling back to python resolution: {e}")
         return None
+
+def get_table_approx_count(table_name: str) -> int:
+    """
+    Fast 0.1ms relation tuple estimation via pg_class reltuples.
+    Eliminates high-overhead SELECT count(*) full table scans.
+    """
+    client = get_supabase_client()
+    if not client:
+        return 0
+    try:
+        res = client.rpc("get_approx_table_count", {"p_table_name": table_name}).execute()
+        return int(res.data or 0)
+    except Exception as e:
+        logger.debug(f"get_approx_table_count notice for '{table_name}': {e}")
+        return 0
+
+def purge_batch_data_fast_rpc(batch_id: str) -> bool:
+    """
+    Fast index-seeking batch purging stored procedure execution.
+    Eliminates unindexed PostgREST DELETE table scan locks.
+    """
+    client = get_supabase_client()
+    if not client or not batch_id:
+        return True
+    try:
+        client.rpc("purge_batch_data_fast", {"p_batch_id": str(batch_id)}).execute()
+        return True
+    except Exception as e:
+        logger.warning(f"purge_batch_data_fast_rpc notice for batch '{batch_id}': {e}")
+        return False
 # ---------------------------------------------------------------------------
 # Master Table Upsert Helpers
 # Each returns a dict {name_str: id} for the resolved rows.
@@ -767,9 +896,6 @@ def call_mobile_sales_rpc(
 ) -> List[Dict[str, Any]]:
     """
     Calls the get_mobile_sales_summary PostgreSQL RPC function.
-    Returns pre-aggregated rows: [{company_id, brand_id, depot_id,
-    headquarters_id, total_cases, total_bottles, total_bl}, ...]
-    Instead of fetching thousands of raw rows this returns ~50-200 aggregated rows.
     """
     client = get_supabase_client()
     if not client:
@@ -786,6 +912,32 @@ def call_mobile_sales_rpc(
         return res.data or []
     except Exception as e:
         logger.error(f"call_mobile_sales_rpc error (start={start_date}, target={target_date}, hq={hq_id}): {e}")
+        return []
+
+
+def call_mobile_sales_rpc_v3(
+    target_date: str,
+    mtd_start: str,
+    ytd_start: str,
+    hq_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Calls get_mobile_sales_summary RPC function to return pre-aggregated sales rows.
+    """
+    client = get_supabase_client()
+    if not client:
+        return []
+    try:
+        params: Dict[str, Any] = {
+            "p_start_date": ytd_start,
+            "p_target_date": target_date,
+        }
+        if hq_id:
+            params["p_hq_id"] = hq_id
+        res = client.rpc("get_mobile_sales_summary", params).execute()
+        return res.data or []
+    except Exception as e:
+        logger.error(f"call_mobile_sales_rpc_v3 error: {e}")
         return []
 
 
