@@ -1,6 +1,7 @@
 import uuid
 import logging
 import io
+import re
 from typing import List, Dict, Any, Optional
 import pandas as pd
 from backend.db.client import get_supabase
@@ -237,16 +238,22 @@ class UserService:
                 return str(auth_user["id"])
         except Exception:
             pass
+        """Check if user exists in auth.users or public.users, or generate a deterministic user_id."""
+        try:
+            res = client.table("users").select("user_id").ilike("email", email).limit(1).execute()
+            if res.data and len(res.data) > 0:
+                return str(res.data[0]["user_id"])
+        except Exception as e:
+            logger.warning(f"Failed to resolve user_id for email '{email}': {e}")
+        return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{email.lower().strip()}"))
 
-        return None
-
-    def _resolve_manager_user_id(self, client: Any, mgr_str: str) -> Optional[str]:
-        """Resolve manager user_id (UUID) from public.users by UUID, email, full name, or first name."""
-        if not mgr_str or str(mgr_str).strip().lower() in ("unassigned", "none", "null", ""):
+    def _resolve_manager_user_id(self, client: Any, reporting_manager: str) -> Optional[str]:
+        if not reporting_manager or reporting_manager.strip().lower() in ("unassigned", "none", "", "null", "nan"):
             return None
-        mgr_clean = str(mgr_str).strip()
 
-        # 1. Check if UUID
+        mgr_clean = reporting_manager.strip()
+
+        # 1. Check if valid UUID string
         try:
             uuid.UUID(mgr_clean)
             res = client.table("users").select("user_id").eq("user_id", mgr_clean).limit(1).execute()
@@ -284,21 +291,32 @@ class UserService:
     def create_user(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         client = get_supabase()
 
-        first_name = payload.get("first_name") or payload.get("firstName") or ""
-        last_name = payload.get("last_name") or payload.get("lastName") or ""
+        first_name = str(payload.get("first_name") or payload.get("firstName") or "").strip()
+        last_name = str(payload.get("last_name") or payload.get("lastName") or "").strip()
         if not first_name and payload.get("name"):
-            parts = payload["name"].split(" ", 1)
+            parts = str(payload["name"]).strip().split(" ", 1)
             first_name = parts[0]
             last_name = parts[1] if len(parts) > 1 else ""
 
-        email = payload.get("email") or f"{first_name.lower().replace(' ', '')}.{last_name.lower().replace(' ', '')}@rll.com"
-        phone = payload.get("phone") or payload.get("phoneNumber") or ""
-        role_name = payload.get("role") or "Territory Executive"
+        email = str(payload.get("email") or "").strip()
+        phone = str(payload.get("phone") or payload.get("phoneNumber") or "").strip()
+        clean_phone = re.sub(r'\D', '', phone)
+        role_name = str(payload.get("role") or "").strip()
         reporting_manager = payload.get("reportingManager") or payload.get("reporting_manager") or ""
         depot_name = payload.get("depotName") or payload.get("depot_name") or "Unassigned"
         headquarters = payload.get("headquarters") or "Unassigned"
         is_active = payload.get("is_active", payload.get("isActive", True))
 
+        if not first_name:
+            raise ValueError("First Name is mandatory.")
+        if not email:
+            raise ValueError("Email is mandatory.")
+        if not phone or len(clean_phone) != 10:
+            raise ValueError("Phone Number is mandatory and must be exactly 10 digits.")
+        if not role_name:
+            raise ValueError("Role is mandatory.")
+
+        phone = clean_phone
         full_name = f"{first_name} {last_name}".strip()
 
         # Resolve real user_id from auth.users or public.users if client is available
@@ -344,8 +362,6 @@ class UserService:
 
         # Resolve manager user_id if reporting_manager provided
         manager_user_id = self._resolve_manager_user_id(client, reporting_manager)
-        if manager_user_id:
-            user_row["manager_id"] = manager_user_id
 
         try:
             # 1. Upsert into public.users
@@ -416,10 +432,29 @@ class UserService:
 
         first_name = payload.get("first_name") or payload.get("firstName")
         last_name = payload.get("last_name") or payload.get("lastName")
-        if not first_name and payload.get("name"):
-            parts = payload["name"].split(" ", 1)
+        if first_name is None and payload.get("name"):
+            parts = str(payload["name"]).strip().split(" ", 1)
             first_name = parts[0]
             last_name = parts[1] if len(parts) > 1 else ""
+
+        if first_name is not None and not str(first_name).strip():
+            raise ValueError("First Name is mandatory.")
+
+        if "email" in payload:
+            email_val = str(payload["email"]).strip()
+            if not email_val:
+                raise ValueError("Email is mandatory.")
+
+        if "phone" in payload or "phoneNumber" in payload:
+            ph_val = str(payload.get("phone", payload.get("phoneNumber")) or "").strip()
+            clean_ph = re.sub(r'\D', '', ph_val)
+            if not ph_val or len(clean_ph) != 10:
+                raise ValueError("Phone Number is mandatory and must be exactly 10 digits.")
+            payload["phone"] = clean_ph
+            payload["phoneNumber"] = clean_ph
+
+        if "role" in payload and not str(payload["role"]).strip():
+            raise ValueError("Role is mandatory.")
 
         # Update in memory cache
         for idx, u in enumerate(self.in_memory_users):
@@ -457,12 +492,8 @@ class UserService:
         reporting_manager = payload.get("reportingManager") or payload.get("reporting_manager")
         manager_user_id = None
         if reporting_manager:
-            if str(reporting_manager).strip().lower() in ("unassigned", "none", "null", ""):
-                user_update["manager_id"] = None
-            else:
+            if str(reporting_manager).strip().lower() not in ("unassigned", "none", "null", ""):
                 manager_user_id = self._resolve_manager_user_id(client, reporting_manager)
-                if manager_user_id:
-                    user_update["manager_id"] = manager_user_id
 
         try:
             if user_update:
@@ -683,10 +714,13 @@ class UserService:
                     ln = parts[1] if len(parts) > 1 else ""
 
             if not fn or fn.lower() in ("nan", "none", "null", ""):
+                logger.warning("Excel roster row skipped: First Name is mandatory.")
                 continue
 
-            email_val = str(row[email_col]).strip() if email_col and pd.notna(row[email_col]) else f"{fn.lower().replace(' ', '')}.{ln.lower().replace(' ', '')}@rll.com"
-            
+            email_val = str(row[email_col]).strip() if email_col and pd.notna(row[email_col]) else ""
+            if not email_val or email_val.lower() in ("nan", "none", "null", ""):
+                email_val = f"{fn.lower().replace(' ', '')}.{ln.lower().replace(' ', '')}@rll.com"
+
             phone_val = ""
             if phone_col and pd.notna(row[phone_col]):
                 raw_ph = row[phone_col]
@@ -698,6 +732,11 @@ class UserService:
                 except Exception:
                     phone_val = str(raw_ph).strip()
 
+            clean_ph = re.sub(r'\D', '', phone_val)
+            if len(clean_ph) != 10:
+                logger.warning(f"Excel roster row for '{fn}' skipped: Phone number must be exactly 10 digits (got '{phone_val}').")
+                continue
+
             role_val = str(row[role_col]).strip() if role_col and pd.notna(row[role_col]) else "Territory Executive"
             manager_val = str(row[manager_col]).strip() if manager_col and pd.notna(row[manager_col]) else "Unassigned"
             depot_val = str(row[depot_col]).strip() if depot_col and pd.notna(row[depot_col]) else "Unassigned"
@@ -707,7 +746,7 @@ class UserService:
                 "first_name": fn,
                 "last_name": ln,
                 "email": email_val,
-                "phone": phone_val,
+                "phone": clean_ph,
                 "role": role_val,
                 "reporting_manager": "Unassigned",  # Will map in Pass 2
                 "depot_name": depot_val,
@@ -715,13 +754,17 @@ class UserService:
                 "is_active": True
             }
 
-            res = self.create_user(payload)
-            if res:
-                imported_count += 1
-                pass1_records.append({
-                    "user": res,
-                    "target_manager": manager_val
-                })
+            try:
+                res = self.create_user(payload)
+                if res:
+                    imported_count += 1
+                    pass1_records.append({
+                        "user": res,
+                        "target_manager": manager_val
+                    })
+            except ValueError as ve:
+                logger.warning(f"Excel roster row for '{fn}' skipped due to validation error: {ve}")
+                continue
 
         # PASS 2: Establish Hierarchy Mappings in public.ase_tsm_mapping and update manager_id
         for rec in pass1_records:

@@ -43,9 +43,15 @@ async def list_users():
 
 @router.post("/")
 async def create_user(payload: Dict[str, Any]):
-    res = user_service.create_user(payload)
-    await invalidate_user_and_territory_caches()
-    return res
+    try:
+        res = user_service.create_user(payload)
+        await invalidate_user_and_territory_caches()
+        return res
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Error creating user: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/roles")
@@ -119,7 +125,13 @@ async def update_user(user_id: str, payload: Dict[str, Any], current_user: dict 
     if (is_active_val is False or is_active_val == "inactive") and str(current_user.get("user_id")) == str(user_id):
         raise HTTPException(status_code=400, detail="You cannot deactivate your own account.")
 
-    res = user_service.update_user(user_id, payload)
+    try:
+        res = user_service.update_user(user_id, payload)
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Error updating user: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     
     # Instant Remote User Revocation integration:
     # If user account is set to inactive/deactivated, revoke all active sessions in Redis immediately.
