@@ -53,3 +53,12 @@ async def log_error(
         logger.error(f"Failed to log error to Supabase: {str(e)}")
         # We don't throw 500 here because the frontend doesn't need to crash if logging fails.
         return {"status": "error", "message": "Failed to log error"}
+
+
+@router.get("/tenant/config")
+def get_tenant_config_endpoint(tenant_slug: Optional[str] = "rll"):
+    """
+    Returns dynamic white-label tenant configuration (App Name, Logo URL, Favicon, Splash Screen, Pinned Company).
+    """
+    from backend.services.tenant_service import get_tenant_config_service
+    return get_tenant_config_service(tenant_slug=tenant_slug or "rll")

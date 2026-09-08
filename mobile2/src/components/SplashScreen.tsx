@@ -1,12 +1,14 @@
 import React, { useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Animated } from 'react-native';
+import { View, Text, StyleSheet, Animated, Image } from 'react-native';
 import LogoSvg from '../assets/rll logo.svg';
+import { useTenant } from '../context/TenantContext';
 
 interface SplashScreenProps {
   onFinish?: () => void;
 }
 
 export function SplashScreen({ onFinish }: SplashScreenProps) {
+  const { config } = useTenant();
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(0.92)).current;
 
@@ -26,6 +28,8 @@ export function SplashScreen({ onFinish }: SplashScreenProps) {
     ]).start();
   }, [fadeAnim, scaleAnim]);
 
+  const splashImgUrl = config.splashScreenUrl || config.logoUrl;
+
   return (
     <View style={styles.container}>
       <Animated.View
@@ -38,14 +42,17 @@ export function SplashScreen({ onFinish }: SplashScreenProps) {
         ]}
       >
         <View style={styles.logoContainer}>
-          <LogoSvg width={120} height={120} />
+          {splashImgUrl ? (
+            <Image source={{ uri: splashImgUrl }} style={{ width: 120, height: 120, resizeMode: 'contain' }} />
+          ) : (
+            <LogoSvg width={120} height={120} />
+          )}
         </View>
 
         <View style={styles.textContainer}>
           <Text style={styles.brandTitle}>
-            LucidX<Text style={styles.brandAccent}>360</Text>
+            {config.appName || 'LucidX360'}
           </Text>
-          <Text style={styles.brandSubtitle}>RAJASTHAN LIQUOR LIMITED</Text>
         </View>
       </Animated.View>
     </View>

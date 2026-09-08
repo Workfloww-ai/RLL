@@ -21,6 +21,9 @@ import {
 } from '../../components/Icons';
 import LogoSvg from '../../assets/rll logo.svg';
 
+import { useTenant } from '../../context/TenantContext';
+import { Image } from 'react-native';
+
 interface HeaderProps {
   period: Period;
   setPeriod: (period: Period) => void;
@@ -80,6 +83,7 @@ export function Header({
   headquartersList,
   latestSaleDate,
 }: HeaderProps) {
+  const { config } = useTenant();
   const periods: Period[] = ['Daily', 'MTD', 'YTD'];
   const [showHqModal, setShowHqModal] = useState(false);
   const [pickerTarget, setPickerTarget] = useState<'from' | 'to' | null>(null);
@@ -233,9 +237,13 @@ export function Header({
       <View style={styles.topRow}>
         <View style={styles.branding}>
           <View style={styles.logoBox}>
-            <LogoSvg width={28} height={28} />
+            {config.logoUrl ? (
+              <Image source={{ uri: config.logoUrl }} style={{ width: 28, height: 28, resizeMode: 'contain' }} />
+            ) : (
+              <LogoSvg width={28} height={28} />
+            )}
           </View>
-          <Text style={styles.title}>LucidX360</Text>
+          <Text style={styles.title}>{config.appName || 'LucidX360'}</Text>
         </View>
 
         {/* Minimalist Headquarters Selector Pill */}

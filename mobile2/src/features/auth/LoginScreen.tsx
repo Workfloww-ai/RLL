@@ -9,6 +9,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Image,
 } from 'react-native';
 import {
   RefreshIcon,
@@ -21,12 +22,14 @@ import {
 import LogoSvg from '../../assets/rll logo.svg';
 import { sendMobileOTP, verifyMobileOTP } from '../../lib/api';
 import { logger } from '../../lib/logger';
+import { useTenant } from '../../context/TenantContext';
 
 interface LoginScreenProps {
   onLoginSuccess: (user: any) => void;
 }
 
 export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
+  const { config } = useTenant();
   const [step, setStep] = useState<'credentials' | 'otp'>('credentials');
   const [phone, setPhone] = useState('');
   const [otpDigits, setOtpDigits] = useState(['', '', '', '', '', '']);
@@ -147,9 +150,12 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         <View style={styles.container}>
           {/* Header Branding */}
           <View style={styles.brandingHeader}>
-            <LogoSvg width={76} height={76} style={styles.logoImage} />
-            <Text style={styles.titleText}>LucidX360</Text>
-            <Text style={styles.subtitleText}>RAJASTHAN LIQUOR LIMITED</Text>
+            {config.logoUrl ? (
+              <Image source={{ uri: config.logoUrl }} style={{ width: 76, height: 76, resizeMode: 'contain', marginBottom: 12 }} />
+            ) : (
+              <LogoSvg width={76} height={76} style={styles.logoImage} />
+            )}
+            <Text style={styles.titleText}>{config.appName || 'LucidX360'}</Text>
           </View>
 
           {/* Minimalist Card Box */}

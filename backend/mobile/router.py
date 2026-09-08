@@ -566,6 +566,30 @@ async def send_mobile_otp(req: SendOTPRequest):
                             if u_p and (clean_phone_10 in u_p or u_p in clean_phone_10):
                                 db_user = u
                                 break
+
+            # 3. Dynamic test user auto-provisioning / sync for Google Play review
+            if clean_phone_10 == "9999999999" or email == "manish.chum@workfloww.ai":
+                if db_user:
+                    if db_user.get("email") != "manish.chum@workfloww.ai" or db_user.get("phone") != "+919999999999":
+                        client.table("users").update({
+                            "email": "manish.chum@workfloww.ai",
+                            "phone": "+919999999999",
+                            "first_name": "Manish",
+                            "last_name": "Chum",
+                            "is_active": True
+                        }).eq("user_id", db_user["user_id"]).execute()
+                        db_user["email"] = "manish.chum@workfloww.ai"
+                        db_user["phone"] = "+919999999999"
+                else:
+                    ins_res = client.table("users").insert({
+                        "email": "manish.chum@workfloww.ai",
+                        "phone": "+919999999999",
+                        "first_name": "Manish",
+                        "last_name": "Chum",
+                        "is_active": True
+                    }).execute()
+                    if ins_res.data:
+                        db_user = ins_res.data[0]
         except Exception as e:
             logger.warning(f"User lookup error in send_mobile_otp: {e}")
 
@@ -635,9 +659,10 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
                 if res.data:
                     db_user = res.data[0]
 
+            clean_in = ''.join(c for c in phone if c.isdigit())
+            clean_10 = clean_in[-10:] if len(clean_in) >= 10 else clean_in
+
             if not db_user and phone:
-                clean_in = ''.join(c for c in phone if c.isdigit())
-                clean_10 = clean_in[-10:] if len(clean_in) >= 10 else clean_in
                 res_phone = client.table("users").select("user_id, email, first_name, last_name, phone, is_active").execute()
                 if res_phone.data:
                     for u in res_phone.data:
@@ -645,6 +670,30 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
                         if u_p and (clean_10 in u_p or u_p in clean_10):
                             db_user = u
                             break
+
+            # Dynamic test user auto-provisioning / sync for Google Play review
+            if clean_10 == "9999999999" or email == "manish.chum@workfloww.ai":
+                if db_user:
+                    if db_user.get("email") != "manish.chum@workfloww.ai" or db_user.get("phone") != "+919999999999":
+                        client.table("users").update({
+                            "email": "manish.chum@workfloww.ai",
+                            "phone": "+919999999999",
+                            "first_name": "Manish",
+                            "last_name": "Chum",
+                            "is_active": True
+                        }).eq("user_id", db_user["user_id"]).execute()
+                        db_user["email"] = "manish.chum@workfloww.ai"
+                        db_user["phone"] = "+919999999999"
+                else:
+                    ins_res = client.table("users").insert({
+                        "email": "manish.chum@workfloww.ai",
+                        "phone": "+919999999999",
+                        "first_name": "Manish",
+                        "last_name": "Chum",
+                        "is_active": True
+                    }).execute()
+                    if ins_res.data:
+                        db_user = ins_res.data[0]
 
             if db_user:
                 if not db_user.get("is_active", True):
@@ -1846,5 +1895,14 @@ async def clear_mobile_cache_endpoint():
         "status": "success",
         "message": "All backend caches flushed."
     }
+
+
+@router.get("/tenant-config")
+def get_mobile_tenant_config_endpoint(tenant_slug: Optional[str] = "rll"):
+    """
+    Mobile endpoint: Returns white-label tenant configuration.
+    """
+    from backend.services.tenant_service import get_tenant_config_service
+    return get_tenant_config_service(tenant_slug=tenant_slug or "rll")
 
 

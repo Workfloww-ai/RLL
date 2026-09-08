@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Shield, Plus, Edit2, Trash2, CheckCircle2, Save, X } from 'lucide-react';
+import { Shield, Plus, Edit2, Trash2, CheckCircle2, Save, X, XCircle } from 'lucide-react';
 import { API_BASE_URL } from '../config';
 import { useToast } from '../contexts/ToastContext';
 import { secureFetch } from '../lib/apiClient';

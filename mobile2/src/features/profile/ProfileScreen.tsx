@@ -11,6 +11,8 @@ import {
 } from '../../components/Icons';
 import { ProfileSkeleton } from '../../components/SkeletonLoaders';
 
+import { useTenant } from '../../context/TenantContext';
+
 interface ProfileScreenProps {
   user: any;
   onLogout: () => void;
@@ -19,6 +21,7 @@ interface ProfileScreenProps {
 }
 
 export function ProfileScreen({ user, onLogout, loading = false, onRefresh }: ProfileScreenProps) {
+  const { config } = useTenant();
   const [refreshing, setRefreshing] = useState(false);
 
   const handleRefresh = useCallback(async () => {
@@ -176,7 +179,7 @@ export function ProfileScreen({ user, onLogout, loading = false, onRefresh }: Pr
         </TouchableOpacity>
 
         <View style={styles.footer}>
-          <Text style={styles.footerText}>Rajasthan Liquor Limited • Powered by Workfloww.ai</Text>
+          <Text style={styles.footerText}>{`${config.appName || 'LucidX360'} • Powered by Workfloww.ai`}</Text>
         </View>
       </View>
     </View>

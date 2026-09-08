@@ -1,6 +1,7 @@
 import React from 'react';
 import { Package, Map, Users, LogOut, Settings, Shield } from 'lucide-react';
 import { ViewState } from '../types';
+import { useTenantConfig } from '../hooks/useTenantConfig';
 
 interface DashboardLayoutProps {
   currentView: ViewState;
@@ -11,6 +12,7 @@ interface DashboardLayoutProps {
 }
 
 export default function DashboardLayout({ currentView, onViewChange, onLogout, userName, children }: DashboardLayoutProps) {
+  const { config } = useTenantConfig();
   const displayUserName = userName || 'Admin User';
   const userInitial = displayUserName.charAt(0).toUpperCase();
   const navItems = [
@@ -28,10 +30,14 @@ export default function DashboardLayout({ currentView, onViewChange, onLogout, u
         {/* Brand Header */}
         <div className="p-6 mb-2 flex items-center gap-3">
           <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center p-1.5 shadow-sm">
-            <img src="/images/rll logo.svg" alt="RLL Logo" className="w-full h-full object-contain" />
+            <img 
+              src={config.logoUrl || "/images/rll logo.svg"} 
+              alt={config.appName || "Logo"} 
+              className="w-full h-full object-contain" 
+            />
           </div>
           <div>
-            <h1 className="text-white font-extrabold tracking-tight text-lg leading-tight">RLL</h1>
+            <h1 className="text-white font-extrabold tracking-tight text-lg leading-tight">{config.appName || "RLL"}</h1>
             <p className="text-[10px] text-blue-200/80 font-medium tracking-wide">Admin Portal</p>
           </div>
         </div>

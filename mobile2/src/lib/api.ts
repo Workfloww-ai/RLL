@@ -827,3 +827,15 @@ export async function secureApiFetch(endpointPath: string, init?: RequestInit): 
     return response;
 }
 
+
+export async function fetchTenantConfig(tenantSlug: string = 'rll') {
+  try {
+    const res = await apiFetch(`/mobile/tenant-config?tenant_slug=${encodeURIComponent(tenantSlug)}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (e) {
+    logger.warn('fetchTenantConfig error:', e);
+    return null;
+  }
+}
+

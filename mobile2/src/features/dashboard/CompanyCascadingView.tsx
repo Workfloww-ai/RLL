@@ -26,6 +26,8 @@ import {
   UsersIcon,
 } from '../../components/Icons';
 
+import { useTenant } from '../../context/TenantContext';
+
 interface CompanyCascadingViewProps {
   period: Period;
   dateFrom: string;
@@ -49,6 +51,7 @@ export function CompanyCascadingView({
   selectedCompanyFromParent,
   onClearParentSelectedCompany,
 }: CompanyCascadingViewProps) {
+  const { config } = useTenant();
   // Navigation level:
   // Level 1 = Companies List
   // Level 2 = Company Detail (Brands List)
@@ -201,7 +204,7 @@ export function CompanyCascadingView({
     setSelectedBrand(brand);
     setLevel(3);
     resetFilters();
-    loadBrandLicensees(brand.brand_id);
+    loadBrandLicensees(brand.brand_id, true);
   };
 
   const handleGoBack = useCallback(() => {
@@ -299,25 +302,16 @@ export function CompanyCascadingView({
     return brandLicensees;
   }, [level, companies, companyBrands, brandLicensees]);
 
-  // Pinned Rank helper for Companies (BUSINESS_LOGIC_SPEC.md Section 5)
+  // Pinned Rank helper for Companies (Dynamic tenant pinning or purely alphabetical)
   const getPinnedRank = (item: any): number => {
-    const id = String(item.id || '').toLowerCase();
-    const name = String(item.name || item.company_name || '').toLowerCase();
+    const id = String(item.id || '').toLowerCase().trim();
+    const name = String(item.name || item.company_name || '').toLowerCase().trim();
+    const pinnedTarget = (config?.pinnedCompanyName || '').toLowerCase().trim();
 
-    if (
-      id === 'rll' ||
-      name === 'rll' ||
-      name.startsWith('rll ') ||
-      name.includes('rajasthan liquor') ||
-      name.includes('rajasthan liquors') ||
-      name.includes('rajasthan')
-    ) {
+    if (pinnedTarget && (name === pinnedTarget || name.includes(pinnedTarget) || id === pinnedTarget)) {
       return 1;
     }
-    if (id.includes('diageo') || name.includes('diageo')) {
-      return 2;
-    }
-    if (item.isPinned) return 3;
+    if (item.isPinned) return 2;
     return 99;
   };
 
@@ -429,7 +423,7 @@ export function CompanyCascadingView({
           >
             <ChevronLeftIcon size={16} color="#0F172A" />
             <Text style={styles.backBtnText}>
-              {level === 2 ? 'Brands' : 'Licensees'}
+              {level === 3 ? 'Brands' : 'Companies'}
             </Text>
           </TouchableOpacity>
         </View>
@@ -580,7 +574,7 @@ export function CompanyCascadingView({
               <MetricsCard
                 key={item.licensee_id || index}
                 title={item.licensee_name || 'Licensee'}
-                // subtitle={item.group_name ? `Group: ${item.group_name}` : item.shop_name || 'Licensee Detail'}
+                subtitle={`Trade: ${item.trade || item.Trade || 'Off'}`}
                 locationPill={depotLocationPill}
                 pillTheme="blue"
                 metrics={[

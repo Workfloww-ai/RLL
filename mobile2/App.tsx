@@ -40,6 +40,7 @@ import {
 } from './src/lib/api';
 
 import { Header } from './src/features/dashboard/Header';
+import { TenantProvider, useTenant } from './src/context/TenantContext';
 import { FooterNav } from './src/features/dashboard/FooterNav';
 import { CompanyCard } from './src/features/dashboard/CompanyCard';
 import { NoDataModal } from './src/components/NoDataModal';
@@ -67,7 +68,8 @@ import {
 
 export type CompanySortOption = 'az' | 'za' | 'cases_desc' | 'cases_asc';
 
-export default function App() {
+function MainApp() {
+  const { config } = useTenant();
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
 
   useEffect(() => {
@@ -453,33 +455,14 @@ export default function App() {
     const getPinnedRank = (c: Company) => {
       const name = (c.name || '').toLowerCase().trim();
       const id = (c.id || '').toLowerCase().trim();
+      const pinnedTarget = (config?.pinnedCompanyName || '').toLowerCase().trim();
 
-      // Rank 1: Rajasthan Liquors / RLL (matches all variations regardless of casing, spacing, or Excel naming)
-      if (
-        id === 'rll' ||
-        name === 'rll' ||
-        name.startsWith('rll ') ||
-        name.endsWith(' rll') ||
-        name.includes('rajasthan liquor') ||
-        name.includes('rajasthan liquors') ||
-        name.includes('rajasthan') ||
-        name.includes('RLL')
-      ) {
+      if (pinnedTarget && (name === pinnedTarget || name.includes(pinnedTarget) || id === pinnedTarget)) {
         return 1;
       }
-
-      // Rank 2: Diageo (matches all variations of Diageo)
-      if (
-        id.includes('diageo') ||
-        name.includes('diageo')
-      ) {
+      if (c.isPinned) {
         return 2;
       }
-
-      if (c.isPinned) {
-        return 3;
-      }
-
       return 99;
     };
 
@@ -1074,3 +1057,11 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
 });
+
+export default function App() {
+  return (
+    <TenantProvider>
+      <MainApp />
+    </TenantProvider>
+  );
+}
