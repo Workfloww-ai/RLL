@@ -121,7 +121,7 @@ export function BrandModal({
   if (!company) return null;
 
   const rawCompanyData = company.data?.[period] || { cases: company.cases || 0, bottles: company.bottles || 0 };
-  const companyCases = Math.round((rawCompanyData.cases ?? company.cases ?? 0) * scaleFactor);
+  const companyCases = Number(((rawCompanyData.cases ?? company.cases ?? 0) * scaleFactor).toFixed(2));
   const companyBottles = Math.round((rawCompanyData.bottles ?? company.bottles ?? 0) * scaleFactor);
 
   const getSortLabel = () => {
@@ -273,7 +273,7 @@ export function BrandModal({
             }
             renderItem={({ item }) => {
               const rawBData = item.data[period];
-              const bCases = Math.round(rawBData.cases * scaleFactor);
+              const bCases = Number((rawBData.cases * scaleFactor).toFixed(2));
               const bBottles = Math.round(rawBData.bottles * scaleFactor);
 
               return (

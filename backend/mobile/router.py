@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query, Request, status
 from pydantic import BaseModel
 from backend.core.security import create_access_token, get_current_user, RoleChecker
 from backend.db.client import get_supabase
+from backend.db.company_aliases import normalize_company_name, is_pinned_company
 from backend.db.supabase_client import (
     call_mobile_sales_rpc,
     call_mobile_tsm_sales_rpc,
@@ -142,12 +143,13 @@ def _fetch_fresh_master_lookups():
     for c_id_raw, c_name in companies_lookup.items():
         if not c_name or c_name == "Others":
             continue
-        c_key = c_name.lower().replace(" ", "-").replace("/", "-")
+        norm_name = normalize_company_name(c_name)
+        c_key = norm_name.lower().replace(" ", "-").replace("/", "-")
         master_companies[c_key] = {
             "id": c_key,
             "company_id": str(c_id_raw),
-            "name": c_name,
-            "isPinned": c_key in ["rll", "diageo-inbrew"] or c_name.upper() == "RLL",
+            "name": norm_name,
+            "isPinned": is_pinned_company(norm_name, c_key),
             "hqLocation": "All Headquarters",
             "data": {
                 "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
@@ -236,12 +238,13 @@ def _fetch_fresh_master_lookups():
     for c_id_raw, c_name in companies_lookup.items():
         if not c_name or c_name == "Others":
             continue
-        c_key = c_name.lower().replace(" ", "-").replace("/", "-")
+        norm_name = normalize_company_name(c_name)
+        c_key = norm_name.lower().replace(" ", "-").replace("/", "-")
         master_companies[c_key] = {
             "id": c_key,
             "company_id": str(c_id_raw),
-            "name": c_name,
-            "isPinned": c_key in ["rll", "diageo-inbrew"] or c_name.upper() == "RLL",
+            "name": norm_name,
+            "isPinned": is_pinned_company(norm_name, c_key),
             "hqLocation": "All Headquarters",
             "data": {
                 "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
@@ -1136,24 +1139,17 @@ async def get_mobile_sales(
     # I. Python transformation timing
     t_transform_start = time.perf_counter()
 
-    # Company Aliases Normalization (Willam vs William)
-    COMPANY_ALIASES = {
-        "willam grants": "William Grants",
-        "william grants": "William Grants",
-        "william grants & sons": "William Grants"
-    }
-
     grouped_comp_rows = {}
     for cid_raw, cname_raw in companies_lookup.items():
         if not cname_raw or cname_raw.lower() == "others":
             continue
-        norm_name = COMPANY_ALIASES.get(cname_raw.lower(), cname_raw)
+        norm_name = normalize_company_name(cname_raw)
         comp_id = norm_name.lower().replace(" ", "-").replace("/", "-")
         if comp_id not in grouped_comp_rows:
             grouped_comp_rows[comp_id] = {
                 "id": comp_id,
                 "name": norm_name,
-                "isPinned": comp_id in ["rll", "diageo-inbrew"] or norm_name.upper() == "RLL",
+                "isPinned": is_pinned_company(norm_name, comp_id),
                 "hqLocation": selected_hq or "All Headquarters",
                 "company_ids": [str(cid_raw)],
                 "data": {
@@ -1173,14 +1169,14 @@ async def get_mobile_sales(
         if not cname or cname.lower() == "others":
             continue
 
-        norm_name = COMPANY_ALIASES.get(cname.lower(), cname)
+        norm_name = normalize_company_name(cname)
         comp_id = norm_name.lower().replace(" ", "-").replace("/", "-")
 
         if comp_id not in grouped_comp_rows:
             grouped_comp_rows[comp_id] = {
                 "id": comp_id,
                 "name": norm_name,
-                "isPinned": comp_id in ["rll", "diageo-inbrew"] or norm_name.upper() == "RLL",
+                "isPinned": is_pinned_company(norm_name, comp_id),
                 "hqLocation": selected_hq or "All Headquarters",
                 "company_ids": [cid] if cid else [],
                 "data": {

@@ -88,8 +88,8 @@ export default function App() {
   const [user, setUser] = useState<any>(null);
   const [loadingSession, setLoadingSession] = useState(true);
   const [period, setPeriod] = useState<Period>('Daily');
-  const [dateFrom, setDateFrom] = useState<string>('2026-07-31');
-  const [dateTo, setDateTo] = useState<string>('2026-07-31');
+  const [dateFrom, setDateFrom] = useState<string>('');
+  const [dateTo, setDateTo] = useState<string>('');
   const [viewMode, setViewMode] = useState<ViewMode>('companies');
   const [viewModeHistory, setViewModeHistory] = useState<ViewMode[]>(['companies']);
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
@@ -218,8 +218,8 @@ export default function App() {
         if (cachedUser && token) {
           logger.info(`App: Found active session for user: ${JSON.parse(cachedUser).email}`);
           setPeriod('Daily');
-          setDateFrom('2026-07-31');
-          setDateTo('2026-07-31');
+          setDateFrom('');
+          setDateTo('');
           setViewMode('companies');
           setUser(JSON.parse(cachedUser));
         } else {
@@ -259,8 +259,8 @@ export default function App() {
   }, [Boolean(user)]);
 
   const prevFiltersRef = useRef({
-    dateFrom: '2026-07-31',
-    dateTo: '2026-07-31',
+    dateFrom: '',
+    dateTo: '',
     period: 'Daily',
     selectedHq: 'All Headquarters',
   });
@@ -427,8 +427,8 @@ export default function App() {
     setUser(null);
     setApiData(null);
     setPeriod('Daily');
-    setDateFrom('2026-07-31');
-    setDateTo('2026-07-31');
+    setDateFrom('');
+    setDateTo('');
     setViewMode('companies');
   };
 
@@ -528,7 +528,7 @@ export default function App() {
       { cases: 0, bottles: 0 }
     );
     return {
-      cases: Math.round(raw.cases * scaleFactor),
+      cases: Number((raw.cases * scaleFactor).toFixed(2)),
       bottles: Math.round(raw.bottles * scaleFactor),
     };
   }, [sortedCompanies, period, scaleFactor]);
@@ -620,8 +620,9 @@ export default function App() {
             onPress={() => {
               setSearchQuery('');
               setSortBy('az');
-              setDateFrom('2026-07-31');
-              setDateTo('2026-07-31');
+              const latestDate = apiData?.latest_sale_date || '';
+              setDateFrom(latestDate);
+              setDateTo(latestDate);
             }}
           >
             <Text style={styles.resetSearchBtnText}>Reset to Latest Date</Text>
@@ -645,8 +646,8 @@ export default function App() {
           <LoginScreen
             onLoginSuccess={(loggedInUser) => {
               setPeriod('Daily');
-              setDateFrom('2026-07-31');
-              setDateTo('2026-07-31');
+              setDateFrom('');
+              setDateTo('');
               setViewMode('companies');
               setUser(loggedInUser);
             }}
@@ -817,7 +818,7 @@ export default function App() {
               selectedDate={dateTo || dateFrom || undefined}
               onReset={async () => {
                 setShowNoDataModal(false);
-                const targetLatest = apiData?.latest_sale_date || '2026-07-31';
+                const targetLatest = apiData?.latest_sale_date || '';
                 setDateFrom(targetLatest);
                 setDateTo(targetLatest);
                 setSelectedHq('All Headquarters');

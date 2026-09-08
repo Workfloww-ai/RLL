@@ -2,6 +2,7 @@ import logging
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from backend.db.supabase_client import get_supabase_client
+from backend.db.company_aliases import normalize_company_name, is_pinned_company
 
 logger = logging.getLogger(__name__)
 
@@ -68,13 +69,6 @@ def get_companies_summary(
         logger.error(f"Error calling get_mobile_companies_summary RPC: {e}")
         return [], target_date
 
-    # 2. Company Aliases Normalization (Willam vs William)
-    COMPANY_ALIASES = {
-        "willam grants": "William Grants",
-        "william grants": "William Grants",
-        "william grants & sons": "William Grants"
-    }
-
     # 2. Fetch all registered master companies to ensure all companies are shown irrespective of HQ sales
     grouped_companies = {}
     try:
@@ -84,13 +78,13 @@ def get_companies_summary(
             cname = str(mc.get("company_name") or "").strip()
             if not cname or cname.lower() == "others":
                 continue
-            norm_name = COMPANY_ALIASES.get(cname.lower(), cname)
+            norm_name = normalize_company_name(cname)
             norm_key = norm_name.lower().replace(" ", "-").replace("/", "-")
             if norm_key not in grouped_companies:
                 grouped_companies[norm_key] = {
                     "id": norm_key,
                     "name": norm_name,
-                    "isPinned": norm_key in ("rll", "diageo-inbrew") or norm_name.upper() == "RLL",
+                    "isPinned": is_pinned_company(norm_name, norm_key),
                     "hqLocation": selected_hq or "All Headquarters",
                     "company_ids": [],
                     "daily_cases": 0.0,
@@ -114,14 +108,14 @@ def get_companies_summary(
         if not cname or cname.lower() == "others":
             continue
 
-        norm_name = COMPANY_ALIASES.get(cname.lower(), cname)
+        norm_name = normalize_company_name(cname)
         norm_key = norm_name.lower().replace(" ", "-").replace("/", "-")
 
         if norm_key not in grouped_companies:
             grouped_companies[norm_key] = {
                 "id": norm_key,
                 "name": norm_name,
-                "isPinned": norm_key in ("rll", "diageo-inbrew") or norm_name.upper() == "RLL",
+                "isPinned": is_pinned_company(norm_name, norm_key),
                 "hqLocation": selected_hq or "All Headquarters",
                 "company_ids": [cid] if cid else [],
                 "daily_cases": 0.0,

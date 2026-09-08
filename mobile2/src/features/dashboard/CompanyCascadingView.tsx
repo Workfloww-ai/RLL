@@ -170,12 +170,21 @@ export function CompanyCascadingView({
     }
   };
 
+  // Derive current selectedCompany from parent companies list so it is ALWAYS 100% in sync with the latest date/period/HQ metrics!
+  const activeSelectedCompany = useMemo(() => {
+    if (!selectedCompany) return null;
+    const normKey = getNormalizedCompanyKey(selectedCompany);
+    return companies.find((c) => getNormalizedCompanyKey(c) === normKey) || selectedCompany;
+  }, [selectedCompany, companies, getNormalizedCompanyKey]);
+
   // Sync details on date/period/HQ changes
   useEffect(() => {
-    if (level === 2 && selectedCompany) {
-      loadCompanyBrands(selectedCompany);
+    companyBrandsCacheRef.current.clear();
+    brandLicenseesCacheRef.current.clear();
+    if (level === 2 && activeSelectedCompany) {
+      loadCompanyBrands(activeSelectedCompany, true);
     } else if (level === 3 && selectedBrand) {
-      loadBrandLicensees(selectedBrand.brand_id);
+      loadBrandLicensees(selectedBrand.brand_id, true);
     }
   }, [dateFrom, dateTo, period, selectedHq]);
 
@@ -201,13 +210,13 @@ export function CompanyCascadingView({
       setLevel(2);
       resetFilters();
 
-      if (selectedCompany) {
-        const normKey = getNormalizedCompanyKey(selectedCompany);
+      if (activeSelectedCompany) {
+        const normKey = getNormalizedCompanyKey(activeSelectedCompany);
         const key = `${normKey}_${cacheKey}`;
         if (companyBrandsCacheRef.current.has(key)) {
           setCompanyBrands(companyBrandsCacheRef.current.get(key) || []);
         } else {
-          loadCompanyBrands(selectedCompany);
+          loadCompanyBrands(activeSelectedCompany);
         }
       }
     } else if (level === 2) {
@@ -219,7 +228,7 @@ export function CompanyCascadingView({
         onClearParentSelectedCompany();
       }
     }
-  }, [level, selectedCompany, cacheKey, onClearParentSelectedCompany, getNormalizedCompanyKey]);
+  }, [level, activeSelectedCompany, cacheKey, onClearParentSelectedCompany, getNormalizedCompanyKey]);
 
   // Hardware BackHandler
   useEffect(() => {
@@ -248,8 +257,8 @@ export function CompanyCascadingView({
     companyBrandsCacheRef.current.clear();
     brandLicenseesCacheRef.current.clear();
     try {
-      if (level === 2 && selectedCompany) {
-        await loadCompanyBrands(selectedCompany, true);
+      if (level === 2 && activeSelectedCompany) {
+        await loadCompanyBrands(activeSelectedCompany, true);
       } else if (level === 3 && selectedBrand?.brand_id) {
         await loadBrandLicensees(selectedBrand.brand_id, true);
       }
@@ -258,7 +267,7 @@ export function CompanyCascadingView({
     } finally {
       setRefreshing(false);
     }
-  }, [level, selectedCompany, selectedBrand]);
+  }, [level, activeSelectedCompany, selectedBrand]);
 
   // Helper to extract cases and bottles respecting period
   const getScaledCases = (item: any): number => {
@@ -269,7 +278,7 @@ export function CompanyCascadingView({
       item.mtd_cases ??
       0
     );
-    return Math.round(rawCases * scaleFactor);
+    return Number((rawCases * scaleFactor).toFixed(2));
   };
 
   const getScaledBottles = (item: any): number => {
@@ -385,10 +394,10 @@ export function CompanyCascadingView({
 
   // Header breadcrumb summary metrics
   const headerMetrics = useMemo(() => {
-    if (level === 2 && selectedCompany) {
-      const cases = getScaledCases(selectedCompany);
-      const bottles = getScaledBottles(selectedCompany);
-      return { cases, bottles, title: selectedCompany.name };
+    if (level === 2 && activeSelectedCompany) {
+      const cases = getScaledCases(activeSelectedCompany);
+      const bottles = getScaledBottles(activeSelectedCompany);
+      return { cases, bottles, title: activeSelectedCompany.name };
     }
     if (level === 3 && selectedBrand) {
       const cases = getScaledCases(selectedBrand);
@@ -396,7 +405,7 @@ export function CompanyCascadingView({
       return { cases, bottles, title: selectedBrand.brand_name };
     }
     return null;
-  }, [level, selectedCompany, selectedBrand, period, scaleFactor]);
+  }, [level, activeSelectedCompany, selectedBrand, period, scaleFactor]);
 
   const getSortOptionLabel = (option: SortOptionValue): string => {
     switch (option) {

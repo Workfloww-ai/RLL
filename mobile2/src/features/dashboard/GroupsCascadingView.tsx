@@ -460,8 +460,8 @@ export function GroupsCascadingView({
           paginatedList.map((item, index) => {
             // Level 1: Root Group Card (Image 1)
             if (level === 1) {
-              const cases = Math.round(
-                Number(item.total_cases ?? item.cases ?? item.mtd_cases ?? 0)
+              const cases = Number(
+                Number(item.total_cases ?? item.cases ?? item.mtd_cases ?? 0).toFixed(2)
               );
               const bottles = Math.round(
                 Number(item.total_bottles ?? item.bottles ?? item.mtd_bottles ?? 0)
@@ -485,7 +485,7 @@ export function GroupsCascadingView({
 
             // Level 2: Group Brands View (Image 2)
             if (level === 2 && activeGroupTab === 'brands') {
-              const cases = Math.round(Number(item.total_cases ?? 0));
+              const cases = Number(Number(item.total_cases ?? 0).toFixed(2));
               const bottles = Math.round(Number(item.total_bottles ?? 0));
               const depotPill =
                 item.depot_name && item.depot_name !== 'Unassigned'
@@ -510,7 +510,7 @@ export function GroupsCascadingView({
 
             // Level 2: Group Licensees View (Image 3)
             if (level === 2 && activeGroupTab === 'licensees') {
-              const cases = Math.round(Number(item.total_cases ?? 0));
+              const cases = Number(Number(item.total_cases ?? 0).toFixed(2));
               const bottles = Math.round(Number(item.total_bottles ?? 0));
               const depotPill =
                 item.depot_name && item.depot_name !== 'Unassigned'
@@ -538,7 +538,7 @@ export function GroupsCascadingView({
 
             // Level 3: Licensee Brands View (Image 4)
             if (level === 3) {
-              const cases = Math.round(Number(item.total_cases ?? 0));
+              const cases = Number(Number(item.total_cases ?? 0).toFixed(2));
               const bottles = Math.round(Number(item.total_bottles ?? 0));
               const depotPill =
                 item.depot_name && item.depot_name !== 'Unassigned'

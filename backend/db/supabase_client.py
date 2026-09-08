@@ -1059,21 +1059,21 @@ def resolve_company_id_uuid(client: Any, target_company: str) -> str:
         return target_str
 
     try:
+        from backend.db.company_aliases import normalize_company_name
+        norm_target = normalize_company_name(target_str)
         res = client.table("companies").select("company_id, company_name").execute()
         data = res.data or []
+
+        # 1. Match by normalized name
+        for c in data:
+            cname = c.get("company_name", "").strip()
+            cid = str(c.get("company_id"))
+            if normalize_company_name(cname) == norm_target:
+                return cid
+
+        # 2. Fallback substring/exact match
         t_low = target_str.lower()
         cleaned = t_low.replace("-", " ").replace("_", " ")
-
-        # 1. Acronym & Synonym mappings
-        for c in data:
-            cname = c.get("company_name", "").strip().lower()
-            cid = str(c.get("company_id"))
-            if t_low in ["rll", "rajasthan", "rajasthan liquor", "rajasthan liquors"] and ("rajasthan" in cname or "rll" in cname):
-                return cid
-            if t_low in ["diageo", "diageo-inbrew"] and "diageo" in cname:
-                return cid
-
-        # 2. Exact or substring match
         for c in data:
             cname = c.get("company_name", "").strip().lower()
             cid = str(c.get("company_id"))

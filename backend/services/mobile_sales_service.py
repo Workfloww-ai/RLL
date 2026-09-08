@@ -10,6 +10,7 @@ from datetime import datetime, date
 from typing import Any, Dict, List, Optional, Tuple
 
 from backend.db.supabase_client import call_mobile_sales_rpc, call_mobile_sales_rpc_v3, get_supabase_client
+from backend.db.company_aliases import normalize_company_name, is_pinned_company
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +216,8 @@ def build_sales_response(
 
     # Pre-seed companies from master so companies with 0 sales still appear
     for c in master["comp_db"]:
-        c_name = c.get("company_name") or ""
+        raw_c_name = c.get("company_name") or ""
+        c_name = normalize_company_name(raw_c_name)
         if not c_name or c_name == "Others":
             continue
         c_id = _normalize_id(c_name)
@@ -225,7 +227,7 @@ def build_sales_response(
             "company_name": c_name,
             "name": c_name,
             "is_active": c.get("is_active", True),
-            "isPinned": c_id in ["rll", "diageo-inbrew"],
+            "isPinned": is_pinned_company(c_name, c_id),
             "hqLocation": "Jaipur",
             "data": {
                 "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
@@ -247,8 +249,9 @@ def build_sales_response(
         depot_meta = depots_by_id.get(depot_uuid) or {}
         hq_meta    = hq_by_id.get(hq_uuid) or {}
 
-        comp_name  = comp_meta.get("company_name") or "Others"
-        if comp_name == "Others":
+        raw_comp_name = comp_meta.get("company_name") or "Others"
+        comp_name = normalize_company_name(raw_comp_name)
+        if not comp_name or comp_name == "Others":
             continue
         brand_name = brand_meta.get("brand_name") or "Generic Brand"
         depot_name = depot_meta.get("name") or "Central Depot"
@@ -266,17 +269,17 @@ def build_sales_response(
 
         row_metrics = {
             "Daily": {
-                "cases": int(row.get("daily_cases") or 0),
+                "cases": round(float(row.get("daily_cases") or 0.0), 2),
                 "bottles": int(row.get("daily_bottles") or 0),
                 "bl": float(row.get("daily_bl") or 0.0),
             },
             "MTD": {
-                "cases": int(row.get("mtd_cases") or 0),
+                "cases": round(float(row.get("mtd_cases") or 0.0), 2),
                 "bottles": int(row.get("mtd_bottles") or 0),
                 "bl": float(row.get("mtd_bl") or 0.0),
             },
             "YTD": {
-                "cases": int(row.get("ytd_cases") or 0),
+                "cases": round(float(row.get("ytd_cases") or 0.0), 2),
                 "bottles": int(row.get("ytd_bottles") or 0),
                 "bl": float(row.get("ytd_bl") or 0.0),
             },
@@ -292,7 +295,7 @@ def build_sales_response(
                 companies_map[c_id] = {
                     "id": c_id, "company_id": comp_uuid, "company_name": comp_name,
                     "name": comp_name, "is_active": comp_meta.get("is_active", True),
-                    "isPinned": c_id in ["rll", "diageo-inbrew"], "hqLocation": hq_name,
+                    "isPinned": is_pinned_company(comp_name, c_id), "hqLocation": hq_name,
                     "data": {
                         "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
                         "MTD":   {"cases": 0, "bottles": 0, "bl": 0.0},
@@ -366,32 +369,43 @@ def build_sales_response(
                     "brands_map": {},
                 }
             tpd = tsms_map[tsm_id]["data"][period_key]
-        tpd["cases"]   += cases
-        tpd["bottles"] += btl
-        tpd["bl"]      += bl
+            tpd["cases"]   += cases
+            tpd["bottles"] += btl
+            tpd["bl"]      += bl
 
-        tbm = tsms_map[tsm_id]["brands_map"]
-        if b_id not in tbm:
-            tbm[b_id] = {
-                "brandId": b_id, "brandName": brand_name,
-                "data": {
-                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "MTD":   {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "YTD":   {"cases": 0, "bottles": 0, "bl": 0.0},
-                },
-            }
-        tbpd = tbm[b_id]["data"][period]
-        tbpd["cases"]   += cases
-        tbpd["bottles"] += btl
-        tbpd["bl"]      += bl
+            tbm = tsms_map[tsm_id]["brands_map"]
+            if b_id not in tbm:
+                tbm[b_id] = {
+                    "brandId": b_id, "brandName": brand_name,
+                    "data": {
+                        "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                        "MTD":   {"cases": 0, "bottles": 0, "bl": 0.0},
+                        "YTD":   {"cases": 0, "bottles": 0, "bl": 0.0},
+                    },
+                }
+            tbpd = tbm[b_id]["data"][period_key]
+            tbpd["cases"]   += cases
+            tbpd["bottles"] += btl
+            tbpd["bl"]      += bl
 
     t_agg_ms = (time.perf_counter() - t_agg) * 1000
 
     # ── Response formatting ──────────────────────────────────────────────────
     def _format_company(c_data: Dict) -> Dict:
-        c_data["data"][period]["bl"] = round(c_data["data"][period]["bl"], 2)
+        c_data["data"][period]["cases"] = round(c_data["data"][period]["cases"], 2)
+        c_data["data"][period]["bl"]    = round(c_data["data"][period]["bl"], 2)
         c_data["brands"] = [
-            {**b, "data": {**b["data"], period: {**b["data"][period], "bl": round(b["data"][period]["bl"], 2)}}}
+            {
+                **b,
+                "data": {
+                    **b["data"],
+                    period: {
+                        **b["data"][period],
+                        "cases": round(b["data"][period]["cases"], 2),
+                        "bl":    round(b["data"][period]["bl"], 2),
+                    },
+                },
+            }
             for b in c_data.pop("brands_map").values()
         ]
         return c_data

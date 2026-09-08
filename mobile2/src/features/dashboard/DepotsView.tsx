@@ -72,7 +72,7 @@ export function DepotsView({
   const renderDepotItem = useCallback(
     ({ item: depot }: { item: typeof filteredDepots[0] }) => {
       const raw = depot.data[period];
-      const cases = Math.round(raw.cases * scaleFactor);
+      const cases = Number((raw.cases * scaleFactor).toFixed(2));
       const bottles = Math.round(raw.bottles * scaleFactor);
       return (
         <TouchableOpacity
@@ -196,7 +196,7 @@ export function DepotsView({
                 contentContainerStyle={styles.modalListContent}
                 renderItem={({ item }) => {
                   const bRaw = item.data[period];
-                  const bCases = Math.round(bRaw.cases * scaleFactor);
+                  const bCases = Number((bRaw.cases * scaleFactor).toFixed(2));
                   const bBottles = Math.round(bRaw.bottles * scaleFactor);
 
                   return (

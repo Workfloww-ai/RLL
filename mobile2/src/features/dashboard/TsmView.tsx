@@ -206,8 +206,8 @@ export function TsmView({
 
       const aRaw = a.data?.[period] || { cases: 0, bottles: 0 };
       const bRaw = b.data?.[period] || { cases: 0, bottles: 0 };
-      const casesA = Math.round((aRaw.cases || a.total_cases || 0) * scaleFactor);
-      const casesB = Math.round((bRaw.cases || b.total_cases || 0) * scaleFactor);
+      const casesA = Number(((aRaw.cases || a.total_cases || 0) * scaleFactor).toFixed(2));
+      const casesB = Number(((bRaw.cases || b.total_cases || 0) * scaleFactor).toFixed(2));
 
       if (sortOption === 'az') return nameA.localeCompare(nameB);
       if (sortOption === 'za') return nameB.localeCompare(nameA);
@@ -345,7 +345,7 @@ export function TsmView({
             // Level 1: Root TSM Card (Image 1)
             if (level === 1) {
               const rawData = item.data?.[period] || { cases: 0, bottles: 0 };
-              const cases = Math.round((rawData.cases || 0) * scaleFactor);
+              const cases = Number(((rawData.cases || 0) * scaleFactor).toFixed(2));
               const bottles = Math.round((rawData.bottles || 0) * scaleFactor);
               const aseCount = item.ases?.length || 0;
               const companyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.brands?.filter((b: any) => (b.data?.[period]?.cases || 0) > 0 || (b.data?.[period]?.bottles || 0) > 0).length || 0);
@@ -371,7 +371,7 @@ export function TsmView({
             // Level 2: TSM Companies View (Image 2)
             if (level === 2 && activeTsmTab === 'companies') {
               const rawData = item.data?.[period] || { cases: 0, bottles: 0 };
-              const cases = Math.round((rawData.cases || item.total_cases || 0) * scaleFactor);
+              const cases = Number(((rawData.cases || item.total_cases || 0) * scaleFactor).toFixed(2));
               const bottles = Math.round((rawData.bottles || item.total_bottles || 0) * scaleFactor);
               const compName = item.brandName || item.company_name || item.name || 'Company';
 
@@ -391,7 +391,7 @@ export function TsmView({
             // Level 2: TSM ASEs List View (Image 3)
             if (level === 2 && activeTsmTab === 'ase') {
               const rawData = item.data?.[period] || { cases: 0, bottles: 0 };
-              const cases = Math.round((rawData.cases || 0) * scaleFactor);
+              const cases = Number(((rawData.cases || 0) * scaleFactor).toFixed(2));
               const bottles = Math.round((rawData.bottles || 0) * scaleFactor);
               const companyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.brands?.filter((b: any) => (b.data?.[period]?.cases || 0) > 0 || (b.data?.[period]?.bottles || 0) > 0).length || 0);
 
@@ -414,7 +414,7 @@ export function TsmView({
             // Level 3: ASE Companies View (Image 4)
             if (level === 3) {
               const rawData = item.data?.[period] || { cases: 0, bottles: 0 };
-              const cases = Math.round((rawData.cases || item.total_cases || 0) * scaleFactor);
+              const cases = Number(((rawData.cases || item.total_cases || 0) * scaleFactor).toFixed(2));
               const bottles = Math.round((rawData.bottles || item.total_bottles || 0) * scaleFactor);
               const compName = item.brandName || item.company_name || item.name || 'Company';
 

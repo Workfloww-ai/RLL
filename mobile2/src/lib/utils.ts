@@ -7,8 +7,8 @@ export function formatNumber(val: number): string {
   // since Intl.NumberFormat might behave slightly differently across Hermes/React Native environments
   try {
     return new Intl.NumberFormat('en-IN', {
-      maximumFractionDigits: 1,
-      minimumFractionDigits: val % 1 !== 0 ? 1 : 0,
+      maximumFractionDigits: 2,
+      minimumFractionDigits: val % 1 !== 0 ? 2 : 0,
     }).format(val);
   } catch (e) {
     return val.toLocaleString();
@@ -49,7 +49,7 @@ export function calculateDateFactor(fromStr: string, toStr: string, period: Peri
 
 export function getScaledMetrics(metrics: Metrics, scaleFactor: number): Metrics {
   return {
-    cases: Math.round(metrics.cases * scaleFactor),
+    cases: Number((metrics.cases * scaleFactor).toFixed(2)),
     bottles: Math.round(metrics.bottles * scaleFactor),
     bl: Number((metrics.bl * scaleFactor).toFixed(1)),
   };
