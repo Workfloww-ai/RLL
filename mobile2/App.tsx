@@ -26,7 +26,7 @@ import { logger } from './src/lib/logger';
 import { secureStorage } from './src/lib/secureStorage';
 
 import { Company, Period, ViewMode } from './src/types';
-import { formatNumber } from './src/lib/utils';
+import { formatNumber, normalizeCompanyList } from './src/lib/utils';
 import { getDynamicCardDimensions } from './src/lib/responsive';
 import {
   fetchMobileSales,
@@ -38,6 +38,7 @@ import {
   hydratePersistentCache,
   registerSessionRevokedListener,
 } from './src/lib/api';
+import { preloadAllHeadquartersData } from './src/lib/prefetchService';
 
 import { Header } from './src/features/dashboard/Header';
 import { TenantProvider, useTenant } from './src/context/TenantContext';
@@ -125,6 +126,9 @@ function MainApp() {
       if (hqs && hqs.length > 0) {
         setHeadquartersList(hqs);
       }
+      preloadAllHeadquartersData(true).catch((err) => {
+        logger.error('App: Background prefetch on refresh error:', err);
+      });
     } catch (err) {
       logger.error('Error refreshing data in App.tsx:', err);
     } finally {
@@ -178,7 +182,7 @@ function MainApp() {
   const scaleFactor = 1;
 
   useEffect(() => {
-    StatusBar.setBarStyle('dark-content');
+    StatusBar.setBarStyle('light-content');
   }, []);
 
   // Register central session revocation callback (forces instant exit on 401/403)
@@ -240,13 +244,16 @@ function MainApp() {
     loadSession();
   }, []);
 
-  // Fetch headquarters list
+  // Fetch headquarters list & trigger background prefetch worker
   useEffect(() => {
     if (!user) return;
     fetchMobileHeadquarters().then((hqs) => {
       if (hqs && hqs.length > 0) {
         setHeadquartersList(hqs);
       }
+      preloadAllHeadquartersData().catch((err) => {
+        logger.error('App: Background prefetch error:', err);
+      });
     });
   }, [user]);
 
@@ -437,12 +444,13 @@ function MainApp() {
   // Filter companies by search query
   const filteredCompanies = useMemo(() => {
     const rawCompanies: Company[] = (apiData && apiData.companies) ? apiData.companies : [];
+    const normalizedCompanies = normalizeCompanyList(rawCompanies);
 
-    return rawCompanies.filter((c) => {
+    return normalizedCompanies.filter((c) => {
       if (!searchQuery.trim()) return true;
       const q = searchQuery.toLowerCase();
       const matchCompany = c.name.toLowerCase().includes(q);
-      const matchBrands = c.brands && c.brands.some((b) => (b.name || b.brand_name || '').toLowerCase().includes(q));
+      const matchBrands = c.brands && c.brands.some((b: any) => (b.name || b.brand_name || '').toLowerCase().includes(q));
       return matchCompany || matchBrands;
     });
   }, [searchQuery, apiData]);
@@ -683,6 +691,7 @@ function MainApp() {
                     selectedHq={selectedHq}
                     companies={sortedCompanies}
                     loading={loadingSalesData}
+                    onRefresh={handleRefresh}
                   />
                 </View>
               )}
@@ -696,6 +705,7 @@ function MainApp() {
                     dateTo={dateTo}
                     scaleFactor={scaleFactor}
                     selectedHq={selectedHq}
+                    onRefresh={handleRefresh}
                   />
                 </View>
               )}
@@ -848,15 +858,15 @@ const styles = StyleSheet.create({
   },
   safeArea: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#0F172A',
   },
   metricsBanner: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#F1F5F9',
     paddingHorizontal: 18,
-    paddingVertical: 12,
+    paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: '#E2E8F0',
   },
@@ -865,10 +875,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   indicatorDot: {
-    width: 7,
-    height: 7,
+    width: 8,
+    height: 8,
     borderRadius: 4,
-    backgroundColor: '#0D3B8E',
+    backgroundColor: '#2563EB',
     marginRight: 8,
   },
   indicatorLabel: {

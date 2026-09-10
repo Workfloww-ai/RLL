@@ -28,10 +28,17 @@ def get_companies_summary(
 
     # Resolve HQ filter if provided
     hq_id_filter = None
-    if selected_hq and selected_hq != "All Headquarters":
-        hq_res = client.table("headquarters").select("headquarters_id").ilike("name", selected_hq.strip()).execute()
-        if hq_res.data:
-            hq_id_filter = hq_res.data[0]["headquarters_id"]
+    if selected_hq and selected_hq.strip() and selected_hq.strip() != "All Headquarters":
+        try:
+            clean_hq_target = selected_hq.strip().lower()
+            hq_res = client.table("headquarters").select("headquarters_id, name").execute()
+            for h in (hq_res.data or []):
+                h_name = (h.get("name") or "").strip().lower()
+                if h_name == clean_hq_target or clean_hq_target in h_name or h_name in clean_hq_target:
+                    hq_id_filter = str(h["headquarters_id"])
+                    break
+        except Exception as e_hq:
+            logger.warning(f"get_companies_summary: HQ resolution error for '{selected_hq}': {e_hq}")
 
     # Determine target dates
     target_date = date_to

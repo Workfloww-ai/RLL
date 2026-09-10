@@ -36,7 +36,7 @@ export function FooterNav({ viewMode, setViewMode }: FooterNavProps) {
             activeOpacity={0.75}
           >
             <Icon
-              color={isActive ? '#0D3B8E' : '#94A3B8'}
+              color={isActive ? '#0F172A' : '#94A3B8'}
               size={19}
             />
             <Text
@@ -56,9 +56,9 @@ export function FooterNav({ viewMode, setViewMode }: FooterNavProps) {
 
 const styles = StyleSheet.create({
   container: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#0F172A',
     borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
+    borderTopColor: '#1E293B',
     paddingTop: 8,
     paddingBottom: Platform.OS === 'ios' ? 24 : 10,
     paddingHorizontal: 12,
@@ -66,10 +66,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-around',
     alignItems: 'center',
     shadowColor: '#000000',
-    shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.03,
-    shadowRadius: 6,
-    elevation: 3,
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 4,
   },
   navBtn: {
     alignItems: 'center',
@@ -80,16 +80,16 @@ const styles = StyleSheet.create({
     minWidth: 72,
   },
   navBtnActive: {
-    backgroundColor: '#EFF6FF',
+    backgroundColor: '#FFFFFF',
   },
   navText: {
     fontSize: 11,
     fontWeight: '600',
-    color: '#64748B',
+    color: '#94A3B8',
     marginTop: 3,
   },
   navTextActive: {
-    color: '#0D3B8E',
+    color: '#0F172A',
     fontWeight: '800',
   },
 });

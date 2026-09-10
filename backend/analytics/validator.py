@@ -16,15 +16,28 @@ class AnalyticsValidator:
     Guarantees 100% precision before enabling production traffic.
     """
 
+    def _get_others_company_id(self, client) -> Optional[str]:
+        """Resolves company_id for 'Others' company to ensure strict exclusion per Rule #7."""
+        try:
+            res = client.table("companies").select("company_id").ilike("company_name", "others").limit(1).execute()
+            if res.data:
+                return res.data[0]["company_id"]
+        except Exception:
+            pass
+        return None
+
     def _fetch_all_daily_summary_rows(self, client, target_date: str, hq_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Paginated fetcher for sales_daily_summary to bypass PostgREST 1000 row cap."""
+        """Paginated fetcher for sales_daily_summary excluding company 'Others'."""
         all_rows = []
         offset = 0
         limit = 1000
+        others_id = self._get_others_company_id(client)
         while True:
             q = client.table("sales_daily_summary").select("company_id, brand_id, depot_id, total_cases, total_bottles, total_bl").eq("sale_date", target_date)
             if hq_id:
                 q = q.eq("headquarters_id", hq_id)
+            if others_id:
+                q = q.neq("company_id", others_id)
             res = q.range(offset, offset + limit - 1).execute()
             rows = res.data or []
             all_rows.extend(rows)
@@ -34,14 +47,37 @@ class AnalyticsValidator:
         return all_rows
 
     def _fetch_all_monthly_summary_rows(self, client, month_start: str, hq_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Paginated fetcher for sales_monthly_summary to bypass PostgREST 1000 row cap."""
+        """Paginated fetcher for sales_monthly_summary excluding company 'Others'."""
         all_rows = []
         offset = 0
         limit = 1000
+        others_id = self._get_others_company_id(client)
         while True:
             q = client.table("sales_monthly_summary").select("company_id, brand_id, depot_id, total_cases, total_bottles, total_bl").eq("month_start", month_start)
             if hq_id:
                 q = q.eq("headquarters_id", hq_id)
+            if others_id:
+                q = q.neq("company_id", others_id)
+            res = q.range(offset, offset + limit - 1).execute()
+            rows = res.data or []
+            all_rows.extend(rows)
+            if len(rows) < limit:
+                break
+            offset += limit
+        return all_rows
+
+    def _fetch_mtd_daily_summary_rows(self, client, mtd_start: str, target_date: str, hq_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Paginated fetcher for sales_daily_summary from mtd_start up to target_date excluding company 'Others'."""
+        all_rows = []
+        offset = 0
+        limit = 1000
+        others_id = self._get_others_company_id(client)
+        while True:
+            q = client.table("sales_daily_summary").select("total_cases").gte("sale_date", mtd_start).lte("sale_date", target_date)
+            if hq_id:
+                q = q.eq("headquarters_id", hq_id)
+            if others_id:
+                q = q.neq("company_id", others_id)
             res = q.range(offset, offset + limit - 1).execute()
             rows = res.data or []
             all_rows.extend(rows)
@@ -80,11 +116,11 @@ class AnalyticsValidator:
         old_daily_cases = sum(c.get("daily_cases", 0) for c in old_companies)
         old_mtd_cases = sum(c.get("mtd_cases", 0) for c in old_companies)
 
-        # 2. Fetch New Summary Table results (Paginated)
+        # 2. Fetch New Summary Table results (Paginated & Filtered)
         new_daily_rows = self._fetch_all_daily_summary_rows(client, target_date, hq_id)
         new_daily_cases = sum(float(r.get("total_cases", 0.0)) for r in new_daily_rows)
 
-        new_mtd_rows = self._fetch_all_monthly_summary_rows(client, mtd_start, hq_id)
+        new_mtd_rows = self._fetch_mtd_daily_summary_rows(client, mtd_start, target_date, hq_id)
         new_mtd_cases = sum(float(r.get("total_cases", 0.0)) for r in new_mtd_rows)
 
         # 3. Perform Comparison Checks

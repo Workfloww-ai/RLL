@@ -353,7 +353,7 @@ export function TsmView({
 
               return (
                 <MetricsCard
-                  key={item.id || index}
+                  key={`tsm-${item.id || item.name || 'tsm'}-${index}`}
                   title={item.name}
                   subtitle={`${aseCount} ASE(s)  •  ${companyCount} Companies`}
                   metrics={[
@@ -377,7 +377,7 @@ export function TsmView({
 
               return (
                 <MetricsCard
-                  key={item.brandId || item.id || index}
+                  key={`tsm-comp-${item.brandId || item.id || 'comp'}-${index}`}
                   title={compName}
                   metrics={[
                     { label: 'Cases', value: cases },
@@ -397,7 +397,7 @@ export function TsmView({
 
               return (
                 <MetricsCard
-                  key={item.id || index}
+                  key={`ase-${item.id || item.name || 'ase'}-${index}`}
                   title={item.name}
                   subtitle={`${companyCount} Companies`}
                   metrics={[
@@ -420,7 +420,7 @@ export function TsmView({
 
               return (
                 <MetricsCard
-                  key={item.brandId || item.id || index}
+                  key={`ase-comp-${item.brandId || item.id || 'comp'}-${index}`}
                   title={compName}
                   metrics={[
                     { label: 'Cases', value: cases },

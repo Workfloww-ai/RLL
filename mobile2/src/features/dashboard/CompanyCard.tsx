@@ -2,7 +2,7 @@ import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Company, Period } from '../../types';
 import { formatNumber } from '../../lib/utils';
-import { PinIcon, ChevronRightIcon } from '../../components/Icons';
+import { StarIcon, ChevronRightIcon } from '../../components/Icons';
 
 interface CompanyCardProps {
   company: Company;
@@ -25,7 +25,7 @@ export const CompanyCard = React.memo(function CompanyCard({
 
   const cId = (company.id || '').toLowerCase();
   const cName = (company.name || '').toLowerCase();
-  const isPinned = company.isPinned || cId === 'rll' || cName === 'rll' || cName.startsWith('rll') || cId.includes('diageo') || cName.includes('diageo');
+  const isPinned = company.isPinned || cId === 'rll' || cName.includes('rajasthan') || cId.includes('diageo') || cName.includes('diageo');
 
   return (
     <TouchableOpacity
@@ -38,18 +38,17 @@ export const CompanyCard = React.memo(function CompanyCard({
       activeOpacity={0.75}
     >
       <View style={styles.cardMainRow}>
-        {/* Left Section: Company Name, Pinned Badge & Subtitle */}
+        {/* Left Section: Star Icon In Front, Company Name & Subtitle */}
         <View style={styles.titleWrapper}>
           <View style={styles.nameRow}>
-            <Text style={styles.companyName}>
-              {company.name}
-            </Text>
-            {company.isPinned ? (
-              <View style={styles.pinnedBadge}>
-                <PinIcon color="#FFFFFF" size={9} />
-                <Text style={styles.pinnedBadgeText}>Pinned</Text>
+            {isPinned ? (
+              <View style={styles.starBadgePrefix}>
+                <StarIcon color="#0F172A" size={12} />
               </View>
             ) : null}
+            <Text style={styles.companyName} numberOfLines={1}>
+              {company.name}
+            </Text>
           </View>
 
           <View style={styles.subtextRow}>
@@ -71,7 +70,7 @@ export const CompanyCard = React.memo(function CompanyCard({
             <Text style={styles.metricLabel}>BOTTLES</Text>
           </View>
 
-          <ChevronRightIcon size={16} color="#94A3B8" />
+          <ChevronRightIcon size={15} color="#94A3B8" />
         </View>
       </View>
     </TouchableOpacity>
@@ -84,9 +83,9 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    marginBottom: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 8,
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.02,
@@ -104,48 +103,37 @@ const styles = StyleSheet.create({
   },
   titleWrapper: {
     flex: 1,
-    marginRight: 10,
+    marginRight: 8,
   },
   nameRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
+  },
+  starBadgePrefix: {
+    marginRight: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   companyName: {
-    fontSize: 14.5,
+    fontSize: 13,
     fontWeight: '800',
     color: '#0F172A',
     letterSpacing: -0.2,
-    lineHeight: 19,
-  },
-  pinnedBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#0F172A',
-    borderRadius: 6,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    marginLeft: 6,
-    gap: 3,
-  },
-  pinnedBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 8.5,
-    fontWeight: '700',
+    lineHeight: 17,
+    flexShrink: 1,
   },
   subtextRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 4,
-    flexWrap: 'wrap',
+    marginTop: 3,
   },
   subtext: {
-    fontSize: 11,
+    fontSize: 10,
     color: '#64748B',
     fontWeight: '600',
   },
   subtextDot: {
-    fontSize: 11,
+    fontSize: 10,
     color: '#94A3B8',
     fontWeight: '600',
   },
@@ -156,33 +144,32 @@ const styles = StyleSheet.create({
     paddingVertical: 1,
   },
   hqPillText: {
-    fontSize: 10,
+    fontSize: 9.5,
     color: '#475569',
     fontWeight: '600',
   },
   metricsRightRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
   },
   metricCell: {
     alignItems: 'flex-end',
   },
   metricLabel: {
-    fontSize: 9,
+    fontSize: 8.5,
     fontWeight: '700',
     color: '#94A3B8',
     letterSpacing: 0.5,
     marginTop: 1,
   },
   casesValue: {
-    fontSize: 14.5,
+    fontSize: 13,
     fontWeight: '800',
     color: '#0D3B8E',
-    marginTop: 1,
   },
   bottlesValue: {
-    fontSize: 14.5,
+    fontSize: 13,
     fontWeight: '800',
     color: '#0F172A',
   },

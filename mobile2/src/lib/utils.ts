@@ -54,3 +54,78 @@ export function getScaledMetrics(metrics: Metrics, scaleFactor: number): Metrics
     bl: Number((metrics.bl * scaleFactor).toFixed(1)),
   };
 }
+
+export function normalizeCompanyName(name: string): string {
+  if (!name) return '';
+  const lowered = name.trim().toLowerCase();
+  if (
+    lowered === 'diageo' ||
+    lowered === 'inbrew' ||
+    lowered === 'in brew' ||
+    lowered === 'diageo/inbrew' ||
+    lowered === 'diageo/in brew' ||
+    lowered === 'diageo / inbrew' ||
+    lowered === 'diageo / in brew' ||
+    lowered === 'diageo inbrew' ||
+    lowered === 'diageo in brew'
+  ) {
+    return 'Diageo/In brew';
+  }
+  if (
+    lowered === 'rll' ||
+    lowered === 'r.l.l.' ||
+    lowered === 'rajasthan liquor limited' ||
+    lowered === 'rajasthan liquors limited' ||
+    lowered === 'rajasthan liquor' || 
+    lowered === 'Rajasthan Liquors'
+  ) {
+    return 'Rajasthan Liquor Limited';
+  }
+  return name.trim();
+}
+
+export function normalizeCompanyList(rawCompanies: any[]): any[] {
+  if (!Array.isArray(rawCompanies) || rawCompanies.length === 0) return rawCompanies;
+
+  const map = new Map<string, any>();
+  for (const c of rawCompanies) {
+    if (!c || !c.name) continue;
+    const normName = normalizeCompanyName(c.name || '');
+    const normId = normName.toLowerCase().replace(/\s+/g, '-').replace(/\//g, '-');
+
+    if (!map.has(normId)) {
+      map.set(normId, {
+        ...c,
+        id: normId,
+        name: normName,
+        isPinned: c.isPinned || normName === 'Diageo/In brew' || normName === 'Rajasthan Liquor Limited',
+        brands: [...(c.brands || [])],
+        data: {
+          Daily: { ...(c.data?.Daily || { cases: 0, bottles: 0, bl: 0 }) },
+          MTD: { ...(c.data?.MTD || { cases: 0, bottles: 0, bl: 0 }) },
+          YTD: { ...(c.data?.YTD || { cases: 0, bottles: 0, bl: 0 }) },
+        }
+      });
+    } else {
+      const existing = map.get(normId)!;
+      // Merge brands without duplication
+      const existingBrandIds = new Set(existing.brands.map((b: any) => b.id || b.brand_id || b.name || b.brand_name));
+      for (const b of (c.brands || [])) {
+        const bid = b.id || b.brand_id || b.name || b.brand_name;
+        if (!existingBrandIds.has(bid)) {
+          existing.brands.push(b);
+          existingBrandIds.add(bid);
+        }
+      }
+      // Merge metrics
+      for (const p of ['Daily', 'MTD', 'YTD'] as Period[]) {
+        const dSrc = c.data?.[p] || { cases: 0, bottles: 0, bl: 0 };
+        const dDst = existing.data[p] || { cases: 0, bottles: 0, bl: 0 };
+        dDst.cases = Number(((dDst.cases || 0) + (dSrc.cases || 0)).toFixed(2));
+        dDst.bottles = Math.round((dDst.bottles || 0) + (dSrc.bottles || 0));
+        dDst.bl = Number(((dDst.bl || 0) + (dSrc.bl || 0)).toFixed(1));
+      }
+    }
+  }
+  return Array.from(map.values());
+}

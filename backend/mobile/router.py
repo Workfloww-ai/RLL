@@ -1151,13 +1151,17 @@ async def get_mobile_sales(
     ytd_start = f"{fy_year}-04-01"
 
     target_hq_id = None
-    if selected_hq and selected_hq != "All Headquarters":
-        target_hq_id = master_cache.get("hq_name_to_id", {}).get(selected_hq.strip().lower())
+    if selected_hq and selected_hq.strip() and selected_hq.strip() != "All Headquarters":
+        clean_hq_target = selected_hq.strip().lower()
+        target_hq_id = master_cache.get("hq_name_to_id", {}).get(clean_hq_target)
         if not target_hq_id:
             try:
-                hq_res = client.table("headquarters").select("headquarters_id").ilike("name", selected_hq.strip()).execute()
-                if hq_res.data:
-                    target_hq_id = hq_res.data[0]["headquarters_id"]
+                hq_res = client.table("headquarters").select("headquarters_id, name").execute()
+                for h in (hq_res.data or []):
+                    h_name = (h.get("name") or "").strip().lower()
+                    if h_name == clean_hq_target or clean_hq_target in h_name or h_name in clean_hq_target:
+                        target_hq_id = str(h["headquarters_id"])
+                        break
             except Exception as e:
                 logger.warning(f"HQ lookup error for {selected_hq}: {e}")
 
@@ -1777,13 +1781,21 @@ async def get_group_brands_endpoint(
     date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     period: Optional[str] = Query(None, description="Period filter (Daily/MTD/YTD)"),
-    depot_name: Optional[str] = Query(None, description="Filter by depot name")
+    depot_name: Optional[str] = Query(None, description="Filter by depot name"),
+    selected_hq: Optional[str] = Query(None, description="Filter by HQ name")
 ):
     """
     Mobile endpoint: Fetch aggregated brand-wise sales for all licensees in a group.
     """
     from backend.services.mobile_cascading_service import get_group_brand_sales
-    return get_group_brand_sales(group_id=group_id, date_from=date_from, date_to=date_to, period=period, depot_name=depot_name)
+    return get_group_brand_sales(
+        group_id=group_id,
+        date_from=date_from,
+        date_to=date_to,
+        period=period,
+        depot_name=depot_name,
+        selected_hq=selected_hq
+    )
 
 
 @router.get("/cascading/groups/{group_id}/licensees")
@@ -1792,13 +1804,21 @@ async def get_group_licensees_endpoint(
     date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     period: Optional[str] = Query(None, description="Period filter (Daily/MTD/YTD)"),
-    depot_name: Optional[str] = Query(None, description="Filter by depot name")
+    depot_name: Optional[str] = Query(None, description="Filter by depot name"),
+    selected_hq: Optional[str] = Query(None, description="Filter by HQ name")
 ):
     """
     Mobile endpoint: Fetch licensees for a group with specific depot breakdown and sales stats.
     """
     from backend.services.mobile_cascading_service import get_group_licensees
-    return get_group_licensees(group_id=group_id, date_from=date_from, date_to=date_to, period=period, depot_name=depot_name)
+    return get_group_licensees(
+        group_id=group_id,
+        date_from=date_from,
+        date_to=date_to,
+        period=period,
+        depot_name=depot_name,
+        selected_hq=selected_hq
+    )
 
 
 @router.get("/cascading/licensees/{licensee_id}/brand-sales")
@@ -1807,13 +1827,21 @@ async def get_licensee_brand_sales_endpoint(
     date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     period: Optional[str] = Query(None, description="Period filter (Daily/MTD/YTD)"),
-    depot_name: Optional[str] = Query(None, description="Filter by depot name")
+    depot_name: Optional[str] = Query(None, description="Filter by depot name"),
+    selected_hq: Optional[str] = Query(None, description="Filter by HQ name")
 ):
     """
     Mobile endpoint: Fetch brand-wise sales breakdown for a licensee.
     """
     from backend.services.mobile_cascading_service import get_licensee_brand_sales
-    return get_licensee_brand_sales(licensee_id=licensee_id, date_from=date_from, date_to=date_to, period=period, depot_name=depot_name)
+    return get_licensee_brand_sales(
+        licensee_id=licensee_id,
+        date_from=date_from,
+        date_to=date_to,
+        period=period,
+        depot_name=depot_name,
+        selected_hq=selected_hq
+    )
 
 
 @router.get("/cascading/company-brands")

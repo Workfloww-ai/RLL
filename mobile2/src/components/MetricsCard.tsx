@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { formatNumber } from '../lib/utils';
-import { ChevronRightIcon, LocationIcon } from './Icons';
+import { ChevronRightIcon, LocationIcon, StarIcon } from './Icons';
 
 export interface MetricItem {
   label: string;
@@ -45,17 +45,17 @@ export function MetricsCard({
       <View style={styles.cardMainRow}>
         {/* Left Column: Title (Row 1), Subtitle (Row 2), Location Pill (Row 3) */}
         <View style={styles.titleContainer}>
-          {/* Row 1: Name + Pinned Badge */}
+          {/* Row 1: Pinned Star + Name */}
           <View style={styles.titleBadgeRow}>
-            {titleIcon && <View style={styles.iconWrapper}>{titleIcon}</View>}
-            <Text style={[styles.titleText, { fontSize: scaledFontSize(14) }]} numberOfLines={1}>
-              {title}
-            </Text>
             {isPinned && (
-              <View style={styles.pinnedTag}>
-                <Text style={styles.pinnedText}>Pinned</Text>
+              <View style={styles.starBadgeWrapperPrefix}>
+                <StarIcon color="#0F172A" size={scaledFontSize(12)} />
               </View>
             )}
+            {titleIcon && <View style={styles.iconWrapper}>{titleIcon}</View>}
+            <Text style={[styles.titleText, { fontSize: scaledFontSize(13) }]} numberOfLines={1}>
+              {title}
+            </Text>
           </View>
 
           {/* Row 2: Subtitle & Company Badge */}
@@ -189,17 +189,10 @@ const styles = StyleSheet.create({
     color: '#475569',
     fontWeight: '600',
   },
-  pinnedTag: {
-    backgroundColor: '#1E293B',
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    borderRadius: 4,
+  starBadgeWrapperPrefix: {
     marginRight: 4,
-  },
-  pinnedText: {
-    color: '#FFFFFF',
-    fontSize: 9,
-    fontWeight: '700',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   metricsRightRow: {
     flexDirection: 'row',

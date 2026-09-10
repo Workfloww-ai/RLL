@@ -126,6 +126,79 @@ async def log_requests(request: Request, call_next):
     )
     return response
 
+import traceback
+from fastapi import HTTPException
+from fastapi.responses import JSONResponse
+from backend.db.supabase_client import log_system_error
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    user_id = None
+    try:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+            import jwt
+            payload = jwt.decode(token, settings.JWT_SECRET, algorithms=["HS256"], options={"verify_signature": False})
+            user_id = payload.get("user_id") or payload.get("sub")
+    except Exception:
+        pass
+
+    if exc.status_code >= 400:
+        source_name = f"HTTP_{exc.status_code}"
+        if exc.status_code in [401, 403]:
+            source_name = "AUTH_ERROR"
+        elif exc.status_code == 400:
+            source_name = "BAD_REQUEST"
+
+        log_system_error(
+            source=source_name,
+            error_message=str(exc.detail),
+            stack_trace=None,
+            user_id=user_id,
+            context={
+                "path": request.url.path,
+                "method": request.method,
+                "status_code": exc.status_code,
+                "client_ip": request.client.host if request.client else None
+            }
+        )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=getattr(exc, "headers", None)
+    )
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    tb = traceback.format_exc()
+    user_id = None
+    try:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+            import jwt
+            payload = jwt.decode(token, settings.JWT_SECRET, algorithms=["HS256"], options={"verify_signature": False})
+            user_id = payload.get("user_id") or payload.get("sub")
+    except Exception:
+        pass
+
+    log_system_error(
+        source="SYSTEM_UNHANDLED_EXCEPTION",
+        error_message=str(exc),
+        stack_trace=tb,
+        user_id=user_id,
+        context={
+            "path": request.url.path,
+            "method": request.method,
+            "client_ip": request.client.host if request.client else None
+        }
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error"}
+    )
+
 # Register v1 API Routers
 app.include_router(auth_router, prefix=settings.API_V1_STR)
 app.include_router(mobile_router, prefix=settings.API_V1_STR)

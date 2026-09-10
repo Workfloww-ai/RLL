@@ -319,6 +319,9 @@ class MasterService:
         if val_str in {"nan", "none", "null"}:
             return ""
 
+        if val_str in {"other", "others"} or val_str.startswith("other "):
+            return "others"
+
         # Remove punctuation & special characters
         val_str = re.sub(r"[^a-z0-9\s]", " ", val_str)
 
@@ -766,10 +769,12 @@ class MasterService:
     def bulk_resolve_licensees(self, licensee_items: List[Dict[str, Any]]) -> Dict[str, Any]:
         client = get_supabase()
         missing = {}
+        existing_hq_updates = {}
         for item in licensee_items:
             name = item.get("licensee_name")
             display = self._display(name)
             key = self._clean(name)
+            hq_id = item.get("headquarters_id")
             if key and key not in self._licensee_cache:
                 trade = self._display(item.get("trade"))
                 if trade.lower() == "off":
@@ -784,11 +789,21 @@ class MasterService:
                     "trade": trade,
                     "group_id": item.get("group_id"),
                     "depot_id": item.get("depot_id"),
-                    "headquarters_id": item.get("headquarters_id"),
+                    "headquarters_id": hq_id,
                     "office_id": item.get("office_id"),
                     "circle_id": item.get("circle_id"),
                     "is_active": True
                 }
+            elif key and key in self._licensee_cache and hq_id:
+                lic_id = self._licensee_cache[key]
+                existing_hq_updates[lic_id] = hq_id
+
+        if existing_hq_updates and client:
+            try:
+                for lic_id, hq_id in existing_hq_updates.items():
+                    client.table("licensees").update({"headquarters_id": hq_id}).eq("licensee_id", lic_id).execute()
+            except Exception as e_hq_up:
+                logger.warning(f"bulk_resolve_licensees existing HQ update notice: {e_hq_up}")
 
         if missing and client:
             payloads = list(missing.values())
@@ -796,17 +811,17 @@ class MasterService:
             for chunk_start in range(0, len(payloads), 200):
                 chunk = payloads[chunk_start:chunk_start + 200]
                 try:
-                    res = client.table("licensees").insert(chunk).execute()
+                    res = client.table("licensees").upsert(chunk, on_conflict="licensee_name").execute()
                     for row in res.data or []:
                         k = self._clean(row.get("licensee_name"))
                         if k:
                             self._licensee_cache[k] = row["licensee_id"]
                 except Exception as e_lic:
-                    logger.warning(f"bulk_resolve_licensees chunk insert notice: {e_lic}")
-                    # Fallback to item-by-item insert if chunk contains a conflict
+                    logger.warning(f"bulk_resolve_licensees chunk upsert notice: {e_lic}")
+                    # Fallback to item-by-item upsert if chunk contains an error
                     for single_item in chunk:
                         try:
-                            res_single = client.table("licensees").insert(single_item).execute()
+                            res_single = client.table("licensees").upsert(single_item, on_conflict="licensee_name").execute()
                             if res_single.data:
                                 k = self._clean(res_single.data[0].get("licensee_name"))
                                 if k:
@@ -819,7 +834,7 @@ class MasterService:
                                     "group_id": single_item.get("group_id"),
                                     "is_active": True
                                 }
-                                res_min = client.table("licensees").insert(minimal_item).execute()
+                                res_min = client.table("licensees").upsert(minimal_item, on_conflict="licensee_name").execute()
                                 if res_min.data:
                                     k = self._clean(res_min.data[0].get("licensee_name"))
                                     if k:

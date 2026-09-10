@@ -24,6 +24,7 @@ import {
   ChevronLeftIcon,
   WineIcon,
   UsersIcon,
+  RefreshIcon,
 } from '../../components/Icons';
 
 import { useTenant } from '../../context/TenantContext';
@@ -38,6 +39,7 @@ interface CompanyCascadingViewProps {
   loading?: boolean;
   selectedCompanyFromParent?: Company | null;
   onClearParentSelectedCompany?: () => void;
+  onRefresh?: () => Promise<void> | void;
 }
 
 export function CompanyCascadingView({
@@ -50,6 +52,7 @@ export function CompanyCascadingView({
   loading: parentLoading = false,
   selectedCompanyFromParent,
   onClearParentSelectedCompany,
+  onRefresh,
 }: CompanyCascadingViewProps) {
   const { config } = useTenant();
   // Navigation level:
@@ -260,6 +263,9 @@ export function CompanyCascadingView({
     companyBrandsCacheRef.current.clear();
     brandLicenseesCacheRef.current.clear();
     try {
+      if (onRefresh) {
+        await onRefresh();
+      }
       if (level === 2 && activeSelectedCompany) {
         await loadCompanyBrands(activeSelectedCompany, true);
       } else if (level === 3 && selectedBrand?.brand_id) {
@@ -270,7 +276,7 @@ export function CompanyCascadingView({
     } finally {
       setRefreshing(false);
     }
-  }, [level, activeSelectedCompany, selectedBrand]);
+  }, [level, activeSelectedCompany, selectedBrand, onRefresh]);
 
   // Helper to extract cases and bottles respecting period
   const getScaledCases = (item: any): number => {
@@ -413,49 +419,28 @@ export function CompanyCascadingView({
 
   return (
     <View style={styles.container}>
-      {/* Top Header Bar for Level 2 & Level 3: Back Button */}
-      {level > 1 && (
-        <View style={styles.topHeaderBar}>
-          <TouchableOpacity
-            style={styles.backBtn}
-            onPress={handleGoBack}
-            activeOpacity={0.75}
-          >
-            <ChevronLeftIcon size={16} color="#0F172A" />
-            <Text style={styles.backBtnText}>
-              {level === 3 ? 'Brands' : 'Companies'}
-            </Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {/* Level 2 or Level 3 Header Banner */}
+      {/* Level 2 or Level 3 Header Banner - Single Compact Row Layout */}
       {level > 1 && headerMetrics && (
         <View style={styles.headerCard}>
-          <View style={styles.headerTitleRow}>
-            <View style={styles.headerTitleWrapper}>
-              <Text style={styles.headerTitle} numberOfLines={1}>
-                {headerMetrics.title}
-              </Text>
-              <Text style={styles.headerSubtitle}>
-                {level === 2 ? 'Company Brands' : 'Brand Licensees'}
-              </Text>
+          <TouchableOpacity
+            style={styles.headerLeftTitleBlock}
+            onPress={handleGoBack}
+            activeOpacity={0.7}
+          >
+            <ChevronLeftIcon size={18} color="#0F172A" style={styles.headerBackIcon} />
+            <Text style={styles.headerTitle} numberOfLines={2}>
+              {headerMetrics.title}
+            </Text>
+          </TouchableOpacity>
+
+          <View style={styles.headerRightMetricsBlock}>
+            <View style={styles.metricBadgePrimary}>
+              <Text style={styles.metricValuePrimary}>{formatNumber(headerMetrics.cases)}</Text>
+              <Text style={styles.metricLabelPrimary}>CASES</Text>
             </View>
-
-            <View style={styles.headerMetricsRow}>
-              <View style={styles.headerMetricCell}>
-                <Text style={styles.headerMetricValue}>
-                  {formatNumber(headerMetrics.cases)}
-                </Text>
-                <Text style={styles.headerMetricLabel}>CASES</Text>
-              </View>
-
-              <View style={styles.headerMetricCell}>
-                <Text style={styles.headerMetricValue}>
-                  {formatNumber(headerMetrics.bottles)}
-                </Text>
-                <Text style={styles.headerMetricLabel}>BOTTLES</Text>
-              </View>
+            <View style={styles.metricBadgeSecondary}>
+              <Text style={styles.metricValueSecondary}>{formatNumber(headerMetrics.bottles)}</Text>
+              <Text style={styles.metricLabelSecondary}>BTL</Text>
             </View>
           </View>
         </View>
@@ -487,6 +472,14 @@ export function CompanyCascadingView({
             </TouchableOpacity>
           ) : null}
         </View>
+
+        <TouchableOpacity
+          style={styles.refreshButton}
+          onPress={handleRefresh}
+          activeOpacity={0.7}
+        >
+          <RefreshIcon size={15} color="#0F172A" />
+        </TouchableOpacity>
 
         <TouchableOpacity
           style={styles.sortButton}
@@ -532,7 +525,7 @@ export function CompanyCascadingView({
             if (level === 1) {
               return (
                 <CompanyCard
-                  key={item.id || index}
+                  key={`company-${item.id || item.name || 'comp'}-${index}`}
                   company={item}
                   period={period}
                   scaleFactor={scaleFactor}
@@ -550,7 +543,7 @@ export function CompanyCascadingView({
 
               return (
                 <MetricsCard
-                  key={item.brand_id || index}
+                  key={`brand-${item.brand_id || item.id || item.brand_name || 'brand'}-${index}`}
                   title={item.brand_name || 'Brand'}
                   subtitle={subtext}
                   metrics={[
@@ -572,7 +565,7 @@ export function CompanyCascadingView({
 
             return (
               <MetricsCard
-                key={item.licensee_id || index}
+                key={`licensee-${item.licensee_id || item.id || item.licensee_name || 'lic'}-${index}`}
                 title={item.licensee_name || 'Licensee'}
                 subtitle={`Trade: ${item.trade || item.Trade || 'Off'}`}
                 locationPill={depotLocationPill}
@@ -619,91 +612,76 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#F8FAFC',
   },
-  topHeaderBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#FFFFFF',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
-  },
-  backBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    gap: 4,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
-  },
-  backBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
   headerCard: {
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
-  },
-  backButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 6,
-    gap: 4,
-  },
-  backButtonText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  headerTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
   },
-  headerTitleWrapper: {
+  headerLeftTitleBlock: {
     flex: 1,
-    marginRight: 10,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginRight: 8,
+  },
+  headerBackIcon: {
+    marginRight: 4,
+    marginTop: 1,
   },
   headerTitle: {
-    fontSize: 16,
+    flex: 1,
+    fontSize: 11.5,
+    fontWeight: '700',
+    color: '#0F172A',
+    lineHeight: 15.5,
+    flexWrap: 'wrap',
+  },
+  headerRightMetricsBlock: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  metricBadgePrimary: {
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    alignItems: 'center',
+    minWidth: 54,
+  },
+  metricValuePrimary: {
+    fontSize: 11.5,
+    fontWeight: '800',
+    color: '#1D4ED8',
+  },
+  metricLabelPrimary: {
+    fontSize: 8,
+    fontWeight: '700',
+    color: '#3B82F6',
+  },
+  metricBadgeSecondary: {
+    backgroundColor: '#F8FAFC',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+    minWidth: 46,
+  },
+  metricValueSecondary: {
+    fontSize: 11.5,
     fontWeight: '800',
     color: '#0F172A',
   },
-  headerSubtitle: {
-    fontSize: 11,
-    color: '#64748B',
-    fontWeight: '600',
-    marginTop: 2,
-  },
-  headerMetricsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  headerMetricCell: {
-    alignItems: 'flex-end',
-  },
-  headerMetricValue: {
-    fontSize: 14,
-    fontWeight: '900',
-    color: '#0F172A',
-  },
-  headerMetricLabel: {
-    fontSize: 9,
+  metricLabelSecondary: {
+    fontSize: 8,
     fontWeight: '700',
-    color: '#94A3B8',
+    color: '#64748B',
   },
   searchControlsRow: {
     flexDirection: 'row',
@@ -729,6 +707,16 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#0F172A',
     paddingVertical: 0,
+  },
+  refreshButton: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    paddingHorizontal: 10,
+    height: 38,
   },
   sortButton: {
     flexDirection: 'row',

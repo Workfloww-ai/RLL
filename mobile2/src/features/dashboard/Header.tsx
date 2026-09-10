@@ -253,7 +253,7 @@ export function Header({
           activeOpacity={0.75}
         >
           <View style={styles.iconBox}>
-            <LocationIcon size={13} color="#0D3B8E" />
+            <LocationIcon size={13} color="#FFFFFF" />
           </View>
           <Text
             style={styles.hqText}
@@ -263,7 +263,7 @@ export function Header({
           >
             {selectedHq}
           </Text>
-          <ChevronDownIcon size={14} color="#0D3B8E" />
+          <ChevronDownIcon size={14} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
 
@@ -300,7 +300,7 @@ export function Header({
         {period === 'Daily' ? (
           <View style={styles.dateControlsPill}>
             <TouchableOpacity onPress={() => adjustDate(-1)} style={styles.dateAdjustBtn} activeOpacity={0.7}>
-              <ChevronLeftIcon size={13} color="#0D3B8E" />
+              <ChevronLeftIcon size={13} color="#FFFFFF" />
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -309,7 +309,7 @@ export function Header({
               activeOpacity={0.75}
             >
               <View style={styles.iconBox}>
-                <CalendarIcon size={13} color="#0D3B8E" />
+                <CalendarIcon size={13} color="#FFFFFF" />
               </View>
               <Text style={styles.dateInputText} numberOfLines={1}>
                 {formatDateDisplay(dateFrom || dateTo || latestSaleDate || '') || 'Select Date'}
@@ -317,14 +317,14 @@ export function Header({
             </TouchableOpacity>
 
             <TouchableOpacity onPress={() => adjustDate(1)} style={styles.dateAdjustBtn} activeOpacity={0.7}>
-              <ChevronRightIcon size={13} color="#0D3B8E" />
+              <ChevronRightIcon size={13} color="#FFFFFF" />
             </TouchableOpacity>
           </View>
         ) : (
           <View style={styles.dateControlsPill}>
             <View style={styles.rangeInlineContainer}>
               <View style={styles.iconBox}>
-                <CalendarIcon size={12} color="#0D3B8E" />
+                <CalendarIcon size={12} color="#FFFFFF" />
               </View>
               <TouchableOpacity
                 style={styles.dateFieldPair}
@@ -619,23 +619,23 @@ export function Header({
 
 const styles = StyleSheet.create({
   header: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#0F172A',
     paddingHorizontal: 16,
     paddingTop: Platform.OS === 'ios' ? 12 : 12,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
+    paddingBottom: 14,
+    borderBottomLeftRadius: 20,
+    borderBottomRightRadius: 20,
     shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.03,
-    shadowRadius: 6,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 4,
   },
   topRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: 12,
   },
   branding: {
     flexDirection: 'row',
@@ -649,19 +649,19 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   title: {
-    color: '#0D3B8E',
+    color: '#FFFFFF',
     fontSize: 17.5,
     fontWeight: '800',
     letterSpacing: -0.2,
   },
   hqSelectorPill: {
     flexDirection: 'row',
-    backgroundColor: '#F8FAFC',
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
     borderRadius: 12,
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: 'rgba(255, 255, 255, 0.18)',
     alignItems: 'center',
     gap: 4,
     maxWidth: 170,
@@ -671,7 +671,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   hqText: {
-    color: '#0D3B8E',
+    color: '#FFFFFF',
     fontSize: 12,
     fontWeight: '700',
     flex: 1,
@@ -684,11 +684,11 @@ const styles = StyleSheet.create({
   },
   periodSwitcher: {
     flexDirection: 'row',
-    backgroundColor: '#F1F5F9',
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
     borderRadius: 12,
     padding: 3,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: 'rgba(255, 255, 255, 0.15)',
     alignItems: 'center',
   },
   periodBtn: {
@@ -699,8 +699,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   periodBtnActive: {
-    backgroundColor: '#0D3B8E',
-    shadowColor: '#0D3B8E',
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.15,
     shadowRadius: 4,
@@ -708,11 +708,11 @@ const styles = StyleSheet.create({
   },
   periodBtnText: {
     fontSize: 11.5,
-    color: '#64748B',
+    color: '#94A3B8',
     fontWeight: '700',
   },
   periodBtnTextActive: {
-    color: '#FFFFFF',
+    color: '#0F172A',
     fontWeight: '800',
   },
   dateControlsPill: {
@@ -720,12 +720,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#F8FAFC',
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
     borderRadius: 12,
     paddingHorizontal: 8,
     paddingVertical: 5,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: 'rgba(255, 255, 255, 0.18)',
     overflow: 'hidden',
   },
   rangeInlineContainer: {
@@ -742,13 +742,13 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   rangeInputText: {
-    color: '#0F172A',
+    color: '#FFFFFF',
     fontSize: 11.5,
     fontWeight: '700',
     textAlign: 'center',
   },
   rangeSeparatorText: {
-    color: '#0D3B8E',
+    color: '#FFFFFF',
     fontSize: 11,
     fontWeight: '800',
     marginHorizontal: 2,
@@ -766,7 +766,7 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   dateInputText: {
-    color: '#0F172A',
+    color: '#FFFFFF',
     fontSize: 11.5,
     fontWeight: '700',
     textAlign: 'center',

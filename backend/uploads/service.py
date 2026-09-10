@@ -872,6 +872,56 @@ class ImportPipelineEngine:
                 local_batch["imported_rows"] = imported_rows
                 local_batch["failed_rows"] = failed_rows
 
+            # Populate detailed error logs in upload_validation_errors table for failed rows
+            if failed_rows > 0:
+                try:
+                    invalid_indices = fact_df[~valid_mask].index
+                    validation_error_records = []
+
+                    for idx in invalid_indices:
+                        # Check Depot resolution
+                        if pd.isna(map_depot.iloc[idx]):
+                            raw_val = str(s_depot.iloc[idx]).strip() if idx < len(s_depot) and pd.notna(s_depot.iloc[idx]) else ""
+                            validation_error_records.append({
+                                "batch_id": str(batch_id),
+                                "column_name": "depot_raw",
+                                "error_message": f"Unmapped Depot name: '{raw_val}'" if raw_val else "Missing Depot name"
+                            })
+
+                        # Check Licensee resolution
+                        if pd.isna(map_licensee.iloc[idx]):
+                            raw_val = str(s_licensee.iloc[idx]).strip() if idx < len(s_licensee) and pd.notna(s_licensee.iloc[idx]) else ""
+                            validation_error_records.append({
+                                "batch_id": str(batch_id),
+                                "column_name": "licensee_raw",
+                                "error_message": f"Unmapped Licensee name: '{raw_val}'" if raw_val else "Missing Licensee name"
+                            })
+
+                        # Check Brand resolution
+                        if pd.isna(map_brand.iloc[idx]):
+                            raw_val = str(s_brand.iloc[idx]).strip() if idx < len(s_brand) and pd.notna(s_brand.iloc[idx]) else ""
+                            validation_error_records.append({
+                                "batch_id": str(batch_id),
+                                "column_name": "brand_name_raw",
+                                "error_message": f"Unmapped Brand name: '{raw_val}'" if raw_val else "Missing Brand name"
+                            })
+
+                        # Check Packaging resolution
+                        if pd.isna(map_packaging.iloc[idx]):
+                            raw_val = str(s_packing.iloc[idx]).strip() if idx < len(s_packing) and pd.notna(s_packing.iloc[idx]) else ""
+                            validation_error_records.append({
+                                "batch_id": str(batch_id),
+                                "column_name": "packing_raw",
+                                "error_message": f"Unmapped Packaging/Size: '{raw_val}'" if raw_val else "Missing Packaging size"
+                            })
+
+                    if validation_error_records:
+                        from backend.db.supabase_client import log_validation_errors
+                        log_validation_errors(validation_error_records)
+                        logger.info(f"Batch {batch_id}: Successfully logged {len(validation_error_records)} detailed error records into upload_validation_errors table.")
+                except Exception as e_err_log:
+                    logger.warning(f"Batch {batch_id}: Exception logging detailed validation errors: {e_err_log}")
+
 
             # Step 7 - Bulk Insert Raw Records in chunks with progress
             if raw_records:
@@ -1035,6 +1085,17 @@ class ImportPipelineEngine:
                 batch_id,
                 exc,
             )
+
+            # Record error in upload_validation_errors table
+            try:
+                self._save_validation_error(
+                    batch_id=batch_id,
+                    column_name="PIPELINE_ERROR",
+                    message=f"Upload batch failed: {str(exc)}",
+                    raw_id=None,
+                )
+            except Exception as log_err:
+                logger.warning(f"Could not log pipeline failure to upload_validation_errors: {log_err}")
 
             # Rollback / cleanup any partial records inserted for this batch
             self._cleanup_failed_batch(batch_id)
@@ -1973,24 +2034,93 @@ class ImportPipelineEngine:
 
             success = False
             err_msg = None
+            inserted_count = 0
 
             if client:
-                try:
-                    if table == "dashboard_summary_daily":
-                        client.table(table).upsert(chunk, on_conflict="sale_date,depot_id,brand_id").execute()
-                    else:
-                        client.table(table).insert(chunk).execute()
-                    success = True
-                except Exception as exc:
-                    err_msg = str(exc)
-                    logger.warning(f"Error inserting chunk {idx}/{total_chunks} into {table}: {err_msg}")
+                max_retries = 3
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        if table == "dashboard_summary_daily":
+                            client.table(table).upsert(chunk, on_conflict="sale_date,depot_id,brand_id").execute()
+                        elif table in ("sales_fact", "user_sales_fact"):
+                            client.table(table).upsert(chunk, ignore_duplicates=True).execute()
+                        else:
+                            client.table(table).insert(chunk).execute()
+                        success = True
+                        inserted_count = len(chunk)
+                        break
+                    except Exception as exc:
+                        err_msg = str(exc)
+                        if attempt < max_retries:
+                            import time
+                            sleep_sec = attempt * 1.5
+                            logger.warning(f"Chunk {idx}/{total_chunks} ({table}) attempt {attempt} failed: {err_msg}. Retrying in {sleep_sec}s...")
+                            time.sleep(sleep_sec)
+                        else:
+                            logger.warning(f"Chunk {idx}/{total_chunks} ({table}) failed all {max_retries} full retries: {err_msg}. Initiating sub-chunk self-healing recovery...")
+
+                if not success:
+                    # Sub-chunk retry recovery (divide chunk into sub-chunks of 500)
+                    sub_chunk_size = 500
+                    sub_inserted = 0
+                    failed_sub_records = []
+
+                    for sub_start in range(0, len(chunk), sub_chunk_size):
+                        sub_chunk = chunk[sub_start : sub_start + sub_chunk_size]
+                        try:
+                            if table == "dashboard_summary_daily":
+                                client.table(table).upsert(sub_chunk, on_conflict="sale_date,depot_id,brand_id").execute()
+                            else:
+                                client.table(table).insert(sub_chunk).execute()
+                            sub_inserted += len(sub_chunk)
+                        except Exception as sub_exc:
+                            sub_err = str(sub_exc)
+                            logger.warning(f"Sub-chunk ({sub_start}-{sub_start+len(sub_chunk)}) error in {table}: {sub_err}. Falling back to single row isolation...")
+                            # Single-row micro-batch fallback to recover all good rows
+                            for item_idx, single_item in enumerate(sub_chunk):
+                                try:
+                                    if table == "dashboard_summary_daily":
+                                        client.table(table).upsert([single_item], on_conflict="sale_date,depot_id,brand_id").execute()
+                                    else:
+                                        client.table(table).insert([single_item]).execute()
+                                    sub_inserted += 1
+                                except Exception as single_exc:
+                                    actual_row_num = start_row + sub_start + item_idx
+                                    failed_sub_records.append({
+                                        "batch_id": str(batch_id) if batch_id else None,
+                                        "column_name": table,
+                                        "error_message": f"Row {actual_row_num} failed insertion in table '{table}': {single_exc}"
+                                    })
+
+                    if sub_inserted > 0:
+                        success = True
+                        inserted_count = sub_inserted
+                        logger.info(f"Self-healing recovery saved {sub_inserted}/{len(chunk)} rows for {table} in chunk {idx}.")
+
+                    # Ensure failed sub-records OR unrecovered chunk errors are logged into upload_validation_errors
+                    if not failed_sub_records and inserted_count < len(chunk):
+                        # Log generic chunk level error for uninserted rows
+                        failed_sub_records.append({
+                            "batch_id": str(batch_id) if batch_id else None,
+                            "column_name": table,
+                            "error_message": f"Chunk {idx} (rows {start_row}-{end_row}) failed insertion in table '{table}': {err_msg}"
+                        })
+
+                    if failed_sub_records:
+                        try:
+                            from backend.db.supabase_client import log_validation_errors
+                            log_validation_errors(failed_sub_records)
+                            logger.info(f"Batch {batch_id}: Logged {len(failed_sub_records)} detailed row error records into upload_validation_errors.")
+                        except Exception as log_exc:
+                            logger.warning(f"Could not log chunk error to upload_validation_errors: {log_exc}")
             else:
                 success = True
+                inserted_count = len(chunk)
 
             end_time_iso = datetime.now().isoformat()
 
-            if batch_id and (is_milestone or not success):
-                if success:
+            if batch_id and (is_milestone or not success or inserted_count < len(chunk)):
+                if success and inserted_count == len(chunk):
                     msg_done = f"Chunk {idx}/{total_chunks} populated in table '{table}'."
                     self._record_batch_chunk(
                         batch_id=batch_id,
@@ -1999,7 +2129,20 @@ class ImportPipelineEngine:
                         end_row=end_row,
                         row_count=len(chunk),
                         status="completed",
-                        inserted_rows=len(chunk),
+                        inserted_rows=inserted_count,
+                        completed_at=end_time_iso,
+                    )
+                elif success and inserted_count > 0:
+                    msg_part = f"Chunk {idx}/{total_chunks} partially recovered ({inserted_count}/{len(chunk)} inserted)."
+                    self._record_batch_chunk(
+                        batch_id=batch_id,
+                        chunk_number=chunk_num,
+                        start_row=start_row,
+                        end_row=end_row,
+                        row_count=len(chunk),
+                        status="partial",
+                        inserted_rows=inserted_count,
+                        error_message=err_msg,
                         completed_at=end_time_iso,
                     )
                 else:
@@ -2114,74 +2257,28 @@ class ImportPipelineEngine:
 
     def _save_validation_error(
         self,
-        batch_id: int,
+        batch_id: Any,
         column_name: Optional[str],
         message: str,
         raw_id: Optional[int] = None,
     ):
-
-        client = get_supabase()
-
-        if not client:
-            return
-
-        record = {
-
-            "batch_id":
-                batch_id,
-
-            "raw_id":
-                raw_id,
-
-            "column_name":
-                column_name,
-
-            "error_message":
-                message,
-        }
-
-        try:
-
-            (
-                client
-                .table(
-                    "upload_validation_errors"
-                )
-                .insert(record)
-                .execute()
-            )
-
-        except Exception as exc:
-
-            logger.warning(
-                "Could not save validation "
-                "error: %s",
-                exc,
-            )
+        from backend.db.supabase_client import log_upload_validation_error
+        b_id = str(batch_id) if batch_id is not None else None
+        log_upload_validation_error(
+            batch_id=b_id,
+            error_message=message,
+            column_name=column_name,
+            raw_id=raw_id
+        )
 
         # Existing API compatibility.
         upload_logs_db.append({
-
-            "upload_batch_id":
-                batch_id,
-
-            "row_number":
-                0,
-
-            "column_name":
-                column_name,
-
-            "error_type":
-                "VALIDATION_ERROR",
-
-            "error_message":
-                message,
-
-            "raw_data":
-                None,
-
-            "created_at":
-                datetime.now().isoformat(),
+            "upload_batch_id": batch_id,
+            "row_number": 0,
+            "column_name": column_name or "General",
+            "error_message": message,
+            "error_type": "VALIDATION_ERROR",
+            "created_at": datetime.now().isoformat(),
         })
 
     # ========================================================

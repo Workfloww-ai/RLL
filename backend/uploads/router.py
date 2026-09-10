@@ -58,9 +58,12 @@ async def upload_excel(
     allowed_extensions = {".xlsx", ".xls", ".xlsb", ".xlsm", ".csv"}
     file_ext = "." + filename.split(".")[-1].lower() if "." in filename else ""
     if file_ext not in allowed_extensions:
+        err_msg = f"Unsupported file format '{file_ext}'. Allowed formats: {', '.join(sorted(allowed_extensions))}"
+        from backend.db.supabase_client import log_upload_validation_error
+        log_upload_validation_error(batch_id=None, column_name="FILE_EXTENSION", error_message=err_msg)
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file format '{file_ext}'. Allowed formats: {', '.join(sorted(allowed_extensions))}"
+            detail=err_msg
         )
 
     # 2. File Size Limit Validation (250 MB Limit)
@@ -68,9 +71,12 @@ async def upload_excel(
     try:
         contents = await file.read()
         if len(contents) > MAX_FILE_SIZE:
+            err_msg = f"File size exceeds maximum allowed limit of 250 MB (Received: {len(contents) / (1024*1024):.2f} MB)."
+            from backend.db.supabase_client import log_upload_validation_error
+            log_upload_validation_error(batch_id=None, column_name="FILE_SIZE", error_message=err_msg)
             raise HTTPException(
                 status_code=413,
-                detail=f"File size exceeds maximum allowed limit of 250 MB (Received: {len(contents) / (1024*1024):.2f} MB)."
+                detail=err_msg
             )
 
         batch_record = import_pipeline.create_initial_batch(filename, user_id)
@@ -92,9 +98,13 @@ async def upload_excel(
         return batch_record
     except ValueError as ve:
         logger.warning(f"Excel upload failed validation for file {filename} by user {user_id}: {str(ve)}")
+        from backend.db.supabase_client import log_upload_validation_error
+        log_upload_validation_error(batch_id=None, column_name="FILE_VALIDATION", error_message=str(ve))
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         logger.error(f"Excel upload initialization failed for file {filename} by user {user_id}: {str(e)}")
+        from backend.db.supabase_client import log_upload_validation_error
+        log_upload_validation_error(batch_id=None, column_name="FILE_INIT_ERROR", error_message=str(e))
         raise HTTPException(status_code=500, detail=f"File upload initialization error: {str(e)}")
 
 

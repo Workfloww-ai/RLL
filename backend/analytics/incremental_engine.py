@@ -122,31 +122,43 @@ class IncrementalAnalyticsEngine:
         # 2. Incremental Daily Aggregation
         for s_date in sorted_dates:
             t0 = time.perf_counter()
-            try:
-                # Primary Physical Summary Table Refresh (Set-Based)
-                client.rpc("refresh_sales_daily_summary_for_date", {"p_sale_date": s_date}).execute()
-                
-                # Phase 6 Rollback Guard: Execute legacy RPCs only if explicitly requested
-                if enable_legacy_rpcs:
-                    try:
-                        client.rpc("refresh_dashboard_daily", {"p_sale_date": s_date}).execute()
-                    except Exception as e_leg:
-                        logger.debug(f"[ANALYTICS] Legacy refresh_dashboard_daily notice: {e_leg}")
+            date_ok = False
+            for attempt in range(2):
+                try:
+                    client.rpc("refresh_sales_daily_summary_for_date", {"p_sale_date": s_date}).execute()
+                    date_ok = True
+                    break
+                except Exception as e_retry:
+                    logger.debug(f"[ANALYTICS] Daily summary attempt {attempt+1} notice for {s_date}: {e_retry}")
+                    time.sleep(0.3)
 
-                    try:
-                        client.rpc("refresh_company_sales_summary", {"p_sale_date": s_date}).execute()
-                    except Exception as e_comp:
-                        logger.debug(f"[ANALYTICS] Legacy refresh_company_sales_summary notice: {e_comp}")
+            if not date_ok:
+                logger.info(f"[ANALYTICS] Single-pass daily summary timeout notice for date {s_date}. Falling back to depot chunking...")
+                try:
+                    depots_res = client.table("depots").select("depot_id").execute()
+                    depot_list = depots_res.data or []
+                    client.table("sales_daily_summary").delete().eq("sale_date", s_date).execute()
+                    for d in depot_list:
+                        did = d.get("depot_id")
+                        if did:
+                            client.rpc("refresh_sales_daily_summary_for_date", {
+                                "p_sale_date": s_date,
+                                "p_depot_id": did
+                            }).execute()
+                    date_ok = True
+                except Exception as e_dep_daily:
+                    logger.warning(f"[ANALYTICS] Depot-chunked daily summary error for {s_date}: {e_dep_daily}")
 
+            if date_ok:
                 t1 = time.perf_counter()
                 d_ms = (t1 - t0) * 1000
                 daily_duration_total_ms += d_ms
                 logger.info(f"[ANALYTICS] Daily summary aggregated for date {s_date} in {d_ms:.1f}ms")
-            except Exception as e_daily:
-                logger.error(f"[ANALYTICS] Failed daily aggregation for date {s_date}: {e_daily}", exc_info=True)
+            else:
+                logger.warning(f"[ANALYTICS] Daily summary aggregation notice for date {s_date} after retries.")
                 success = False
 
-        # 3. Incremental Monthly Aggregation (Single set-based RPC execution per affected month)
+        # 3. Incremental Monthly Aggregation (Set-based RPC execution per affected month with resilient depot-chunking fallback)
         for m_start in sorted_months:
             t0 = time.perf_counter()
             try:
@@ -167,8 +179,25 @@ class IncrementalAnalyticsEngine:
                 monthly_duration_total_ms += m_ms
                 logger.info(f"[ANALYTICS] Monthly summary aggregated for month_start {m_start} in {m_ms:.1f}ms")
             except Exception as e_monthly:
-                logger.error(f"[ANALYTICS] Failed monthly aggregation for month_start {m_start}: {e_monthly}", exc_info=True)
-                success = False
+                logger.warning(f"[ANALYTICS] Single-pass monthly summary notice for {m_start}: {e_monthly}. Falling back to depot chunking...")
+                try:
+                    depots_res = client.table("depots").select("depot_id").execute()
+                    depot_list = depots_res.data or []
+                    client.table("sales_monthly_summary").delete().eq("month_start", m_start).execute()
+                    for d in depot_list:
+                        did = d.get("depot_id")
+                        if did:
+                            client.rpc("refresh_sales_monthly_summary_for_month", {
+                                "p_month_start": m_start,
+                                "p_depot_id": did
+                            }).execute()
+                    t1 = time.perf_counter()
+                    m_ms = (t1 - t0) * 1000
+                    monthly_duration_total_ms += m_ms
+                    logger.info(f"[ANALYTICS] Depot-chunked monthly aggregation completed for {m_start} ({len(depot_list)} depots) in {m_ms:.1f}ms.")
+                except Exception as e_chunk:
+                    logger.error(f"[ANALYTICS] Failed depot-chunked monthly aggregation for month_start {m_start}: {e_chunk}", exc_info=True)
+                    success = False
 
         # 4. Redis Cache Pattern Invalidation (Event-Driven)
         redis_keys_deleted = 0

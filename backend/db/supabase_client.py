@@ -201,6 +201,67 @@ def log_validation_errors(errors: List[Dict[str, Any]]):
             client.table("upload_validation_errors").insert(errors[i:i + 500]).execute()
     except Exception as e:
         logger.error(f"log_validation_errors error: {e}")
+
+def log_upload_validation_error(batch_id: Optional[str], error_message: str, column_name: Optional[str] = None, raw_id: Optional[Any] = None) -> bool:
+    """Inserts a single validation error record into upload_validation_errors reliably."""
+    client = get_supabase_client()
+    if not client:
+        logger.info(f"[Mock Validation Error] batch_id={batch_id}, column={column_name}, msg={error_message}")
+        return True
+    try:
+        raw_uuid = None
+        if raw_id is not None:
+            raw_str = str(raw_id).strip()
+            try:
+                import uuid
+                uuid.UUID(raw_str)
+                raw_uuid = raw_str
+            except Exception:
+                if not error_message.startswith("[Row "):
+                    error_message = f"[Row #{raw_str}] {error_message}"
+
+        b_uuid = str(batch_id).strip() if batch_id else None
+
+        data = {
+            "batch_id": b_uuid,
+            "column_name": column_name,
+            "error_message": error_message,
+            "raw_id": raw_uuid
+        }
+        try:
+            client.table("upload_validation_errors").insert(data).execute()
+        except Exception as insert_exc:
+            if "23503" in str(insert_exc) or "foreign key" in str(insert_exc).lower():
+                data["batch_id"] = None
+                data["error_message"] = f"[Batch {b_uuid}] {error_message}"
+                client.table("upload_validation_errors").insert(data).execute()
+            else:
+                raise insert_exc
+        return True
+    except Exception as e:
+        logger.error(f"Failed to log upload_validation_error (batch_id={batch_id}): {e}")
+        return False
+
+def log_system_error(source: str, error_message: str, stack_trace: Optional[str] = None, user_id: Optional[str] = None, context: Optional[Dict[str, Any]] = None) -> bool:
+    """Inserts an application/auth/client system error record into error_logs table reliably."""
+    client = get_supabase_client()
+    if not client:
+        logger.info(f"[Mock System Error Log] source={source}, msg={error_message}")
+        return True
+    try:
+        data = {
+            "source": source or "SYSTEM",
+            "error_message": str(error_message),
+            "stack_trace": stack_trace,
+            "user_id": user_id,
+            "context": context or {}
+        }
+        client.table("error_logs").insert(data).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to insert into error_logs (source={source}): {e}")
+        return False
+
 def bulk_insert_raw_sales(records: List[Dict[str, Any]]) -> bool:
     """Bulk-inserts cleaned rows into raw_sales_upload in optimized batches."""
     return bulk_insert_records("raw_sales_upload", records, chunk_size=5000)

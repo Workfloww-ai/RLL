@@ -4,6 +4,7 @@ import { Platform } from 'react-native';
 import CryptoJS from 'crypto-js';
 import { logger } from './logger';
 import { secureStorage } from './secureStorage';
+import { FastStorage } from './storage';
 
 function formatBaseUrl(url: string): string {
   let formatted = url.trim();
@@ -53,13 +54,15 @@ export async function apiFetch(endpointPath: string, init?: RequestInit): Promis
 
   const reqInit: RequestInit = { ...(init || {}) };
   const token = await getAuthToken();
-  if (token) {
-    const headers = new Headers(reqInit.headers || {});
-    if (!headers.has('Authorization')) {
-      headers.set('Authorization', `Bearer ${token}`);
-    }
-    reqInit.headers = headers;
+  const headers = new Headers(reqInit.headers || {});
+  
+  if (token && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`);
   }
+  if (!headers.has('Accept-Encoding')) {
+    headers.set('Accept-Encoding', 'gzip, deflate');
+  }
+  reqInit.headers = headers;
 
   logger.info(`apiFetch: ${reqInit.method || 'GET'} ${url}`);
   try {
@@ -321,7 +324,8 @@ export async function fetchMobileSales(
   dateTo: string,
   period: string,
   selectedHq: string = 'All Headquarters',
-  testLimit?: number
+  testLimit?: number,
+  isPrefetch: boolean = false
 ) {
   const token = await getAuthToken();
   if (!token) {
@@ -329,13 +333,16 @@ export async function fetchMobileSales(
     return null;
   }
 
-  // Cancel previous in-flight sales request if filters change rapidly
-  if (activeSalesAbortController) {
-    activeSalesAbortController.abort();
-    logger.info('fetchMobileSales: Aborted previous in-flight sales request due to filter update.');
+  let signal: AbortSignal | undefined = undefined;
+  if (!isPrefetch) {
+    // Cancel previous in-flight sales request if filters change rapidly
+    if (activeSalesAbortController) {
+      activeSalesAbortController.abort();
+      logger.info('fetchMobileSales: Aborted previous in-flight sales UI request due to filter update.');
+    }
+    activeSalesAbortController = new AbortController();
+    signal = activeSalesAbortController.signal;
   }
-  activeSalesAbortController = new AbortController();
-  const signal = activeSalesAbortController.signal;
 
   const requestId = `req_${Math.random().toString(36).substring(2, 10)}`;
   const now = () => Date.now();
@@ -364,7 +371,7 @@ export async function fetchMobileSales(
       'X-Request-ID': requestId,
     };
 
-    const res = await fetch(url, { headers, signal });
+    const res = await fetch(url, signal ? { headers, signal } : { headers });
     const tResponseReceived = now();
     const networkDurationMs = Math.round(tResponseReceived - tRequestStart);
 
@@ -494,8 +501,6 @@ export async function fetchMobileHeadquarters() {
     const hqs = data?.headquarters || [];
     logger.info(`fetchMobileHeadquarters: Successfully retrieved ${hqs.length} headquarters.`);
     return hqs;
-    logger.info(`fetchMobileHeadquarters: Successfully retrieved ${hqs.length} headquarters.`);
-    return hqs;
   } catch (error) {
     logger.error('fetchMobileHeadquarters: Exception fetching headquarters:', error);
     return ['All Headquarters'];
@@ -504,8 +509,9 @@ export async function fetchMobileHeadquarters() {
 
 export async function clearAllPhoneCaches() {
   try {
+    FastStorage.clear();
     const keys = await AsyncStorage.getAllKeys();
-    const cacheKeys = keys.filter((k) => k.startsWith('rll_phone_cache_') || k.startsWith('rll_mobile_cascading_') || k.startsWith('DISK_CACHE_'));
+    const cacheKeys = keys.filter((k) => k.startsWith('rll_phone_cache_') || k.startsWith('rll_mobile_cascading_') || k.startsWith('DISK_CACHE_') || k.startsWith('rll_fast_v2::'));
     if (cacheKeys.length > 0) {
       await AsyncStorage.multiRemove(cacheKeys);
       logger.info(`clearAllPhoneCaches: Cleared ${cacheKeys.length} stale phone cache keys.`);
@@ -554,7 +560,10 @@ export async function fetchGroupBrands(groupId: string, dateFrom?: string, dateT
     if (dateFrom) params.append('date_from', dateFrom);
     if (dateTo) params.append('date_to', dateTo);
     if (period) params.append('period', period);
-    if (selectedHq && selectedHq !== 'All Headquarters') params.append('depot_name', selectedHq);
+    if (selectedHq && selectedHq !== 'All Headquarters') {
+      params.append('selected_hq', selectedHq);
+      params.append('depot_name', selectedHq);
+    }
 
     const queryStr = params.toString() ? `?${params.toString()}` : '';
     const res = await apiFetch(`/mobile/cascading/groups/${encodeURIComponent(groupId)}/brands${queryStr}`);
@@ -577,7 +586,10 @@ export async function fetchGroupLicensees(groupId: string, dateFrom?: string, da
     if (dateFrom) params.append('date_from', dateFrom);
     if (dateTo) params.append('date_to', dateTo);
     if (period) params.append('period', period);
-    if (selectedHq && selectedHq !== 'All Headquarters') params.append('depot_name', selectedHq);
+    if (selectedHq && selectedHq !== 'All Headquarters') {
+      params.append('selected_hq', selectedHq);
+      params.append('depot_name', selectedHq);
+    }
 
     const queryStr = params.toString() ? `?${params.toString()}` : '';
     const res = await apiFetch(`/mobile/cascading/groups/${encodeURIComponent(groupId)}/licensees${queryStr}`);
@@ -600,7 +612,10 @@ export async function fetchLicenseeBrandSales(licenseeId: string, dateFrom?: str
     if (dateFrom) params.append('date_from', dateFrom);
     if (dateTo) params.append('date_to', dateTo);
     if (period) params.append('period', period);
-    if (selectedHq && selectedHq !== 'All Headquarters') params.append('depot_name', selectedHq);
+    if (selectedHq && selectedHq !== 'All Headquarters') {
+      params.append('selected_hq', selectedHq);
+      params.append('depot_name', selectedHq);
+    }
 
     const queryStr = params.toString() ? `?${params.toString()}` : '';
     const res = await apiFetch(`/mobile/cascading/licensees/${encodeURIComponent(licenseeId)}/brand-sales${queryStr}`);
@@ -616,39 +631,50 @@ export async function fetchLicenseeBrandSales(licenseeId: string, dateFrom?: str
   }
 }
 
-export async function fetchMobileCompanies(period: string = 'Daily', dateTo?: string, selectedHq: string = 'All Headquarters') {
-  logger.info(`fetchMobileCompanies: period=${period}, dateTo=${dateTo}, selectedHq=${selectedHq}`);
-  const cacheKey = `rll_phone_cache_companies_${period}_${selectedHq}_${dateTo || 'latest'}`;
+export async function fetchMobileCompanies(
+  period: string = 'Daily',
+  dateTo?: string,
+  selectedHq: string = 'All Headquarters',
+  isPrefetch: boolean = false
+) {
+  const cleanHq = selectedHq ? selectedHq.trim() : 'All Headquarters';
+  const fastKey = `companies_${cleanHq}_${period}_${dateTo || 'latest'}`;
+  logger.info(`fetchMobileCompanies: period=${period}, dateTo=${dateTo}, selectedHq=${cleanHq}, isPrefetch=${isPrefetch}`);
 
-  // Only use phone disk cache when dateTo is empty AND selectedHq is 'All Headquarters'
-  if (!dateTo && selectedHq === 'All Headquarters') {
-    try {
-      const cachedStr = await AsyncStorage.getItem(cacheKey);
-      if (cachedStr) {
-        const cachedData = JSON.parse(cachedStr);
-        if (cachedData && Array.isArray(cachedData.companies) && cachedData.companies.length > 0) {
-          logger.info(`fetchMobileCompanies: Phone cache HIT for ${cacheKey}`);
-          setTimeout(() => {
-            fetchMobileCompaniesNetwork(period, dateTo, selectedHq, cacheKey).catch(() => {});
-          }, 50);
-          return cachedData;
-        }
-      }
-    } catch (e) {
-      logger.warn(`fetchMobileCompanies: Phone cache read error: ${e}`);
+  // 1. FastStorage 0ms synchronous read (pre-fetched background queue or previous session)
+  const cachedObj = FastStorage.getObject<any>(fastKey);
+  if (cachedObj && Array.isArray(cachedObj.companies) && cachedObj.companies.length > 0) {
+    logger.info(`fetchMobileCompanies: FastStorage HIT (0ms) for key ${fastKey}`);
+    // Background silent revalidation
+    if (!isPrefetch) {
+      setTimeout(() => {
+        fetchMobileCompaniesNetwork(period, dateTo, cleanHq, fastKey, true).catch(() => {});
+      }, 50);
     }
+    return cachedObj;
   }
 
-  return fetchMobileCompaniesNetwork(period, dateTo, selectedHq, cacheKey);
+  // 2. Fetch from live network
+  return fetchMobileCompaniesNetwork(period, dateTo, cleanHq, fastKey, isPrefetch);
 }
 
-async function fetchMobileCompaniesNetwork(period: string, dateTo?: string, selectedHq: string = 'All Headquarters', cacheKey?: string) {
-  if (activeCompaniesAbortController) {
-    activeCompaniesAbortController.abort();
-    logger.info('fetchMobileCompaniesNetwork: Aborted previous in-flight companies request.');
+async function fetchMobileCompaniesNetwork(
+  period: string,
+  dateTo?: string,
+  selectedHq: string = 'All Headquarters',
+  fastKey?: string,
+  isPrefetch: boolean = false
+) {
+  let signal: AbortSignal | undefined = undefined;
+
+  if (!isPrefetch) {
+    if (activeCompaniesAbortController) {
+      activeCompaniesAbortController.abort();
+      logger.info('fetchMobileCompaniesNetwork: Aborted previous in-flight companies UI request.');
+    }
+    activeCompaniesAbortController = new AbortController();
+    signal = activeCompaniesAbortController.signal;
   }
-  activeCompaniesAbortController = new AbortController();
-  const signal = activeCompaniesAbortController.signal;
 
   try {
     const params = new URLSearchParams();
@@ -656,7 +682,7 @@ async function fetchMobileCompaniesNetwork(period: string, dateTo?: string, sele
     if (dateTo) params.append('date', dateTo);
     if (selectedHq) params.append('selected_hq', selectedHq);
 
-    const res = await apiFetch(`/mobile/companies?${params.toString()}`, { signal });
+    const res = await apiFetch(`/mobile/companies?${params.toString()}`, signal ? { signal } : undefined);
     if (!res.ok) {
       logger.warn(`fetchMobileCompaniesNetwork: API status ${res.status}`);
       return null;
@@ -666,8 +692,8 @@ async function fetchMobileCompaniesNetwork(period: string, dateTo?: string, sele
       return null;
     }
 
-    if (cacheKey && data.companies.length > 0) {
-      AsyncStorage.setItem(cacheKey, JSON.stringify(data)).catch(() => {});
+    if (fastKey && data.companies.length > 0) {
+      FastStorage.setObject(fastKey, data);
     }
     return data;
   } catch (error: any) {
