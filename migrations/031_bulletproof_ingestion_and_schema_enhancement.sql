@@ -48,32 +48,12 @@ ON public.sales_daily_summary(headquarters_id, office_id, sale_date);
 CREATE INDEX IF NOT EXISTS idx_sms_hq_office_month
 ON public.sales_monthly_summary(headquarters_id, office_id, month_start);
 
--- 3. Surgical Deduplication on sales_fact
--- Delete exact duplicates keeping the lowest ctid
-DELETE FROM public.sales_fact a
-USING public.sales_fact b
-WHERE a.ctid > b.ctid
-  AND a.sale_date = b.sale_date
-  AND a.depot_id = b.depot_id
-  AND a.brand_id = b.brand_id
-  AND a.packaging_id IS NOT DISTINCT FROM b.packaging_id
-  AND a.licensee_id IS NOT DISTINCT FROM b.licensee_id
-  AND a.total_case IS NOT DISTINCT FROM b.total_case
-  AND a.total_btl IS NOT DISTINCT FROM b.total_btl
-  AND a.total_bl IS NOT DISTINCT FROM b.total_bl;
-
--- Add database-level unique constraint to permanently prevent duplicate ingestion
-CREATE UNIQUE INDEX IF NOT EXISTS uq_sales_fact_txn
-ON public.sales_fact (
-    sale_date,
-    depot_id,
-    brand_id,
-    COALESCE(packaging_id, '00000000-0000-0000-0000-000000000000'::uuid),
-    COALESCE(licensee_id, '00000000-0000-0000-0000-000000000000'::uuid),
-    total_case,
-    total_btl,
-    total_bl
-);
+-- 3. Ingestion Idempotency & Deduplication Notice
+-- NOTE: Retail excise sales fact legitimately contains multiple identical indents 
+-- placed by the same licensee on the same day (e.g., placing two separate 1-case orders).
+-- Enforcing a unique index across (sale_date, depot_id, brand_id, packaging_id, licensee_id, total_case, total_btl, total_bl)
+-- incorrectly deletes legitimate sales. Upload idempotency is handled per-batch / date range instead.
+DROP INDEX IF EXISTS public.uq_sales_fact_txn;
 
 -- 4. Update refresh_sales_daily_summary_for_date RPC to include office_id
 CREATE OR REPLACE FUNCTION public.refresh_sales_daily_summary_for_date(p_sale_date DATE)

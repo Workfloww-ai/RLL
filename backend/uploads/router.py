@@ -1,6 +1,6 @@
 import logging
-from typing import List
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks, status
+from typing import List, Optional
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks, status, Header, Query
 from backend.uploads.service import import_pipeline, upload_batches_db, upload_logs_db
 from backend.core.security import RoleChecker
 from backend.db.client import get_supabase
@@ -21,6 +21,8 @@ router = APIRouter(
 async def upload_excel(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID"),
+    tenant_id: Optional[str] = Query(None),
     current_user: dict = Depends(admin_only)
 ):
     """
@@ -30,8 +32,9 @@ async def upload_excel(
     and bulk Supabase inserts in a non-blocking background thread.
     """
     user_id = current_user.get("user_id")
+    resolved_tenant_id = x_tenant_id or tenant_id or current_user.get("tenant_id") or "a0000000-0000-0000-0000-000000000001"
     filename = file.filename or "upload.xlsx"
-    logger.info(f"Excel upload request initiated by user: {user_id} for file: {filename}")
+    logger.info(f"Excel upload request initiated by user: {user_id} for file: {filename} (tenant: {resolved_tenant_id})")
 
     # 0. Preflight Database Health Guard
     db_health = import_pipeline.check_db_health()
@@ -79,7 +82,7 @@ async def upload_excel(
                 detail=err_msg
             )
 
-        batch_record = import_pipeline.create_initial_batch(filename, user_id)
+        batch_record = import_pipeline.create_initial_batch(filename, user_id, tenant_id=resolved_tenant_id)
 
         # Phase 2 Idempotent Retry: If returning existing active batch, do not add duplicate background task
         if batch_record.get("is_existing_active"):
@@ -91,7 +94,8 @@ async def upload_excel(
             filename,
             contents,
             user_id,
-            batch_record["upload_batch_id"]
+            batch_record["upload_batch_id"],
+            resolved_tenant_id
         )
 
         logger.info(f"Excel file {filename} queued successfully for asynchronous processing (Batch ID: {batch_record['upload_batch_id']})")

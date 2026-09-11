@@ -55,10 +55,20 @@ async def log_error(
         return {"status": "error", "message": "Failed to log error"}
 
 
+from fastapi import Header, Query
+
 @router.get("/tenant/config")
-def get_tenant_config_endpoint(tenant_slug: Optional[str] = "rll"):
+def get_tenant_config_endpoint(
+    tenant_slug: Optional[str] = Query(None),
+    tenant_id: Optional[str] = Query(None),
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID"),
+    x_tenant_slug: Optional[str] = Header(None, alias="X-Tenant-Slug"),
+):
     """
-    Returns dynamic white-label tenant configuration (App Name, Logo URL, Favicon, Splash Screen, Pinned Company).
+    Returns dynamic white-label tenant configuration (Tenant ID, App Name, Logo URL, Favicon, Splash Screen, Pinned Company).
     """
     from backend.services.tenant_service import get_tenant_config_service
-    return get_tenant_config_service(tenant_slug=tenant_slug or "rll")
+    effective_id = tenant_id or x_tenant_id
+    effective_slug = tenant_slug or x_tenant_slug or "rll"
+    return get_tenant_config_service(tenant_slug=effective_slug, tenant_id=effective_id)
+

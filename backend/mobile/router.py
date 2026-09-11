@@ -4,7 +4,7 @@ import time
 import copy
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
-from fastapi import APIRouter, HTTPException, Depends, Query, Request, status
+from fastapi import APIRouter, HTTPException, Depends, Query, Request, status, Header
 from pydantic import BaseModel
 from backend.core.security import create_access_token, get_current_user, RoleChecker
 from backend.db.client import get_supabase
@@ -548,18 +548,18 @@ async def send_mobile_otp(req: SendOTPRequest):
         try:
             # 1. Lookup by email if provided
             if email:
-                res = client.table("users").select("user_id, email, phone, first_name, last_name, is_active").ilike("email", email).execute()
+                res = client.table("users").select("user_id, email, phone, first_name, last_name, is_active, tenant_id, company_id, company_name").ilike("email", email).execute()
                 if res.data:
                     db_user = res.data[0]
 
             # 2. Lookup by phone if not found by email
             if not db_user and clean_phone_10:
-                res_phone = client.table("users").select("user_id, email, phone, first_name, last_name, is_active").ilike("phone", f"%{clean_phone_10}%").limit(1).execute()
+                res_phone = client.table("users").select("user_id, email, phone, first_name, last_name, is_active, tenant_id, company_id, company_name").ilike("phone", f"%{clean_phone_10}%").limit(1).execute()
                 if res_phone.data:
                     db_user = res_phone.data[0]
                 else:
                     # Fallback robust phone lookup: strip non-digits from db phones
-                    all_users_res = client.table("users").select("user_id, email, phone, first_name, last_name, is_active").execute()
+                    all_users_res = client.table("users").select("user_id, email, phone, first_name, last_name, is_active, tenant_id, company_id, company_name").execute()
                     if all_users_res.data:
                         for u in all_users_res.data:
                             u_p = ''.join(c for c in (u.get("phone") or "") if c.isdigit())
@@ -622,10 +622,32 @@ async def send_mobile_otp(req: SendOTPRequest):
     sms_sent = await send_otp_sms(target_phone, otp_code)
     logger.info(f"Mobile OTP successfully generated and sent via SMS to {target_phone} (SMS sent status: {sms_sent})")
 
+    # Resolve user company name and logo for dynamic branding
+    company_name = db_user.get("company_name")
+    company_id = db_user.get("company_id")
+    company_logo_url = None
+    if company_id:
+        try:
+            c_res = client.table("companies").select("company_name, logo_url").eq("company_id", company_id).limit(1).execute()
+            if c_res.data:
+                company_name = company_name or c_res.data[0].get("company_name")
+                company_logo_url = c_res.data[0].get("logo_url")
+        except Exception:
+            pass
+    if not company_logo_url and company_name:
+        try:
+            c_res = client.table("companies").select("logo_url").ilike("company_name", company_name.strip()).limit(1).execute()
+            if c_res.data:
+                company_logo_url = c_res.data[0].get("logo_url")
+        except Exception:
+            pass
+
     return {
         "success": True,
         "message": f"6-digit OTP sent successfully to {target_phone}",
-        "otp_sent": sms_sent
+        "otp_sent": sms_sent,
+        "company_name": company_name,
+        "company_logo_url": company_logo_url,
     }
 
 
@@ -663,7 +685,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
             clean_10 = clean_in[-10:] if len(clean_in) >= 10 else clean_in
 
             if not db_user and phone:
-                res_phone = client.table("users").select("user_id, email, first_name, last_name, phone, is_active").execute()
+                res_phone = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, tenant_id, company_id, company_name").execute()
                 if res_phone.data:
                     for u in res_phone.data:
                         u_p = ''.join(c for c in (u.get("phone") or "") if c.isdigit())
@@ -724,6 +746,29 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
                 except Exception:
                     pass
 
+                # Resolve user's company and company logo
+                company_name = db_user.get("company_name")
+                company_id = db_user.get("company_id")
+                tenant_id = str(db_user.get("tenant_id") or "a0000000-0000-0000-0000-000000000001")
+                company_logo_url = None
+
+                if company_id:
+                    try:
+                        c_res = client.table("companies").select("company_name, logo_url").eq("company_id", company_id).limit(1).execute()
+                        if c_res.data:
+                            company_name = company_name or c_res.data[0].get("company_name")
+                            company_logo_url = c_res.data[0].get("logo_url")
+                    except Exception:
+                        pass
+
+                if not company_logo_url and company_name:
+                    try:
+                        c_res = client.table("companies").select("logo_url").ilike("company_name", company_name.strip()).limit(1).execute()
+                        if c_res.data:
+                            company_logo_url = c_res.data[0].get("logo_url")
+                    except Exception:
+                        pass
+
                 user_data = {
                     "user_id": str(db_user.get("user_id")),
                     "email": db_user.get("email") or email or f"{phone}@rll.com",
@@ -733,6 +778,10 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
                     "role_name": role_name,
                     "depot_name": depot_name,
                     "hq_location": "All Headquarters",
+                    "tenant_id": tenant_id,
+                    "company_id": str(company_id) if company_id else None,
+                    "company_name": company_name,
+                    "company_logo_url": company_logo_url or "/images/rll logo.svg",
                     "is_active": bool(db_user.get("is_active", True))
                 }
         except HTTPException:
@@ -748,17 +797,29 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
             detail="This mobile number is not registered."
         )
 
-    # Generate Access Token valid for 30 days for mobile application
+    # Generate Access Token valid for 30 days for mobile application with tenant and company scope
     token = create_access_token(
-        data={"sub": user_data["email"], "role": user_data["role_name"], "user_id": user_data["user_id"]},
+        data={
+            "sub": user_data["email"],
+            "role": user_data["role_name"],
+            "user_id": user_data["user_id"],
+            "tenant_id": user_data["tenant_id"],
+            "company_name": user_data["company_name"]
+        },
         expires_delta=timedelta(days=30)
     )
-    logger.info(f"Mobile OTP verification successful for phone: {phone} (User: {user_data['email']}, Role: {user_data['role_name']})")
+    logger.info(f"Mobile OTP verification successful for phone: {phone} (User: {user_data['email']}, Company: {user_data['company_name']}, Role: {user_data['role_name']})")
 
     return {
         "access_token": token,
         "token_type": "bearer",
-        "user": user_data
+        "user": user_data,
+        "tenant_config": {
+            "tenant_id": user_data["tenant_id"],
+            "app_name": user_data["company_name"] or "LucidX360",
+            "logo_url": user_data["company_logo_url"],
+            "pinned_company_name": user_data["company_name"] or "Rajasthan Liquor Limited",
+        }
     }
 
 
@@ -767,7 +828,7 @@ def get_mobile_user_profile(
     current_user: dict = Depends(RoleChecker(['tsm', 'ase', 'leader', 'territory executive', 'admin']))
 ):
     """
-    Fetch current logged-in user profile with depot details.
+    Fetch current logged-in user profile with depot and company details.
     """
     client = get_supabase()
     sub_val = (current_user.get("sub") or current_user.get("email") or current_user.get("phone") or "").strip()
@@ -778,12 +839,12 @@ def get_mobile_user_profile(
     try:
         db_user = None
         if user_id_val:
-            u_res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active").eq("user_id", user_id_val).execute()
+            u_res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, tenant_id, company_id, company_name").eq("user_id", user_id_val).execute()
             if u_res.data:
                 db_user = u_res.data[0]
 
         if not db_user and sub_val:
-            u_res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active").or_(f"email.ilike.{sub_val},phone.ilike.%{sub_val}%").execute()
+            u_res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, tenant_id, company_id, company_name").or_(f"email.ilike.{sub_val},phone.ilike.%{sub_val}%").execute()
             if u_res.data:
                 db_user = u_res.data[0]
 
@@ -800,6 +861,28 @@ def get_mobile_user_profile(
             except Exception:
                 pass
 
+            company_name = db_user.get("company_name") or current_user.get("company_name")
+            company_id = db_user.get("company_id")
+            tenant_id = str(db_user.get("tenant_id") or current_user.get("tenant_id") or "a0000000-0000-0000-0000-000000000001")
+            company_logo_url = None
+
+            if company_id:
+                try:
+                    c_res = client.table("companies").select("company_name, logo_url").eq("company_id", company_id).limit(1).execute()
+                    if c_res.data:
+                        company_name = company_name or c_res.data[0].get("company_name")
+                        company_logo_url = c_res.data[0].get("logo_url")
+                except Exception:
+                    pass
+
+            if not company_logo_url and company_name:
+                try:
+                    c_res = client.table("companies").select("logo_url").ilike("company_name", company_name.strip()).limit(1).execute()
+                    if c_res.data:
+                        company_logo_url = c_res.data[0].get("logo_url")
+                except Exception:
+                    pass
+
             return {
                 "user_id": str(db_user.get("user_id")),
                 "email": db_user.get("email"),
@@ -809,6 +892,10 @@ def get_mobile_user_profile(
                 "role_name": role_name,
                 "depot_name": depot_name,
                 "hq_location": "All Headquarters",
+                "tenant_id": tenant_id,
+                "company_id": str(company_id) if company_id else None,
+                "company_name": company_name,
+                "company_logo_url": company_logo_url or "/images/rll logo.svg",
                 "is_active": bool(db_user.get("is_active", True))
             }
     except Exception as e:
@@ -877,7 +964,8 @@ async def get_mobile_companies(
 ):
     """
     Fetches period-specific company sales analytics (Daily, MTD, YTD).
-    Excludes Company 'Others' strictly. Caches response in Redis.
+    Excludes Company 'Others' strictly. Scopes to user's assigned company if applicable.
+    Caches response in Redis.
     """
     from backend.services.mobile_companies_service import get_companies_summary
     from backend.services.cache_service import get_json_cache, set_json_cache
@@ -886,7 +974,12 @@ async def get_mobile_companies(
     clean_hq = selected_hq.strip() if selected_hq else "All Headquarters"
     clean_date = date_to.strip() if date_to else "latest"
 
-    redis_key = f"rll:mobile:companies:{clean_period}:{clean_hq}:{clean_date}"
+    # User company scoping: if user has assigned company, scope sales data strictly to that company
+    user_role = (current_user.get("role_name") or current_user.get("role") or "").lower()
+    user_company = current_user.get("company_name")
+    effective_company = user_company if (user_company and user_role not in ["admin", "super_admin", "super admin"]) else None
+
+    redis_key = f"rll:mobile:companies:{clean_period}:{clean_hq}:{clean_date}:{effective_company or 'all'}"
     cached_payload = await get_json_cache(redis_key)
     if cached_payload is not None:
         logger.info(f"get_mobile_companies: Redis CACHE HIT for {redis_key}")
@@ -896,7 +989,8 @@ async def get_mobile_companies(
         companies_list, resolved_date = get_companies_summary(
             period=clean_period,
             date_to=date_to,
-            selected_hq=selected_hq
+            selected_hq=selected_hq,
+            company_name=effective_company
         )
         payload = {
             "status": "success",
@@ -1926,11 +2020,19 @@ async def clear_mobile_cache_endpoint():
 
 
 @router.get("/tenant-config")
-def get_mobile_tenant_config_endpoint(tenant_slug: Optional[str] = "rll"):
+def get_mobile_tenant_config_endpoint(
+    tenant_slug: Optional[str] = Query(None),
+    tenant_id: Optional[str] = Query(None),
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID"),
+    x_tenant_slug: Optional[str] = Header(None, alias="X-Tenant-Slug"),
+):
     """
-    Mobile endpoint: Returns white-label tenant configuration.
+    Mobile endpoint: Returns dynamic white-label tenant configuration with tenant_id.
     """
     from backend.services.tenant_service import get_tenant_config_service
-    return get_tenant_config_service(tenant_slug=tenant_slug or "rll")
+    effective_id = tenant_id or x_tenant_id
+    effective_slug = tenant_slug or x_tenant_slug or "rll"
+    return get_tenant_config_service(tenant_slug=effective_slug, tenant_id=effective_id)
+
 
 

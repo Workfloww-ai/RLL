@@ -43,6 +43,20 @@ export function getApiBaseUrl(): string {
 export const BASE_URL = getApiBaseUrl();
 
 let _onSessionRevokedCallback: (() => void) | null = null;
+let _activeTenantId: string = FastStorage.getString('rll_tenant_id') || 'a0000000-0000-0000-0000-000000000001';
+
+export function getTenantId(): string {
+  return _activeTenantId;
+}
+
+export function setTenantId(id: string): void {
+  if (id && typeof id === 'string') {
+    _activeTenantId = id;
+    try {
+      FastStorage.setString('rll_tenant_id', id);
+    } catch {}
+  }
+}
 
 export function registerSessionRevokedListener(callback: () => void) {
   _onSessionRevokedCallback = callback;
@@ -50,18 +64,49 @@ export function registerSessionRevokedListener(callback: () => void) {
 
 export async function apiFetch(endpointPath: string, init?: RequestInit): Promise<Response> {
   const cleanPath = endpointPath.startsWith('/') ? endpointPath : `/${endpointPath}`;
-  const url = `${BASE_URL}${cleanPath}`;
+  const tenantId = getTenantId();
+
+  // Inject tenant_id as query parameter if not already present
+  const separator = cleanPath.includes('?') ? '&' : '?';
+  const finalPath = cleanPath.includes('tenant_id=')
+    ? cleanPath
+    : `${cleanPath}${separator}tenant_id=${encodeURIComponent(tenantId)}`;
+
+  const url = `${BASE_URL}${finalPath}`;
 
   const reqInit: RequestInit = { ...(init || {}) };
   const token = await getAuthToken();
   const headers = new Headers(reqInit.headers || {});
   
+  // Attach Authorization and tenant headers
   if (token && !headers.has('Authorization')) {
     headers.set('Authorization', `Bearer ${token}`);
+  }
+  if (!headers.has('X-Tenant-ID')) {
+    headers.set('X-Tenant-ID', tenantId);
   }
   if (!headers.has('Accept-Encoding')) {
     headers.set('Accept-Encoding', 'gzip, deflate');
   }
+
+  // Inject tenant_id into JSON request body if present (POST, PUT, PATCH, DELETE)
+  const method = (reqInit.method || 'GET').toUpperCase();
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && reqInit.body) {
+    if (typeof reqInit.body === 'string') {
+      try {
+        const parsed = JSON.parse(reqInit.body);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          if (!parsed.tenant_id && !parsed.tenantId) {
+            parsed.tenant_id = tenantId;
+            reqInit.body = JSON.stringify(parsed);
+          }
+        }
+      } catch {
+        // Not a standard JSON string, leave unchanged
+      }
+    }
+  }
+
   reqInit.headers = headers;
 
   logger.info(`apiFetch: ${reqInit.method || 'GET'} ${url}`);
@@ -854,11 +899,18 @@ export async function secureApiFetch(endpointPath: string, init?: RequestInit): 
 }
 
 
-export async function fetchTenantConfig(tenantSlug: string = 'rll') {
+export async function fetchTenantConfig(tenantIdentifier?: string) {
   try {
-    const res = await apiFetch(`/mobile/tenant-config?tenant_slug=${encodeURIComponent(tenantSlug)}`);
+    const param = tenantIdentifier
+      ? (tenantIdentifier.includes('-') && tenantIdentifier.length === 36 ? `tenant_id=${encodeURIComponent(tenantIdentifier)}` : `tenant_slug=${encodeURIComponent(tenantIdentifier)}`)
+      : 'tenant_slug=rll';
+    const res = await apiFetch(`/mobile/tenant-config?${param}`);
     if (!res.ok) return null;
-    return await res.json();
+    const data = await res.json();
+    if (data && data.tenant_id) {
+      setTenantId(data.tenant_id);
+    }
+    return data;
   } catch (e) {
     logger.warn('fetchTenantConfig error:', e);
     return null;

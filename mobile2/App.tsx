@@ -70,7 +70,7 @@ import {
 export type CompanySortOption = 'az' | 'za' | 'cases_desc' | 'cases_asc';
 
 function MainApp() {
-  const { config } = useTenant();
+  const { config, updateWithUser } = useTenant();
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
 
   useEffect(() => {
@@ -227,7 +227,9 @@ function MainApp() {
           setDateFrom('');
           setDateTo('');
           setViewMode('companies');
-          setUser(JSON.parse(cachedUser));
+          const parsed = JSON.parse(cachedUser);
+          setUser(parsed);
+          updateWithUser(parsed);
         } else {
           logger.info('App: No active session found. Showing LoginScreen.');
         }
@@ -263,6 +265,7 @@ function MainApp() {
     fetchUserProfile().then((profile) => {
       if (profile && (profile.email || profile.phone || profile.user_id)) {
         setUser(profile);
+        updateWithUser(profile);
       }
     });
   }, [Boolean(user)]);
@@ -444,7 +447,7 @@ function MainApp() {
   // Filter companies by search query
   const filteredCompanies = useMemo(() => {
     const rawCompanies: Company[] = (apiData && apiData.companies) ? apiData.companies : [];
-    const normalizedCompanies = normalizeCompanyList(rawCompanies);
+    const normalizedCompanies = normalizeCompanyList(rawCompanies, config.pinnedCompanyName, user?.company_name);
 
     return normalizedCompanies.filter((c) => {
       if (!searchQuery.trim()) return true;
@@ -453,7 +456,7 @@ function MainApp() {
       const matchBrands = c.brands && c.brands.some((b: any) => (b.name || b.brand_name || '').toLowerCase().includes(q));
       return matchCompany || matchBrands;
     });
-  }, [searchQuery, apiData]);
+  }, [searchQuery, apiData, config.pinnedCompanyName, user?.company_name]);
 
   // Sort companies: Default A-Z view pins RLL (#1) & Diageo (#2) at top.
   // Explicit sort modes (volume_desc, volume_asc, name_desc) sort ALL companies purely by metric.
@@ -641,6 +644,7 @@ function MainApp() {
               setDateTo('');
               setViewMode('companies');
               setUser(loggedInUser);
+              updateWithUser(loggedInUser);
             }}
           />
         ) : (

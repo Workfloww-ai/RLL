@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
+import { setTenantId } from '../lib/apiClient';
 
 export interface TenantConfig {
+  tenantId: string;
   tenantSlug: string;
   appName: string;
   logoUrl: string;
@@ -11,9 +13,10 @@ export interface TenantConfig {
 }
 
 const defaultTenantConfig: TenantConfig = {
+  tenantId: 'a0000000-0000-0000-0000-000000000001',
   tenantSlug: 'rll',
-  appName: 'RLL',
-  logoUrl: '',
+  appName: 'LucidX360',
+  logoUrl: '/images/rll logo.svg',
   faviconUrl: '',
   splashScreenUrl: '',
   pinnedCompanyName: 'Rajasthan Liquor Limited',
@@ -33,10 +36,14 @@ export function useTenantConfig() {
         if (res.ok) {
           const data = await res.json();
           if (isMounted && data) {
+            const resolvedId = data.tenant_id || 'a0000000-0000-0000-0000-000000000001';
+            setTenantId(resolvedId);
+
             setConfig({
+              tenantId: resolvedId,
               tenantSlug: data.tenant_slug || 'rll',
-              appName: data.app_name || 'RLL',
-              logoUrl: data.logo_url || '',
+              appName: data.app_name || 'LucidX360',
+              logoUrl: data.logo_url || '/images/rll logo.svg',
               faviconUrl: data.favicon_url || '',
               splashScreenUrl: data.splash_screen_url || '',
               pinnedCompanyName: data.pinned_company_name || '',

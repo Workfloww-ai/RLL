@@ -29,7 +29,7 @@ interface LoginScreenProps {
 }
 
 export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
-  const { config } = useTenant();
+  const { config, updateBranding } = useTenant();
   const [step, setStep] = useState<'credentials' | 'otp'>('credentials');
   const [phone, setPhone] = useState('');
   const [otpDigits, setOtpDigits] = useState(['', '', '', '', '', '']);
@@ -76,6 +76,13 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
     try {
       const res = await sendMobileOTP(phone.trim());
       if (res && res.success) {
+        if (res.company_name) {
+          updateBranding({
+            appName: res.company_name,
+            logoUrl: res.company_logo_url || config.logoUrl,
+            pinnedCompanyName: res.company_name,
+          });
+        }
         logger.info(`LoginScreen: OTP requested successfully. Advancing to verification step.`);
         setStep('otp');
         setSuccessMessage(`6-digit code sent to +91 ${phone.trim()}`);

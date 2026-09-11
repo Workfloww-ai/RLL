@@ -84,21 +84,36 @@ export function normalizeCompanyName(name: string): string {
   return name.trim();
 }
 
-export function normalizeCompanyList(rawCompanies: any[]): any[] {
+export function normalizeCompanyList(rawCompanies: any[], pinnedCompanyName?: string, userCompanyName?: string): any[] {
   if (!Array.isArray(rawCompanies) || rawCompanies.length === 0) return rawCompanies;
 
+  let source = rawCompanies;
+  if (userCompanyName && userCompanyName.trim().toLowerCase() !== 'all') {
+    const targetComp = userCompanyName.trim().toLowerCase();
+    const matched = rawCompanies.filter(c => {
+      const cName = (c?.name || c?.company_name || '').trim().toLowerCase();
+      return cName === targetComp || cName.includes(targetComp) || targetComp.includes(cName);
+    });
+    if (matched.length > 0) {
+      source = matched;
+    }
+  }
+
+  const targetPinned = (pinnedCompanyName || userCompanyName || 'Rajasthan Liquor Limited').toLowerCase().trim();
   const map = new Map<string, any>();
-  for (const c of rawCompanies) {
+  for (const c of source) {
     if (!c || !c.name) continue;
     const normName = normalizeCompanyName(c.name || '');
     const normId = normName.toLowerCase().replace(/\s+/g, '-').replace(/\//g, '-');
+
+    const isMatchPinned = normName.toLowerCase().trim() === targetPinned || (targetPinned === 'rajasthan liquor limited' && normName === 'Diageo/In brew');
 
     if (!map.has(normId)) {
       map.set(normId, {
         ...c,
         id: normId,
         name: normName,
-        isPinned: c.isPinned || normName === 'Diageo/In brew' || normName === 'Rajasthan Liquor Limited',
+        isPinned: Boolean(c.isPinned || isMatchPinned),
         brands: [...(c.brands || [])],
         data: {
           Daily: { ...(c.data?.Daily || { cases: 0, bottles: 0, bl: 0 }) },

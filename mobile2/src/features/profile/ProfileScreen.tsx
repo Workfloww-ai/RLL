@@ -8,6 +8,7 @@ import {
   LocationIcon,
   ShieldCheckIcon,
   UserIcon,
+  BuildingIcon,
 } from '../../components/Icons';
 import { ProfileSkeleton } from '../../components/SkeletonLoaders';
 
@@ -48,6 +49,7 @@ export function ProfileScreen({ user, onLogout, loading = false, onRefresh }: Pr
   const phone = user?.phone || 'N/A';
   const designation = user?.role_name || user?.role || 'Territory Sales Manager (TSM)';
   const depotName = user?.depot_name || user?.depotName || user?.depot || user?.hq_location || 'Jaipur Central Depot';
+  const companyName = user?.company_name || config.pinnedCompanyName || '';
 
   const roleLower = String(designation).toLowerCase();
   const isLeaderRole =
@@ -111,6 +113,22 @@ export function ProfileScreen({ user, onLogout, loading = false, onRefresh }: Pr
         {/* Account Details Card */}
         <View style={styles.detailsCard}>
           <Text style={styles.sectionHeaderTitle}>ACCOUNT INFORMATION</Text>
+
+          {/* Company Assigned */}
+          {companyName ? (
+            <>
+              <View style={styles.detailItem}>
+                <View style={styles.detailIconCircle}>
+                  <BuildingIcon size={16} color="#0F2042" />
+                </View>
+                <View style={styles.detailTextWrapper}>
+                  <Text style={styles.detailLabel}>Assigned Company</Text>
+                  <Text style={styles.detailValue}>{companyName}</Text>
+                </View>
+              </View>
+              <View style={styles.divider} />
+            </>
+          ) : null}
 
           {/* Designation */}
           <View style={styles.detailItem}>

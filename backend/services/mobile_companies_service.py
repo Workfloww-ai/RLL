@@ -9,11 +9,12 @@ logger = logging.getLogger(__name__)
 def get_companies_summary(
     period: str = "Daily",
     date_to: Optional[str] = None,
-    selected_hq: Optional[str] = None
+    selected_hq: Optional[str] = None,
+    company_name: Optional[str] = None
 ) -> Tuple[List[Dict[str, Any]], str]:
     """
     Period-specific Companies sales analytics service.
-    Excludes company 'Others' strictly.
+    Excludes company 'Others' strictly. Supports single company scoping.
     Returns list of company objects structured for mobile UI.
     Uses sales_daily_summary as the single source of truth.
     """
@@ -68,6 +69,8 @@ def get_companies_summary(
     }
     if hq_id_filter:
         rpc_params["p_hq_id"] = hq_id_filter
+    if company_name:
+        rpc_params["p_company_name"] = company_name.strip()
 
     try:
         comp_summary_res = client.rpc("get_mobile_companies_summary", rpc_params).execute()
@@ -84,6 +87,8 @@ def get_companies_summary(
             cid = str(mc.get("company_id") or "")
             cname = str(mc.get("company_name") or "").strip()
             if not cname or cname.lower() == "others":
+                continue
+            if company_name and cname.lower() != company_name.strip().lower():
                 continue
             norm_name = normalize_company_name(cname)
             norm_key = norm_name.lower().replace(" ", "-").replace("/", "-")

@@ -526,6 +526,7 @@ class ImportPipelineEngine:
         self,
         filename: str,
         user_id: str,
+        tenant_id: Optional[str] = None,
     ) -> Dict[str, Any]:
 
         filename_lower = filename.lower()
@@ -554,6 +555,7 @@ class ImportPipelineEngine:
 
         client = get_supabase()
         batch_id = None
+        tenant_id = tenant_id or "a0000000-0000-0000-0000-000000000001"
 
         today_str = datetime.now().strftime("%Y-%m-%d")
 
@@ -569,6 +571,7 @@ class ImportPipelineEngine:
                 "imported_rows": 0,
                 "status": "queued",
                 "upload_status": "queued",
+                "tenant_id": tenant_id,
                 "remarks": "File accepted and queued for processing.",
             }
             if user_id and len(str(user_id)) == 36 and user_id != "00000000-0000-0000-0000-000000000001":
@@ -597,6 +600,7 @@ class ImportPipelineEngine:
             "source_file": filename,
             "file_name": filename,
             "load_type": "daily",
+            "tenant_id": tenant_id,
             "covers_start": today_str,
             "covers_end": today_str,
             "storage_path": f"uploads/{int(time.time())}_{filename}",
@@ -647,7 +651,9 @@ class ImportPipelineEngine:
         contents: bytes,
         user_id: str,
         batch_id: int,
+        tenant_id: Optional[str] = None,
     ):
+        tenant_id = tenant_id or (upload_batches_db.get(batch_id) or {}).get("tenant_id") or "a0000000-0000-0000-0000-000000000001"
         start_time = time.time()
         started_at_iso = datetime.now().isoformat()
 
@@ -808,7 +814,7 @@ class ImportPipelineEngine:
             brand_cache = master_service.bulk_resolve_brands(brand_items)
             packaging_cache = master_service.bulk_resolve_packagings(unique_packagings)
             self._sync_user_hierarchy(s_ase, s_asm, s_depot, depot_cache)
-            self._populate_user_sales_fact(batch_id, s_date, s_company, s_ase, s_brand, s_cases, s_btl, s_bl, company_cache, brand_cache)
+            self._populate_user_sales_fact(batch_id, s_date, s_company, s_ase, s_brand, s_cases, s_btl, s_bl, company_cache, brand_cache, tenant_id=tenant_id)
 
             # Vectorized ID Resolution
             clean_fn = master_service._clean
@@ -816,6 +822,7 @@ class ImportPipelineEngine:
             map_licensee = s_licensee.map(lambda x: licensee_cache.get(clean_fn(x)))
             map_brand = s_brand.map(lambda x: brand_cache.get(clean_fn(x)))
             map_packaging = s_packing.map(lambda x: packaging_cache.get(clean_fn(x)))
+            map_hq = s_hq.map(lambda x: hq_cache.get(clean_fn(x)))
 
             # Parse dates vectorized
             def parse_date_val(d):
@@ -828,6 +835,7 @@ class ImportPipelineEngine:
 
             # Build Raw Staging DataFrame & Records
             raw_df = pd.DataFrame({
+                "tenant_id": tenant_id,
                 "batch_id": batch_id,
                 "sale_date_raw": s_date,
                 "company_raw": s_company,
@@ -850,18 +858,20 @@ class ImportPipelineEngine:
 
             # Build Sales Fact DataFrame & Records
             fact_df = pd.DataFrame({
+                "tenant_id": tenant_id,
                 "sale_date": map_date,
                 "licensee_id": map_licensee,
                 "brand_id": map_brand,
                 "packaging_id": map_packaging,
                 "depot_id": map_depot,
+                "headquarters_id": map_hq,
                 "total_case": s_cases,
                 "total_btl": s_btl,
                 "total_bl": s_bl,
                 "batch_id": batch_id,
             })
 
-            valid_mask = fact_df[["depot_id", "licensee_id", "brand_id", "packaging_id"]].notna().all(axis=1)
+            valid_mask = fact_df[["depot_id", "licensee_id", "brand_id", "packaging_id", "headquarters_id"]].notna().all(axis=1)
             valid_fact_df = fact_df[valid_mask].copy()
             fact_records = valid_fact_df.to_dict("records")
 
@@ -913,6 +923,15 @@ class ImportPipelineEngine:
                                 "batch_id": str(batch_id),
                                 "column_name": "packing_raw",
                                 "error_message": f"Unmapped Packaging/Size: '{raw_val}'" if raw_val else "Missing Packaging size"
+                            })
+
+                        # Check Headquarters resolution
+                        if pd.isna(map_hq.iloc[idx]):
+                            raw_val = str(s_hq.iloc[idx]).strip() if idx < len(s_hq) and pd.notna(s_hq.iloc[idx]) else ""
+                            validation_error_records.append({
+                                "batch_id": str(batch_id),
+                                "column_name": "hq_raw",
+                                "error_message": f"Unmapped Headquarters: '{raw_val}'" if raw_val else "Missing Headquarters"
                             })
 
                     if validation_error_records:
@@ -2042,8 +2061,6 @@ class ImportPipelineEngine:
                     try:
                         if table == "dashboard_summary_daily":
                             client.table(table).upsert(chunk, on_conflict="sale_date,depot_id,brand_id").execute()
-                        elif table in ("sales_fact", "user_sales_fact"):
-                            client.table(table).upsert(chunk, ignore_duplicates=True).execute()
                         else:
                             client.table(table).insert(chunk).execute()
                         success = True
@@ -2467,7 +2484,8 @@ class ImportPipelineEngine:
         s_btl: pd.Series,
         s_bl: pd.Series,
         company_cache: Dict[str, str],
-        brand_cache: Dict[str, str]
+        brand_cache: Dict[str, str],
+        tenant_id: Optional[str] = None
     ):
         """
         Inserts normalized non-Others sales facts into public.user_sales_fact at the ASE/User level.
@@ -2475,6 +2493,8 @@ class ImportPipelineEngine:
         client = get_supabase()
         if not client:
             return
+
+        tenant_id = tenant_id or "a0000000-0000-0000-0000-000000000001"
 
         try:
             u_res = client.table("users").select("user_id, first_name, last_name").execute()
@@ -2515,6 +2535,7 @@ class ImportPipelineEngine:
                 sale_dt_str = self._parse_date(dt)
 
                 fact_records.append({
+                    "tenant_id": tenant_id,
                     "user_id": user_id,
                     "company_id": company_id,
                     "brand_id": brand_id,
