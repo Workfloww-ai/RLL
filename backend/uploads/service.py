@@ -507,16 +507,35 @@ class ImportPipelineEngine:
 
         return {"acquired": True}
 
-    def release_pipeline_lock(self, batch_id: int):
+    def release_pipeline_lock(self, batch_id: Optional[Any] = None):
         """
-        Phase 2 Release Lock:
-        Releases PostgreSQL advisory lock upon pipeline completion or failure.
+        Phase 2 Release Lock & Post-Lock Staging Drop:
+        Releases PostgreSQL advisory lock upon pipeline completion or failure,
+        and drops temporary data from public.raw_sales_upload.
         """
         try:
             release_advisory_lock()
             logger.info(f"Phase 2 Advisory Lock released for batch {batch_id}.")
         except Exception as exc:
             logger.warning(f"Phase 2 release_pipeline_lock notice for batch {batch_id}: {exc}")
+
+        # Drop the data from raw_sales_upload table after advisory locks are released
+        try:
+            client = get_supabase()
+            if client:
+                b_str = str(batch_id).strip() if batch_id is not None else ""
+                if len(b_str) == 36 and "-" in b_str:
+                    try:
+                        client.rpc("purge_batch_data_fast", {"p_batch_id": b_str}).execute()
+                        logger.info(f"Batch {batch_id}: Purged raw_sales_upload via purge_batch_data_fast RPC after advisory lock release.")
+                    except Exception:
+                        client.table("raw_sales_upload").delete().eq("batch_id", b_str).execute()
+                        logger.info(f"Batch {batch_id}: Dropped staging records from raw_sales_upload after advisory lock release.")
+                else:
+                    client.table("raw_sales_upload").delete().neq("raw_id", "00000000-0000-0000-0000-000000000000").execute()
+                    logger.info("Dropped staging records from raw_sales_upload after advisory lock release.")
+        except Exception as exc_drop:
+            logger.warning(f"Notice dropping raw_sales_upload for batch {batch_id} after lock release: {exc_drop}")
 
     # ========================================================
     # CREATE UPLOAD BATCH
@@ -780,7 +799,7 @@ class ImportPipelineEngine:
                     "depot_name": d,
                     "office_id": office_cache.get(master_service._clean(deo)),
                     "circle_id": circle_cache.get(master_service._clean(cir)),
-                    "headquarters_id": hq_cache.get(master_service._clean(hq)),
+                    "headquarters_id": hq_cache.get(master_service._clean(hq)) or hq_cache.get(master_service._clean_no_space(hq)),
                 }
                 for d, deo, cir, hq in zip(s_depot, s_deo, s_circle, s_hq)
                 if d
@@ -794,7 +813,7 @@ class ImportPipelineEngine:
                     "group_name": g,
                     "group_id": group_cache.get(master_service._clean(g)),
                     "depot_id": depot_cache.get(master_service._clean(d)),
-                    "headquarters_id": hq_cache.get(master_service._clean(hq)),
+                    "headquarters_id": hq_cache.get(master_service._clean(hq)) or hq_cache.get(master_service._clean_no_space(hq)),
                     "office_id": office_cache.get(master_service._clean(deo)),
                     "circle_id": circle_cache.get(master_service._clean(cir)),
                 }
@@ -818,11 +837,12 @@ class ImportPipelineEngine:
 
             # Vectorized ID Resolution
             clean_fn = master_service._clean
+            clean_no_space = master_service._clean_no_space
             map_depot = s_depot.map(lambda x: depot_cache.get(clean_fn(x)))
             map_licensee = s_licensee.map(lambda x: licensee_cache.get(clean_fn(x)))
             map_brand = s_brand.map(lambda x: brand_cache.get(clean_fn(x)))
             map_packaging = s_packing.map(lambda x: packaging_cache.get(clean_fn(x)))
-            map_hq = s_hq.map(lambda x: hq_cache.get(clean_fn(x)))
+            map_hq = s_hq.map(lambda x: hq_cache.get(clean_fn(x)) or hq_cache.get(clean_no_space(x)))
 
             # Parse dates vectorized
             def parse_date_val(d):
@@ -884,10 +904,9 @@ class ImportPipelineEngine:
 
             # Populate detailed error logs in upload_validation_errors table for failed rows
             if failed_rows > 0:
+                validation_error_records = []
                 try:
                     invalid_indices = fact_df[~valid_mask].index
-                    validation_error_records = []
-
                     for idx in invalid_indices:
                         # Check Depot resolution
                         if pd.isna(map_depot.iloc[idx]):
@@ -941,6 +960,43 @@ class ImportPipelineEngine:
                 except Exception as e_err_log:
                     logger.warning(f"Batch {batch_id}: Exception logging detailed validation errors: {e_err_log}")
 
+                # ATOMIC ALL-OR-NOTHING: Rollback to 0 and halt pipeline immediately!
+                first_err = validation_error_records[0]["error_message"] if validation_error_records else "Validation error"
+                failure_reason = f"Upload aborted and rolled back to 0: {failed_rows} rows failed data validation ({first_err})."
+                logger.warning(f"Batch {batch_id}: {failure_reason}")
+
+                self._cleanup_failed_batch(batch_id)
+
+                processing_time = round(time.time() - start_time, 2)
+                if local_batch:
+                    local_batch.update({
+                        "total_rows": total_rows,
+                        "imported_rows": 0,
+                        "failed_rows": failed_rows,
+                        "status": "failed",
+                        "upload_status": "failed",
+                        "processing_time_seconds": processing_time,
+                        "remarks": failure_reason,
+                    })
+
+                self._update_batch(
+                    batch_id=batch_id,
+                    status="failed",
+                    row_count=total_rows,
+                    imported_rows=0,
+                    failed_rows=failed_rows,
+                    remarks=failure_reason
+                )
+
+                self._pipeline_log(
+                    batch_id=batch_id,
+                    step="validation_failed",
+                    status="failed",
+                    message=failure_reason,
+                )
+
+                self.release_pipeline_lock(batch_id)
+                return local_batch
 
             # Step 7 - Bulk Insert Raw Records in chunks with progress
             if raw_records:
@@ -1028,6 +1084,10 @@ class ImportPipelineEngine:
                     else:
                         logger.warning(f"Batch {batch_id}: Accuracy validation notice: {val_res.get('mismatches')}")
 
+            processing_time = round(time.time() - start_time, 2)
+            if local_batch:
+                local_batch["processing_time_seconds"] = processing_time
+
             final_status = "loaded" if imported_rows > 0 else "failed"
             self._update_batch(batch_id=batch_id, row_count=total_rows, status=final_status)
 
@@ -1045,7 +1105,6 @@ class ImportPipelineEngine:
                 except Exception as cache_err:
                     logger.warning(f"Batch {batch_id}: Cache invalidation/pre-warming notice: {cache_err}")
 
-            processing_time = round(time.time() - start_time, 2)
             completed_at_iso = datetime.now().isoformat()
             distinct_dates_count = len(distinct_dates) if fact_records else 0
 
@@ -1925,21 +1984,54 @@ class ImportPipelineEngine:
             except Exception as e:
                 logger.warning(f"Could not update batch progress status: {e}")
 
-    def _cleanup_failed_batch(self, batch_id: int):
+    def _cleanup_failed_batch(self, batch_id: Any):
         """
+        Atomic Rollback to 0:
         Rollback/cleanup all partial records inserted for a batch if processing fails mid-way.
-        Deletes any partial rows from sales_fact, sales, raw_sales_upload, dashboard_summary_daily, and batch_chunks.
+        Purges any partial rows from sales_fact, user_sales_fact, raw_sales_upload, and temporary tables.
         """
         client = get_supabase()
         if not client or not batch_id:
             return
 
-        logger.warning(f"Rolling back partial records for failed upload batch {batch_id}...")
+        b_str = str(batch_id).strip()
+        logger.warning(f"Atomic Rollback: Purging all partial records to 0 for upload batch {b_str}...")
 
         try:
-            client.table("sales_fact").delete().eq("batch_id", batch_id).execute()
+            client.table("sales_fact").delete().eq("batch_id", b_str).execute()
         except Exception as exc:
-            logger.warning(f"Cleanup warning for sales_fact batch {batch_id}: {exc}")
+            logger.warning(f"Single delete for sales_fact batch {b_str} hit timeout: {exc}. Executing date-partitioned rollback...")
+            try:
+                # Fallback: Delete day-by-day to stay well within Postgres statement limits
+                while True:
+                    d_res = client.table("sales_fact").select("sale_date").eq("batch_id", b_str).limit(100).execute()
+                    dates = list({r["sale_date"] for r in (d_res.data or []) if r.get("sale_date")})
+                    if not dates:
+                        break
+                    for d in dates:
+                        client.table("sales_fact").delete().eq("batch_id", b_str).eq("sale_date", d).execute()
+            except Exception as e_p:
+                logger.warning(f"Date-scoped cleanup fallback notice for sales_fact: {e_p}")
+
+        try:
+            client.table("user_sales_fact").delete().eq("batch_id", b_str).execute()
+        except Exception as exc:
+            logger.warning(f"Single delete for user_sales_fact batch {b_str} hit timeout: {exc}. Executing date-partitioned rollback...")
+            try:
+                while True:
+                    d_res = client.table("user_sales_fact").select("sale_date").eq("batch_id", b_str).limit(100).execute()
+                    dates = list({r["sale_date"] for r in (d_res.data or []) if r.get("sale_date")})
+                    if not dates:
+                        break
+                    for d in dates:
+                        client.table("user_sales_fact").delete().eq("batch_id", b_str).eq("sale_date", d).execute()
+            except Exception as e_p:
+                logger.warning(f"Date-scoped cleanup fallback notice for user_sales_fact: {e_p}")
+
+        try:
+            client.table("raw_sales_upload").delete().eq("batch_id", b_str).execute()
+        except Exception as exc:
+            logger.warning(f"Cleanup warning for raw_sales_upload batch {b_str}: {exc}")
 
         self._purge_batch_temporary_data(batch_id)
 
@@ -2130,6 +2222,11 @@ class ImportPipelineEngine:
                             logger.info(f"Batch {batch_id}: Logged {len(failed_sub_records)} detailed row error records into upload_validation_errors.")
                         except Exception as log_exc:
                             logger.warning(f"Could not log chunk error to upload_validation_errors: {log_exc}")
+
+                    # ATOMIC ALL-OR-NOTHING: If any records in this chunk failed insertion, abort and trigger full rollback!
+                    if inserted_count < len(chunk):
+                        first_err_detail = failed_sub_records[0]["error_message"] if failed_sub_records else (err_msg or "Database insertion error")
+                        raise RuntimeError(f"Chunk {idx} (rows {start_row}-{end_row}) failed write into '{table}': {first_err_detail}")
             else:
                 success = True
                 inserted_count = len(chunk)

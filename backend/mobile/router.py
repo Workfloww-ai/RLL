@@ -960,6 +960,7 @@ async def get_mobile_companies(
     period: str = Query("Daily", description="Sales period: Daily, MTD, YTD"),
     date_to: Optional[str] = Query(None, alias="date"),
     selected_hq: Optional[str] = Query(None, alias="selected_hq"),
+    refresh: bool = Query(False, description="Bypass cache on explicit refresh"),
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -980,10 +981,11 @@ async def get_mobile_companies(
     effective_company = user_company if (user_company and user_role not in ["admin", "super_admin", "super admin"]) else None
 
     redis_key = f"rll:mobile:companies:{clean_period}:{clean_hq}:{clean_date}:{effective_company or 'all'}"
-    cached_payload = await get_json_cache(redis_key)
-    if cached_payload is not None:
-        logger.info(f"get_mobile_companies: Redis CACHE HIT for {redis_key}")
-        return cached_payload
+    if not refresh:
+        cached_payload = await get_json_cache(redis_key)
+        if cached_payload is not None:
+            logger.info(f"get_mobile_companies: Redis CACHE HIT for {redis_key}")
+            return cached_payload
 
     try:
         companies_list, resolved_date = get_companies_summary(

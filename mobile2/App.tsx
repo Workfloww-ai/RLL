@@ -110,7 +110,7 @@ function MainApp() {
     try {
       await clearAllPhoneCaches();
       if (viewMode === 'companies') {
-        const compRes = await fetchMobileCompanies(period, dateTo, selectedHq);
+        const compRes = await fetchMobileCompanies(period, dateTo, selectedHq, false, true);
         if (compRes && Array.isArray(compRes.companies)) {
           setApiData((prev: any) => ({ ...(prev || {}), ...compRes }));
         }
@@ -823,7 +823,7 @@ function MainApp() {
                 setLoadingSalesData(true);
                 try {
                   if (viewMode === 'companies') {
-                    const compRes = await fetchMobileCompanies(period, targetLatest, 'All Headquarters');
+                    const compRes = await fetchMobileCompanies(period, targetLatest, 'All Headquarters', false, true);
                     if (compRes && Array.isArray(compRes.companies)) {
                       setApiData(compRes);
                     }

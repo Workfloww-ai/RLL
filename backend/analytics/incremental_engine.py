@@ -123,21 +123,20 @@ class IncrementalAnalyticsEngine:
         for s_date in sorted_dates:
             t0 = time.perf_counter()
             date_ok = False
-            for attempt in range(2):
+            for attempt in range(3):
                 try:
                     client.rpc("refresh_sales_daily_summary_for_date", {"p_sale_date": s_date}).execute()
                     date_ok = True
                     break
                 except Exception as e_retry:
                     logger.debug(f"[ANALYTICS] Daily summary attempt {attempt+1} notice for {s_date}: {e_retry}")
-                    time.sleep(0.3)
+                    time.sleep(1.0 * (attempt + 1))
 
             if not date_ok:
                 logger.info(f"[ANALYTICS] Single-pass daily summary timeout notice for date {s_date}. Falling back to depot chunking...")
                 try:
                     depots_res = client.table("depots").select("depot_id").execute()
                     depot_list = depots_res.data or []
-                    client.table("sales_daily_summary").delete().eq("sale_date", s_date).execute()
                     for d in depot_list:
                         did = d.get("depot_id")
                         if did:
@@ -157,6 +156,23 @@ class IncrementalAnalyticsEngine:
             else:
                 logger.warning(f"[ANALYTICS] Daily summary aggregation notice for date {s_date} after retries.")
                 success = False
+
+        # 2b. Post-Aggregation Completeness Verification
+        # Ensure that every single date in sorted_dates has rows in sales_daily_summary
+        for s_date in sorted_dates:
+            try:
+                check_res = client.table("sales_daily_summary").select("sale_date", count="exact").eq("sale_date", s_date).limit(1).execute()
+                if (check_res.count or 0) == 0:
+                    logger.error(f"[ANALYTICS] CRITICAL: Date {s_date} has 0 rows in sales_daily_summary! Attempting recovery...")
+                    client.rpc("refresh_sales_daily_summary_for_date", {"p_sale_date": s_date}).execute()
+                    check_again = client.table("sales_daily_summary").select("sale_date", count="exact").eq("sale_date", s_date).limit(1).execute()
+                    if (check_again.count or 0) > 0:
+                        logger.info(f"[ANALYTICS] Successfully recovered sales_daily_summary for {s_date} ({check_again.count} rows).")
+                    else:
+                        logger.error(f"[ANALYTICS] Recovery failed for {s_date}! Summary data is missing.")
+                        success = False
+            except Exception as e_ver:
+                logger.warning(f"[ANALYTICS] Date completeness verification notice for {s_date}: {e_ver}")
 
         # 3. Incremental Monthly Aggregation (Set-based RPC execution per affected month with resilient depot-chunking fallback)
         for m_start in sorted_months:

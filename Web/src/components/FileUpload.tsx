@@ -10,9 +10,10 @@ interface FileUploadProps {
   accept?: string;
   uploadEndpoint?: string;
   onUploadComplete?: (fileName: string) => void;
+  onErrorOccurred?: (batchId?: string | number) => void;
 }
 
-export default function FileUpload({ title, instructions, accept = ".xlsx, .xls, .xlsb, .csv, .numbers", uploadEndpoint, onUploadComplete }: FileUploadProps) {
+export default function FileUpload({ title, instructions, accept = ".xlsx, .xls, .xlsb, .csv, .numbers", uploadEndpoint, onUploadComplete, onErrorOccurred }: FileUploadProps) {
   const [uploadState, setUploadState] = useState<FileUploadState>({ status: 'idle', progress: 0 });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -36,6 +37,14 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
     }
   };
 
+  const formatDuration = (sec?: number) => {
+    if (sec === undefined || sec === null || sec < 1) return '< 1s';
+    if (sec < 60) return `${sec}s`;
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}m ${s.toString().padStart(2, '0')}s`;
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       const selectedFile = e.target.files[0];
@@ -44,16 +53,23 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
     }
   };
 
-  const startPollingBatchStatus = (batchId: number, fileName: string) => {
+  const startPollingBatchStatus = (
+    batchId: number | string, 
+    fileName: string, 
+    startTimeFormatted: string, 
+    startTimestampMs: number
+  ) => {
     if (pollTimerRef.current) {
       clearInterval(pollTimerRef.current);
     }
 
     let pollAttempts = 0;
-    const maxPollAttempts = 360; // Allow up to 6 minutes polling for 500k+ row files
+    const maxPollAttempts = 1200; // Allow up to 20 minutes polling for 500k+ row files
 
     pollTimerRef.current = setInterval(async () => {
       pollAttempts += 1;
+      const elapsed = Math.max(1, Math.floor((Date.now() - startTimestampMs) / 1000));
+
       try {
         const token = localStorage.getItem('token');
         const headers: Record<string, string> = {};
@@ -68,6 +84,8 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
               progress: 0,
               fileName,
               batchId,
+              uploadStartTime: startTimeFormatted,
+              elapsedSeconds: elapsed,
               errorMessage: 'Timed out waiting for database confirmation from backend.'
             });
           }
@@ -89,12 +107,16 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
         if (total > 0 && imported > 0) {
           currentProgress = Math.min(95, 40 + Math.floor((imported / total) * 55));
         } else {
-          currentProgress = Math.min(90, 40 + pollAttempts * 2);
+          currentProgress = Math.min(92, 40 + Math.floor(pollAttempts * 1.5));
         }
 
         if (isSuccess) {
           // Backend has confirmed all data is completely saved in database!
           if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+          const finalTimeSec = batchInfo.processing_time_seconds && batchInfo.processing_time_seconds > 0 
+            ? batchInfo.processing_time_seconds 
+            : elapsed;
+
           setUploadState({
             status: 'success',
             progress: 100,
@@ -103,7 +125,9 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
             importedRows: imported,
             failedRows: batchInfo.failed_rows ?? 0,
             duplicateRows: batchInfo.duplicate_rows ?? 0,
-            processingTimeSeconds: batchInfo.processing_time_seconds ?? 0,
+            processingTimeSeconds: finalTimeSec,
+            uploadStartTime: startTimeFormatted,
+            elapsedSeconds: elapsed,
             statusMessage: batchInfo.remarks || 'All Records Successfully Verified & Saved!'
           });
           if (onUploadComplete) onUploadComplete(fileName);
@@ -130,9 +154,12 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
             progress: 0,
             fileName,
             batchId,
+            uploadStartTime: startTimeFormatted,
+            elapsedSeconds: elapsed,
             errorMessage: batchInfo.remarks || 'Database insertion failed due to data validation errors.',
             errorLogs: logs
           });
+          if (onErrorOccurred) onErrorOccurred(batchId);
         } else {
           // Still processing/pending in database
           setUploadState({
@@ -140,6 +167,8 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
             progress: currentProgress,
             fileName,
             batchId,
+            uploadStartTime: startTimeFormatted,
+            elapsedSeconds: elapsed,
             statusMessage: batchInfo.remarks || 'Saving data rows into database...'
           });
 
@@ -150,7 +179,9 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
               progress: 0,
               fileName,
               batchId,
-              errorMessage: 'Database ingestion took too long to respond.'
+              uploadStartTime: startTimeFormatted,
+              elapsedSeconds: elapsed,
+              errorMessage: 'Database ingestion exceeded timeout limit. Click "Check Live DB Status" below to verify if completed.'
             });
           }
         }
@@ -163,6 +194,8 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
             progress: 0,
             fileName,
             batchId,
+            uploadStartTime: startTimeFormatted,
+            elapsedSeconds: elapsed,
             errorMessage: 'Network error while checking database status.'
           });
         }
@@ -170,13 +203,63 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
     }, 1000);
   };
 
+  const checkBatchStatusDirectly = async () => {
+    const id = uploadState.batchId;
+    if (!id) return;
+    try {
+      const token = localStorage.getItem('token');
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const res = await fetch(`${API_BASE_URL}/uploads/batches/${id}`, { headers });
+      if (!res.ok) return;
+      const batchInfo = await res.json();
+      const statusMain = (batchInfo.status || '').toLowerCase();
+      const statusUpload = (batchInfo.upload_status || '').toLowerCase();
+      const isSuccess = ['loaded', 'completed', 'success'].includes(statusMain) || ['loaded', 'completed', 'success'].includes(statusUpload);
+
+      if (isSuccess) {
+        const imported = batchInfo.imported_rows ?? batchInfo.row_count ?? 0;
+        setUploadState({
+          status: 'success',
+          progress: 100,
+          fileName: uploadState.fileName || batchInfo.file_name || batchInfo.source_file,
+          batchId: id,
+          importedRows: imported,
+          failedRows: batchInfo.failed_rows ?? 0,
+          duplicateRows: batchInfo.duplicate_rows ?? 0,
+          processingTimeSeconds: batchInfo.processing_time_seconds || uploadState.elapsedSeconds || 0,
+          uploadStartTime: uploadState.uploadStartTime,
+          elapsedSeconds: uploadState.elapsedSeconds,
+          statusMessage: batchInfo.remarks || 'All Records Successfully Verified & Saved!'
+        });
+        if (onUploadComplete) onUploadComplete(uploadState.fileName || batchInfo.file_name);
+      } else {
+        const startTs = Date.now() - (uploadState.elapsedSeconds || 0) * 1000;
+        startPollingBatchStatus(id, uploadState.fileName || 'Uploaded Sheet', uploadState.uploadStartTime || 'Just now', startTs);
+      }
+    } catch (e) {
+      console.error('Manual status check error:', e);
+    }
+  };
+
   const processFile = async (file: File) => {
     if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+
+    const startMs = Date.now();
+    const timeFormatted = new Date().toLocaleTimeString('en-IN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true
+    });
 
     setUploadState({
       status: 'uploading',
       progress: 15,
       fileName: file.name,
+      uploadStartTime: timeFormatted,
+      elapsedSeconds: 0,
       statusMessage: 'Uploading file to backend server...'
     });
 
@@ -217,6 +300,8 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
           status: 'success',
           progress: 100,
           fileName: file.name,
+          uploadStartTime: timeFormatted,
+          elapsedSeconds: Math.floor((Date.now() - startMs) / 1000),
           importedRows: data.imported_count || 0,
           statusMessage: data.message || 'Excel roster data successfully imported and mapped across database tables.'
         });
@@ -231,6 +316,8 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
           status: 'success',
           progress: 100,
           fileName: file.name,
+          uploadStartTime: timeFormatted,
+          elapsedSeconds: Math.floor((Date.now() - startMs) / 1000),
           statusMessage: data.remarks || data.message || 'File upload completed.'
         });
         if (onUploadComplete) onUploadComplete(file.name);
@@ -243,10 +330,12 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
         progress: 35,
         fileName: file.name,
         batchId,
+        uploadStartTime: timeFormatted,
+        elapsedSeconds: Math.floor((Date.now() - startMs) / 1000),
         statusMessage: data.remarks || 'File received. Backend is parsing data and writing into database...'
       });
 
-      startPollingBatchStatus(batchId, file.name);
+      startPollingBatchStatus(batchId, file.name, timeFormatted, startMs);
 
     } catch (error: any) {
       console.error('Upload error:', error);
@@ -254,6 +343,8 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
         status: 'error',
         progress: 0,
         fileName: file.name,
+        uploadStartTime: timeFormatted,
+        elapsedSeconds: Math.floor((Date.now() - startMs) / 1000),
         errorMessage: error.message || 'File upload failed. Please verify backend connection and try again.'
       });
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -326,7 +417,12 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                 <div className="w-12 h-12 bg-[#0D3B8E]/10 text-[#0D3B8E] rounded-full flex items-center justify-center mb-3 animate-pulse">
                   <FileText size={24} />
                 </div>
-                <p className="text-sm text-slate-900 font-bold mb-1">Uploading {uploadState.fileName}...</p>
+                <p className="text-sm text-slate-900 font-bold mb-1 truncate max-w-sm">Uploading {uploadState.fileName}...</p>
+                {uploadState.uploadStartTime && (
+                  <p className="text-[11px] text-slate-400 font-medium mb-2 flex items-center justify-center gap-1">
+                    <Clock size={11} /> Started: {uploadState.uploadStartTime}
+                  </p>
+                )}
                 <p className="text-xs text-slate-500 mb-3">{uploadState.statusMessage}</p>
                 <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
                   <motion.div 
@@ -346,7 +442,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                 initial={{ opacity: 0, scale: 0.96 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0 }}
-                className="flex flex-col items-center w-full max-w-md mx-auto text-center py-2"
+                className="flex flex-col items-center w-full max-w-lg mx-auto text-center py-2"
               >
                 <div className="relative mb-3">
                   <div className="w-14 h-14 bg-amber-500/10 border border-amber-200 text-amber-600 rounded-2xl flex items-center justify-center">
@@ -358,7 +454,26 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                 </div>
 
                 <h3 className="text-sm font-bold text-slate-900">Processing Data Ingestion...</h3>
-                <p className="text-xs text-slate-500 mt-1">{uploadState.statusMessage}</p>
+
+                {/* Sheet Details & Live Timer */}
+                <div className="flex flex-wrap items-center justify-center gap-2 mt-2.5 mb-2">
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-slate-100 text-slate-800 text-xs font-bold rounded-lg border border-slate-200 truncate max-w-[260px]">
+                    <FileText size={13} className="text-[#0D3B8E] shrink-0" />
+                    <span className="truncate">{uploadState.fileName}</span>
+                  </span>
+                  {uploadState.uploadStartTime && (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-50 text-blue-700 text-[11px] font-semibold rounded-lg border border-blue-200">
+                      <Clock size={12} />
+                      Started: {uploadState.uploadStartTime}
+                    </span>
+                  )}
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-amber-50 text-amber-800 text-[11px] font-bold rounded-lg border border-amber-200">
+                    <RefreshCw size={11} className="animate-spin text-amber-600" />
+                    Elapsed: {formatDuration(uploadState.elapsedSeconds)}
+                  </span>
+                </div>
+
+                <p className="text-xs text-slate-500 mt-1 max-w-md font-medium">{uploadState.statusMessage}</p>
 
                 <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden mt-4">
                   <motion.div 
@@ -376,7 +491,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                 key="success"
                 initial={{ opacity: 0, scale: 0.96 }}
                 animate={{ opacity: 1, scale: 1 }}
-                className="flex flex-col items-center w-full max-w-lg mx-auto"
+                className="flex flex-col items-center w-full max-w-xl mx-auto text-center"
               >
                 <div className="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mb-3">
                   <CheckCircle size={28} />
@@ -384,23 +499,31 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                 <h3 className="text-sm font-bold text-slate-900">Database Confirmation Received!</h3>
                 <p className="text-xs text-slate-500 mt-0.5 font-medium">{uploadState.fileName} is fully saved in database.</p>
 
-                <div className="mt-4 w-full grid grid-cols-3 gap-3 p-3 bg-slate-50 border border-slate-200/80 rounded-xl text-center">
-                  <div className="p-2 bg-white rounded-lg border border-slate-100">
+                <div className="mt-4 w-full grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3 bg-slate-50 border border-slate-200/80 rounded-xl text-center">
+                  <div className="p-2.5 bg-white rounded-lg border border-slate-100">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Sheet Name</p>
+                    <p className="text-xs font-bold text-slate-800 mt-1 truncate" title={uploadState.fileName}>
+                      {uploadState.fileName || '—'}
+                    </p>
+                  </div>
+                  <div className="p-2.5 bg-white rounded-lg border border-slate-100">
                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Saved Rows</p>
                     <p className="text-base font-bold text-emerald-700 mt-0.5">
                       {uploadState.importedRows ? uploadState.importedRows.toLocaleString() : '—'}
                     </p>
                   </div>
-                  <div className="p-2 bg-white rounded-lg border border-slate-100">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Time Taken</p>
-                    <p className="text-base font-bold text-slate-700 mt-0.5 flex items-center justify-center gap-1">
-                      <Clock size={12} className="text-slate-400" />
-                      {uploadState.processingTimeSeconds ? `${uploadState.processingTimeSeconds}s` : '<1s'}
+                  <div className="p-2.5 bg-white rounded-lg border border-slate-100">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Upload Time</p>
+                    <p className="text-xs font-bold text-slate-700 mt-1 flex items-center justify-center gap-1">
+                      <Clock size={11} className="text-slate-400" />
+                      {uploadState.uploadStartTime || 'Just now'}
                     </p>
                   </div>
-                  <div className="p-2 bg-white rounded-lg border border-slate-100">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Batch ID</p>
-                    <p className="text-base font-bold text-slate-700 mt-0.5">#{uploadState.batchId || 1}</p>
+                  <div className="p-2.5 bg-white rounded-lg border border-slate-100">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Time Taken</p>
+                    <p className="text-base font-bold text-slate-700 mt-0.5 flex items-center justify-center gap-1">
+                      {formatDuration(uploadState.processingTimeSeconds || uploadState.elapsedSeconds)}
+                    </p>
                   </div>
                 </div>
 
@@ -418,31 +541,79 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                 key="error"
                 initial={{ opacity: 0, scale: 0.96 }}
                 animate={{ opacity: 1, scale: 1 }}
-                className="flex flex-col items-center w-full max-w-lg mx-auto text-center"
+                className="flex flex-col items-center w-full max-w-xl mx-auto text-center"
               >
                 <div className="w-12 h-12 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center mb-2">
                   <AlertCircle size={28} />
                 </div>
-                <h3 className="text-sm font-bold text-rose-900">Database Ingestion Failed</h3>
-                <p className="text-xs text-rose-700 mt-1 max-w-md font-medium">{uploadState.errorMessage}</p>
+                <h3 className="text-sm font-bold text-rose-900">Database Ingestion Notice</h3>
+
+                {/* Sheet Details & Upload Time */}
+                <div className="flex flex-wrap items-center justify-center gap-2 mt-2 mb-2">
+                  {uploadState.fileName && (
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-white border border-rose-200 text-slate-800 text-xs font-bold rounded-lg shadow-2xs truncate max-w-[260px]">
+                      <FileText size={12} className="text-rose-600 shrink-0" />
+                      <span className="truncate">{uploadState.fileName}</span>
+                    </span>
+                  )}
+                  {uploadState.uploadStartTime && (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-50 border border-rose-200 text-rose-700 text-[11px] font-semibold rounded-lg">
+                      <Clock size={11} />
+                      Started: {uploadState.uploadStartTime}
+                    </span>
+                  )}
+                  {uploadState.elapsedSeconds !== undefined && uploadState.elapsedSeconds > 0 && (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-50 border border-rose-200 text-rose-700 text-[11px] font-semibold rounded-lg">
+                      Duration: {formatDuration(uploadState.elapsedSeconds)}
+                    </span>
+                  )}
+                </div>
+
+                <p className="text-xs text-rose-700 mt-1 max-w-md font-medium">
+                  {uploadState.errorMessage?.includes('[Errno 35]') 
+                    ? 'Connection buffer stalled during insertion. The database was momentarily saturated.'
+                    : uploadState.errorMessage}
+                </p>
 
                 {uploadState.errorLogs && uploadState.errorLogs.length > 0 && (
-                  <div className="mt-3 w-full bg-rose-50 border border-rose-200 rounded-xl p-3 text-left max-h-32 overflow-y-auto">
-                    <p className="text-[10px] font-bold text-rose-800 uppercase tracking-wider mb-1">Validation Errors:</p>
+                  <div className="mt-3 w-full bg-rose-50/80 border border-rose-200 rounded-xl p-3 text-left max-h-32 overflow-y-auto">
+                    <p className="text-[10px] font-bold text-rose-800 uppercase tracking-wider mb-1">
+                      Detected Issues ({uploadState.errorLogs.length}):
+                    </p>
                     <ul className="list-disc list-inside text-xs text-rose-700 space-y-1">
-                      {uploadState.errorLogs.slice(0, 5).map((log, i) => (
-                        <li key={i}>{log}</li>
+                      {uploadState.errorLogs.slice(0, 3).map((log, i) => (
+                        <li key={i} className="truncate">{log}</li>
                       ))}
                     </ul>
                   </div>
                 )}
 
-                <button 
-                  onClick={(e) => { e.stopPropagation(); resetUpload(); }}
-                  className="mt-4 px-4 py-2 bg-rose-600 text-white rounded-xl hover:bg-rose-700 transition-colors text-xs font-bold cursor-pointer"
-                >
-                  Try Uploading Again
-                </button>
+                <div className="flex flex-wrap items-center justify-center gap-2.5 mt-4">
+                  {uploadState.batchId && (
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); checkBatchStatusDirectly(); }}
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition-colors text-xs font-bold cursor-pointer shadow-xs flex items-center gap-1.5"
+                    >
+                      <RefreshCw size={12} /> Check Live DB Status
+                    </button>
+                  )}
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); resetUpload(); }}
+                    className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl transition-colors text-xs font-bold cursor-pointer"
+                  >
+                    Try Uploading Again
+                  </button>
+                  <button 
+                    onClick={(e) => { 
+                      e.stopPropagation(); 
+                      const el = document.getElementById('unified-error-section');
+                      if (el) el.scrollIntoView({ behavior: 'smooth' });
+                    }}
+                    className="px-4 py-2 bg-white border border-rose-200 text-rose-700 hover:bg-rose-50 rounded-xl transition-colors text-xs font-bold cursor-pointer shadow-2xs"
+                  >
+                    Inspect in Diagnostics Center ↓
+                  </button>
+                </div>
               </motion.div>
             )}
           </AnimatePresence>

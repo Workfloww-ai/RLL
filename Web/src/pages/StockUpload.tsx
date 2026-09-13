@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import FileUpload from '../components/FileUpload';
+import UploadErrorViewer from '../components/UploadErrorViewer';
 import { API_BASE_URL } from '../config';
 
 interface LatestUpload {
@@ -11,6 +12,8 @@ interface LatestUpload {
 }
 
 export default function StockUpload() {
+  const [activeErrorBatchId, setActiveErrorBatchId] = useState<string>('all');
+  const [errorRefreshTrigger, setErrorRefreshTrigger] = useState<number>(0);
   const [latestUpload, setLatestUpload] = useState<LatestUpload>({
     lastUploadFormatted: '08 Aug 2026, 12:04 PM',
     uploaderInfo: 'IMFL Ind. May-26.xlsb (Admin User)',
@@ -64,7 +67,7 @@ export default function StockUpload() {
   }, []);
 
   return (
-    <div className="w-full space-y-6">
+    <div className="w-full space-y-6 pb-16">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Sales Data Upload</h1>
         <p className="text-slate-500 mt-1 text-xs font-medium">Upload the latest sales data for real-time outlet visibility.</p>
@@ -78,7 +81,14 @@ export default function StockUpload() {
           "Maximum file size: 30MB.",
           "System handles duplicate removal automatically based on Timestamp."
         ]}
-        onUploadComplete={() => fetchLatestBatch()}
+        onUploadComplete={() => {
+          fetchLatestBatch();
+          setErrorRefreshTrigger(prev => prev + 1);
+        }}
+        onErrorOccurred={(batchId) => {
+          if (batchId) setActiveErrorBatchId(String(batchId));
+          setErrorRefreshTrigger(prev => prev + 1);
+        }}
       />
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
@@ -93,16 +103,23 @@ export default function StockUpload() {
         <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-2xs hover:shadow-xs transition-shadow">
           <h3 className="text-[10px] font-bold text-[#0D3B8E] uppercase tracking-wider mb-2">Records Processed</h3>
           <p className="text-xl font-bold text-slate-900">
-            {latestUpload.status === 'SUCCESS' && 'Successfully Processed'}
-            {latestUpload.status === 'PROCESSING' && 'Processing Data'}
+            {latestUpload.status === 'SUCCESS' && `${latestUpload.recordsCountFormatted} Records`}
+            {latestUpload.status === 'PROCESSING' && 'Processing Data...'}
             {latestUpload.status === 'FAILED' && 'Processing Failed'}
             {latestUpload.status === 'NONE' && 'No Upload Data'}
           </p>
           <p className="text-xs text-slate-400 font-medium mt-1 truncate">
-            {latestUpload.status === 'SUCCESS' ? 'All Records Verified & Saved' : latestUpload.remarksText}
+            {latestUpload.status === 'SUCCESS' ? '100% Data Accuracy • All Records Verified & Saved' : latestUpload.remarksText}
           </p>
         </div>
       </div>
+
+      {/* Unified Ingestion Diagnostics & Error Center */}
+      <UploadErrorViewer 
+        initialBatchId={activeErrorBatchId} 
+        refreshTrigger={errorRefreshTrigger}
+        onRefreshRequested={fetchLatestBatch}
+      />
     </div>
   );
 }

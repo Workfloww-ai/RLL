@@ -680,27 +680,30 @@ export async function fetchMobileCompanies(
   period: string = 'Daily',
   dateTo?: string,
   selectedHq: string = 'All Headquarters',
-  isPrefetch: boolean = false
+  isPrefetch: boolean = false,
+  forceRefresh: boolean = false
 ) {
   const cleanHq = selectedHq ? selectedHq.trim() : 'All Headquarters';
   const fastKey = `companies_${cleanHq}_${period}_${dateTo || 'latest'}`;
-  logger.info(`fetchMobileCompanies: period=${period}, dateTo=${dateTo}, selectedHq=${cleanHq}, isPrefetch=${isPrefetch}`);
+  logger.info(`fetchMobileCompanies: period=${period}, dateTo=${dateTo}, selectedHq=${cleanHq}, isPrefetch=${isPrefetch}, forceRefresh=${forceRefresh}`);
 
   // 1. FastStorage 0ms synchronous read (pre-fetched background queue or previous session)
-  const cachedObj = FastStorage.getObject<any>(fastKey);
-  if (cachedObj && Array.isArray(cachedObj.companies) && cachedObj.companies.length > 0) {
-    logger.info(`fetchMobileCompanies: FastStorage HIT (0ms) for key ${fastKey}`);
-    // Background silent revalidation
-    if (!isPrefetch) {
-      setTimeout(() => {
-        fetchMobileCompaniesNetwork(period, dateTo, cleanHq, fastKey, true).catch(() => {});
-      }, 50);
+  if (!forceRefresh) {
+    const cachedObj = FastStorage.getObject<any>(fastKey);
+    if (cachedObj && Array.isArray(cachedObj.companies) && cachedObj.companies.length > 0) {
+      logger.info(`fetchMobileCompanies: FastStorage HIT (0ms) for key ${fastKey}`);
+      // Background silent revalidation
+      if (!isPrefetch) {
+        setTimeout(() => {
+          fetchMobileCompaniesNetwork(period, dateTo, cleanHq, fastKey, true).catch(() => {});
+        }, 50);
+      }
+      return cachedObj;
     }
-    return cachedObj;
   }
 
   // 2. Fetch from live network
-  return fetchMobileCompaniesNetwork(period, dateTo, cleanHq, fastKey, isPrefetch);
+  return fetchMobileCompaniesNetwork(period, dateTo, cleanHq, fastKey, isPrefetch, forceRefresh);
 }
 
 async function fetchMobileCompaniesNetwork(
@@ -708,7 +711,8 @@ async function fetchMobileCompaniesNetwork(
   dateTo?: string,
   selectedHq: string = 'All Headquarters',
   fastKey?: string,
-  isPrefetch: boolean = false
+  isPrefetch: boolean = false,
+  forceRefresh: boolean = false
 ) {
   let signal: AbortSignal | undefined = undefined;
 
@@ -726,6 +730,7 @@ async function fetchMobileCompaniesNetwork(
     params.append('period', period);
     if (dateTo) params.append('date', dateTo);
     if (selectedHq) params.append('selected_hq', selectedHq);
+    if (forceRefresh) params.append('refresh', 'true');
 
     const res = await apiFetch(`/mobile/companies?${params.toString()}`, signal ? { signal } : undefined);
     if (!res.ok) {

@@ -1,5 +1,8 @@
 import logging
-from typing import List, Optional
+import uuid
+import re
+from datetime import datetime
+from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks, status, Header, Query
 from backend.uploads.service import import_pipeline, upload_batches_db, upload_logs_db
 from backend.core.security import RoleChecker
@@ -190,15 +193,274 @@ async def get_upload_batch(batch_id: str):
     })
 
 
+def humanize_upload_error(column_name: Optional[str], raw_message: str) -> Dict[str, Any]:
+    """
+    Translates raw backend/database error strings into clear, friendly, and actionable UI diagnostics.
+    """
+    msg = (raw_message or "").strip()
+    col = (column_name or "").strip()
+    
+    # 1. Network / Socket / Timeout errors
+    if "[Errno 35]" in msg or "Resource temporarily unavailable" in msg:
+        return {
+            "category": "System & Network",
+            "category_key": "network",
+            "severity": "warning",
+            "friendly_title": "Connection Buffer Stall",
+            "friendly_explanation": "Network socket buffer was momentarily saturated during high-throughput bulk insertion.",
+            "suggested_action": "System automatically recovered or chunk can be re-synchronized. No manual schema change required.",
+            "entity": "Socket Buffer",
+            "group_key": "socket_buffer_stall"
+        }
+    elif "timeout" in msg.lower() or "deadline" in msg.lower():
+        return {
+            "category": "System & Network",
+            "category_key": "network",
+            "severity": "warning",
+            "friendly_title": "Database Query Timeout",
+            "friendly_explanation": "The database took longer than standard latency limits to confirm batch write.",
+            "suggested_action": "Check database health and network latency.",
+            "entity": "Database Request",
+            "group_key": "db_timeout"
+        }
+        
+    # 2. Master Data Mapping Errors
+    if "Unmapped Headquarters" in msg or col.lower() in ("hq_raw", "headquarters", "hq"):
+        match = re.search(r"'(.*?)'", msg) or re.search(r':\s*(.*)', msg)
+        hq_name = match.group(1).strip() if match else "Unknown"
+        return {
+            "category": "Master Data Mapping",
+            "category_key": "master_mapping",
+            "severity": "warning",
+            "friendly_title": f"Unmapped Headquarters: '{hq_name}'",
+            "friendly_explanation": f"The headquarters '{hq_name}' in the Excel file is not recognized in the system master catalog.",
+            "suggested_action": f"Register '{hq_name}' under Territory Management or check Excel spelling.",
+            "entity": f"Headquarters: {hq_name}",
+            "group_key": f"unmapped_hq_{hq_name}"
+        }
+    elif "Unmapped Depot" in msg or col.lower() in ("depot_raw", "depot_name", "depot"):
+        match = re.search(r"'(.*?)'", msg) or re.search(r':\s*(.*)', msg)
+        depot_name = match.group(1).strip() if match else "Unknown"
+        return {
+            "category": "Master Data Mapping",
+            "category_key": "master_mapping",
+            "severity": "warning",
+            "friendly_title": f"Unmapped Depot: '{depot_name}'",
+            "friendly_explanation": f"Depot '{depot_name}' does not match any registered depot in the database.",
+            "suggested_action": f"Add '{depot_name}' in Depot Masters or update alias.",
+            "entity": f"Depot: {depot_name}",
+            "group_key": f"unmapped_depot_{depot_name}"
+        }
+    elif "Unmapped Licensee" in msg or col.lower() in ("licensee_raw", "licensee_name", "licensee"):
+        match = re.search(r"'(.*?)'", msg) or re.search(r':\s*(.*)', msg)
+        lic_name = match.group(1).strip() if match else "Unknown"
+        return {
+            "category": "Master Data Mapping",
+            "category_key": "master_mapping",
+            "severity": "warning",
+            "friendly_title": f"Unmapped Licensee: '{lic_name}'",
+            "friendly_explanation": f"Licensee '{lic_name}' is not recognized in the licensee registry.",
+            "suggested_action": f"Ensure '{lic_name}' is configured in Licensee Master records.",
+            "entity": f"Licensee: {lic_name}",
+            "group_key": f"unmapped_licensee_{lic_name}"
+        }
+    elif "Unmapped Brand" in msg or col.lower() in ("brand_raw", "brand_name", "brand"):
+        match = re.search(r"'(.*?)'", msg) or re.search(r':\s*(.*)', msg)
+        brand_name = match.group(1).strip() if match else "Unknown"
+        return {
+            "category": "Master Data Mapping",
+            "category_key": "master_mapping",
+            "severity": "warning",
+            "friendly_title": f"Unmapped Brand: '{brand_name}'",
+            "friendly_explanation": f"Brand '{brand_name}' was not found in the liquor brand master.",
+            "suggested_action": f"Register '{brand_name}' under Brand Master catalog.",
+            "entity": f"Brand: {brand_name}",
+            "group_key": f"unmapped_brand_{brand_name}"
+        }
+        
+    # 3. Database Insertion & Table Errors
+    if "failed insertion in table" in msg or col in ("user_sales_fact", "sales_fact", "raw_sales_upload"):
+        table_name = col or "sales_fact"
+        return {
+            "category": "Database Insertion",
+            "category_key": "database",
+            "severity": "critical",
+            "friendly_title": f"Row Write Failure on '{table_name}'",
+            "friendly_explanation": f"Could not write record into table '{table_name}'.",
+            "suggested_action": "Check database table schema constraints or trigger rules.",
+            "entity": f"Table: {table_name}",
+            "group_key": f"insertion_failure_{table_name}"
+        }
+
+    # 4. File Structure & Header Validation
+    if col in ("FILE_VALIDATION", "FILE_INIT_ERROR") or "column" in msg.lower() or "header" in msg.lower():
+        return {
+            "category": "File Validation",
+            "category_key": "validation",
+            "severity": "critical",
+            "friendly_title": "File Format or Column Mismatch",
+            "friendly_explanation": msg,
+            "suggested_action": "Ensure Excel columns match the template exactly and contain valid data.",
+            "entity": "File Header",
+            "group_key": "header_validation_error"
+        }
+
+    # Default fallback
+    return {
+        "category": "Data Validation",
+        "category_key": "validation",
+        "severity": "warning",
+        "friendly_title": f"Data Issue on {col or 'Record'}",
+        "friendly_explanation": msg,
+        "suggested_action": "Review the relevant row in the uploaded Excel workbook.",
+        "entity": col or "General",
+        "group_key": f"general_{col}_{msg[:30]}"
+    }
+
+
 @router.get("/batches/{batch_id}/logs", response_model=List[UploadLogResponse])
 async def get_batch_logs(batch_id: str):
     logs = [log for log in upload_logs_db if str(log.get("upload_batch_id")) == str(batch_id) or str(log.get("batch_id")) == str(batch_id)]
     client = get_supabase()
     if client:
         try:
-            res = client.table("upload_validation_errors").select("error_id, batch_id, raw_id, row_number, column_name, error_message, created_at").eq("batch_id", batch_id).execute()
+            res = client.table("upload_validation_errors").select("error_id, batch_id, raw_id, column_name, error_message, created_at").eq("batch_id", batch_id).order("created_at", desc=True).limit(500).execute()
             if res.data:
-                return res.data
-        except Exception:
-            pass
+                formatted = []
+                for item in res.data:
+                    formatted.append({
+                        "upload_log_id": item.get("error_id") or str(uuid.uuid4()),
+                        "upload_batch_id": item.get("batch_id") or batch_id,
+                        "row_number": None,
+                        "column_name": item.get("column_name"),
+                        "error_message": item.get("error_message"),
+                        "created_at": item.get("created_at") or datetime.utcnow(),
+                    })
+                return formatted
+        except Exception as e:
+            logger.warning(f"Failed to fetch logs from Supabase for batch {batch_id}: {e}")
     return logs
+
+
+@router.get("/errors")
+async def get_upload_errors(
+    batch_id: Optional[str] = None,
+    category: Optional[str] = None,
+    limit: int = 250
+):
+    """
+    Unified error endpoint returning human-friendly diagnostics, smart grouping,
+    and category breakdowns for the frontend.
+    """
+    client = get_supabase()
+    raw_errors: List[Dict[str, Any]] = []
+
+    if client:
+        try:
+            query = client.table("upload_validation_errors").select("error_id, batch_id, raw_id, column_name, error_message, created_at").order("created_at", desc=True)
+            if batch_id and batch_id != "all":
+                query = query.eq("batch_id", batch_id)
+            res = query.limit(limit).execute()
+            if res.data:
+                raw_errors = res.data
+        except Exception as e:
+            logger.warning(f"Error querying upload_validation_errors: {e}")
+
+    # Also pull from in-memory upload_logs_db if DB yielded nothing
+    if not raw_errors and upload_logs_db:
+        for log in upload_logs_db:
+            if not batch_id or batch_id == "all" or str(log.get("upload_batch_id")) == str(batch_id) or str(log.get("batch_id")) == str(batch_id):
+                raw_errors.append({
+                    "error_id": log.get("upload_log_id") or str(uuid.uuid4()),
+                    "batch_id": log.get("upload_batch_id") or log.get("batch_id"),
+                    "column_name": log.get("column_name"),
+                    "error_message": log.get("error_message"),
+                    "created_at": log.get("created_at") or datetime.utcnow().isoformat()
+                })
+
+    # Available batches for dropdown
+    available_batches = []
+    if client:
+        try:
+            b_res = client.table("upload_batches").select("batch_id, file_name, source_file, status, upload_status, created_at").order("created_at", desc=True).limit(10).execute()
+            if b_res.data:
+                for b in b_res.data:
+                    available_batches.append({
+                        "batch_id": str(b["batch_id"]),
+                        "label": f"{b.get('source_file') or b.get('file_name') or 'Batch'} (#{str(b['batch_id'])[:8]})",
+                        "status": b.get("upload_status") or b.get("status"),
+                        "created_at": b.get("created_at")
+                    })
+        except Exception as eb:
+            logger.warning(f"Could not load available batches: {eb}")
+
+    # Process and humanize errors
+    processed_errors = []
+    grouped_map: Dict[str, Dict[str, Any]] = {}
+    category_counts: Dict[str, int] = {
+        "Master Data Mapping": 0,
+        "System & Network": 0,
+        "Database Insertion": 0,
+        "File Validation": 0,
+        "Data Validation": 0
+    }
+
+    for item in raw_errors:
+        col = item.get("column_name")
+        raw_msg = item.get("error_message") or ""
+        human = humanize_upload_error(col, raw_msg)
+        cat = human["category"]
+
+        # Filter by category if requested
+        if category and category.lower() != "all" and human["category_key"] != category.lower() and cat.lower() != category.lower():
+            continue
+
+        category_counts[cat] = category_counts.get(cat, 0) + 1
+
+        error_entry = {
+            "error_id": str(item.get("error_id") or uuid.uuid4()),
+            "batch_id": str(item.get("batch_id") or "N/A"),
+            "column_name": col or "General",
+            "raw_message": raw_msg,
+            "friendly_title": human["friendly_title"],
+            "friendly_explanation": human["friendly_explanation"],
+            "suggested_action": human["suggested_action"],
+            "category": cat,
+            "category_key": human["category_key"],
+            "severity": human["severity"],
+            "entity": human["entity"],
+            "created_at": item.get("created_at")
+        }
+        processed_errors.append(error_entry)
+
+        # Smart Grouping aggregation
+        g_key = human["group_key"]
+        if g_key not in grouped_map:
+            grouped_map[g_key] = {
+                "group_key": g_key,
+                "category": cat,
+                "category_key": human["category_key"],
+                "severity": human["severity"],
+                "friendly_title": human["friendly_title"],
+                "friendly_explanation": human["friendly_explanation"],
+                "suggested_action": human["suggested_action"],
+                "entity": human["entity"],
+                "affected_count": 0,
+                "latest_seen": item.get("created_at"),
+                "sample_raw": raw_msg,
+                "batch_id": str(item.get("batch_id") or "N/A")
+            }
+        grouped_map[g_key]["affected_count"] += 1
+
+    # Sort grouped issues by affected count descending
+    top_issues = sorted(list(grouped_map.values()), key=lambda x: x["affected_count"], reverse=True)
+
+    return {
+        "total_errors": len(processed_errors),
+        "category_counts": category_counts,
+        "top_issues": top_issues,
+        "errors": processed_errors,
+        "available_batches": available_batches,
+        "active_batch_id": batch_id or "all"
+    }
+

@@ -6,25 +6,9 @@ from backend.core.config import settings
 logger = logging.getLogger("supabase_client")
 _client: Optional[Client] = None
 def get_supabase_client() -> Optional[Client]:
-    """Returns a singleton Supabase Client instance."""
-    global _client
-    if _client is not None:
-        return _client
-    url = settings.SUPABASE_URL
-    key = getattr(settings, "SUPABASE_SERVICE_ROLE_KEY", getattr(settings, "SUPABASE_ANON_KEY", getattr(settings, "SUPABASE_KEY", "")))
-    if not url or not key:
-        logger.warning(
-            "SUPABASE_URL or SUPABASE key is missing. "
-            "Supabase operations will be skipped (mock mode)."
-        )
-        return None
-    try:
-        _client = create_client(url, key)
-        logger.info("Supabase client connected successfully.")
-        return _client
-    except Exception as e:
-        logger.error(f"Failed to initialize Supabase client: {e}")
-        return None
+    """Returns a singleton Supabase Client instance using optimized HTTP/1.1 connection pool."""
+    from backend.db.client import get_supabase
+    return get_supabase()
 # ---------------------------------------------------------------------------
 # Database Advisory Lock & Concurrency Control Helpers
 # ---------------------------------------------------------------------------
