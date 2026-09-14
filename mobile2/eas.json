@@ -11,14 +11,21 @@
       "distribution": "internal",
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://rll-backend-414899512001.asia-south2.run.app/api/v1"
       }
     },
     "production": {
       "android": {
         "buildType": "app-bundle"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://rll-backend-414899512001.asia-south2.run.app/api/v1"
       }
     }
   },
+  
   "submit": {
     "production": {
       "android": {

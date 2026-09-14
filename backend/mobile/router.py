@@ -543,53 +543,44 @@ async def send_mobile_otp(req: SendOTPRequest):
     if len(clean_phone_10) >= 10:
         clean_phone_10 = clean_phone_10[-10:]
 
+    # 1. Immediate Test User Handling (9999999999 / Google Play Review / Local Testing)
+    if clean_phone_10 == "9999999999" or email == "manish.chum@workfloww.ai":
+        store_otp_in_db("9999999999", "000000")
+        store_otp_in_db("+919999999999", "000000")
+        store_otp_in_db("9999999999", "123456")
+        store_otp_in_db("+919999999999", "123456")
+        logger.info("Test user 9999999999 OTP 000000 / 123456 registered.")
+        return {
+            "success": True,
+            "message": "OTP verification code sent successfully.",
+            "phone": "+919999999999",
+            "company_name": "Lucidx360",
+            "company_logo_url": None
+        }
+
     db_user = None
     if client:
         try:
             # 1. Lookup by email if provided
             if email:
-                res = client.table("users").select("user_id, email, phone, first_name, last_name, is_active, tenant_id, company_id, company_name").ilike("email", email).execute()
+                res = client.table("users").select("user_id, email, phone, first_name, last_name, is_active").ilike("email", email).execute()
                 if res.data:
                     db_user = res.data[0]
 
             # 2. Lookup by phone if not found by email
             if not db_user and clean_phone_10:
-                res_phone = client.table("users").select("user_id, email, phone, first_name, last_name, is_active, tenant_id, company_id, company_name").ilike("phone", f"%{clean_phone_10}%").limit(1).execute()
+                res_phone = client.table("users").select("user_id, email, phone, first_name, last_name, is_active").ilike("phone", f"%{clean_phone_10}%").limit(1).execute()
                 if res_phone.data:
                     db_user = res_phone.data[0]
                 else:
                     # Fallback robust phone lookup: strip non-digits from db phones
-                    all_users_res = client.table("users").select("user_id, email, phone, first_name, last_name, is_active, tenant_id, company_id, company_name").execute()
+                    all_users_res = client.table("users").select("user_id, email, phone, first_name, last_name, is_active").execute()
                     if all_users_res.data:
                         for u in all_users_res.data:
                             u_p = ''.join(c for c in (u.get("phone") or "") if c.isdigit())
                             if u_p and (clean_phone_10 in u_p or u_p in clean_phone_10):
                                 db_user = u
                                 break
-
-            # 3. Dynamic test user auto-provisioning / sync for Google Play review
-            if clean_phone_10 == "9999999999" or email == "manish.chum@workfloww.ai":
-                if db_user:
-                    if db_user.get("email") != "manish.chum@workfloww.ai" or db_user.get("phone") != "+919999999999":
-                        client.table("users").update({
-                            "email": "manish.chum@workfloww.ai",
-                            "phone": "+919999999999",
-                            "first_name": "Manish",
-                            "last_name": "Chum",
-                            "is_active": True
-                        }).eq("user_id", db_user["user_id"]).execute()
-                        db_user["email"] = "manish.chum@workfloww.ai"
-                        db_user["phone"] = "+919999999999"
-                else:
-                    ins_res = client.table("users").insert({
-                        "email": "manish.chum@workfloww.ai",
-                        "phone": "+919999999999",
-                        "first_name": "Manish",
-                        "last_name": "Chum",
-                        "is_active": True
-                    }).execute()
-                    if ins_res.data:
-                        db_user = ins_res.data[0]
         except Exception as e:
             logger.warning(f"User lookup error in send_mobile_otp: {e}")
 
@@ -644,18 +635,18 @@ async def send_mobile_otp(req: SendOTPRequest):
 
     return {
         "success": True,
-        "message": f"6-digit OTP sent successfully to {target_phone}",
-        "otp_sent": sms_sent,
-        "company_name": company_name,
-        "company_logo_url": company_logo_url,
+        "message": "OTP verification code sent successfully.",
+        "phone": target_phone,
+        "company_name": company_name or "Rajasthan Liquor Limited",
+        "company_logo_url": company_logo_url
     }
 
 
 @router.post("/verify-otp", response_model=MobileLoginResponse)
 async def verify_mobile_otp(req: VerifyOTPRequest):
     """
-    Verify 6-digit OTP code against Supabase 'otp_codes' table.
-    Returns signed JWT access token and user profile object.
+    Verify 6-digit OTP code sent to user's mobile number.
+    Returns 30-day Access Token and scoped user profile.
     """
     email = (req.email or "").lower().strip()
     phone = (req.phone or "").strip()
@@ -665,13 +656,63 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
     if not phone or not otp_code:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Phone number and 6-digit OTP code are required")
 
-    # Verify 6-digit OTP from DB
-    is_valid = verify_otp_from_db(phone, otp_code)
+    clean_in = ''.join(c for c in phone if c.isdigit())
+    clean_10 = clean_in[-10:] if len(clean_in) >= 10 else clean_in
+
+    # Google Play Review / test user bypass
+    is_test_user = (clean_10 == "9999999999" or email == "manish.chum@workfloww.ai")
+    if is_test_user and otp_code in ("000000", "123456"):
+        is_valid = True
+    else:
+        is_valid = verify_otp_from_db(phone, otp_code)
+
     if not is_valid:
         logger.warning(f"Mobile OTP verification failed for phone: {phone} - Invalid or expired OTP code")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired 6-digit OTP code")
 
     client = get_supabase()
+
+    # If test user, return full valid authenticated session immediately
+    if is_test_user:
+        user_data = {
+            "user_id": "00000000-0000-0000-0000-000000000099",
+            "email": "manish.chum@workfloww.ai",
+            "first_name": "Manish",
+            "last_name": "Chum",
+            "phone": "+919999999999",
+            "role_name": "TSM",
+            "role": "TSM",
+            "depot_name": "Jaipur Depot",
+            "hq_location": "All Headquarters",
+            "tenant_id": "a0000000-0000-0000-0000-000000000001",
+            "company_id": None,
+            "company_name": "Rajasthan Liquor Limited",
+            "company_logo_url": "/images/rll logo.svg",
+            "is_active": True
+        }
+
+        token = create_access_token(
+            data={
+                "sub": user_data["email"],
+                "role": user_data["role_name"],
+                "user_id": user_data["user_id"],
+                "tenant_id": user_data["tenant_id"],
+                "company_name": user_data["company_name"]
+            },
+            expires_delta=timedelta(days=30)
+        )
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "user": user_data,
+            "tenant_config": {
+                "tenant_id": user_data["tenant_id"],
+                "app_name": "LucidX360",
+                "logo_url": user_data["company_logo_url"],
+                "pinned_company_name": "Rajasthan Liquor Limited",
+            }
+        }
+
     user_data = None
     if client:
         try:
@@ -681,41 +722,14 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
                 if res.data:
                     db_user = res.data[0]
 
-            clean_in = ''.join(c for c in phone if c.isdigit())
-            clean_10 = clean_in[-10:] if len(clean_in) >= 10 else clean_in
-
             if not db_user and phone:
-                res_phone = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, tenant_id, company_id, company_name").execute()
+                res_phone = client.table("users").select("user_id, email, first_name, last_name, phone, is_active").execute()
                 if res_phone.data:
                     for u in res_phone.data:
                         u_p = ''.join(c for c in (u.get("phone") or "") if c.isdigit())
                         if u_p and (clean_10 in u_p or u_p in clean_10):
                             db_user = u
                             break
-
-            # Dynamic test user auto-provisioning / sync for Google Play review
-            if clean_10 == "9999999999" or email == "manish.chum@workfloww.ai":
-                if db_user:
-                    if db_user.get("email") != "manish.chum@workfloww.ai" or db_user.get("phone") != "+919999999999":
-                        client.table("users").update({
-                            "email": "manish.chum@workfloww.ai",
-                            "phone": "+919999999999",
-                            "first_name": "Manish",
-                            "last_name": "Chum",
-                            "is_active": True
-                        }).eq("user_id", db_user["user_id"]).execute()
-                        db_user["email"] = "manish.chum@workfloww.ai"
-                        db_user["phone"] = "+919999999999"
-                else:
-                    ins_res = client.table("users").insert({
-                        "email": "manish.chum@workfloww.ai",
-                        "phone": "+919999999999",
-                        "first_name": "Manish",
-                        "last_name": "Chum",
-                        "is_active": True
-                    }).execute()
-                    if ins_res.data:
-                        db_user = ins_res.data[0]
 
             if db_user:
                 if not db_user.get("is_active", True):
@@ -836,15 +850,33 @@ def get_mobile_user_profile(
     if not client:
         return current_user
 
+    if user_id_val == "00000000-0000-0000-0000-000000000099" or "manish.chum@workfloww.ai" in sub_val:
+        return {
+            "user_id": "00000000-0000-0000-0000-000000000099",
+            "email": "manish.chum@workfloww.ai",
+            "first_name": "Manish",
+            "last_name": "Chum",
+            "phone": "+919999999999",
+            "role_name": "TSM",
+            "role": "TSM",
+            "depot_name": "Jaipur Depot",
+            "hq_location": "All Headquarters",
+            "tenant_id": "a0000000-0000-0000-0000-000000000001",
+            "company_id": None,
+            "company_name": "Rajasthan Liquor Limited",
+            "company_logo_url": "/images/rll logo.svg",
+            "is_active": True
+        }
+
     try:
         db_user = None
         if user_id_val:
-            u_res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, tenant_id, company_id, company_name").eq("user_id", user_id_val).execute()
+            u_res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active").eq("user_id", user_id_val).execute()
             if u_res.data:
                 db_user = u_res.data[0]
 
         if not db_user and sub_val:
-            u_res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, tenant_id, company_id, company_name").or_(f"email.ilike.{sub_val},phone.ilike.%{sub_val}%").execute()
+            u_res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active").or_(f"email.ilike.{sub_val},phone.ilike.%{sub_val}%").execute()
             if u_res.data:
                 db_user = u_res.data[0]
 
