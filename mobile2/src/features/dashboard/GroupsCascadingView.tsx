@@ -33,6 +33,7 @@ import {
   ChevronLeftIcon,
   WineIcon,
   UsersIcon,
+  RefreshIcon,
 } from '../../components/Icons';
 
 interface GroupsCascadingViewProps {
@@ -41,6 +42,7 @@ interface GroupsCascadingViewProps {
   dateTo: string;
   scaleFactor: number;
   selectedHq?: string;
+  onRefresh?: () => Promise<void> | void;
 }
 
 export function GroupsCascadingView({
@@ -49,6 +51,7 @@ export function GroupsCascadingView({
   dateTo,
   scaleFactor,
   selectedHq,
+  onRefresh,
 }: GroupsCascadingViewProps) {
   // Navigation level:
   // Level 1 = Groups List
@@ -272,6 +275,9 @@ export function GroupsCascadingView({
     groupBrandsCacheRef.current.clear();
     licenseeBrandsCacheRef.current.clear();
     try {
+      if (onRefresh) {
+        await onRefresh();
+      }
       if (level === 1) {
         await loadGroups(true);
       } else if (level === 2 && selectedGroup?.group_id) {
@@ -284,7 +290,7 @@ export function GroupsCascadingView({
     } finally {
       setRefreshing(false);
     }
-  }, [level, selectedGroup, selectedLicensee, loadGroups, loadGroupDetails, loadLicenseeBrands]);
+  }, [level, selectedGroup, selectedLicensee, loadGroups, loadGroupDetails, loadLicenseeBrands, onRefresh]);
 
   // Determine active dataset for current view state
   const activeRawList = useMemo(() => {
@@ -415,6 +421,14 @@ export function GroupsCascadingView({
           ) : null}
         </View>
 
+        <TouchableOpacity
+          style={styles.refreshPillBtn}
+          onPress={handleRefresh}
+          activeOpacity={0.75}
+        >
+          <RefreshIcon size={14} color="#0F172A" />
+        </TouchableOpacity>
+
         {/* Sort Pill Button */}
         <TouchableOpacity
           style={styles.sortPillBtn}
@@ -460,8 +474,8 @@ export function GroupsCascadingView({
           paginatedList.map((item, index) => {
             // Level 1: Root Group Card (Image 1)
             if (level === 1) {
-              const cases = Math.round(
-                Number(item.total_cases ?? item.cases ?? item.mtd_cases ?? 0)
+              const cases = Number(
+                Number(item.total_cases ?? item.cases ?? item.mtd_cases ?? 0).toFixed(2)
               );
               const bottles = Math.round(
                 Number(item.total_bottles ?? item.bottles ?? item.mtd_bottles ?? 0)
@@ -469,23 +483,9 @@ export function GroupsCascadingView({
 
               return (
                 <MetricsCard
-                  key={item.group_id || index}
+                  key={`grp-${item.group_id || item.id || 'grp'}-${index}`}
                   title={item.group_name}
-                  subtitle={
-                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
-                      <UsersIcon size={scaledFontSize(12)} color="#64748B" />
-                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500', marginLeft: 3 }}>
-                        {`${item.total_licensees || 0} Licensee(s)`}
-                      </Text>
-                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500' }}>
-                        {'  •  '}
-                      </Text>
-                      <WineIcon size={scaledFontSize(12)} color="#64748B" />
-                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500', marginLeft: 3 }}>
-                        {`${item.total_brands || 0} Brand(s)`}
-                      </Text>
-                    </View>
-                  }
+                  subtitle={`${item.total_licensees || 0} Licensee(s)  •  ${item.total_brands || 0} Brand(s)`}
                   metrics={[
                     { label: 'Cases', value: cases },
                     { label: 'Bottles', value: bottles },
@@ -499,7 +499,7 @@ export function GroupsCascadingView({
 
             // Level 2: Group Brands View (Image 2)
             if (level === 2 && activeGroupTab === 'brands') {
-              const cases = Math.round(Number(item.total_cases ?? 0));
+              const cases = Number(Number(item.total_cases ?? 0).toFixed(2));
               const bottles = Math.round(Number(item.total_bottles ?? 0));
               const depotPill =
                 item.depot_name && item.depot_name !== 'Unassigned'
@@ -508,16 +508,15 @@ export function GroupsCascadingView({
 
               return (
                 <MetricsCard
-                  key={item.brand_id || index}
+                  key={`grp-brand-${item.brand_id || item.id || 'brand'}-${index}`}
                   title={item.brand_name}
-                  titleIcon={<WineIcon size={16} color="#0F172A" />}
                   companyBadge={item.company_name || 'Brand Product'}
                   metrics={[
                     { label: 'Cases', value: cases },
                     { label: 'Bottles', value: bottles },
                   ]}
                   locationPill={depotPill}
-                  pillTheme="red"
+                  pillTheme="blue"
                   scaleFactor={scaleFactor}
                 />
               );
@@ -525,7 +524,7 @@ export function GroupsCascadingView({
 
             // Level 2: Group Licensees View (Image 3)
             if (level === 2 && activeGroupTab === 'licensees') {
-              const cases = Math.round(Number(item.total_cases ?? 0));
+              const cases = Number(Number(item.total_cases ?? 0).toFixed(2));
               const bottles = Math.round(Number(item.total_bottles ?? 0));
               const depotPill =
                 item.depot_name && item.depot_name !== 'Unassigned'
@@ -536,22 +535,9 @@ export function GroupsCascadingView({
 
               return (
                 <MetricsCard
-                  key={item.licensee_id || index}
+                  key={`grp-lic-${item.licensee_id || item.id || 'lic'}-${index}`}
                   title={item.licensee_name}
-                  subtitle={
-                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
-                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500' }}>
-                        {`Trade: ${item.trade || 'Off'}`}
-                      </Text>
-                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500' }}>
-                        {'  •  '}
-                      </Text>
-                      <WineIcon size={scaledFontSize(12)} color="#64748B" />
-                      <Text style={{ fontSize: scaledFontSize(12), color: '#64748B', fontWeight: '500', marginLeft: 3 }}>
-                        {`${item.total_brands || 0} Brand(s)`}
-                      </Text>
-                    </View>
-                  }
+                  subtitle={`Trade: ${item.trade || 'Off'}  •  ${item.total_brands || 0} Brand(s)`}
                   metrics={[
                     { label: 'Cases', value: cases },
                     { label: 'Bottles', value: bottles },
@@ -566,7 +552,7 @@ export function GroupsCascadingView({
 
             // Level 3: Licensee Brands View (Image 4)
             if (level === 3) {
-              const cases = Math.round(Number(item.total_cases ?? 0));
+              const cases = Number(Number(item.total_cases ?? 0).toFixed(2));
               const bottles = Math.round(Number(item.total_bottles ?? 0));
               const depotPill =
                 item.depot_name && item.depot_name !== 'Unassigned'
@@ -577,16 +563,15 @@ export function GroupsCascadingView({
 
               return (
                 <MetricsCard
-                  key={item.brand_id || index}
+                  key={`lic-brand-${item.brand_id || item.id || 'brand'}-${index}`}
                   title={item.brand_name}
-                  titleIcon={<WineIcon size={16} color="#0F172A" />}
                   companyBadge={item.company_name || 'Brand'}
                   metrics={[
                     { label: 'Cases', value: cases },
                     { label: 'Bottles', value: bottles },
                   ]}
                   locationPill={depotPill}
-                  pillTheme="red"
+                  pillTheme="blue"
                   scaleFactor={scaleFactor}
                 />
               );
@@ -734,6 +719,16 @@ const styles = StyleSheet.create({
   },
   clearBtn: {
     padding: 4,
+  },
+  refreshPillBtn: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    height: 40,
   },
   sortPillBtn: {
     flexDirection: 'row',

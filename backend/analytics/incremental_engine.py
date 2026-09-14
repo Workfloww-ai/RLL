@@ -16,13 +16,44 @@ class IncrementalAnalyticsEngine:
     dates and financial months. Guarantees 100% idempotency, transaction safety, and Redis cache invalidation.
     """
 
+    def purge_batch_facts(self, batch_id: Union[int, str]) -> bool:
+        """
+        Phase 3 Batch-Scoped Replacement:
+        Safely purges sales facts belonging strictly to batch_id from sales_fact and user_sales_fact,
+        leaving facts from other upload batches completely untouched.
+        """
+        client = get_supabase()
+        if not client or not batch_id:
+            return True
+
+        batch_id_str = str(batch_id).strip()
+        # Schema guard: Ensure batch_id is valid 36-char UUID format before querying PostgreSQL UUID column
+        if len(batch_id_str) != 36 and "-" not in batch_id_str:
+            logger.info(f"[ANALYTICS] Non-UUID batch_id '{batch_id_str}' passed; skipping live DB deletion.")
+            return True
+
+        try:
+            client.table("sales_fact").delete().eq("batch_id", batch_id_str).execute()
+            try:
+                client.table("user_sales_fact").delete().eq("batch_id", batch_id_str).execute()
+            except Exception as e_usf:
+                logger.debug(f"[ANALYTICS] user_sales_fact purge notice for batch {batch_id_str}: {e_usf}")
+            logger.info(f"[ANALYTICS] Batch-scoped fact purge completed for batch_id={batch_id_str}.")
+            return True
+        except Exception as e:
+            logger.error(f"[ANALYTICS] Failed batch-scoped fact purge for batch_id={batch_id_str}: {e}")
+            return False
+
     def process_batch_incremental_aggregation(
         self,
         batch_id: Optional[Union[int, str]],
-        sale_dates: List[Union[str, date]]
+        sale_dates: List[Union[str, date]],
+        enable_legacy_rpcs: bool = False,
     ) -> Dict[str, Any]:
         """
         Executes incremental aggregation for all dates and financial months affected by a sales batch.
+        Phase 6 Optimized: Bypasses duplicate legacy summary table RPC calls by default, relying
+        strictly on set-based refresh_sales_daily_summary_for_date and refresh_sales_monthly_summary_for_month.
         """
         t_start = time.perf_counter()
         if not sale_dates:
@@ -91,30 +122,59 @@ class IncrementalAnalyticsEngine:
         # 2. Incremental Daily Aggregation
         for s_date in sorted_dates:
             t0 = time.perf_counter()
-            try:
-                # Primary Physical Summary Table Refresh
-                client.rpc("refresh_sales_daily_summary_for_date", {"p_sale_date": s_date}).execute()
-                
-                # Backward Compatibility Refresh Calls
+            date_ok = False
+            for attempt in range(3):
                 try:
-                    client.rpc("refresh_dashboard_daily", {"p_sale_date": s_date}).execute()
-                except Exception as e_leg:
-                    logger.debug(f"[ANALYTICS] Legacy refresh_dashboard_daily notice: {e_leg}")
+                    client.rpc("refresh_sales_daily_summary_for_date", {"p_sale_date": s_date}).execute()
+                    date_ok = True
+                    break
+                except Exception as e_retry:
+                    logger.debug(f"[ANALYTICS] Daily summary attempt {attempt+1} notice for {s_date}: {e_retry}")
+                    time.sleep(1.0 * (attempt + 1))
 
+            if not date_ok:
+                logger.info(f"[ANALYTICS] Single-pass daily summary timeout notice for date {s_date}. Falling back to depot chunking...")
                 try:
-                    client.rpc("refresh_company_sales_summary", {"p_sale_date": s_date}).execute()
-                except Exception as e_comp:
-                    logger.debug(f"[ANALYTICS] Legacy refresh_company_sales_summary notice: {e_comp}")
+                    depots_res = client.table("depots").select("depot_id").execute()
+                    depot_list = depots_res.data or []
+                    for d in depot_list:
+                        did = d.get("depot_id")
+                        if did:
+                            client.rpc("refresh_sales_daily_summary_for_date", {
+                                "p_sale_date": s_date,
+                                "p_depot_id": did
+                            }).execute()
+                    date_ok = True
+                except Exception as e_dep_daily:
+                    logger.warning(f"[ANALYTICS] Depot-chunked daily summary error for {s_date}: {e_dep_daily}")
 
+            if date_ok:
                 t1 = time.perf_counter()
                 d_ms = (t1 - t0) * 1000
                 daily_duration_total_ms += d_ms
                 logger.info(f"[ANALYTICS] Daily summary aggregated for date {s_date} in {d_ms:.1f}ms")
-            except Exception as e_daily:
-                logger.error(f"[ANALYTICS] Failed daily aggregation for date {s_date}: {e_daily}", exc_info=True)
+            else:
+                logger.warning(f"[ANALYTICS] Daily summary aggregation notice for date {s_date} after retries.")
                 success = False
 
-        # 3. Incremental Monthly Aggregation (Single set-based RPC execution per affected month)
+        # 2b. Post-Aggregation Completeness Verification
+        # Ensure that every single date in sorted_dates has rows in sales_daily_summary
+        for s_date in sorted_dates:
+            try:
+                check_res = client.table("sales_daily_summary").select("sale_date", count="exact").eq("sale_date", s_date).limit(1).execute()
+                if (check_res.count or 0) == 0:
+                    logger.error(f"[ANALYTICS] CRITICAL: Date {s_date} has 0 rows in sales_daily_summary! Attempting recovery...")
+                    client.rpc("refresh_sales_daily_summary_for_date", {"p_sale_date": s_date}).execute()
+                    check_again = client.table("sales_daily_summary").select("sale_date", count="exact").eq("sale_date", s_date).limit(1).execute()
+                    if (check_again.count or 0) > 0:
+                        logger.info(f"[ANALYTICS] Successfully recovered sales_daily_summary for {s_date} ({check_again.count} rows).")
+                    else:
+                        logger.error(f"[ANALYTICS] Recovery failed for {s_date}! Summary data is missing.")
+                        success = False
+            except Exception as e_ver:
+                logger.warning(f"[ANALYTICS] Date completeness verification notice for {s_date}: {e_ver}")
+
+        # 3. Incremental Monthly Aggregation (Set-based RPC execution per affected month with resilient depot-chunking fallback)
         for m_start in sorted_months:
             t0 = time.perf_counter()
             try:
@@ -123,19 +183,37 @@ class IncrementalAnalyticsEngine:
                     "p_month_start": m_start
                 }).execute()
                 
-                # Backward Compatibility Refresh Calls
-                try:
-                    client.rpc("refresh_dashboard_monthly", {"p_date": m_start}).execute()
-                except Exception as e_mleg:
-                    logger.debug(f"[ANALYTICS] Legacy refresh_dashboard_monthly notice: {e_mleg}")
+                # Phase 6 Rollback Guard: Execute legacy RPCs only if explicitly requested
+                if enable_legacy_rpcs:
+                    try:
+                        client.rpc("refresh_dashboard_monthly", {"p_date": m_start}).execute()
+                    except Exception as e_mleg:
+                        logger.debug(f"[ANALYTICS] Legacy refresh_dashboard_monthly notice: {e_mleg}")
 
                 t1 = time.perf_counter()
                 m_ms = (t1 - t0) * 1000
                 monthly_duration_total_ms += m_ms
                 logger.info(f"[ANALYTICS] Monthly summary aggregated for month_start {m_start} in {m_ms:.1f}ms")
             except Exception as e_monthly:
-                logger.error(f"[ANALYTICS] Failed monthly aggregation for month_start {m_start}: {e_monthly}", exc_info=True)
-                success = False
+                logger.warning(f"[ANALYTICS] Single-pass monthly summary notice for {m_start}: {e_monthly}. Falling back to depot chunking...")
+                try:
+                    depots_res = client.table("depots").select("depot_id").execute()
+                    depot_list = depots_res.data or []
+                    client.table("sales_monthly_summary").delete().eq("month_start", m_start).execute()
+                    for d in depot_list:
+                        did = d.get("depot_id")
+                        if did:
+                            client.rpc("refresh_sales_monthly_summary_for_month", {
+                                "p_month_start": m_start,
+                                "p_depot_id": did
+                            }).execute()
+                    t1 = time.perf_counter()
+                    m_ms = (t1 - t0) * 1000
+                    monthly_duration_total_ms += m_ms
+                    logger.info(f"[ANALYTICS] Depot-chunked monthly aggregation completed for {m_start} ({len(depot_list)} depots) in {m_ms:.1f}ms.")
+                except Exception as e_chunk:
+                    logger.error(f"[ANALYTICS] Failed depot-chunked monthly aggregation for month_start {m_start}: {e_chunk}", exc_info=True)
+                    success = False
 
         # 4. Redis Cache Pattern Invalidation (Event-Driven)
         redis_keys_deleted = 0

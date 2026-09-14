@@ -15,15 +15,18 @@ import {
   RefreshControl,
   NativeSyntheticEvent,
   NativeScrollEvent,
+  Keyboard,
 } from 'react-native';
 
 
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { AppState, AppStateStatus } from 'react-native';
 import { logger } from './src/lib/logger';
+import { secureStorage } from './src/lib/secureStorage';
 
 import { Company, Period, ViewMode } from './src/types';
-import { formatNumber } from './src/lib/utils';
+import { formatNumber, normalizeCompanyList } from './src/lib/utils';
 import { getDynamicCardDimensions } from './src/lib/responsive';
 import {
   fetchMobileSales,
@@ -33,18 +36,25 @@ import {
   clearAuthSession,
   clearAllPhoneCaches,
   hydratePersistentCache,
+  registerSessionRevokedListener,
 } from './src/lib/api';
+import { preloadAllHeadquartersData } from './src/lib/prefetchService';
 
 import { Header } from './src/features/dashboard/Header';
+import { TenantProvider, useTenant } from './src/context/TenantContext';
 import { FooterNav } from './src/features/dashboard/FooterNav';
 import { CompanyCard } from './src/features/dashboard/CompanyCard';
 import { NoDataModal } from './src/components/NoDataModal';
 import { CompanyListSkeletonList } from './src/features/dashboard/CompanyCardSkeleton';
+import { CompanyCascadingView } from './src/features/dashboard/CompanyCascadingView';
 import { GroupsCascadingView } from './src/features/dashboard/GroupsCascadingView';
 import { TsmView } from './src/features/dashboard/TsmView';
 import { BrandModal } from './src/features/dashboard/BrandModal';
 import { LoginScreen } from './src/features/auth/LoginScreen';
 import { ProfileScreen } from './src/features/profile/ProfileScreen';
+import { SplashScreen } from './src/components/SplashScreen';
+import { SearchBar } from './src/components/SearchBar';
+import { SortModal, SortOptionItem } from './src/components/SortModal';
 import {
   XIcon,
   SearchIcon,
@@ -59,12 +69,30 @@ import {
 
 export type CompanySortOption = 'az' | 'za' | 'cases_desc' | 'cases_asc';
 
-export default function App() {
+function MainApp() {
+  const { config, updateWithUser } = useTenant();
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      () => setIsKeyboardVisible(true)
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => setIsKeyboardVisible(false)
+    );
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
   const [user, setUser] = useState<any>(null);
   const [loadingSession, setLoadingSession] = useState(true);
   const [period, setPeriod] = useState<Period>('Daily');
-  const [dateFrom, setDateFrom] = useState<string>('2026-07-31');
-  const [dateTo, setDateTo] = useState<string>('2026-07-31');
+  const [dateFrom, setDateFrom] = useState<string>('');
+  const [dateTo, setDateTo] = useState<string>('');
   const [viewMode, setViewMode] = useState<ViewMode>('companies');
   const [viewModeHistory, setViewModeHistory] = useState<ViewMode[]>(['companies']);
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
@@ -82,8 +110,10 @@ export default function App() {
     try {
       await clearAllPhoneCaches();
       if (viewMode === 'companies') {
-        const comps = await fetchMobileCompanies(period, dateTo, selectedHq);
-        setApiData((prev: any) => ({ ...(prev || {}), companies: comps }));
+        const compRes = await fetchMobileCompanies(period, dateTo, selectedHq, false, true);
+        if (compRes && Array.isArray(compRes.companies)) {
+          setApiData((prev: any) => ({ ...(prev || {}), ...compRes }));
+        }
       } else {
         const res = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq);
         if (res) setApiData(res);
@@ -96,6 +126,9 @@ export default function App() {
       if (hqs && hqs.length > 0) {
         setHeadquartersList(hqs);
       }
+      preloadAllHeadquartersData(true).catch((err) => {
+        logger.error('App: Background prefetch on refresh error:', err);
+      });
     } catch (err) {
       logger.error('Error refreshing data in App.tsx:', err);
     } finally {
@@ -152,40 +185,77 @@ export default function App() {
     StatusBar.setBarStyle('light-content');
   }, []);
 
-  // Load active session on mount
+  // Register central session revocation callback (forces instant exit on 401/403)
+  useEffect(() => {
+    registerSessionRevokedListener(() => {
+      logger.warn('App: Session revoked listener triggered. Resetting user state to null.');
+      setUser(null);
+    });
+  }, []);
+
+  // Monitor AppState to perform background -> foreground session health-check
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
+      if (nextAppState === 'active' && user) {
+        logger.info('App: Foregrounded. Validating session health with server...');
+        fetchUserProfile().then((profile) => {
+          if (!profile) {
+            logger.warn('App: Foreground health-check failed (session revoked/expired). Resetting user state.');
+            setUser(null);
+          }
+        });
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [user]);
+
+  // Load active session on mount with smooth splash screen timing
   useEffect(() => {
     async function loadSession() {
+      const startTime = Date.now();
       try {
-        logger.info('App: Checking for active user session in AsyncStorage...');
+        logger.info('App: Checking for active user session in hardware-backed secureStorage...');
         await hydratePersistentCache();
-        const cachedUser = await AsyncStorage.getItem('rll_mobile_user');
-        const token = await AsyncStorage.getItem('rll_mobile_token');
+        const cachedUser = await secureStorage.getItem('rll_mobile_user');
+        const token = await secureStorage.getItem('rll_mobile_token');
         if (cachedUser && token) {
           logger.info(`App: Found active session for user: ${JSON.parse(cachedUser).email}`);
           setPeriod('Daily');
-          setDateFrom('2026-07-31');
-          setDateTo('2026-07-31');
+          setDateFrom('');
+          setDateTo('');
           setViewMode('companies');
-          setUser(JSON.parse(cachedUser));
+          const parsed = JSON.parse(cachedUser);
+          setUser(parsed);
+          updateWithUser(parsed);
         } else {
           logger.info('App: No active session found. Showing LoginScreen.');
         }
       } catch (e) {
-        logger.error('App: Error reading auth session from AsyncStorage:', e);
+        logger.error('App: Error reading auth session from secureStorage:', e);
       } finally {
-        setLoadingSession(false);
+        const elapsedTime = Date.now() - startTime;
+        const remaining = Math.max(0, 1200 - elapsedTime);
+        setTimeout(() => {
+          setLoadingSession(false);
+        }, remaining);
       }
     }
     loadSession();
   }, []);
 
-  // Fetch headquarters list
+  // Fetch headquarters list & trigger background prefetch worker
   useEffect(() => {
     if (!user) return;
     fetchMobileHeadquarters().then((hqs) => {
       if (hqs && hqs.length > 0) {
         setHeadquartersList(hqs);
       }
+      preloadAllHeadquartersData().catch((err) => {
+        logger.error('App: Background prefetch error:', err);
+      });
     });
   }, [user]);
 
@@ -195,9 +265,17 @@ export default function App() {
     fetchUserProfile().then((profile) => {
       if (profile && (profile.email || profile.phone || profile.user_id)) {
         setUser(profile);
+        updateWithUser(profile);
       }
     });
   }, [Boolean(user)]);
+
+  const prevFiltersRef = useRef({
+    dateFrom: '',
+    dateTo: '',
+    period: 'Daily',
+    selectedHq: 'All Headquarters',
+  });
 
   // Fetch sales data with microsecond performance instrumentation
   useEffect(() => {
@@ -207,18 +285,46 @@ export default function App() {
     const fetchSalesData = async () => {
       const getNow = () => Date.now();
       const tMobileStart = getNow();
-      setLoadingSalesData(true);
+
+      const prev = prevFiltersRef.current;
+      const filtersChanged =
+        prev.dateFrom !== dateFrom ||
+        prev.dateTo !== dateTo ||
+        prev.period !== period ||
+        prev.selectedHq !== selectedHq;
+
+      prevFiltersRef.current = { dateFrom, dateTo, period, selectedHq };
+
+      const hasDataForTab =
+        viewMode === 'companies'
+          ? Boolean(apiData && Array.isArray(apiData.companies) && apiData.companies.length > 0)
+          : viewMode === 'tsm'
+            ? Boolean(apiData && Array.isArray(apiData.tsms) && apiData.tsms.length > 0)
+            : viewMode === 'depots'
+              ? Boolean(apiData && Array.isArray(apiData.depots) && apiData.depots.length > 0)
+              : true;
+
+      // When date/HQ/period filter changes OR when target tab data is missing in memory, show Skeleton Loaders
+      if (filtersChanged || !hasDataForTab) {
+        setLoadingSalesData(true);
+        if (filtersChanged) {
+          setApiData(null); // Clear previous date payload so screen shows fresh Skeleton Loaders for new date
+        }
+      }
+
       try {
         let res: any = null;
         if (viewMode === 'companies') {
-          const comps = await fetchMobileCompanies(period, dateTo, selectedHq);
-          res = { companies: comps };
+          const compRes = await fetchMobileCompanies(period, dateTo, selectedHq);
+          if (compRes && Array.isArray(compRes.companies)) {
+            res = compRes;
+          }
         } else {
           res = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq);
         }
         if (res && isMounted) {
           const tStateStart = getNow();
-          setApiData(res);
+          setApiData((prevData: any) => ({ ...(prevData || {}), ...res }));
           if (res.latest_sale_date && (!dateFrom && !dateTo)) {
             setDateFrom(res.latest_sale_date);
             setDateTo(res.latest_sale_date);
@@ -333,58 +439,41 @@ export default function App() {
     setUser(null);
     setApiData(null);
     setPeriod('Daily');
-    setDateFrom('2026-07-31');
-    setDateTo('2026-07-31');
+    setDateFrom('');
+    setDateTo('');
     setViewMode('companies');
   };
 
   // Filter companies by search query
   const filteredCompanies = useMemo(() => {
     const rawCompanies: Company[] = (apiData && apiData.companies) ? apiData.companies : [];
+    const normalizedCompanies = normalizeCompanyList(rawCompanies, config.pinnedCompanyName, user?.company_name);
 
-    return rawCompanies.filter((c) => {
+    return normalizedCompanies.filter((c) => {
       if (!searchQuery.trim()) return true;
       const q = searchQuery.toLowerCase();
       const matchCompany = c.name.toLowerCase().includes(q);
-      const matchBrands = c.brands && c.brands.some((b) => (b.name || b.brand_name || '').toLowerCase().includes(q));
+      const matchBrands = c.brands && c.brands.some((b: any) => (b.name || b.brand_name || '').toLowerCase().includes(q));
       return matchCompany || matchBrands;
     });
-  }, [searchQuery, apiData]);
+  }, [searchQuery, apiData, config.pinnedCompanyName, user?.company_name]);
 
-  // Sort companies cleanly
+  // Sort companies: Default A-Z view pins RLL (#1) & Diageo (#2) at top.
+  // Explicit sort modes (volume_desc, volume_asc, name_desc) sort ALL companies purely by metric.
   const sortedCompanies = useMemo(() => {
     const list = [...filteredCompanies];
 
     const getPinnedRank = (c: Company) => {
       const name = (c.name || '').toLowerCase().trim();
       const id = (c.id || '').toLowerCase().trim();
+      const pinnedTarget = (config?.pinnedCompanyName || '').toLowerCase().trim();
 
-      // Rank 1: Rajasthan Liquors / RLL (matches all variations regardless of casing, spacing, or Excel naming)
-      if (
-        id === 'rll' ||
-        name === 'rll' ||
-        name.startsWith('rll ') ||
-        name.endsWith(' rll') ||
-        name.includes('rajasthan liquor') ||
-        name.includes('rajasthan liquors') ||
-        name.includes('rajasthan') ||
-        name.includes('RLL')
-      ) {
+      if (pinnedTarget && (name === pinnedTarget || name.includes(pinnedTarget) || id === pinnedTarget)) {
         return 1;
       }
-
-      // Rank 2: Diageo (matches all variations of Diageo)
-      if (
-        id.includes('diageo') ||
-        name.includes('diageo')
-      ) {
+      if (c.isPinned) {
         return 2;
       }
-
-      if (c.isPinned) {
-        return 3;
-      }
-
       return 99;
     };
 
@@ -414,6 +503,7 @@ export default function App() {
       if (rankA !== rankB) {
         return rankA - rankB;
       }
+
       return a.name.localeCompare(b.name);
     });
 
@@ -432,7 +522,7 @@ export default function App() {
       { cases: 0, bottles: 0 }
     );
     return {
-      cases: Math.round(raw.cases * scaleFactor),
+      cases: Number((raw.cases * scaleFactor).toFixed(2)),
       bottles: Math.round(raw.bottles * scaleFactor),
     };
   }, [sortedCompanies, period, scaleFactor]);
@@ -523,9 +613,10 @@ export default function App() {
             style={styles.resetSearchBtn}
             onPress={() => {
               setSearchQuery('');
-              setSortBy('default');
-              setDateFrom('2026-07-31');
-              setDateTo('2026-07-31');
+              setSortBy('az');
+              const latestDate = apiData?.latest_sale_date || '';
+              setDateFrom(latestDate);
+              setDateTo(latestDate);
             }}
           >
             <Text style={styles.resetSearchBtnText}>Reset to Latest Date</Text>
@@ -537,11 +628,7 @@ export default function App() {
   );
 
   if (loadingSession) {
-    return (
-      <View style={[styles.appContainer, styles.center]}>
-        <Text style={styles.loadingText}>Loading Session...</Text>
-      </View>
-    );
+    return <SplashScreen />;
   }
 
   return (
@@ -553,10 +640,11 @@ export default function App() {
           <LoginScreen
             onLoginSuccess={(loggedInUser) => {
               setPeriod('Daily');
-              setDateFrom('2026-07-31');
-              setDateTo('2026-07-31');
+              setDateFrom('');
+              setDateTo('');
               setViewMode('companies');
               setUser(loggedInUser);
+              updateWithUser(loggedInUser);
             }}
           />
         ) : (
@@ -598,27 +686,16 @@ export default function App() {
             {/* Scrollable layout contents */}
             <View style={styles.mainContent}>
               {viewMode === 'companies' && (
-                <View style={{ flex: 1 }}>
-                  {renderCompanyHeader()}
-                  <FlatList
-                    data={loadingSalesData ? [] : sortedCompanies}
-                    renderItem={renderCompanyItem}
-                    keyExtractor={(item) => item.id}
-                    ListEmptyComponent={renderCompanyEmpty}
-                    style={styles.scrollList}
-                    contentContainerStyle={styles.scrollContent}
-                    initialNumToRender={10}
-                    maxToRenderPerBatch={10}
-                    windowSize={5}
-                    removeClippedSubviews={Platform.OS === 'android'}
-                    refreshControl={
-                      <RefreshControl
-                        refreshing={refreshing}
-                        onRefresh={handleRefresh}
-                        colors={['#0284C7', '#0F172A']}
-                        tintColor="#0284C7"
-                      />
-                    }
+                <View style={styles.tabViewWrapper}>
+                  <CompanyCascadingView
+                    period={period}
+                    dateFrom={dateFrom}
+                    dateTo={dateTo}
+                    scaleFactor={scaleFactor}
+                    selectedHq={selectedHq}
+                    companies={sortedCompanies}
+                    loading={loadingSalesData}
+                    onRefresh={handleRefresh}
                   />
                 </View>
               )}
@@ -632,6 +709,7 @@ export default function App() {
                     dateTo={dateTo}
                     scaleFactor={scaleFactor}
                     selectedHq={selectedHq}
+                    onRefresh={handleRefresh}
                   />
                 </View>
               )}
@@ -726,17 +804,38 @@ export default function App() {
               </TouchableOpacity>
             </Modal>
 
-            {/* Bottom nav tabs */}
-            <FooterNav viewMode={viewMode} setViewMode={handleTabChange} />
+            {/* Bottom nav tabs (hidden when keyboard is open) */}
+            {!isKeyboardVisible && (
+              <FooterNav viewMode={viewMode} setViewMode={handleTabChange} />
+            )}
 
             {/* No Data Found Centered Modal Popup */}
             <NoDataModal
               visible={showNoDataModal}
               selectedDate={dateTo || dateFrom || undefined}
-              onReset={() => {
-                setDateFrom('2026-07-31');
-                setDateTo('2026-07-31');
+              onReset={async () => {
                 setShowNoDataModal(false);
+                const targetLatest = apiData?.latest_sale_date || '';
+                setDateFrom(targetLatest);
+                setDateTo(targetLatest);
+                setSelectedHq('All Headquarters');
+                await clearAllPhoneCaches();
+                setLoadingSalesData(true);
+                try {
+                  if (viewMode === 'companies') {
+                    const compRes = await fetchMobileCompanies(period, targetLatest, 'All Headquarters', false, true);
+                    if (compRes && Array.isArray(compRes.companies)) {
+                      setApiData(compRes);
+                    }
+                  } else {
+                    const res = await fetchMobileSales(targetLatest, targetLatest, period, 'All Headquarters');
+                    if (res) setApiData(res);
+                  }
+                } catch (e) {
+                  logger.error('Error resetting to latest date:', e);
+                } finally {
+                  setLoadingSalesData(false);
+                }
               }}
               onClose={() => setShowNoDataModal(false)}
             />
@@ -750,7 +849,7 @@ export default function App() {
 const styles = StyleSheet.create({
   appContainer: {
     flex: 1,
-    backgroundColor: '#0A1128',
+    backgroundColor: '#FFFFFF',
   },
   center: {
     justifyContent: 'center',
@@ -763,15 +862,15 @@ const styles = StyleSheet.create({
   },
   safeArea: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#0F172A',
   },
   metricsBanner: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#F1F5F9',
     paddingHorizontal: 18,
-    paddingVertical: 12,
+    paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: '#E2E8F0',
   },
@@ -780,8 +879,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   indicatorDot: {
-    width: 7,
-    height: 7,
+    width: 8,
+    height: 8,
     borderRadius: 4,
     backgroundColor: '#2563EB',
     marginRight: 8,
@@ -818,16 +917,23 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingHorizontal: 12,
+    paddingTop: 0,
     paddingBottom: 24,
   },
+  companiesTabWrapper: {
+    flex: 1,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+  },
   headerControlsContainer: {
-    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
   searchAndFilterRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     gap: 8,
   },
   searchWrapper: {
@@ -844,9 +950,10 @@ const styles = StyleSheet.create({
   searchInput: {
     flex: 1,
     fontSize: 13,
+    fontWeight: '500',
     color: '#0F172A',
-    fontWeight: '600',
     paddingVertical: 0,
+    margin: 0,
   },
   clearBtn: {
     padding: 4,
@@ -964,3 +1071,11 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
 });
+
+export default function App() {
+  return (
+    <TenantProvider>
+      <MainApp />
+    </TenantProvider>
+  );
+}

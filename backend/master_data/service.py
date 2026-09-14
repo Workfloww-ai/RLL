@@ -41,6 +41,7 @@ class MasterService:
         self._company_cache: Dict[str, int] = {}
         self._depot_cache: Dict[str, int] = {}
         self._licensee_cache: Dict[str, int] = {}
+        self._licensee_hq_cache: Dict[str, Any] = {}
         self._brand_cache: Dict[str, int] = {}
         self._packaging_cache: Dict[str, int] = {}
 
@@ -302,6 +303,22 @@ class MasterService:
         return value.lower()
 
     @staticmethod
+    def _clean_no_space(value) -> str:
+        """
+        Removes all whitespace and lowers text for space-resilient entity matching.
+        Example:
+            'SRI GANGANAGAR'  -> 'sriganganagar'
+            'Sri ganga nagar' -> 'sriganganagar'
+            'sriganganagar'   -> 'sriganganagar'
+        """
+        if value is None:
+            return ""
+        val = str(value).strip().lower()
+        if val in {"nan", "none", "null"}:
+            return ""
+        return re.sub(r'[\s\-_.]+', '', val)
+
+    @staticmethod
     def _clean_company(value) -> str:
         """
         Aggressive normalization specifically for company names.
@@ -318,6 +335,9 @@ class MasterService:
         val_str = str(value).strip().lower()
         if val_str in {"nan", "none", "null"}:
             return ""
+
+        if val_str in {"other", "others"} or val_str.startswith("other "):
+            return "others"
 
         # Remove punctuation & special characters
         val_str = re.sub(r"[^a-z0-9\s]", " ", val_str)
@@ -489,7 +509,7 @@ class MasterService:
                 res_l = (
                     client
                     .table("licensees")
-                    .select("licensee_id,licensee_name")
+                    .select("licensee_id,licensee_name,headquarters_id")
                     .range(l_offset, l_offset + 999)
                     .execute()
                 )
@@ -498,6 +518,7 @@ class MasterService:
                     key = self._clean(row.get("licensee_name"))
                     if key:
                         self._licensee_cache[key] = row["licensee_id"]
+                        self._licensee_hq_cache[key] = row.get("headquarters_id")
                 if len(rows_l) < 1000:
                     break
                 l_offset += 1000
@@ -643,29 +664,67 @@ class MasterService:
 
     def bulk_resolve_headquarters(self, names: List[str]) -> Dict[str, Any]:
         client = get_supabase()
+
+        # 1. Preload existing headquarters from database if cache is empty
+        if not self._headquarter_cache and client:
+            try:
+                res = client.table("headquarters").select("headquarters_id, name").execute()
+                for row in res.data or []:
+                    hid = row.get("headquarters_id") or row.get("id")
+                    name_str = row.get("name") or ""
+                    clean_k = self._clean(name_str)
+                    no_space_k = self._clean_no_space(name_str)
+                    if clean_k:
+                        self._headquarter_cache[clean_k] = hid
+                    if no_space_k:
+                        self._headquarter_cache[no_space_k] = hid
+            except Exception as e:
+                logger.warning(f"Failed to preload headquarters: {e}")
+
+        # 2. Check each requested name against exact clean and space-trimmed key
         missing = {}
         for name in names:
+            if not name:
+                continue
             display = self._display(name)
             key = self._clean(name)
+            no_space_key = self._clean_no_space(name)
+
+            # Direct or space-trimmed match (e.g. 'sri ganganagar' matches 'sriganganagar')
+            if key in self._headquarter_cache:
+                continue
+            elif no_space_key in self._headquarter_cache:
+                self._headquarter_cache[key] = self._headquarter_cache[no_space_key]
+                continue
+
             if key and key not in self._headquarter_cache:
                 missing[key] = display
 
+        # 3. Insert truly new headquarters if any
         if missing and client:
             payloads = [{"name": disp, "is_active": True} for disp in missing.values()]
             try:
                 res = client.table("headquarters").insert(payloads).execute()
                 for row in res.data or []:
-                    k = self._clean(row.get("name"))
-                    if k:
-                        self._headquarter_cache[k] = row.get("headquarters_id") or row.get("id")
+                    hid = row.get("headquarters_id") or row.get("id")
+                    clean_k = self._clean(row.get("name"))
+                    no_space_k = self._clean_no_space(row.get("name"))
+                    if clean_k:
+                        self._headquarter_cache[clean_k] = hid
+                    if no_space_k:
+                        self._headquarter_cache[no_space_k] = hid
             except Exception as e_hq:
                 logger.warning(f"bulk_resolve_headquarters insert notice: {e_hq}")
                 try:
                     res = client.table("headquarters").select("headquarters_id, name").execute()
                     for row in res.data or []:
-                        k = self._clean(row.get("name"))
-                        if k:
-                            self._headquarter_cache[k] = row.get("headquarters_id") or row.get("id")
+                        hid = row.get("headquarters_id") or row.get("id")
+                        clean_k = self._clean(row.get("name"))
+                        no_space_k = self._clean_no_space(row.get("name"))
+                        if clean_k:
+                            self._headquarter_cache[clean_k] = hid
+                        if no_space_k:
+                            self._headquarter_cache[no_space_k] = hid
                 except Exception:
                     pass
 
@@ -766,10 +825,12 @@ class MasterService:
     def bulk_resolve_licensees(self, licensee_items: List[Dict[str, Any]]) -> Dict[str, Any]:
         client = get_supabase()
         missing = {}
+        existing_hq_updates = {}
         for item in licensee_items:
             name = item.get("licensee_name")
             display = self._display(name)
             key = self._clean(name)
+            hq_id = item.get("headquarters_id")
             if key and key not in self._licensee_cache:
                 trade = self._display(item.get("trade"))
                 if trade.lower() == "off":
@@ -784,11 +845,25 @@ class MasterService:
                     "trade": trade,
                     "group_id": item.get("group_id"),
                     "depot_id": item.get("depot_id"),
-                    "headquarters_id": item.get("headquarters_id"),
+                    "headquarters_id": hq_id,
                     "office_id": item.get("office_id"),
                     "circle_id": item.get("circle_id"),
                     "is_active": True
                 }
+            elif key and key in self._licensee_cache and hq_id:
+                current_hq = self._licensee_hq_cache.get(key)
+                if not current_hq or current_hq != hq_id:
+                    lic_id = self._licensee_cache[key]
+                    existing_hq_updates[lic_id] = hq_id
+                    self._licensee_hq_cache[key] = hq_id
+
+        if existing_hq_updates and client:
+            logger.info(f"bulk_resolve_licensees: Updating headquarters for {len(existing_hq_updates)} licensees whose HQ changed or was missing.")
+            try:
+                for lic_id, hq_id in existing_hq_updates.items():
+                    client.table("licensees").update({"headquarters_id": hq_id}).eq("licensee_id", lic_id).execute()
+            except Exception as e_hq_up:
+                logger.warning(f"bulk_resolve_licensees existing HQ update notice: {e_hq_up}")
 
         if missing and client:
             payloads = list(missing.values())
@@ -796,21 +871,23 @@ class MasterService:
             for chunk_start in range(0, len(payloads), 200):
                 chunk = payloads[chunk_start:chunk_start + 200]
                 try:
-                    res = client.table("licensees").insert(chunk).execute()
+                    res = client.table("licensees").upsert(chunk, on_conflict="licensee_name").execute()
                     for row in res.data or []:
                         k = self._clean(row.get("licensee_name"))
                         if k:
                             self._licensee_cache[k] = row["licensee_id"]
+                            self._licensee_hq_cache[k] = row.get("headquarters_id")
                 except Exception as e_lic:
-                    logger.warning(f"bulk_resolve_licensees chunk insert notice: {e_lic}")
-                    # Fallback to item-by-item insert if chunk contains a conflict
+                    logger.warning(f"bulk_resolve_licensees chunk upsert notice: {e_lic}")
+                    # Fallback to item-by-item upsert if chunk contains an error
                     for single_item in chunk:
                         try:
-                            res_single = client.table("licensees").insert(single_item).execute()
+                            res_single = client.table("licensees").upsert(single_item, on_conflict="licensee_name").execute()
                             if res_single.data:
                                 k = self._clean(res_single.data[0].get("licensee_name"))
                                 if k:
                                     self._licensee_cache[k] = res_single.data[0]["licensee_id"]
+                                    self._licensee_hq_cache[k] = res_single.data[0].get("headquarters_id")
                         except Exception:
                             try:
                                 minimal_item = {
@@ -819,11 +896,12 @@ class MasterService:
                                     "group_id": single_item.get("group_id"),
                                     "is_active": True
                                 }
-                                res_min = client.table("licensees").insert(minimal_item).execute()
+                                res_min = client.table("licensees").upsert(minimal_item, on_conflict="licensee_name").execute()
                                 if res_min.data:
                                     k = self._clean(res_min.data[0].get("licensee_name"))
                                     if k:
                                         self._licensee_cache[k] = res_min.data[0]["licensee_id"]
+                                        self._licensee_hq_cache[k] = res_min.data[0].get("headquarters_id")
                             except Exception:
                                 pass
 
@@ -832,12 +910,13 @@ class MasterService:
             try:
                 l_offset = 0
                 while True:
-                    res = client.table("licensees").select("licensee_id,licensee_name").range(l_offset, l_offset + 999).execute()
+                    res = client.table("licensees").select("licensee_id,licensee_name,headquarters_id").range(l_offset, l_offset + 999).execute()
                     rows = res.data or []
                     for row in rows:
                         k = self._clean(row.get("licensee_name"))
                         if k:
                             self._licensee_cache[k] = row["licensee_id"]
+                            self._licensee_hq_cache[k] = row.get("headquarters_id")
                     if len(rows) < 1000:
                         break
                     l_offset += 1000

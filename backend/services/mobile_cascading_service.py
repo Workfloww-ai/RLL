@@ -150,15 +150,17 @@ def get_group_brand_sales(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     period: Optional[str] = None,
-    depot_name: Optional[str] = None
+    depot_name: Optional[str] = None,
+    selected_hq: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     client = get_supabase_client()
     if not client:
         return []
 
+    hq = selected_hq or depot_name
     try:
         target_date, mtd_start, ytd_start = _resolve_multi_period_dates(client, date_from, date_to, period)
-        cache_key = f"group_brands_json_{group_id}_{target_date}_{period or 'MTD'}_{depot_name or ''}"
+        cache_key = f"group_brands_json_{group_id}_{target_date}_{period or 'MTD'}_{hq or ''}"
         cached = _get_from_cache(cache_key)
         if cached is not None:
             return cached
@@ -168,7 +170,7 @@ def get_group_brand_sales(
             target_date=target_date,
             mtd_start=mtd_start,
             ytd_start=ytd_start,
-            depot_name=depot_name
+            depot_name=hq
         )
         res = _map_period_metrics(raw_brands, period)
         _set_in_cache(cache_key, res)
@@ -183,15 +185,17 @@ def get_group_licensees(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     period: Optional[str] = None,
-    depot_name: Optional[str] = None
+    depot_name: Optional[str] = None,
+    selected_hq: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     client = get_supabase_client()
     if not client:
         return []
 
+    hq = selected_hq or depot_name
     try:
         target_date, mtd_start, ytd_start = _resolve_multi_period_dates(client, date_from, date_to, period)
-        cache_key = f"group_lics_json_{group_id}_{target_date}_{period or 'MTD'}_{depot_name or ''}"
+        cache_key = f"group_lics_json_{group_id}_{target_date}_{period or 'MTD'}_{hq or ''}"
         cached = _get_from_cache(cache_key)
         if cached is not None:
             return cached
@@ -201,7 +205,7 @@ def get_group_licensees(
             target_date=target_date,
             mtd_start=mtd_start,
             ytd_start=ytd_start,
-            depot_name=depot_name
+            depot_name=hq
         )
         res = _map_period_metrics(raw_lics, period)
         _set_in_cache(cache_key, res)
@@ -216,15 +220,17 @@ def get_licensee_brand_sales(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     period: Optional[str] = None,
-    depot_name: Optional[str] = None
+    depot_name: Optional[str] = None,
+    selected_hq: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     client = get_supabase_client()
     if not client:
         return []
 
+    hq = selected_hq or depot_name
     try:
         target_date, mtd_start, ytd_start = _resolve_multi_period_dates(client, date_from, date_to, period)
-        cache_key = f"lic_brands_json_{licensee_id}_{target_date}_{period or 'MTD'}_{depot_name or ''}"
+        cache_key = f"licensee_brands_json_{licensee_id}_{target_date}_{period or 'MTD'}_{hq or ''}"
         cached = _get_from_cache(cache_key)
         if cached is not None:
             return cached
@@ -234,7 +240,7 @@ def get_licensee_brand_sales(
             target_date=target_date,
             mtd_start=mtd_start,
             ytd_start=ytd_start,
-            depot_name=depot_name
+            depot_name=hq
         )
         res = _map_period_metrics(raw_brands, period)
         _set_in_cache(cache_key, res)

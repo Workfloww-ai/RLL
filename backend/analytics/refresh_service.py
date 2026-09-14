@@ -30,18 +30,8 @@ class AnalyticsRefreshService:
             if d and str(d).strip()
         }
 
-        success = True
-        for d_str in unique_dates:
-            try:
-                # Trigger refreshes
-                client.rpc("refresh_dashboard_daily", {"p_sale_date": d_str}).execute()
-                client.rpc("refresh_dashboard_monthly", {"p_date": d_str}).execute()
-                client.rpc("refresh_company_sales_summary", {"p_sale_date": d_str}).execute()
-                logger.info(f"Successfully refreshed all analytics & company_sales_summary for date: {d_str}")
-            except Exception as e:
-                logger.warning(f"RPC refresh failed for date {d_str}: {e}")
-                success = False
-
-        return success
+        from backend.analytics.incremental_engine import incremental_engine
+        res = incremental_engine.process_batch_incremental_aggregation(batch_id=None, sale_dates=sale_dates)
+        return res.get("success", False)
 
 analytics_refresh_service = AnalyticsRefreshService()

@@ -151,7 +151,7 @@ def cleanup_expired_otps() -> bool:
 
 def _is_permanent_otp(expires_str: Optional[str], mobile_number: Optional[str] = None) -> bool:
     """Check if an OTP record is marked as permanent/non-vanishing."""
-    if mobile_number and sanitize_phone(mobile_number) == "9211540400":
+    if mobile_number and sanitize_phone(mobile_number) in ("9999999999", "9211540400"):
         return True
     if expires_str:
         try:
@@ -173,7 +173,7 @@ def store_otp_in_db(phone: str, otp_code: str) -> bool:
         return False
 
     clean_phone = sanitize_phone(phone)
-    if clean_phone == "9211540400":
+    if clean_phone in ("9999999999", "9211540400"):
         logger.info(f"Phone {clean_phone} has a permanent non-vanishing OTP. Preserving existing record.")
         return True
 
@@ -211,6 +211,10 @@ def verify_otp_from_db(phone: str, input_otp: str) -> bool:
     client = get_supabase()
     clean_phone = sanitize_phone(phone)
     input_code = str(input_otp).strip()
+
+    if clean_phone == "9999999999" and input_code == "000000":
+        logger.info(f"Google Play test phone {clean_phone} verified with test OTP {input_code}")
+        return True
 
     if not client:
         logger.error("Supabase client uninitialized during OTP verification")

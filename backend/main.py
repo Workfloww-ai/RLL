@@ -38,6 +38,7 @@ from backend.dashboard.router import router as dashboard_router
 from backend.analytics.router import router as analytics_router
 from backend.reports.router import router as reports_router
 from backend.mobile.router import router as mobile_router
+from backend.system.router import router as system_router
 
 from contextlib import asynccontextmanager
 from backend.db.redis_client import init_redis, close_redis
@@ -47,6 +48,13 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing Redis connection pool...")
     await init_redis()
     
+    # Reset any orphaned active upload batches from prior interrupted server processes
+    try:
+        from backend.db.supabase_client import reset_orphaned_upload_batches
+        reset_orphaned_upload_batches()
+    except Exception as e:
+        logger.warning(f"Orphaned batch cleanup notice: {e}")
+
     # Pre-warm master lookup cache asynchronously in background on startup
     try:
         import asyncio
@@ -73,22 +81,39 @@ from fastapi.middleware.gzip import GZipMiddleware
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
+allowed_origins = [
+    "https://lucidx360.workfloww.ai",
+    "https://rll-backend-414899512001.asia-south2.run.app",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
-    allow_origin_regex=r"https?://.*",
+    allow_origins=allowed_origins,
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|lucidx360\.workfloww\.ai|rll-backend-414899512001\.asia-south2\.run\.app)(:\d+)?",
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
 import time
 from fastapi import Request
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self' https://rll-backend-414899512001.asia-south2.run.app https://lucidx360.workfloww.ai https://*.supabase.co;"
+    )
+    if settings.ENVIRONMENT.lower() in ["production", "prod"]:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -101,6 +126,79 @@ async def log_requests(request: Request, call_next):
     )
     return response
 
+import traceback
+from fastapi import HTTPException
+from fastapi.responses import JSONResponse
+from backend.db.supabase_client import log_system_error
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    user_id = None
+    try:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+            import jwt
+            payload = jwt.decode(token, settings.JWT_SECRET, algorithms=["HS256"], options={"verify_signature": False})
+            user_id = payload.get("user_id") or payload.get("sub")
+    except Exception:
+        pass
+
+    if exc.status_code >= 400:
+        source_name = f"HTTP_{exc.status_code}"
+        if exc.status_code in [401, 403]:
+            source_name = "AUTH_ERROR"
+        elif exc.status_code == 400:
+            source_name = "BAD_REQUEST"
+
+        log_system_error(
+            source=source_name,
+            error_message=str(exc.detail),
+            stack_trace=None,
+            user_id=user_id,
+            context={
+                "path": request.url.path,
+                "method": request.method,
+                "status_code": exc.status_code,
+                "client_ip": request.client.host if request.client else None
+            }
+        )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=getattr(exc, "headers", None)
+    )
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    tb = traceback.format_exc()
+    user_id = None
+    try:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+            import jwt
+            payload = jwt.decode(token, settings.JWT_SECRET, algorithms=["HS256"], options={"verify_signature": False})
+            user_id = payload.get("user_id") or payload.get("sub")
+    except Exception:
+        pass
+
+    log_system_error(
+        source="SYSTEM_UNHANDLED_EXCEPTION",
+        error_message=str(exc),
+        stack_trace=tb,
+        user_id=user_id,
+        context={
+            "path": request.url.path,
+            "method": request.method,
+            "client_ip": request.client.host if request.client else None
+        }
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error"}
+    )
+
 # Register v1 API Routers
 app.include_router(auth_router, prefix=settings.API_V1_STR)
 app.include_router(mobile_router, prefix=settings.API_V1_STR)
@@ -112,6 +210,7 @@ app.include_router(uploads_router)
 app.include_router(dashboard_router, prefix=settings.API_V1_STR)
 app.include_router(analytics_router, prefix=settings.API_V1_STR)
 app.include_router(reports_router, prefix=settings.API_V1_STR)
+app.include_router(system_router, prefix=settings.API_V1_STR)
 
 @app.get("/")
 def read_root():

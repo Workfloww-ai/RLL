@@ -2,12 +2,16 @@ import React, { useState, useEffect } from 'react';
 import { LogIn, Mail, ArrowLeft, CheckCircle2, Lock, Send, KeyRound, Eye, EyeOff, ShieldCheck, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { API_BASE_URL } from '../config';
+import { secureFetch } from '../lib/apiClient';
+
+import { useTenantConfig } from '../hooks/useTenantConfig';
 
 interface LoginProps {
   onLogin: (userName: string) => void;
 }
 
 export default function Login({ onLogin }: LoginProps) {
+  const { config } = useTenantConfig();
   const [view, setView] = useState<'login' | 'forgot-password' | 'reset-password'>('login');
   
   const [email, setEmail] = useState('');
@@ -63,7 +67,7 @@ export default function Login({ onLogin }: LoginProps) {
     const fallbackName = formattedName || 'User';
 
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/login`, {
+      const response = await secureFetch(`${API_BASE_URL}/auth/login`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -111,7 +115,7 @@ export default function Login({ onLogin }: LoginProps) {
     setSuccessMessage(null);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/forgot-password`, {
+      const response = await secureFetch(`${API_BASE_URL}/auth/forgot-password`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -155,7 +159,7 @@ export default function Login({ onLogin }: LoginProps) {
     setSuccessMessage(null);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/reset-password`, {
+      const response = await secureFetch(`${API_BASE_URL}/auth/reset-password`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -201,13 +205,13 @@ export default function Login({ onLogin }: LoginProps) {
         className="sm:mx-auto sm:w-full sm:max-w-md text-center z-10"
       >
         <div className="inline-flex p-4 bg-white/60 backdrop-blur-2xl rounded-3xl shadow-[0_12px_40px_rgba(13,59,142,0.08)] border border-white/80 mb-4 transition-all duration-300 hover:scale-105 hover:bg-white/80 hover:border-white">
-          <img src="/images/rll logo.svg" alt="RLL Logo" className="w-28 h-28 object-contain filter drop-shadow-xs" />
+          <img src={config.logoUrl || "/images/rll logo.svg"} alt={`${config.appName || "Admin"} Logo`} className="w-28 h-28 object-contain filter drop-shadow-xs" />
         </div>
         <h1 className="text-2xl font-bold tracking-tight text-slate-900 drop-shadow-xs">
-          RLL Admin Portal
+          {config.appName || "Admin"} Admin Portal
         </h1>
         <p className="mt-1.5 text-xs text-slate-500 font-medium tracking-wide">
-          Rajasthan Liquor Limited Administrative Dashboard
+          {config.pinnedCompanyName || config.appName || "Enterprise"} Administrative Dashboard
         </p>
       </motion.div>
 
@@ -487,12 +491,6 @@ export default function Login({ onLogin }: LoginProps) {
               </motion.form>
             )}
           </AnimatePresence>
-        </div>
-
-        {/* Security Glass Badge */}
-        <div className="mt-6 text-center text-[11px] text-slate-600 font-medium flex items-center justify-center gap-1.5 backdrop-blur-md py-1.5 px-4 rounded-full bg-white/50 border border-white/70 mx-auto w-fit shadow-xs">
-          <ShieldCheck className="w-3.5 h-3.5 text-[#0D3B8E]" />
-          <span>Rajasthan State Enterprise Portal • 256-Bit Encrypted</span>
         </div>
       </motion.div>
     </div>

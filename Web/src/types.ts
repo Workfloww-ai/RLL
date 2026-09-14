@@ -1,16 +1,18 @@
-export type ViewState = 'stock' | 'territory' | 'headcount';
+export type ViewState = 'stock' | 'territory' | 'headcount' | 'roles' | 'settings';
 
 export interface FileUploadState {
   status: 'idle' | 'uploading' | 'processing' | 'success' | 'error';
   progress: number;
   fileName?: string;
-  batchId?: number;
+  batchId?: number | string;
   statusMessage?: string;
   errorMessage?: string;
   importedRows?: number;
   failedRows?: number;
   duplicateRows?: number;
   processingTimeSeconds?: number;
+  uploadStartTime?: string;
+  elapsedSeconds?: number;
   errorLogs?: string[];
 }
 

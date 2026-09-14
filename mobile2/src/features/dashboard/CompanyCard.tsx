@@ -2,7 +2,7 @@ import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Company, Period } from '../../types';
 import { formatNumber } from '../../lib/utils';
-import { PinIcon, ChevronRightIcon } from '../../components/Icons';
+import { StarIcon, ChevronRightIcon } from '../../components/Icons';
 
 interface CompanyCardProps {
   company: Company;
@@ -20,49 +20,57 @@ export const CompanyCard = React.memo(function CompanyCard({
   cardStyle,
 }: CompanyCardProps) {
   const rawData = company.data?.[period] || { cases: company.cases || 0, bottles: company.bottles || 0 };
-  const cases = Math.round((rawData.cases ?? company.cases ?? 0) * scaleFactor);
+  const cases = Number(((rawData.cases ?? company.cases ?? 0) * scaleFactor).toFixed(2));
   const bottles = Math.round((rawData.bottles ?? company.bottles ?? 0) * scaleFactor);
+
+  const cId = (company.id || '').toLowerCase();
+  const cName = (company.name || '').toLowerCase();
+  const isPinned = company.isPinned || cId === 'rll' || cName.includes('rajasthan') || cId.includes('diageo') || cName.includes('diageo');
 
   return (
     <TouchableOpacity
       style={[
         styles.card,
-        company.isPinned ? styles.cardPinned : null,
+        isPinned ? styles.cardPinned : null,
         cardStyle,
       ]}
       onPress={onClick}
       activeOpacity={0.75}
     >
-      <View style={styles.cardHeader}>
+      <View style={styles.cardMainRow}>
+        {/* Left Section: Star Icon In Front, Company Name & Subtitle */}
         <View style={styles.titleWrapper}>
           <View style={styles.nameRow}>
+            {isPinned ? (
+              <View style={styles.starBadgePrefix}>
+                <StarIcon color="#0F172A" size={12} />
+              </View>
+            ) : null}
             <Text style={styles.companyName} numberOfLines={1}>
               {company.name}
             </Text>
-            {company.isPinned ? (
-              <View style={styles.pinnedBadge}>
-                <PinIcon color="#FFFFFF" size={9} />
-                <Text style={styles.pinnedBadgeText}>Pinned</Text>
-              </View>
-            ) : null}
           </View>
-          <Text style={styles.brandCount}>
-            {company.brands.length} {company.brands.length === 1 ? 'Brand' : 'Brands'}
-          </Text>
-        </View>
-        <ChevronRightIcon size={16} color="#94A3B8" />
-      </View>
 
-      {/* Primary Metrics Inset Box */}
-      <View style={styles.metricsGrid}>
-        <View style={styles.metricCell}>
-          <Text style={styles.metricLabel}>CASES</Text>
-          <Text style={styles.metricValue}>{formatNumber(cases)}</Text>
+          <View style={styles.subtextRow}>
+            <Text style={styles.subtext}>
+              {company.brands.length} {company.brands.length === 1 ? 'Brand' : 'Brands'}
+            </Text>
+          </View>
         </View>
 
-        <View style={styles.metricCell}>
-          <Text style={styles.metricLabel}>BOTTLES</Text>
-          <Text style={styles.metricValue}>{formatNumber(bottles)}</Text>
+        {/* Right Section: Metrics (Cases & Bottles) + Chevron Arrow */}
+        <View style={styles.metricsRightRow}>
+          <View style={styles.metricCell}>
+            <Text style={styles.casesValue}>{formatNumber(cases)}</Text>
+            <Text style={styles.metricLabel}>CASES</Text>
+          </View>
+
+          <View style={styles.metricCell}>
+            <Text style={styles.bottlesValue}>{formatNumber(bottles)}</Text>
+            <Text style={styles.metricLabel}>BOTTLES</Text>
+          </View>
+
+          <ChevronRightIcon size={15} color="#94A3B8" />
         </View>
       </View>
     </TouchableOpacity>
@@ -72,25 +80,26 @@ export const CompanyCard = React.memo(function CompanyCard({
 const styles = StyleSheet.create({
   card: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 16,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    padding: 14,
-    marginBottom: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 8,
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.03,
+    shadowOpacity: 0.02,
     shadowRadius: 3,
     elevation: 1,
   },
   cardPinned: {
-    borderColor: '#E2E8F0',
+    borderColor: '#CBD5E1',
+    backgroundColor: '#FAFCFF',
   },
-  cardHeader: {
+  cardMainRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
+    justifyContent: 'space-between',
   },
   titleWrapper: {
     flex: 1,
@@ -100,59 +109,68 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
+  starBadgePrefix: {
+    marginRight: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   companyName: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '800',
     color: '#0F172A',
-    flexShrink: 1,
     letterSpacing: -0.2,
+    lineHeight: 17,
+    flexShrink: 1,
   },
-  pinnedBadge: {
+  subtextRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#0F172A',
-    borderRadius: 6,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    marginLeft: 8,
-    gap: 3,
+    marginTop: 3,
   },
-  pinnedBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 9,
-    fontWeight: '700',
-  },
-  brandCount: {
-    fontSize: 11,
+  subtext: {
+    fontSize: 10,
     color: '#64748B',
     fontWeight: '600',
-    marginTop: 2,
   },
-  metricsGrid: {
+  subtextDot: {
+    fontSize: 10,
+    color: '#94A3B8',
+    fontWeight: '600',
+  },
+  hqPill: {
+    backgroundColor: '#F1F5F9',
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+  },
+  hqPillText: {
+    fontSize: 9.5,
+    color: '#475569',
+    fontWeight: '600',
+  },
+  metricsRightRow: {
     flexDirection: 'row',
-    backgroundColor: '#F8FAFC',
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 8,
-    borderWidth: 1,
-    borderColor: '#F1F5F9',
+    alignItems: 'center',
+    gap: 10,
   },
   metricCell: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: 'flex-end',
   },
   metricLabel: {
-    fontSize: 8,
+    fontSize: 8.5,
     fontWeight: '700',
     color: '#94A3B8',
     letterSpacing: 0.5,
-    textTransform: 'uppercase',
+    marginTop: 1,
   },
-  metricValue: {
-    fontSize: 14,
-    fontWeight: '900',
+  casesValue: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#0D3B8E',
+  },
+  bottlesValue: {
+    fontSize: 13,
+    fontWeight: '800',
     color: '#0F172A',
-    marginTop: 2,
   },
 });

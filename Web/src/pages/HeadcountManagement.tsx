@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import FileUpload from '../components/FileUpload';
-import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X, RefreshCw, Mail, Phone, Shield, RotateCcw, ChevronUp, ChevronDown, ArrowUpDown, ChevronLeft, ChevronRight } from 'lucide-react';
+import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X, RefreshCw, RotateCcw, ChevronUp, ChevronDown, ArrowUpDown, ChevronLeft, ChevronRight, Mail, Phone, ArrowLeft } from 'lucide-react';
 import { User } from '../types';
 import { API_BASE_URL } from '../config';
+import { useToast } from '../contexts/ToastContext';
 
 const INITIAL_USERS: User[] = [];
 
@@ -56,6 +57,7 @@ export default function HeadcountManagement() {
   const [showUpload, setShowUpload] = useState(false);
   const [isAdding, setIsAdding] = useState(false);
   const [loading, setLoading] = useState(false);
+  const { showToast } = useToast();
 
   const [newUser, setNewUser] = useState({ 
     firstName: '', 
@@ -90,10 +92,51 @@ export default function HeadcountManagement() {
 
   const [availableRoles, setAvailableRoles] = useState<{ role_id: string; role_name: string; description?: string }[]>([]);
 
+  const handleToggleUserStatus = async (user: User) => {
+    const newActiveState = !user.isActive;
+
+    // Optimistic Update
+    const previousState = user.isActive;
+    setUsers((prev) => prev.map((u) => u.id === user.id ? { ...u, isActive: newActiveState } : u));
+    
+    if (!newActiveState) {
+      showToast('User deactivated and active sessions revoked.', 'success');
+    } else {
+      showToast('User reactivated successfully.', 'success');
+    }
+
+    const updatedPayload = {
+      isActive: newActiveState,
+      is_active: newActiveState,
+    };
+
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE_URL}/users/${user.id}`, {
+        method: 'PUT',
+        headers: { 
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify(updatedPayload)
+      });
+      if (!res.ok) {
+        throw new Error('Update failed');
+      }
+    } catch (e) {
+      console.error('Error toggling user status:', e);
+      // Revert Optimistic Update
+      setUsers((prev) => prev.map((u) => u.id === user.id ? { ...u, isActive: previousState } : u));
+      showToast('Failed to update user status.', 'error');
+    }
+  };
+
   const fetchUsers = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/users/`);
+      const token = localStorage.getItem('token');
+      const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+      const res = await fetch(`${API_BASE_URL}/users/`, { headers });
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) {
@@ -109,7 +152,9 @@ export default function HeadcountManagement() {
 
   const fetchRoles = async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/users/roles`);
+      const token = localStorage.getItem('token');
+      const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+      const res = await fetch(`${API_BASE_URL}/users/roles`, { headers });
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) {
@@ -154,36 +199,99 @@ export default function HeadcountManagement() {
     setEditIsActive(user.isActive ?? true);
   };
 
+  const validateUserForm = (firstName: string, email: string, phoneNumber: string, role: string) => {
+    if (!firstName || !firstName.trim()) {
+      showToast('First Name is mandatory.', 'error');
+      return false;
+    }
+    if (!email || !email.trim()) {
+      showToast('Email is mandatory.', 'error');
+      return false;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email.trim())) {
+      showToast('Please enter a valid email address.', 'error');
+      return false;
+    }
+    if (!phoneNumber || !phoneNumber.trim()) {
+      showToast('Phone Number is mandatory.', 'error');
+      return false;
+    }
+    const cleanPhone = phoneNumber.replace(/\D/g, '');
+    if (cleanPhone.length !== 10) {
+      showToast('Phone Number must be exactly 10 digits.', 'error');
+      return false;
+    }
+    if (!role || !role.trim()) {
+      showToast('Role is mandatory.', 'error');
+      return false;
+    }
+    return true;
+  };
+
   const handleSave = async (userId: string) => {
+    if (!editName || !editName.trim()) {
+      showToast('First Name / Name is mandatory.', 'error');
+      return;
+    }
+    if (!editEmail || !editEmail.trim()) {
+      showToast('Email is mandatory.', 'error');
+      return;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(editEmail.trim())) {
+      showToast('Please enter a valid email address.', 'error');
+      return;
+    }
+    if (!editPhone || !editPhone.trim()) {
+      showToast('Phone Number is mandatory.', 'error');
+      return;
+    }
+    const cleanPhone = editPhone.replace(/\D/g, '');
+    if (cleanPhone.length !== 10) {
+      showToast('Phone Number must be exactly 10 digits.', 'error');
+      return;
+    }
+    if (!editRole || !editRole.trim()) {
+      showToast('Role is mandatory.', 'error');
+      return;
+    }
+
     const updatedPayload = {
-      name: editName,
-      phone: editPhone,
-      phoneNumber: editPhone,
-      email: editEmail,
+      name: editName.trim(),
+      phone: cleanPhone,
+      phoneNumber: cleanPhone,
+      email: editEmail.trim(),
       role: editRole,
-      reportingManager: editReportingManager,
-      reporting_manager: editReportingManager,
+      reportingManager: editReportingManager ? editReportingManager.trim() : 'Unassigned',
+      reporting_manager: editReportingManager ? editReportingManager.trim() : 'Unassigned',
       isActive: editIsActive,
       is_active: editIsActive,
     };
 
     try {
+      const token = localStorage.getItem('token');
       const res = await fetch(`${API_BASE_URL}/users/${userId}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
         body: JSON.stringify(updatedPayload)
       });
       if (res.ok) {
         const updatedUser = await res.json();
         setUsers((prev) => prev.map((u) => u.id === userId ? normalizeUser({ ...u, ...updatedUser }) : u));
+        showToast('User record updated successfully.', 'success');
+        setEditingId(null);
       } else {
-        setUsers((prev) => prev.map((u) => u.id === userId ? normalizeUser({ ...u, ...updatedPayload }) : u));
+        const errData = await res.json().catch(() => ({}));
+        showToast(errData.detail || 'Failed to update user.', 'error');
       }
     } catch (err) {
       console.error('Error updating user on backend:', err);
-      setUsers((prev) => prev.map((u) => u.id === userId ? normalizeUser({ ...u, ...updatedPayload }) : u));
+      showToast('Network error while saving.', 'error');
     }
-    setEditingId(null);
   };
 
   const handleCancel = () => {
@@ -193,49 +301,66 @@ export default function HeadcountManagement() {
   const handleDelete = async (id: string) => {
     if (!confirm("Are you sure you want to delete this user record?")) return;
     try {
-      await fetch(`${API_BASE_URL}/users/${id}`, { method: 'DELETE' });
+      const token = localStorage.getItem('token');
+      const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+      const res = await fetch(`${API_BASE_URL}/users/${id}`, { method: 'DELETE', headers });
+      if (res.ok) {
+        setUsers(users.filter(u => u.id !== id));
+        showToast('User record deleted & active sessions revoked.', 'success');
+      } else {
+        showToast('Failed to delete user.', 'error');
+      }
     } catch (err) {
       console.error('Error deleting user on backend:', err);
+      showToast('Network error while deleting.', 'error');
     }
-    setUsers(users.filter(u => u.id !== id));
   };
 
   const handleAdd = async () => {
-    if (newUser.firstName.trim() || newUser.email.trim() || newUser.phoneNumber.trim()) {
-      const fullName = `${newUser.firstName} ${newUser.lastName}`.trim();
-      const userPayload = {
-        ...newUser,
-        first_name: newUser.firstName,
-        last_name: newUser.lastName,
-        name: fullName,
-        phone: newUser.phoneNumber,
-        phoneNumber: newUser.phoneNumber,
-        email: newUser.email,
-        circleName: 'Unassigned',
-        reportingManager: newUser.reportingManager || 'Unassigned',
-        reporting_manager: newUser.reportingManager || 'Unassigned',
-        is_active: newUser.isActive
-      };
+    if (!validateUserForm(newUser.firstName, newUser.email, newUser.phoneNumber, newUser.role)) {
+      return;
+    }
 
-      try {
-        const res = await fetch(`${API_BASE_URL}/users/`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(userPayload)
-        });
-        if (res.ok) {
-          const created = await res.json();
-          setUsers([normalizeUser(created), ...users]);
-        } else {
-          setUsers([normalizeUser(userPayload), ...users]);
-        }
-      } catch (err) {
-        console.error('Error creating user on backend:', err);
-        setUsers([normalizeUser(userPayload), ...users]);
+    const cleanPhone = newUser.phoneNumber.replace(/\D/g, '');
+    const fullName = `${newUser.firstName.trim()} ${newUser.lastName.trim()}`.trim();
+    const userPayload = {
+      ...newUser,
+      first_name: newUser.firstName.trim(),
+      last_name: newUser.lastName.trim(),
+      name: fullName,
+      phone: cleanPhone,
+      phoneNumber: cleanPhone,
+      email: newUser.email.trim(),
+      role: newUser.role,
+      circleName: 'Unassigned',
+      reportingManager: newUser.reportingManager ? newUser.reportingManager.trim() : 'Unassigned',
+      reporting_manager: newUser.reportingManager ? newUser.reportingManager.trim() : 'Unassigned',
+      is_active: newUser.isActive
+    };
+
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE_URL}/users/`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify(userPayload)
+      });
+      if (res.ok) {
+        const created = await res.json();
+        setUsers([normalizeUser(created), ...users]);
+        showToast('User created successfully.', 'success');
+        setIsAdding(false);
+        setNewUser({ firstName: '', lastName: '', phoneNumber: '', email: '', role: 'ASE', id: '', headquarters: 'Unassigned', depotName: 'Unassigned', reportingManager: 'Unassigned', isActive: true });
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        showToast(errData.detail || 'Failed to create user.', 'error');
       }
-
-      setIsAdding(false);
-      setNewUser({ firstName: '', lastName: '', phoneNumber: '', email: '', role: 'ASE', id: '', headquarters: 'Unassigned', depotName: 'Unassigned', reportingManager: 'Unassigned', isActive: true });
+    } catch (err) {
+      console.error('Error creating user on backend:', err);
+      showToast('Network error while saving.', 'error');
     }
   };
 
@@ -419,10 +544,23 @@ export default function HeadcountManagement() {
         <div className="flex items-center gap-2">
           <button 
             onClick={() => setShowUpload(!showUpload)}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-colors cursor-pointer"
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+              showUpload 
+                ? 'bg-slate-200 hover:bg-slate-300 text-slate-800 border border-slate-300' 
+                : 'bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700'
+            }`}
           >
-            <UploadCloud className="w-3.5 h-3.5 text-[#0D3B8E]" />
-            Bulk Upload
+            {showUpload ? (
+              <>
+                <ArrowLeft className="w-3.5 h-3.5 text-slate-700" />
+                Back to User List
+              </>
+            ) : (
+              <>
+                <UploadCloud className="w-3.5 h-3.5 text-[#0D3B8E]" />
+                Bulk Upload
+              </>
+            )}
           </button>
           <button 
             onClick={() => setIsAdding(!isAdding)}
@@ -434,13 +572,47 @@ export default function HeadcountManagement() {
         </div>
       </div>
 
+      {/* Bulk Upload Drawer */}
+      {showUpload && (
+        <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm transition-all">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900">Bulk User Roster Upload</h3>
+              <p className="text-xs text-slate-500 mt-0.5">Upload an Excel (.xlsx, .xls, .xlsb) or CSV file containing user personnel data to automatically populate the database.</p>
+            </div>
+            <button 
+              onClick={() => setShowUpload(false)}
+              className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+              title="Close Panel"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <FileUpload
+            title="Upload Personnel Roster File"
+            instructions={[
+              "Supported file formats: .xlsx, .xls, .xlsb, .csv",
+              "Recognized column aliases: Name, First Name, Last Name, Email, Phone, Role, Reporting Manager, Depot, HQ",
+              "Personnel records will be automatically created & updated in the database users table"
+            ]}
+            uploadEndpoint={`${API_BASE_URL}/users/upload-roster`}
+            onUploadComplete={() => {
+              showToast('User roster excel uploaded and database populated successfully!', 'success');
+              fetchUsers();
+            }}
+          />
+        </div>
+      )}
+
       {/* Add User Form Drawer */}
       {isAdding && (
         <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm mb-6">
           <h3 className="text-sm font-bold text-slate-900 mb-4">Add New Personnel Record</h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
-              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">First Name</label>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                First Name <span className="text-red-500">*</span>
+              </label>
               <input 
                 type="text" 
                 value={newUser.firstName}
@@ -450,7 +622,9 @@ export default function HeadcountManagement() {
               />
             </div>
             <div>
-              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Last Name</label>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                Last Name <span className="text-slate-400 font-normal lowercase">(optional)</span>
+              </label>
               <input 
                 type="text" 
                 value={newUser.lastName}
@@ -460,7 +634,9 @@ export default function HeadcountManagement() {
               />
             </div>
             <div>
-              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Email Address</label>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                Email Address <span className="text-red-500">*</span>
+              </label>
               <input 
                 type="email" 
                 value={newUser.email}
@@ -470,17 +646,22 @@ export default function HeadcountManagement() {
               />
             </div>
             <div>
-              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Phone Number</label>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                Phone Number (10 Digits) <span className="text-red-500">*</span>
+              </label>
               <input 
                 type="text" 
+                maxLength={10}
                 value={newUser.phoneNumber}
-                onChange={(e) => setNewUser({...newUser, phoneNumber: e.target.value})}
-                placeholder="+91 9876543210"
+                onChange={(e) => setNewUser({...newUser, phoneNumber: e.target.value.replace(/\D/g, '').slice(0, 10)})}
+                placeholder="9876543210"
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:border-[#0D3B8E]"
               />
             </div>
             <div>
-              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Assigned Role</label>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                Assigned Role <span className="text-red-500">*</span>
+              </label>
               <select 
                 value={newUser.role}
                 onChange={(e) => setNewUser({...newUser, role: e.target.value})}
@@ -492,7 +673,9 @@ export default function HeadcountManagement() {
               </select>
             </div>
             <div>
-              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Reporting Manager</label>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                Reporting Manager <span className="text-slate-400 font-normal lowercase">(optional)</span>
+              </label>
               <input 
                 type="text" 
                 value={newUser.reportingManager}
@@ -520,7 +703,8 @@ export default function HeadcountManagement() {
       )}
 
       {/* Table Card */}
-      <div className="bg-white rounded-2xl shadow-2xs border border-slate-200/80 flex-1 min-h-0 overflow-hidden flex flex-col">
+      {!showUpload && (
+        <div className="bg-white rounded-2xl shadow-2xs border border-slate-200/80 flex-1 min-h-0 overflow-hidden flex flex-col">
         <div className="overflow-x-auto flex-1">
           <table className="w-full text-left border-collapse table-fixed min-w-[800px]">
             <thead>
@@ -644,6 +828,7 @@ export default function HeadcountManagement() {
               ) : (
                 paginatedUsers.map((user, idx) => {
                   const serialNumber = (currentPage - 1) * rowsPerPage + idx + 1;
+
                   return (
                     <tr key={user.id} className="hover:bg-blue-50/20 transition-colors group">
                       {/* S.No */}
@@ -742,21 +927,49 @@ export default function HeadcountManagement() {
                       {/* Status */}
                       <td className="px-4 py-2.5">
                         {editingId === user.id ? (
-                          <select
-                            value={editIsActive ? "active" : "inactive"}
-                            onChange={(e) => setEditIsActive(e.target.value === "active")}
-                            className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
+                          <button
+                            type="button"
+                            onClick={() => setEditIsActive(!editIsActive)}
+                            className="flex items-center gap-2 cursor-pointer group select-none"
+                            title={`Click to switch to ${editIsActive ? 'Inactive' : 'Active'}`}
                           >
-                            <option value="active">Active</option>
-                            <option value="inactive">Inactive</option>
-                          </select>
+                            <div
+                              className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
+                                editIsActive ? 'bg-emerald-500' : 'bg-slate-300'
+                              }`}
+                            >
+                              <span
+                                className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
+                                  editIsActive ? 'translate-x-4' : 'translate-x-0'
+                                }`}
+                              />
+                            </div>
+                            <span className={`text-xs font-extrabold ${editIsActive ? 'text-emerald-700' : 'text-slate-500'}`}>
+                              {editIsActive ? 'Active' : 'Inactive'}
+                            </span>
+                          </button>
                         ) : (
-                          <div className="flex items-center gap-1.5">
-                            <span className={`w-2 h-2 rounded-full ${user.isActive ? 'bg-emerald-500' : 'bg-slate-300'}`}></span>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleUserStatus(user)}
+                            className="flex items-center gap-2 cursor-pointer group select-none"
+                            title={`Click to ${user.isActive ? 'deactivate user' : 'reactivate user'}`}
+                          >
+                            <div
+                              className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
+                                user.isActive ? 'bg-emerald-500' : 'bg-slate-300'
+                              }`}
+                            >
+                              <span
+                                className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
+                                  user.isActive ? 'translate-x-4' : 'translate-x-0'
+                                }`}
+                              />
+                            </div>
                             <span className={`text-xs font-bold ${user.isActive ? 'text-emerald-700' : 'text-slate-500'}`}>
                               {user.isActive ? 'Active' : 'Inactive'}
                             </span>
-                          </div>
+                          </button>
                         )}
                       </td>
 
@@ -802,50 +1015,51 @@ export default function HeadcountManagement() {
                 })
               )}
             </tbody>
-          </table>
-        </div>
+            </table>
+          </div>
 
-        {/* Full Pagination Footer */}
-        <div className="p-4 bg-slate-50/80 border-t border-slate-200/80 text-xs font-semibold text-slate-600 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
-            <span>SHOWING {filteredUsers.length === 0 ? 0 : (currentPage - 1) * rowsPerPage + 1} TO {Math.min(currentPage * rowsPerPage, filteredUsers.length)} OF {filteredUsers.length} USER RECORDS</span>
-            <div className="flex items-center gap-1.5 ml-4">
-              <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400">ROWS:</span>
-              <select
-                value={rowsPerPage}
-                onChange={(e) => { setRowsPerPage(Number(e.target.value)); setCurrentPage(1); }}
-                className="px-2.5 py-1 bg-white border border-slate-200/80 rounded-lg text-xs font-bold text-slate-700 focus:outline-none focus:border-[#0D3B8E]"
+          {/* Pagination Footer */}
+          <div className="px-4 py-3 bg-slate-50/80 border-t border-slate-200/80 flex items-center justify-between text-xs select-none shrink-0">
+            <div className="flex items-center gap-2 font-bold text-slate-500 text-[11px]">
+              <span>SHOWING {filteredUsers.length === 0 ? 0 : (currentPage - 1) * rowsPerPage + 1} TO {Math.min(currentPage * rowsPerPage, filteredUsers.length)} OF {filteredUsers.length} USER RECORDS</span>
+              <div className="flex items-center gap-1.5 ml-4">
+                <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400">ROWS:</span>
+                <select
+                  value={rowsPerPage}
+                  onChange={(e) => { setRowsPerPage(Number(e.target.value)); setCurrentPage(1); }}
+                  className="px-2.5 py-1 bg-white border border-slate-200/80 rounded-lg text-xs font-bold text-slate-700 focus:outline-none focus:border-[#0D3B8E]"
+                >
+                  <option value={10}>10</option>
+                  <option value={15}>15</option>
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                disabled={currentPage <= 1}
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                className="p-1.5 border border-slate-200 bg-white rounded-lg disabled:opacity-40 text-slate-600 hover:bg-slate-50 transition-colors cursor-pointer"
               >
-                <option value={10}>10</option>
-                <option value={15}>15</option>
-                <option value={25}>25</option>
-                <option value={50}>50</option>
-                <option value={100}>100</option>
-              </select>
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <span className="px-3 py-1 bg-white border border-slate-200/80 rounded-lg text-xs font-bold text-[#0D3B8E]">
+                Page {currentPage} of {totalPages}
+              </span>
+              <button
+                disabled={currentPage >= totalPages}
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                className="p-1.5 border border-slate-200 bg-white rounded-lg disabled:opacity-40 text-slate-600 hover:bg-slate-50 transition-colors cursor-pointer"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
             </div>
           </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              disabled={currentPage <= 1}
-              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-              className="p-1.5 border border-slate-200 bg-white rounded-lg disabled:opacity-40 text-slate-600 hover:bg-slate-50 transition-colors cursor-pointer"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <span className="px-3 py-1 bg-white border border-slate-200/80 rounded-lg text-xs font-bold text-[#0D3B8E]">
-              Page {currentPage} of {totalPages}
-            </span>
-            <button
-              disabled={currentPage >= totalPages}
-              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-              className="p-1.5 border border-slate-200 bg-white rounded-lg disabled:opacity-40 text-slate-600 hover:bg-slate-50 transition-colors cursor-pointer"
-            >
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

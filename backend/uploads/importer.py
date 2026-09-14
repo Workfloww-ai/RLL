@@ -65,3 +65,30 @@ async def process_dataframe(
         "rows_inserted": inserted_rows,
         "processing_time": round(time.time() - start_time, 2)
     }
+
+
+async def process_upload_batch_chunked(
+    batch_id: int,
+    file_path: str,
+    load_type: str = "daily",
+    covers_start: str = None,
+    covers_end: str = None,
+    chunk_size: int = 2500,
+):
+    """
+    Executes the standard enterprise import pipeline for a given saved file path and batch_id.
+    """
+    import os
+    from backend.uploads.service import import_pipeline
+    try:
+        with open(file_path, "rb") as f:
+            contents = f.read()
+        filename = os.path.basename(file_path)
+        import_pipeline.process_file_upload_async(
+            filename=filename,
+            contents=contents,
+            user_id="system",
+            batch_id=batch_id,
+        )
+    except Exception as e:
+        print(f"Error in process_upload_batch_chunked for batch {batch_id}: {e}")

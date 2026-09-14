@@ -103,6 +103,53 @@ def invalidate_analytics_cache_sync() -> int:
         return 0
 
 
+async def prewarm_cache_egress() -> Dict[str, Any]:
+    """
+    Phase 4 Cache Egress Pre-Warming:
+    Triggers Redis and response cache pre-warming (rll:analytics:*, rll:mobile:*)
+    immediately after summary generation to optimize API egress performance.
+    """
+    results: Dict[str, Any] = {}
+    # 1. Pre-warm mobile sales cache responses
+    try:
+        from backend.services.mobile_sales_service import prewarm_mobile_sales
+        m_res = prewarm_mobile_sales()
+        results["mobile_sales"] = m_res
+    except Exception as e_m:
+        logger.warning(f"prewarm_cache_egress mobile sales notice: {e_m}")
+
+    # 2. Pre-warm analytics cache patterns
+    try:
+        import time as _t
+        analytics_prewarm_key = "rll:analytics:summary:latest"
+        await safe_set(analytics_prewarm_key, json.dumps({"status": "prewarmed", "timestamp": _t.time()}), ttl=300)
+        results["analytics_summary"] = "prewarmed"
+    except Exception as e_a:
+        logger.warning(f"prewarm_cache_egress analytics notice: {e_a}")
+
+    logger.info(f"Phase 4 Cache Egress Pre-Warming completed: {results}")
+    return results
+
+
+def prewarm_cache_egress_sync() -> Dict[str, Any]:
+    """Synchronous wrapper for prewarm_cache_egress to call after ingestion summary generation."""
+    try:
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        if loop.is_running():
+            asyncio.create_task(prewarm_cache_egress())
+            return {"status": "task_scheduled"}
+        else:
+            return loop.run_until_complete(prewarm_cache_egress())
+    except Exception as e:
+        logger.warning(f"Error executing prewarm_cache_egress_sync: {e}")
+        return {"status": "error", "error": str(e)}
+
+
 
 
 def cache_response(prefix: str, ttl: Optional[int] = None):

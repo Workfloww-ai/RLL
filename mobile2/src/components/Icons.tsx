@@ -4,6 +4,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 interface IconProps {
   color?: string;
   size?: number;
+  style?: any;
 }
 
 export const SearchIcon = ({ color = '#94A3B8', size = 16 }: IconProps) => (
@@ -58,6 +59,10 @@ export const PinIcon = ({ color = '#F59E0B', size = 14 }: IconProps) => (
   <MaterialIcons name="push-pin" size={size} color={color} />
 );
 
+export const StarIcon = ({ color = '#0F172A', size = 12 }: IconProps) => (
+  <MaterialIcons name="star" size={size} color={color} />
+);
+
 export const CheckCircleIcon = ({ color = '#10B981', size = 14 }: IconProps) => (
   <MaterialIcons name="check-circle" size={size} color={color} />
 );
@@ -70,8 +75,8 @@ export const CalendarIcon = ({ color = '#FFFFFF', size = 16 }: IconProps) => (
   <MaterialIcons name="event" size={size} color={color} />
 );
 
-export const ChevronLeftIcon = ({ color = '#94A3B8', size = 16 }: IconProps) => (
-  <MaterialIcons name="chevron-left" size={size} color={color} />
+export const ChevronLeftIcon = ({ color = '#94A3B8', size = 16, style }: IconProps) => (
+  <MaterialIcons name="chevron-left" size={size} color={color} style={style} />
 );
 
 export const ChevronRightIcon = ({ color = '#94A3B8', size = 16 }: IconProps) => (

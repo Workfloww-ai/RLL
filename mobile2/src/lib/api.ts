@@ -1,7 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
+import CryptoJS from 'crypto-js';
 import { logger } from './logger';
+import { secureStorage } from './secureStorage';
+import { FastStorage } from './storage';
 
 function formatBaseUrl(url: string): string {
   let formatted = url.trim();
@@ -16,16 +19,9 @@ function formatBaseUrl(url: string): string {
 }
 
 export function getApiBaseUrl(): string {
-  // 1. Native Expo public environment variable
-  const envUrl = process.env.EXPO_PUBLIC_API_URL;
-  if (envUrl && envUrl !== 'undefined' && envUrl.trim() !== '') {
-    return formatBaseUrl(envUrl);
-  }
-
-  // Configurable backend port (defaults to 8000 if not specified)
   const port = process.env.EXPO_PUBLIC_API_PORT || process.env.EXPO_PUBLIC_PORT || '8000';
 
-  // 2. Automatically derive computer's host IP from Metro bundler hostUri (works for physical devices & emulators)
+  // 1. Automatically derive computer's active Wi-Fi IP from Metro bundler (works on physical devices & emulators across any Wi-Fi)
   const hostUri = Constants.expoConfig?.hostUri || Constants.manifest2?.extra?.expoGo?.developer?.tool;
   if (hostUri) {
     const hostIp = hostUri.split(':')[0];
@@ -34,29 +30,96 @@ export function getApiBaseUrl(): string {
     }
   }
 
+  // 2. Native Expo public environment variable override
+  const envUrl = process.env.EXPO_PUBLIC_API_URL;
+  if (envUrl && envUrl !== 'undefined' && envUrl.trim() !== '' && !envUrl.includes('localhost') && !envUrl.includes('127.0.0.1')) {
+    return formatBaseUrl(envUrl);
+  }
+
   // 3. Fallback to localhost (for ADB reverse tcp or iOS Simulator)
   return `http://localhost:${port}/api/v1`;
 }
 
 export const BASE_URL = getApiBaseUrl();
 
+let _onSessionRevokedCallback: (() => void) | null = null;
+let _activeTenantId: string = FastStorage.getString('rll_tenant_id') || 'a0000000-0000-0000-0000-000000000001';
+
+export function getTenantId(): string {
+  return _activeTenantId;
+}
+
+export function setTenantId(id: string): void {
+  if (id && typeof id === 'string') {
+    _activeTenantId = id;
+    try {
+      FastStorage.setString('rll_tenant_id', id);
+    } catch {}
+  }
+}
+
+export function registerSessionRevokedListener(callback: () => void) {
+  _onSessionRevokedCallback = callback;
+}
+
 export async function apiFetch(endpointPath: string, init?: RequestInit): Promise<Response> {
   const cleanPath = endpointPath.startsWith('/') ? endpointPath : `/${endpointPath}`;
-  const url = `${BASE_URL}${cleanPath}`;
+  const tenantId = getTenantId();
+
+  // Inject tenant_id as query parameter if not already present
+  const separator = cleanPath.includes('?') ? '&' : '?';
+  const finalPath = cleanPath.includes('tenant_id=')
+    ? cleanPath
+    : `${cleanPath}${separator}tenant_id=${encodeURIComponent(tenantId)}`;
+
+  const url = `${BASE_URL}${finalPath}`;
 
   const reqInit: RequestInit = { ...(init || {}) };
   const token = await getAuthToken();
-  if (token) {
-    const headers = new Headers(reqInit.headers || {});
-    if (!headers.has('Authorization')) {
-      headers.set('Authorization', `Bearer ${token}`);
-    }
-    reqInit.headers = headers;
+  const headers = new Headers(reqInit.headers || {});
+  
+  // Attach Authorization and tenant headers
+  if (token && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`);
   }
+  if (!headers.has('X-Tenant-ID')) {
+    headers.set('X-Tenant-ID', tenantId);
+  }
+  if (!headers.has('Accept-Encoding')) {
+    headers.set('Accept-Encoding', 'gzip, deflate');
+  }
+
+  // Inject tenant_id into JSON request body if present (POST, PUT, PATCH, DELETE)
+  const method = (reqInit.method || 'GET').toUpperCase();
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && reqInit.body) {
+    if (typeof reqInit.body === 'string') {
+      try {
+        const parsed = JSON.parse(reqInit.body);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          if (!parsed.tenant_id && !parsed.tenantId) {
+            parsed.tenant_id = tenantId;
+            reqInit.body = JSON.stringify(parsed);
+          }
+        }
+      } catch {
+        // Not a standard JSON string, leave unchanged
+      }
+    }
+  }
+
+  reqInit.headers = headers;
 
   logger.info(`apiFetch: ${reqInit.method || 'GET'} ${url}`);
   try {
-    return await fetch(url, reqInit);
+    const res = await fetch(url, reqInit);
+    if (res.status === 401 || res.status === 403) {
+      logger.warn(`apiFetch: Received status ${res.status} for ${endpointPath}. Session may be revoked or expired. Wiping credentials.`);
+      await clearAuthSession();
+      if (_onSessionRevokedCallback) {
+        _onSessionRevokedCallback();
+      }
+    }
+    return res;
   } catch (err: any) {
     const isAbort =
       err?.name === 'AbortError' ||
@@ -76,12 +139,12 @@ export async function apiFetch(endpointPath: string, init?: RequestInit): Promis
 }
 
 // ── Auth Token Cache ────────────────────────────────────────────────────────
-// Avoids repeated AsyncStorage disk reads on every API call after first load.
+// Avoids repeated secureStorage disk reads on every API call after first load.
 let _cachedToken: string | null = null;
 
 export async function getAuthToken(): Promise<string | null> {
   if (_cachedToken !== null) return _cachedToken;
-  _cachedToken = await AsyncStorage.getItem('rll_mobile_token');
+  _cachedToken = await secureStorage.getItem('rll_mobile_token');
   return _cachedToken;
 }
 
@@ -254,8 +317,8 @@ export async function verifyMobileOTP(phone: string, otp: string, email: string 
 
     const data = await res.json();
     if (data.access_token) {
-      await AsyncStorage.setItem('rll_mobile_token', data.access_token);
-      await AsyncStorage.setItem('rll_mobile_user', JSON.stringify(data.user));
+      await secureStorage.setItem('rll_mobile_token', data.access_token);
+      await secureStorage.setItem('rll_mobile_user', JSON.stringify(data.user));
       seedCachedToken(data.access_token);
     }
     logger.info(`verifyMobileOTP: Success. Token acquired for phone: ${phone}`);
@@ -286,8 +349,8 @@ export async function loginMobileUser(email: string, password: string) {
 
     const data = await res.json();
     if (data.access_token) {
-      await AsyncStorage.setItem('rll_mobile_token', data.access_token);
-      await AsyncStorage.setItem('rll_mobile_user', JSON.stringify(data.user));
+      await secureStorage.setItem('rll_mobile_token', data.access_token);
+      await secureStorage.setItem('rll_mobile_user', JSON.stringify(data.user));
       seedCachedToken(data.access_token);
     }
     logger.info(`loginMobileUser: Success. Session loaded for email: ${email}`);
@@ -306,7 +369,8 @@ export async function fetchMobileSales(
   dateTo: string,
   period: string,
   selectedHq: string = 'All Headquarters',
-  testLimit?: number
+  testLimit?: number,
+  isPrefetch: boolean = false
 ) {
   const token = await getAuthToken();
   if (!token) {
@@ -314,13 +378,16 @@ export async function fetchMobileSales(
     return null;
   }
 
-  // Cancel previous in-flight sales request if filters change rapidly
-  if (activeSalesAbortController) {
-    activeSalesAbortController.abort();
-    logger.info('fetchMobileSales: Aborted previous in-flight sales request due to filter update.');
+  let signal: AbortSignal | undefined = undefined;
+  if (!isPrefetch) {
+    // Cancel previous in-flight sales request if filters change rapidly
+    if (activeSalesAbortController) {
+      activeSalesAbortController.abort();
+      logger.info('fetchMobileSales: Aborted previous in-flight sales UI request due to filter update.');
+    }
+    activeSalesAbortController = new AbortController();
+    signal = activeSalesAbortController.signal;
   }
-  activeSalesAbortController = new AbortController();
-  const signal = activeSalesAbortController.signal;
 
   const requestId = `req_${Math.random().toString(36).substring(2, 10)}`;
   const now = () => Date.now();
@@ -349,7 +416,7 @@ export async function fetchMobileSales(
       'X-Request-ID': requestId,
     };
 
-    const res = await fetch(url, { headers, signal });
+    const res = await fetch(url, signal ? { headers, signal } : { headers });
     const tResponseReceived = now();
     const networkDurationMs = Math.round(tResponseReceived - tRequestStart);
 
@@ -479,8 +546,6 @@ export async function fetchMobileHeadquarters() {
     const hqs = data?.headquarters || [];
     logger.info(`fetchMobileHeadquarters: Successfully retrieved ${hqs.length} headquarters.`);
     return hqs;
-    logger.info(`fetchMobileHeadquarters: Successfully retrieved ${hqs.length} headquarters.`);
-    return hqs;
   } catch (error) {
     logger.error('fetchMobileHeadquarters: Exception fetching headquarters:', error);
     return ['All Headquarters'];
@@ -489,8 +554,9 @@ export async function fetchMobileHeadquarters() {
 
 export async function clearAllPhoneCaches() {
   try {
+    FastStorage.clear();
     const keys = await AsyncStorage.getAllKeys();
-    const cacheKeys = keys.filter((k) => k.startsWith('rll_phone_cache_') || k.startsWith('rll_mobile_cascading_') || k.startsWith('DISK_CACHE_'));
+    const cacheKeys = keys.filter((k) => k.startsWith('rll_phone_cache_') || k.startsWith('rll_mobile_cascading_') || k.startsWith('DISK_CACHE_') || k.startsWith('rll_fast_v2::'));
     if (cacheKeys.length > 0) {
       await AsyncStorage.multiRemove(cacheKeys);
       logger.info(`clearAllPhoneCaches: Cleared ${cacheKeys.length} stale phone cache keys.`);
@@ -501,9 +567,9 @@ export async function clearAllPhoneCaches() {
 }
 
 export async function clearAuthSession() {
-  logger.info('clearAuthSession: Clearing user auth tokens and profiles from AsyncStorage.');
-  await AsyncStorage.removeItem('rll_mobile_token');
-  await AsyncStorage.removeItem('rll_mobile_user');
+  logger.info('clearAuthSession: Clearing user auth tokens and profiles from encrypted secureStorage.');
+  await secureStorage.removeItem('rll_mobile_token');
+  await secureStorage.removeItem('rll_mobile_user');
   await clearAllPhoneCaches();
   clearCachedToken();
   invalidateApiCache();
@@ -539,7 +605,10 @@ export async function fetchGroupBrands(groupId: string, dateFrom?: string, dateT
     if (dateFrom) params.append('date_from', dateFrom);
     if (dateTo) params.append('date_to', dateTo);
     if (period) params.append('period', period);
-    if (selectedHq && selectedHq !== 'All Headquarters') params.append('depot_name', selectedHq);
+    if (selectedHq && selectedHq !== 'All Headquarters') {
+      params.append('selected_hq', selectedHq);
+      params.append('depot_name', selectedHq);
+    }
 
     const queryStr = params.toString() ? `?${params.toString()}` : '';
     const res = await apiFetch(`/mobile/cascading/groups/${encodeURIComponent(groupId)}/brands${queryStr}`);
@@ -562,7 +631,10 @@ export async function fetchGroupLicensees(groupId: string, dateFrom?: string, da
     if (dateFrom) params.append('date_from', dateFrom);
     if (dateTo) params.append('date_to', dateTo);
     if (period) params.append('period', period);
-    if (selectedHq && selectedHq !== 'All Headquarters') params.append('depot_name', selectedHq);
+    if (selectedHq && selectedHq !== 'All Headquarters') {
+      params.append('selected_hq', selectedHq);
+      params.append('depot_name', selectedHq);
+    }
 
     const queryStr = params.toString() ? `?${params.toString()}` : '';
     const res = await apiFetch(`/mobile/cascading/groups/${encodeURIComponent(groupId)}/licensees${queryStr}`);
@@ -585,7 +657,10 @@ export async function fetchLicenseeBrandSales(licenseeId: string, dateFrom?: str
     if (dateFrom) params.append('date_from', dateFrom);
     if (dateTo) params.append('date_to', dateTo);
     if (period) params.append('period', period);
-    if (selectedHq && selectedHq !== 'All Headquarters') params.append('depot_name', selectedHq);
+    if (selectedHq && selectedHq !== 'All Headquarters') {
+      params.append('selected_hq', selectedHq);
+      params.append('depot_name', selectedHq);
+    }
 
     const queryStr = params.toString() ? `?${params.toString()}` : '';
     const res = await apiFetch(`/mobile/cascading/licensees/${encodeURIComponent(licenseeId)}/brand-sales${queryStr}`);
@@ -601,59 +676,76 @@ export async function fetchLicenseeBrandSales(licenseeId: string, dateFrom?: str
   }
 }
 
-export async function fetchMobileCompanies(period: string = 'Daily', dateTo?: string, selectedHq: string = 'All Headquarters') {
-  logger.info(`fetchMobileCompanies: period=${period}, dateTo=${dateTo}, selectedHq=${selectedHq}`);
-  const cacheKey = `rll_phone_cache_companies_${period}_${selectedHq}_${dateTo || 'latest'}`;
+export async function fetchMobileCompanies(
+  period: string = 'Daily',
+  dateTo?: string,
+  selectedHq: string = 'All Headquarters',
+  isPrefetch: boolean = false,
+  forceRefresh: boolean = false
+) {
+  const cleanHq = selectedHq ? selectedHq.trim() : 'All Headquarters';
+  const fastKey = `companies_${cleanHq}_${period}_${dateTo || 'latest'}`;
+  logger.info(`fetchMobileCompanies: period=${period}, dateTo=${dateTo}, selectedHq=${cleanHq}, isPrefetch=${isPrefetch}, forceRefresh=${forceRefresh}`);
 
-  // Only use phone disk cache when dateTo is empty (latest date mode)
-  if (!dateTo) {
-    try {
-      const cachedStr = await AsyncStorage.getItem(cacheKey);
-      if (cachedStr) {
-        const cachedData = JSON.parse(cachedStr);
-        const comps = cachedData.companies || [];
-        if (comps.length > 0) {
-          logger.info(`fetchMobileCompanies: Phone cache HIT for ${cacheKey}`);
-          setTimeout(() => {
-            fetchMobileCompaniesNetwork(period, dateTo, selectedHq, cacheKey).catch(() => {});
-          }, 50);
-          return comps;
-        }
+  // 1. FastStorage 0ms synchronous read (pre-fetched background queue or previous session)
+  if (!forceRefresh) {
+    const cachedObj = FastStorage.getObject<any>(fastKey);
+    if (cachedObj && Array.isArray(cachedObj.companies) && cachedObj.companies.length > 0) {
+      logger.info(`fetchMobileCompanies: FastStorage HIT (0ms) for key ${fastKey}`);
+      // Background silent revalidation
+      if (!isPrefetch) {
+        setTimeout(() => {
+          fetchMobileCompaniesNetwork(period, dateTo, cleanHq, fastKey, true).catch(() => {});
+        }, 50);
       }
-    } catch (e) {
-      logger.warn(`fetchMobileCompanies: Phone cache read error: ${e}`);
+      return cachedObj;
     }
   }
 
-  return fetchMobileCompaniesNetwork(period, dateTo, selectedHq, cacheKey);
+  // 2. Fetch from live network
+  return fetchMobileCompaniesNetwork(period, dateTo, cleanHq, fastKey, isPrefetch, forceRefresh);
 }
 
-async function fetchMobileCompaniesNetwork(period: string, dateTo?: string, selectedHq: string = 'All Headquarters', cacheKey?: string) {
-  if (activeCompaniesAbortController) {
-    activeCompaniesAbortController.abort();
-    logger.info('fetchMobileCompaniesNetwork: Aborted previous in-flight companies request.');
+async function fetchMobileCompaniesNetwork(
+  period: string,
+  dateTo?: string,
+  selectedHq: string = 'All Headquarters',
+  fastKey?: string,
+  isPrefetch: boolean = false,
+  forceRefresh: boolean = false
+) {
+  let signal: AbortSignal | undefined = undefined;
+
+  if (!isPrefetch) {
+    if (activeCompaniesAbortController) {
+      activeCompaniesAbortController.abort();
+      logger.info('fetchMobileCompaniesNetwork: Aborted previous in-flight companies UI request.');
+    }
+    activeCompaniesAbortController = new AbortController();
+    signal = activeCompaniesAbortController.signal;
   }
-  activeCompaniesAbortController = new AbortController();
-  const signal = activeCompaniesAbortController.signal;
 
   try {
     const params = new URLSearchParams();
     params.append('period', period);
     if (dateTo) params.append('date', dateTo);
     if (selectedHq) params.append('selected_hq', selectedHq);
+    if (forceRefresh) params.append('refresh', 'true');
 
-    const res = await apiFetch(`/mobile/companies?${params.toString()}`, { signal });
+    const res = await apiFetch(`/mobile/companies?${params.toString()}`, signal ? { signal } : undefined);
     if (!res.ok) {
       logger.warn(`fetchMobileCompaniesNetwork: API status ${res.status}`);
-      return [];
+      return null;
     }
     const data = await res.json();
-    const companies = data?.companies || [];
-
-    if (cacheKey && companies.length > 0) {
-      AsyncStorage.setItem(cacheKey, JSON.stringify(data)).catch(() => {});
+    if (!data || !Array.isArray(data.companies)) {
+      return null;
     }
-    return companies;
+
+    if (fastKey && data.companies.length > 0) {
+      FastStorage.setObject(fastKey, data);
+    }
+    return data;
   } catch (error: any) {
     const isAbort =
       error?.name === 'AbortError' ||
@@ -665,10 +757,168 @@ async function fetchMobileCompaniesNetwork(period: string, dateTo?: string, sele
 
     if (isAbort) {
       logger.info('fetchMobileCompaniesNetwork: Request canceled successfully.');
-      return [];
+      return null;
     }
     logger.error('fetchMobileCompaniesNetwork: Exception fetching companies:', error);
+    return null;
+  }
+}
+
+export async function fetchCompanyBrands(companyId: string, dateFrom?: string, dateTo?: string, selectedHq?: string) {
+  logger.info(`fetchCompanyBrands: Fetching brand sales for company ${companyId} (dateFrom: ${dateFrom}, dateTo: ${dateTo}, hq: ${selectedHq})`);
+  try {
+    const params = new URLSearchParams();
+    params.append('company_id', companyId);
+    if (dateFrom) params.append('date_from', dateFrom);
+    if (dateTo) params.append('date_to', dateTo);
+    if (selectedHq && selectedHq !== 'All Headquarters') params.append('hq_name', selectedHq);
+
+    const token = await getAuthToken();
+    const res = await apiFetch(`/mobile/cascading/company-brands?${params.toString()}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      logger.warn(`fetchCompanyBrands status error ${res.status}`);
+      return [];
+    }
+    const data = await res.json();
+    return data || [];
+  } catch (error) {
+    logger.error(`fetchCompanyBrands error for company ${companyId}:`, error);
     return [];
+  }
+}
+
+export async function fetchBrandLicensees(brandId: string, dateFrom?: string, dateTo?: string, selectedHq?: string) {
+  logger.info(`fetchBrandLicensees: Fetching licensee sales for brand ${brandId} (dateFrom: ${dateFrom}, dateTo: ${dateTo}, hq: ${selectedHq})`);
+  try {
+    const params = new URLSearchParams();
+    params.append('brand_id', brandId);
+    if (dateFrom) params.append('date_from', dateFrom);
+    if (dateTo) params.append('date_to', dateTo);
+    if (selectedHq && selectedHq !== 'All Headquarters') params.append('hq_name', selectedHq);
+
+    const token = await getAuthToken();
+    const res = await apiFetch(`/mobile/cascading/brand-licensees?${params.toString()}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      logger.warn(`fetchBrandLicensees status error ${res.status}`);
+      return [];
+    }
+    const data = await res.json();
+    return data || [];
+  } catch (error) {
+    logger.error(`fetchBrandLicensees error for brand ${brandId}:`, error);
+    return [];
+  }
+}
+
+const ENVIRONMENT = process.env.EXPO_PUBLIC_ENVIRONMENT || 'development';
+const ENCRYPTION_KEY = process.env.EXPO_PUBLIC_PAYLOAD_ENCRYPTION_KEY || '';
+
+export function encryptPayload(data: string): string {
+    if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length !== 64) {
+        logger.error("Invalid EXPO_PUBLIC_PAYLOAD_ENCRYPTION_KEY length.");
+        return data;
+    }
+    try {
+        const key = CryptoJS.enc.Hex.parse(ENCRYPTION_KEY);
+        const iv = CryptoJS.lib.WordArray.random(16);
+        const encrypted = CryptoJS.AES.encrypt(data, key, {
+            iv: iv,
+            mode: CryptoJS.mode.CBC,
+            padding: CryptoJS.pad.Pkcs7
+        });
+        const ivAndCiphertext = iv.clone().concat(encrypted.ciphertext);
+        return CryptoJS.enc.Base64.stringify(ivAndCiphertext);
+    } catch (e) {
+        logger.error("Encryption failed", e);
+        return data;
+    }
+}
+
+export function decryptPayload(encryptedB64: string): string {
+    if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length !== 64) {
+        return encryptedB64;
+    }
+    try {
+        const key = CryptoJS.enc.Hex.parse(ENCRYPTION_KEY);
+        const encryptedWords = CryptoJS.enc.Base64.parse(encryptedB64);
+        
+        const iv = CryptoJS.lib.WordArray.create(encryptedWords.words.slice(0, 4), 16);
+        const ciphertext = CryptoJS.lib.WordArray.create(encryptedWords.words.slice(4), encryptedWords.sigBytes - 16);
+        const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: ciphertext });
+        
+        const decrypted = CryptoJS.AES.decrypt(cipherParams, key, {
+            iv: iv,
+            mode: CryptoJS.mode.CBC,
+            padding: CryptoJS.pad.Pkcs7
+        });
+        return decrypted.toString(CryptoJS.enc.Utf8);
+    } catch (e) {
+        logger.error("Decryption failed", e);
+        return encryptedB64;
+    }
+}
+
+export async function secureApiFetch(endpointPath: string, init?: RequestInit): Promise<Response> {
+    const isProduction = ENVIRONMENT === 'production';
+    const reqInit: RequestInit = { ...(init || {}) };
+    
+    if (isProduction && reqInit.body && typeof reqInit.body === 'string') {
+        const encrypted = encryptPayload(reqInit.body);
+        reqInit.body = JSON.stringify({ encrypted_data: encrypted });
+        
+        const headers = new Headers(reqInit.headers || {});
+        headers.set('Content-Type', 'application/json');
+        reqInit.headers = headers;
+    }
+
+    const response = await apiFetch(endpointPath, reqInit);
+
+    if (isProduction && response.ok) {
+        const contentType = response.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+            const responseClone = response.clone();
+            const text = await responseClone.text();
+            
+            try {
+                const json = JSON.parse(text);
+                if (json.encrypted_data) {
+                    const decryptedStr = decryptPayload(json.encrypted_data);
+                    
+                    return new Response(decryptedStr, {
+                        status: response.status,
+                        statusText: response.statusText,
+                        headers: response.headers
+                    });
+                }
+            } catch (e) {
+                logger.warn("Failed to parse or decrypt response", e);
+            }
+        }
+    }
+
+    return response;
+}
+
+
+export async function fetchTenantConfig(tenantIdentifier?: string) {
+  try {
+    const param = tenantIdentifier
+      ? (tenantIdentifier.includes('-') && tenantIdentifier.length === 36 ? `tenant_id=${encodeURIComponent(tenantIdentifier)}` : `tenant_slug=${encodeURIComponent(tenantIdentifier)}`)
+      : 'tenant_slug=rll';
+    const res = await apiFetch(`/mobile/tenant-config?${param}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data && data.tenant_id) {
+      setTenantId(data.tenant_id);
+    }
+    return data;
+  } catch (e) {
+    logger.warn('fetchTenantConfig error:', e);
+    return null;
   }
 }
 

@@ -4,10 +4,11 @@ import time
 import copy
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
-from fastapi import APIRouter, HTTPException, Depends, Query, Request, status
+from fastapi import APIRouter, HTTPException, Depends, Query, Request, status, Header
 from pydantic import BaseModel
 from backend.core.security import create_access_token, get_current_user, RoleChecker
 from backend.db.client import get_supabase
+from backend.db.company_aliases import normalize_company_name, is_pinned_company
 from backend.db.supabase_client import (
     call_mobile_sales_rpc,
     call_mobile_tsm_sales_rpc,
@@ -42,58 +43,35 @@ _SALES_RESPONSE_TTL = 1
 def _fetch_fresh_master_lookups():
     client = get_supabase()
     companies_lookup: Dict[str, str] = {}
+    brands_lookup: Dict[str, Dict[str, Any]] = {}
+    hq_lookup: Dict[str, str] = {}
+    master_depots = {}
+    hq_name_lookup = {}
+
     try:
-        c_res = client.table("companies").select("company_id, company_name").execute()
-        for c in (c_res.data or []):
+        rpc_res = client.rpc("get_master_lookups_json").execute()
+        master_json = rpc_res.data or {}
+        raw_companies = master_json.get("companies") or []
+        raw_brands = master_json.get("brands") or []
+        raw_hqs = master_json.get("headquarters") or []
+        raw_depots = master_json.get("depots") or []
+
+        for c in raw_companies:
             if c.get("company_id") and c.get("company_name"):
                 companies_lookup[str(c["company_id"])] = c["company_name"]
-    except Exception as e_c:
-        logger.warning(f"Error fetching companies_lookup: {e_c}")
 
-    brands_lookup: Dict[str, Dict[str, Any]] = {}
-    try:
-        b_res = client.table("brands").select("brand_id, brand_name, company_id").execute()
-        for b in (b_res.data or []):
+        for b in raw_brands:
             if b.get("brand_id") and b.get("brand_name"):
                 brands_lookup[str(b["brand_id"])] = {
                     "name": b["brand_name"],
                     "company_id": str(b["company_id"]) if b.get("company_id") else None
                 }
-    except Exception as e_b:
-        logger.warning(f"Error fetching brands_lookup: {e_b}")
 
-    hq_lookup: Dict[str, str] = {}
-    try:
-        h_res = client.table("headquarters").select("headquarters_id, name").execute()
-        for h in (h_res.data or []):
+        for h in raw_hqs:
             if h.get("headquarters_id") and h.get("name"):
                 hq_lookup[str(h["headquarters_id"])] = h["name"]
-    except Exception as e_h:
-        logger.warning(f"Error fetching hq_lookup: {e_h}")
 
-    master_companies = {}
-    for c_id_raw, c_name in companies_lookup.items():
-        if not c_name or c_name == "Others":
-            continue
-        c_key = c_name.lower().replace(" ", "-").replace("/", "-")
-        master_companies[c_key] = {
-            "id": c_key,
-            "name": c_name,
-            "isPinned": c_key in ["rll", "diageo-inbrew"] or c_name.upper() == "RLL",
-            "hqLocation": "All Headquarters",
-            "data": {
-                "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-            },
-            "brands_map": {}
-        }
-
-    master_depots = {}
-    hq_name_lookup = {}
-    try:
-        d_res = client.table("depots").select("depot_id, name, headquarters_id").execute()
-        for d in (d_res.data or []):
+        for d in raw_depots:
             d_id = str(d.get("depot_id"))
             d_name = d.get("name")
             hq_id = str(d.get("headquarters_id") or "")
@@ -110,8 +88,76 @@ def _fetch_fresh_master_lookups():
                 },
                 "brands_map": {}
             }
-    except Exception as e:
-        logger.warning(f"Error fetching master depots: {e}")
+    except Exception as e_rpc:
+        logger.warning(f"Error fetching get_master_lookups_json RPC: {e_rpc}, falling back to table queries...")
+        try:
+            c_res = client.table("companies").select("company_id, company_name").execute()
+            for c in (c_res.data or []):
+                if c.get("company_id") and c.get("company_name"):
+                    companies_lookup[str(c["company_id"])] = c["company_name"]
+        except Exception as e_c:
+            logger.warning(f"Error fetching companies_lookup: {e_c}")
+
+        try:
+            b_res = client.table("brands").select("brand_id, brand_name, company_id").execute()
+            for b in (b_res.data or []):
+                if b.get("brand_id") and b.get("brand_name"):
+                    brands_lookup[str(b["brand_id"])] = {
+                        "name": b["brand_name"],
+                        "company_id": str(b["company_id"]) if b.get("company_id") else None
+                    }
+        except Exception as e_b:
+            logger.warning(f"Error fetching brands_lookup: {e_b}")
+
+        try:
+            h_res = client.table("headquarters").select("headquarters_id, name").execute()
+            for h in (h_res.data or []):
+                if h.get("headquarters_id") and h.get("name"):
+                    hq_lookup[str(h["headquarters_id"])] = h["name"]
+        except Exception as e_h:
+            logger.warning(f"Error fetching hq_lookup: {e_h}")
+
+        try:
+            d_res = client.table("depots").select("depot_id, name, headquarters_id").execute()
+            for d in (d_res.data or []):
+                d_id = str(d.get("depot_id"))
+                d_name = d.get("name")
+                hq_id = str(d.get("headquarters_id") or "")
+                hq_name = hq_lookup.get(hq_id, "Unassigned")
+                hq_name_lookup[d_id] = hq_name
+                master_depots[d_id] = {
+                    "id": d_id,
+                    "name": d_name,
+                    "hqName": hq_name,
+                    "data": {
+                        "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                        "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                        "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                    },
+                    "brands_map": {}
+                }
+        except Exception as e:
+            logger.warning(f"Error fetching master depots: {e}")
+
+    master_companies = {}
+    for c_id_raw, c_name in companies_lookup.items():
+        if not c_name or c_name == "Others":
+            continue
+        norm_name = normalize_company_name(c_name)
+        c_key = norm_name.lower().replace(" ", "-").replace("/", "-")
+        master_companies[c_key] = {
+            "id": c_key,
+            "company_id": str(c_id_raw),
+            "name": norm_name,
+            "isPinned": is_pinned_company(norm_name, c_key),
+            "hqLocation": "All Headquarters",
+            "data": {
+                "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+            },
+            "brands_map": {}
+        }
 def _fetch_single_tsm_lookup(user_id: str) -> Optional[Dict[str, Any]]:
     client = get_supabase()
     if not client or not user_id:
@@ -192,11 +238,13 @@ def _fetch_fresh_master_lookups():
     for c_id_raw, c_name in companies_lookup.items():
         if not c_name or c_name == "Others":
             continue
-        c_key = c_name.lower().replace(" ", "-").replace("/", "-")
+        norm_name = normalize_company_name(c_name)
+        c_key = norm_name.lower().replace(" ", "-").replace("/", "-")
         master_companies[c_key] = {
             "id": c_key,
-            "name": c_name,
-            "isPinned": c_key in ["rll", "diageo-inbrew"] or c_name.upper() == "RLL",
+            "company_id": str(c_id_raw),
+            "name": norm_name,
+            "isPinned": is_pinned_company(norm_name, c_key),
             "hqLocation": "All Headquarters",
             "data": {
                 "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
@@ -500,24 +548,48 @@ async def send_mobile_otp(req: SendOTPRequest):
         try:
             # 1. Lookup by email if provided
             if email:
-                res = client.table("users").select("user_id, email, phone, first_name, last_name, is_active").ilike("email", email).execute()
+                res = client.table("users").select("user_id, email, phone, first_name, last_name, is_active, tenant_id, company_id, company_name").ilike("email", email).execute()
                 if res.data:
                     db_user = res.data[0]
 
             # 2. Lookup by phone if not found by email
             if not db_user and clean_phone_10:
-                res_phone = client.table("users").select("user_id, email, phone, first_name, last_name, is_active").ilike("phone", f"%{clean_phone_10}%").limit(1).execute()
+                res_phone = client.table("users").select("user_id, email, phone, first_name, last_name, is_active, tenant_id, company_id, company_name").ilike("phone", f"%{clean_phone_10}%").limit(1).execute()
                 if res_phone.data:
                     db_user = res_phone.data[0]
                 else:
                     # Fallback robust phone lookup: strip non-digits from db phones
-                    all_users_res = client.table("users").select("user_id, email, phone, first_name, last_name, is_active").execute()
+                    all_users_res = client.table("users").select("user_id, email, phone, first_name, last_name, is_active, tenant_id, company_id, company_name").execute()
                     if all_users_res.data:
                         for u in all_users_res.data:
                             u_p = ''.join(c for c in (u.get("phone") or "") if c.isdigit())
                             if u_p and (clean_phone_10 in u_p or u_p in clean_phone_10):
                                 db_user = u
                                 break
+
+            # 3. Dynamic test user auto-provisioning / sync for Google Play review
+            if clean_phone_10 == "9999999999" or email == "manish.chum@workfloww.ai":
+                if db_user:
+                    if db_user.get("email") != "manish.chum@workfloww.ai" or db_user.get("phone") != "+919999999999":
+                        client.table("users").update({
+                            "email": "manish.chum@workfloww.ai",
+                            "phone": "+919999999999",
+                            "first_name": "Manish",
+                            "last_name": "Chum",
+                            "is_active": True
+                        }).eq("user_id", db_user["user_id"]).execute()
+                        db_user["email"] = "manish.chum@workfloww.ai"
+                        db_user["phone"] = "+919999999999"
+                else:
+                    ins_res = client.table("users").insert({
+                        "email": "manish.chum@workfloww.ai",
+                        "phone": "+919999999999",
+                        "first_name": "Manish",
+                        "last_name": "Chum",
+                        "is_active": True
+                    }).execute()
+                    if ins_res.data:
+                        db_user = ins_res.data[0]
         except Exception as e:
             logger.warning(f"User lookup error in send_mobile_otp: {e}")
 
@@ -550,10 +622,32 @@ async def send_mobile_otp(req: SendOTPRequest):
     sms_sent = await send_otp_sms(target_phone, otp_code)
     logger.info(f"Mobile OTP successfully generated and sent via SMS to {target_phone} (SMS sent status: {sms_sent})")
 
+    # Resolve user company name and logo for dynamic branding
+    company_name = db_user.get("company_name")
+    company_id = db_user.get("company_id")
+    company_logo_url = None
+    if company_id:
+        try:
+            c_res = client.table("companies").select("company_name, logo_url").eq("company_id", company_id).limit(1).execute()
+            if c_res.data:
+                company_name = company_name or c_res.data[0].get("company_name")
+                company_logo_url = c_res.data[0].get("logo_url")
+        except Exception:
+            pass
+    if not company_logo_url and company_name:
+        try:
+            c_res = client.table("companies").select("logo_url").ilike("company_name", company_name.strip()).limit(1).execute()
+            if c_res.data:
+                company_logo_url = c_res.data[0].get("logo_url")
+        except Exception:
+            pass
+
     return {
         "success": True,
         "message": f"6-digit OTP sent successfully to {target_phone}",
-        "otp_sent": sms_sent
+        "otp_sent": sms_sent,
+        "company_name": company_name,
+        "company_logo_url": company_logo_url,
     }
 
 
@@ -587,16 +681,41 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
                 if res.data:
                     db_user = res.data[0]
 
+            clean_in = ''.join(c for c in phone if c.isdigit())
+            clean_10 = clean_in[-10:] if len(clean_in) >= 10 else clean_in
+
             if not db_user and phone:
-                clean_in = ''.join(c for c in phone if c.isdigit())
-                clean_10 = clean_in[-10:] if len(clean_in) >= 10 else clean_in
-                res_phone = client.table("users").select("user_id, email, first_name, last_name, phone, is_active").execute()
+                res_phone = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, tenant_id, company_id, company_name").execute()
                 if res_phone.data:
                     for u in res_phone.data:
                         u_p = ''.join(c for c in (u.get("phone") or "") if c.isdigit())
                         if u_p and (clean_10 in u_p or u_p in clean_10):
                             db_user = u
                             break
+
+            # Dynamic test user auto-provisioning / sync for Google Play review
+            if clean_10 == "9999999999" or email == "manish.chum@workfloww.ai":
+                if db_user:
+                    if db_user.get("email") != "manish.chum@workfloww.ai" or db_user.get("phone") != "+919999999999":
+                        client.table("users").update({
+                            "email": "manish.chum@workfloww.ai",
+                            "phone": "+919999999999",
+                            "first_name": "Manish",
+                            "last_name": "Chum",
+                            "is_active": True
+                        }).eq("user_id", db_user["user_id"]).execute()
+                        db_user["email"] = "manish.chum@workfloww.ai"
+                        db_user["phone"] = "+919999999999"
+                else:
+                    ins_res = client.table("users").insert({
+                        "email": "manish.chum@workfloww.ai",
+                        "phone": "+919999999999",
+                        "first_name": "Manish",
+                        "last_name": "Chum",
+                        "is_active": True
+                    }).execute()
+                    if ins_res.data:
+                        db_user = ins_res.data[0]
 
             if db_user:
                 if not db_user.get("is_active", True):
@@ -627,6 +746,29 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
                 except Exception:
                     pass
 
+                # Resolve user's company and company logo
+                company_name = db_user.get("company_name")
+                company_id = db_user.get("company_id")
+                tenant_id = str(db_user.get("tenant_id") or "a0000000-0000-0000-0000-000000000001")
+                company_logo_url = None
+
+                if company_id:
+                    try:
+                        c_res = client.table("companies").select("company_name, logo_url").eq("company_id", company_id).limit(1).execute()
+                        if c_res.data:
+                            company_name = company_name or c_res.data[0].get("company_name")
+                            company_logo_url = c_res.data[0].get("logo_url")
+                    except Exception:
+                        pass
+
+                if not company_logo_url and company_name:
+                    try:
+                        c_res = client.table("companies").select("logo_url").ilike("company_name", company_name.strip()).limit(1).execute()
+                        if c_res.data:
+                            company_logo_url = c_res.data[0].get("logo_url")
+                    except Exception:
+                        pass
+
                 user_data = {
                     "user_id": str(db_user.get("user_id")),
                     "email": db_user.get("email") or email or f"{phone}@rll.com",
@@ -636,6 +778,10 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
                     "role_name": role_name,
                     "depot_name": depot_name,
                     "hq_location": "All Headquarters",
+                    "tenant_id": tenant_id,
+                    "company_id": str(company_id) if company_id else None,
+                    "company_name": company_name,
+                    "company_logo_url": company_logo_url or "/images/rll logo.svg",
                     "is_active": bool(db_user.get("is_active", True))
                 }
         except HTTPException:
@@ -651,17 +797,29 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
             detail="This mobile number is not registered."
         )
 
-    # Generate Access Token valid for 30 days for mobile application
+    # Generate Access Token valid for 30 days for mobile application with tenant and company scope
     token = create_access_token(
-        data={"sub": user_data["email"], "role": user_data["role_name"], "user_id": user_data["user_id"]},
+        data={
+            "sub": user_data["email"],
+            "role": user_data["role_name"],
+            "user_id": user_data["user_id"],
+            "tenant_id": user_data["tenant_id"],
+            "company_name": user_data["company_name"]
+        },
         expires_delta=timedelta(days=30)
     )
-    logger.info(f"Mobile OTP verification successful for phone: {phone} (User: {user_data['email']}, Role: {user_data['role_name']})")
+    logger.info(f"Mobile OTP verification successful for phone: {phone} (User: {user_data['email']}, Company: {user_data['company_name']}, Role: {user_data['role_name']})")
 
     return {
         "access_token": token,
         "token_type": "bearer",
-        "user": user_data
+        "user": user_data,
+        "tenant_config": {
+            "tenant_id": user_data["tenant_id"],
+            "app_name": user_data["company_name"] or "LucidX360",
+            "logo_url": user_data["company_logo_url"],
+            "pinned_company_name": user_data["company_name"] or "Rajasthan Liquor Limited",
+        }
     }
 
 
@@ -670,7 +828,7 @@ def get_mobile_user_profile(
     current_user: dict = Depends(RoleChecker(['tsm', 'ase', 'leader', 'territory executive', 'admin']))
 ):
     """
-    Fetch current logged-in user profile with depot details.
+    Fetch current logged-in user profile with depot and company details.
     """
     client = get_supabase()
     sub_val = (current_user.get("sub") or current_user.get("email") or current_user.get("phone") or "").strip()
@@ -681,12 +839,12 @@ def get_mobile_user_profile(
     try:
         db_user = None
         if user_id_val:
-            u_res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active").eq("user_id", user_id_val).execute()
+            u_res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, tenant_id, company_id, company_name").eq("user_id", user_id_val).execute()
             if u_res.data:
                 db_user = u_res.data[0]
 
         if not db_user and sub_val:
-            u_res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active").or_(f"email.ilike.{sub_val},phone.ilike.%{sub_val}%").execute()
+            u_res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, tenant_id, company_id, company_name").or_(f"email.ilike.{sub_val},phone.ilike.%{sub_val}%").execute()
             if u_res.data:
                 db_user = u_res.data[0]
 
@@ -703,6 +861,28 @@ def get_mobile_user_profile(
             except Exception:
                 pass
 
+            company_name = db_user.get("company_name") or current_user.get("company_name")
+            company_id = db_user.get("company_id")
+            tenant_id = str(db_user.get("tenant_id") or current_user.get("tenant_id") or "a0000000-0000-0000-0000-000000000001")
+            company_logo_url = None
+
+            if company_id:
+                try:
+                    c_res = client.table("companies").select("company_name, logo_url").eq("company_id", company_id).limit(1).execute()
+                    if c_res.data:
+                        company_name = company_name or c_res.data[0].get("company_name")
+                        company_logo_url = c_res.data[0].get("logo_url")
+                except Exception:
+                    pass
+
+            if not company_logo_url and company_name:
+                try:
+                    c_res = client.table("companies").select("logo_url").ilike("company_name", company_name.strip()).limit(1).execute()
+                    if c_res.data:
+                        company_logo_url = c_res.data[0].get("logo_url")
+                except Exception:
+                    pass
+
             return {
                 "user_id": str(db_user.get("user_id")),
                 "email": db_user.get("email"),
@@ -712,6 +892,10 @@ def get_mobile_user_profile(
                 "role_name": role_name,
                 "depot_name": depot_name,
                 "hq_location": "All Headquarters",
+                "tenant_id": tenant_id,
+                "company_id": str(company_id) if company_id else None,
+                "company_name": company_name,
+                "company_logo_url": company_logo_url or "/images/rll logo.svg",
                 "is_active": bool(db_user.get("is_active", True))
             }
     except Exception as e:
@@ -776,11 +960,13 @@ async def get_mobile_companies(
     period: str = Query("Daily", description="Sales period: Daily, MTD, YTD"),
     date_to: Optional[str] = Query(None, alias="date"),
     selected_hq: Optional[str] = Query(None, alias="selected_hq"),
+    refresh: bool = Query(False, description="Bypass cache on explicit refresh"),
     current_user: dict = Depends(get_current_user)
 ):
     """
     Fetches period-specific company sales analytics (Daily, MTD, YTD).
-    Excludes Company 'Others' strictly. Caches response in Redis.
+    Excludes Company 'Others' strictly. Scopes to user's assigned company if applicable.
+    Caches response in Redis.
     """
     from backend.services.mobile_companies_service import get_companies_summary
     from backend.services.cache_service import get_json_cache, set_json_cache
@@ -789,25 +975,36 @@ async def get_mobile_companies(
     clean_hq = selected_hq.strip() if selected_hq else "All Headquarters"
     clean_date = date_to.strip() if date_to else "latest"
 
-    redis_key = f"rll:mobile:companies:{clean_period}:{clean_hq}:{clean_date}"
-    cached_payload = await get_json_cache(redis_key)
-    if cached_payload is not None:
-        logger.info(f"get_mobile_companies: Redis CACHE HIT for {redis_key}")
-        return cached_payload
+    # User company scoping: if user has assigned company, scope sales data strictly to that company
+    user_role = (current_user.get("role_name") or current_user.get("role") or "").lower()
+    user_company = current_user.get("company_name")
+    effective_company = user_company if (user_company and user_role not in ["admin", "super_admin", "super admin"]) else None
+
+    redis_key = f"rll:mobile:companies:{clean_period}:{clean_hq}:{clean_date}:{effective_company or 'all'}"
+    if not refresh:
+        cached_payload = await get_json_cache(redis_key)
+        if cached_payload is not None:
+            logger.info(f"get_mobile_companies: Redis CACHE HIT for {redis_key}")
+            return cached_payload
 
     try:
-        companies_list = get_companies_summary(
+        companies_list, resolved_date = get_companies_summary(
             period=clean_period,
             date_to=date_to,
-            selected_hq=selected_hq
+            selected_hq=selected_hq,
+            company_name=effective_company
         )
         payload = {
             "status": "success",
             "period": clean_period,
             "count": len(companies_list),
+            "latest_sale_date": resolved_date,
             "companies": companies_list
         }
-        await set_json_cache(redis_key, payload, ttl=900)  # 15 minutes TTL
+        if len(companies_list) > 0:
+            await set_json_cache(redis_key, payload, ttl=900)  # 15 minutes TTL
+        else:
+            logger.warning(f"get_mobile_companies: Skipping Redis cache set for {redis_key} due to empty companies list.")
         return payload
     except Exception as e:
         logger.error(f"Error fetching mobile companies analytics: {e}", exc_info=True)
@@ -881,6 +1078,17 @@ async def get_mobile_sales(
     t_auth_start = time.perf_counter()
     user_role = (current_user.get("role_name") or current_user.get("role") or "").lower()
     user_id = current_user.get("user_id")
+    
+    # Apply Data Visibility Toggle
+    from backend.db.redis_client import safe_get
+    restriction_setting = await safe_get("rll:setting:tsm_ase_data_restriction_enabled")
+    is_restricted = str(restriction_setting).strip().lower() != "false" # Defaults to true
+    
+    if not is_restricted and user_role in ["tsm", "ase", "territory executive"]:
+        # When restriction is OFF, TSM/ASE behave like Leaders
+        logger.info(f"Data restriction OFF: Upgrading role of {user_id} from {user_role} to leader")
+        user_role = "leader"
+        
     t_auth_end = time.perf_counter()
     auth_duration_ms = round((t_auth_end - t_auth_start) * 1000, 2)
 
@@ -894,24 +1102,6 @@ async def get_mobile_sales(
         selected_period = "YTD"
     else:
         selected_period = "Daily"
-
-    # C. Master cache lookup timing
-    t_master_start = time.perf_counter()
-    master_cache_hit = _MASTER_CACHE["data"] is not None and (time.time() - _MASTER_CACHE["timestamp"]) < _MASTER_CACHE_TTL
-    master_cache = get_cached_master_lookups()
-    t_master_end = time.perf_counter()
-    master_cache_duration_ms = round((t_master_end - t_master_start) * 1000, 2)
-
-    companies_lookup = master_cache["companies_lookup"]
-    brands_lookup = master_cache["brands_lookup"]
-    hq_lookup = master_cache["hq_lookup"]
-    master_companies = master_cache["master_companies"]
-    master_depots = master_cache["master_depots"]
-    master_tsms = master_cache["master_tsms"]
-    tsm_depot_lookup = master_cache["tsm_depot_lookup"]
-    user_depots_map = master_cache["user_depots_map"]
-    tsm_ase_lookup = master_cache["tsm_ase_lookup"]
-    ase_names_lookup = master_cache["ase_names_lookup"]
 
     cache_key = f"{selected_period}:{selected_hq}:{date_from}:{date_to}:{user_role}:{user_id}:{test_limit or 'all'}"
     
@@ -942,7 +1132,7 @@ async def get_mobile_sales(
                 f"BACKEND\n"
                 f"--------------------------------------------------\n"
                 f"Authentication:         {auth_duration_ms:.1f} ms\n"
-                f"Master cache:          {master_cache_duration_ms:.1f} ms ({'HIT' if master_cache_hit else 'MISS'})\n"
+                f"Master cache:          0.0 ms (CACHED)\n"
                 f"Sales cache:           {sales_cache_duration_ms:.1f} ms (HIT)\n"
                 f"Supabase RPC:          0.0 ms (CACHED)\n"
                 f"RPC payload:           0.0 KB / 0.00 MB\n"
@@ -994,6 +1184,24 @@ async def get_mobile_sales(
     t_sales_cache_end = time.perf_counter()
     sales_cache_duration_ms = round((t_sales_cache_end - t_sales_cache_start) * 1000, 2)
 
+    # C. Master cache lookup timing
+    t_master_start = time.perf_counter()
+    master_cache_hit = _MASTER_CACHE["data"] is not None and (time.time() - _MASTER_CACHE["timestamp"]) < _MASTER_CACHE_TTL
+    master_cache = get_cached_master_lookups()
+    t_master_end = time.perf_counter()
+    master_cache_duration_ms = round((t_master_end - t_master_start) * 1000, 2)
+
+    companies_lookup = master_cache["companies_lookup"]
+    brands_lookup = master_cache["brands_lookup"]
+    hq_lookup = master_cache["hq_lookup"]
+    master_companies = master_cache["master_companies"]
+    master_depots = master_cache["master_depots"]
+    master_tsms = master_cache["master_tsms"]
+    tsm_depot_lookup = master_cache["tsm_depot_lookup"]
+    user_depots_map = master_cache["user_depots_map"]
+    tsm_ase_lookup = master_cache["tsm_ase_lookup"]
+    ase_names_lookup = master_cache["ase_names_lookup"]
+
     allowed_depots = set()
     if user_role == "tsm":
         if user_id in master_tsms:
@@ -1039,13 +1247,17 @@ async def get_mobile_sales(
     ytd_start = f"{fy_year}-04-01"
 
     target_hq_id = None
-    if selected_hq and selected_hq != "All Headquarters":
-        target_hq_id = master_cache.get("hq_name_to_id", {}).get(selected_hq.strip().lower())
+    if selected_hq and selected_hq.strip() and selected_hq.strip() != "All Headquarters":
+        clean_hq_target = selected_hq.strip().lower()
+        target_hq_id = master_cache.get("hq_name_to_id", {}).get(clean_hq_target)
         if not target_hq_id:
             try:
-                hq_res = client.table("headquarters").select("headquarters_id").ilike("name", selected_hq.strip()).execute()
-                if hq_res.data:
-                    target_hq_id = hq_res.data[0]["headquarters_id"]
+                hq_res = client.table("headquarters").select("headquarters_id, name").execute()
+                for h in (hq_res.data or []):
+                    h_name = (h.get("name") or "").strip().lower()
+                    if h_name == clean_hq_target or clean_hq_target in h_name or h_name in clean_hq_target:
+                        target_hq_id = str(h["headquarters_id"])
+                        break
             except Exception as e:
                 logger.warning(f"HQ lookup error for {selected_hq}: {e}")
 
@@ -1076,30 +1288,19 @@ async def get_mobile_sales(
     # I. Python transformation timing
     t_transform_start = time.perf_counter()
 
-    # Company Aliases Normalization (Willam vs William)
-    COMPANY_ALIASES = {
-        "willam grants": "William Grants",
-        "william grants": "William Grants",
-        "william grants & sons": "William Grants"
-    }
-
     grouped_comp_rows = {}
-    for row in company_records:
-        cid = str(row.get("company_id") or "")
-        cname = str(row.get("company_name") or "").strip()
-        if not cname or cname.lower() == "others":
+    for cid_raw, cname_raw in companies_lookup.items():
+        if not cname_raw or cname_raw.lower() == "others":
             continue
-
-        norm_name = COMPANY_ALIASES.get(cname.lower(), cname)
+        norm_name = normalize_company_name(cname_raw)
         comp_id = norm_name.lower().replace(" ", "-").replace("/", "-")
-
         if comp_id not in grouped_comp_rows:
             grouped_comp_rows[comp_id] = {
                 "id": comp_id,
                 "name": norm_name,
-                "isPinned": comp_id in ["rll", "diageo-inbrew"] or norm_name.upper() == "RLL",
+                "isPinned": is_pinned_company(norm_name, comp_id),
                 "hqLocation": selected_hq or "All Headquarters",
-                "company_ids": [],
+                "company_ids": [str(cid_raw)],
                 "data": {
                     "Daily": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
                     "MTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
@@ -1107,9 +1308,38 @@ async def get_mobile_sales(
                 },
                 "brands_map": {}
             }
+        else:
+            if str(cid_raw) not in grouped_comp_rows[comp_id]["company_ids"]:
+                grouped_comp_rows[comp_id]["company_ids"].append(str(cid_raw))
+
+    for row in company_records:
+        cid = str(row.get("company_id") or "")
+        cname = str(row.get("company_name") or "").strip()
+        if not cname or cname.lower() == "others":
+            continue
+
+        norm_name = normalize_company_name(cname)
+        comp_id = norm_name.lower().replace(" ", "-").replace("/", "-")
+
+        if comp_id not in grouped_comp_rows:
+            grouped_comp_rows[comp_id] = {
+                "id": comp_id,
+                "name": norm_name,
+                "isPinned": is_pinned_company(norm_name, comp_id),
+                "hqLocation": selected_hq or "All Headquarters",
+                "company_ids": [cid] if cid else [],
+                "data": {
+                    "Daily": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+                    "MTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+                    "YTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+                },
+                "brands_map": {}
+            }
+        else:
+            if cid and cid not in grouped_comp_rows[comp_id]["company_ids"]:
+                grouped_comp_rows[comp_id]["company_ids"].append(cid)
 
         g = grouped_comp_rows[comp_id]
-        g["company_ids"].append(cid)
         g["data"]["Daily"]["cases"] += float(row.get("daily_cases") or 0.0)
         g["data"]["Daily"]["bottles"] += float(row.get("daily_bottles") or 0.0)
         g["data"]["Daily"]["bl"] += float(row.get("daily_bl") or 0.0)
@@ -1120,10 +1350,35 @@ async def get_mobile_sales(
         g["data"]["YTD"]["bottles"] += float(row.get("ytd_bottles") or 0.0)
         g["data"]["YTD"]["bl"] += float(row.get("ytd_bl") or 0.0)
 
-    # For each grouped company, fetch Brand summaries using get_mobile_company_brands_summary RPC
+    # Collect all company UUIDs across grouped companies to fetch brand summaries in a SINGLE RPC call
+    all_company_ids = []
+    raw_to_comp_id = {}
     for comp_id, g in grouped_comp_rows.items():
+        for cid in g["company_ids"]:
+            all_company_ids.append(cid)
+            raw_to_comp_id[cid] = comp_id
+
+    # Pre-populate brands_map with ALL master registered brands for each company (so 0-sale brands are counted and listed)
+    for bid, binfo in brands_lookup.items():
+        b_comp_id = binfo.get("company_id")
+        if b_comp_id and b_comp_id in raw_to_comp_id:
+            comp_id = raw_to_comp_id[b_comp_id]
+            if comp_id in grouped_comp_rows:
+                g = grouped_comp_rows[comp_id]
+                if bid not in g["brands_map"]:
+                    g["brands_map"][bid] = {
+                        "id": bid,
+                        "name": binfo.get("name") or "Generic Brand",
+                        "data": {
+                            "Daily": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+                            "MTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+                            "YTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+                        }
+                    }
+
+    if all_company_ids:
         brand_params = {
-            "p_company_ids": g["company_ids"],
+            "p_company_ids": all_company_ids,
             "p_target_date": end_date,
             "p_mtd_start": mtd_start,
             "p_ytd_start": ytd_start,
@@ -1135,10 +1390,16 @@ async def get_mobile_sales(
             brand_res = client.rpc("get_mobile_company_brands_summary", brand_params).execute()
             brands_data = brand_res.data or []
         except Exception as e_brands:
-            logger.error(f"Error calling get_mobile_company_brands_summary RPC for {g['name']}: {e_brands}")
+            logger.error(f"Error calling get_mobile_company_brands_summary RPC: {e_brands}")
             brands_data = []
 
         for b in brands_data:
+            raw_cid = str(b.get("company_id") or "")
+            comp_id = raw_to_comp_id.get(raw_cid)
+            if not comp_id or comp_id not in grouped_comp_rows:
+                continue
+
+            g = grouped_comp_rows[comp_id]
             bid = str(b.get("brand_id") or "")
             bname = str(b.get("brand_name") or "Generic Brand").strip()
             
@@ -1616,13 +1877,21 @@ async def get_group_brands_endpoint(
     date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     period: Optional[str] = Query(None, description="Period filter (Daily/MTD/YTD)"),
-    depot_name: Optional[str] = Query(None, description="Filter by depot name")
+    depot_name: Optional[str] = Query(None, description="Filter by depot name"),
+    selected_hq: Optional[str] = Query(None, description="Filter by HQ name")
 ):
     """
     Mobile endpoint: Fetch aggregated brand-wise sales for all licensees in a group.
     """
     from backend.services.mobile_cascading_service import get_group_brand_sales
-    return get_group_brand_sales(group_id=group_id, date_from=date_from, date_to=date_to, period=period, depot_name=depot_name)
+    return get_group_brand_sales(
+        group_id=group_id,
+        date_from=date_from,
+        date_to=date_to,
+        period=period,
+        depot_name=depot_name,
+        selected_hq=selected_hq
+    )
 
 
 @router.get("/cascading/groups/{group_id}/licensees")
@@ -1631,13 +1900,21 @@ async def get_group_licensees_endpoint(
     date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     period: Optional[str] = Query(None, description="Period filter (Daily/MTD/YTD)"),
-    depot_name: Optional[str] = Query(None, description="Filter by depot name")
+    depot_name: Optional[str] = Query(None, description="Filter by depot name"),
+    selected_hq: Optional[str] = Query(None, description="Filter by HQ name")
 ):
     """
     Mobile endpoint: Fetch licensees for a group with specific depot breakdown and sales stats.
     """
     from backend.services.mobile_cascading_service import get_group_licensees
-    return get_group_licensees(group_id=group_id, date_from=date_from, date_to=date_to, period=period, depot_name=depot_name)
+    return get_group_licensees(
+        group_id=group_id,
+        date_from=date_from,
+        date_to=date_to,
+        period=period,
+        depot_name=depot_name,
+        selected_hq=selected_hq
+    )
 
 
 @router.get("/cascading/licensees/{licensee_id}/brand-sales")
@@ -1646,13 +1923,59 @@ async def get_licensee_brand_sales_endpoint(
     date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     period: Optional[str] = Query(None, description="Period filter (Daily/MTD/YTD)"),
-    depot_name: Optional[str] = Query(None, description="Filter by depot name")
+    depot_name: Optional[str] = Query(None, description="Filter by depot name"),
+    selected_hq: Optional[str] = Query(None, description="Filter by HQ name")
 ):
     """
     Mobile endpoint: Fetch brand-wise sales breakdown for a licensee.
     """
     from backend.services.mobile_cascading_service import get_licensee_brand_sales
-    return get_licensee_brand_sales(licensee_id=licensee_id, date_from=date_from, date_to=date_to, period=period, depot_name=depot_name)
+    return get_licensee_brand_sales(
+        licensee_id=licensee_id,
+        date_from=date_from,
+        date_to=date_to,
+        period=period,
+        depot_name=depot_name,
+        selected_hq=selected_hq
+    )
+
+
+@router.get("/cascading/company-brands")
+def get_company_brands_endpoint(
+    company_id: str = Query(..., description="Target Company UUID"),
+    date_from: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    date_to: str = Query(..., description="End date (YYYY-MM-DD)"),
+    hq_name: Optional[str] = Query(None, description="Optional Headquarter filter"),
+):
+    """
+    Mobile endpoint: Fetch brand sales breakdown for a selected company.
+    """
+    from backend.services.company_cascading_service import get_company_brands_sales_service
+    return get_company_brands_sales_service(
+        company_id=company_id,
+        date_from=date_from,
+        date_to=date_to,
+        hq_name=hq_name,
+    )
+
+
+@router.get("/cascading/brand-licensees")
+def get_brand_licensees_endpoint(
+    brand_id: str = Query(..., description="Target Brand UUID"),
+    date_from: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    date_to: str = Query(..., description="End date (YYYY-MM-DD)"),
+    hq_name: Optional[str] = Query(None, description="Optional Headquarter filter"),
+):
+    """
+    Mobile endpoint: Fetch licensee sales breakdown for a selected brand.
+    """
+    from backend.services.company_cascading_service import get_brand_licensees_sales_service
+    return get_brand_licensees_sales_service(
+        brand_id=brand_id,
+        date_from=date_from,
+        date_to=date_to,
+        hq_name=hq_name,
+    )
 
 
 
@@ -1696,5 +2019,22 @@ async def clear_mobile_cache_endpoint():
         "status": "success",
         "message": "All backend caches flushed."
     }
+
+
+@router.get("/tenant-config")
+def get_mobile_tenant_config_endpoint(
+    tenant_slug: Optional[str] = Query(None),
+    tenant_id: Optional[str] = Query(None),
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID"),
+    x_tenant_slug: Optional[str] = Header(None, alias="X-Tenant-Slug"),
+):
+    """
+    Mobile endpoint: Returns dynamic white-label tenant configuration with tenant_id.
+    """
+    from backend.services.tenant_service import get_tenant_config_service
+    effective_id = tenant_id or x_tenant_id
+    effective_slug = tenant_slug or x_tenant_slug or "rll"
+    return get_tenant_config_service(tenant_slug=effective_slug, tenant_id=effective_id)
+
 
 
