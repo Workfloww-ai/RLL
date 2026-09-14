@@ -2,7 +2,7 @@
   "expo": {
     "name": "LucidX360",
     "slug": "rll",
-    "version": "1.0.6",
+    "version": "1.0.7",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "icon": "./src/assets/lucid_logo_nobg.png",
@@ -16,7 +16,7 @@
     ],
     "android": {
       "package": "com.workfloww.lucid360",
-      "versionCode": 7,
+      "versionCode": 8,
       "adaptiveIcon": {
         "foregroundImage": "./src/assets/lucid_logo_nobg.png",
         "backgroundColor": "#FFFFFF"
@@ -24,9 +24,9 @@
     },
     "extra": {
       "eas": {
-        "projectId": "bd7dca48-80e7-4960-af9b-96dcd3cc14a1"
+        "projectId": "57ca29f2-77f9-4c6b-bf39-3ac26c7e586f"
       }
     },
-    "owner": "workflowwais-team"
+    "owner": "khwaish.gahoi"
   }
 }
