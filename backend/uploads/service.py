@@ -998,7 +998,68 @@ class ImportPipelineEngine:
                 self.release_pipeline_lock(batch_id)
                 return local_batch
 
-            # Step 7 - Bulk Insert Raw Records in chunks with progress
+            # Step 7 - Stage raw records and resolve via set-based SQL procedure (Phase 3 & Phase 4)
+            use_sql_resolution = False
+            if raw_records:
+                try:
+                    # Phase 4 Fast-Path: Direct PostgreSQL Binary COPY Streaming via asyncpg
+                    res_sql = self._execute_direct_copy_staging(
+                        raw_records=raw_records,
+                        batch_id=batch_id,
+                        tenant_id=tenant_id
+                    )
+
+                    # Phase 3 Fallback: If direct COPY not available, stage via PostgREST and invoke RPC
+                    if res_sql is None:
+                        self._bulk_insert(
+                            table="staging_raw_sales_upload",
+                            records=raw_records,
+                            chunk_size=5000,
+                            batch_id=batch_id,
+                        )
+                        from backend.db.supabase_client import resolve_sales_facts_rpc
+                        res_sql = resolve_sales_facts_rpc(batch_id=str(batch_id), tenant_id=str(tenant_id) if tenant_id else None)
+
+                    if res_sql:
+                        if res_sql.get("status") == "failed":
+                            failure_reason = res_sql.get("error_message") or "Validation error during database resolution."
+                            logger.warning(f"Batch {batch_id}: {failure_reason}")
+                            self._cleanup_failed_batch(batch_id)
+                            processing_time = round(time.time() - start_time, 2)
+                            if local_batch:
+                                local_batch.update({
+                                    "total_rows": total_rows,
+                                    "imported_rows": 0,
+                                    "failed_rows": res_sql.get("failed_rows", total_rows),
+                                    "status": "failed",
+                                    "upload_status": "failed",
+                                    "processing_time_seconds": processing_time,
+                                    "remarks": failure_reason,
+                                })
+                            self._update_batch(
+                                batch_id=batch_id,
+                                status="failed",
+                                row_count=total_rows,
+                                imported_rows=0,
+                                failed_rows=res_sql.get("failed_rows", total_rows),
+                                remarks=failure_reason
+                            )
+                            self._pipeline_log(
+                                batch_id=batch_id,
+                                step="validation_failed",
+                                status="failed",
+                                message=failure_reason,
+                            )
+                            self.release_pipeline_lock(batch_id)
+                            return local_batch
+                        elif res_sql.get("status") == "success":
+                            use_sql_resolution = True
+                            imported_rows = res_sql.get("imported_rows", imported_rows)
+                            logger.info(f"Batch {batch_id}: Set-based SQL resolution succeeded. Inserted {imported_rows} facts.")
+                except Exception as e_sql_res:
+                    logger.warning(f"Batch {batch_id}: Staging/SQL resolution notice: {e_sql_res}. Continuing with fallback.")
+
+            # Bulk Insert Raw Records into raw_sales_upload for permanent audit archive
             if raw_records:
                 self._bulk_insert(
                     table="raw_sales_upload",
@@ -1029,8 +1090,8 @@ class ImportPipelineEngine:
             if fact_records:
                 self._update_batch(batch_id=batch_id, status="validated")
 
-            # Step 9 - Bulk Insert Sales Fact Records in chunks with progress
-            if fact_records:
+            # Step 9 - Bulk Insert Sales Fact Records if not already resolved via SQL procedure
+            if fact_records and not use_sql_resolution:
                 distinct_dates = list({str(r.get("sale_date", "")).strip() for r in fact_records if r.get("sale_date")})
                 try:
                     from backend.db.supabase_client import ensure_calendar_dates
@@ -1100,8 +1161,9 @@ class ImportPipelineEngine:
                 try:
                     purged_count = invalidate_analytics_cache_sync()
                     logger.info(f"Batch {batch_id}: Post-load cache invalidation purged {purged_count} entries.")
-                    prewarm_res = prewarm_cache_egress_sync()
-                    logger.info(f"Batch {batch_id}: Phase 4 Post-load cache pre-warming result: {prewarm_res}")
+                    primary_date = str(distinct_dates[0]).split("T")[0] if (fact_records and distinct_dates) else None
+                    prewarm_res = prewarm_cache_egress_sync(target_date=primary_date)
+                    logger.info(f"Batch {batch_id}: Phase 5 Post-load edge cache pre-warming result: {prewarm_res}")
                 except Exception as cache_err:
                     logger.warning(f"Batch {batch_id}: Cache invalidation/pre-warming notice: {cache_err}")
 
@@ -2033,6 +2095,11 @@ class ImportPipelineEngine:
         except Exception as exc:
             logger.warning(f"Cleanup warning for raw_sales_upload batch {b_str}: {exc}")
 
+        try:
+            client.table("staging_raw_sales_upload").delete().eq("batch_id", b_str).execute()
+        except Exception as exc_s:
+            logger.warning(f"Cleanup warning for staging_raw_sales_upload batch {b_str}: {exc_s}")
+
         self._purge_batch_temporary_data(batch_id)
 
     def _record_batch_chunk(
@@ -2080,6 +2147,100 @@ class ImportPipelineEngine:
                 client.table("batch_chunks").insert(payload).execute()
             except Exception as e2:
                 logger.warning(f"Could not record batch_chunks row: {exc} | fallback: {e2}")
+
+    def _execute_direct_copy_staging(
+        self,
+        raw_records: List[Dict[str, Any]],
+        batch_id: Any,
+        tenant_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Phase 4: Direct PostgreSQL Binary COPY Streaming Pipeline.
+        Streams raw staging records in binary format directly to UNLOGGED staging_raw_sales_upload
+        using asyncpg (100k+ rows/sec), executes set-based SQL foreign key resolution,
+        and truncates staging immediately.
+        """
+        from backend.db.direct_pool import direct_postgres_pool
+        if not direct_postgres_pool.is_available():
+            return None
+
+        import uuid
+        import json
+        import concurrent.futures
+
+        async def _stream_coro():
+            t_b_id = uuid.UUID(str(batch_id))
+            t_t_id = uuid.UUID(str(tenant_id)) if tenant_id else uuid.UUID("00000000-0000-0000-0000-000000000000")
+
+            staging_columns = [
+                "tenant_id", "batch_id", "sale_date_raw", "company_raw",
+                "licensee_raw", "trade_raw", "group_name_raw", "hq_raw",
+                "deo_office_raw", "circle_office_raw", "depot_raw",
+                "ase_raw", "asm_tsm_raw", "brand_name_raw", "packing_raw",
+                "total_case", "total_btl", "total_bl"
+            ]
+
+            clean_tuples = [
+                (
+                    t_t_id,
+                    t_b_id,
+                    str(r.get("sale_date_raw") or ""),
+                    str(r.get("company_raw") or ""),
+                    str(r.get("licensee_raw") or ""),
+                    str(r.get("trade_raw") or ""),
+                    str(r.get("group_name_raw") or ""),
+                    str(r.get("hq_raw") or ""),
+                    str(r.get("deo_office_raw") or ""),
+                    str(r.get("circle_office_raw") or ""),
+                    str(r.get("depot_raw") or ""),
+                    str(r.get("ase_raw") or ""),
+                    str(r.get("asm_tsm_raw") or ""),
+                    str(r.get("brand_name_raw") or ""),
+                    str(r.get("packing_raw") or ""),
+                    float(r.get("total_case") or 0.0),
+                    float(r.get("total_btl") or 0.0),
+                    float(r.get("total_bl") or 0.0),
+                )
+                for r in raw_records
+            ]
+
+            async with direct_postgres_pool.acquire_connection() as conn:
+                if conn is None:
+                    return None
+
+                async with conn.transaction():
+                    logger.info(f"Batch {batch_id}: Streaming {len(clean_tuples)} records into staging via direct COPY...")
+                    await conn.copy_records_to_table(
+                        "staging_raw_sales_upload",
+                        records=clean_tuples,
+                        columns=staging_columns
+                    )
+                    logger.info(f"Batch {batch_id}: Executing set-based SQL resolution procedure...")
+                    row_res = await conn.fetchval(
+                        "SELECT resolve_and_insert_sales_facts($1, $2)",
+                        t_b_id, t_t_id
+                    )
+                    await conn.execute(
+                        "DELETE FROM staging_raw_sales_upload WHERE batch_id = $1",
+                        t_b_id
+                    )
+                    return json.loads(row_res) if isinstance(row_res, str) else row_res
+
+        try:
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+            if loop.is_running():
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    return executor.submit(asyncio.run, _stream_coro()).result()
+            else:
+                return loop.run_until_complete(_stream_coro())
+        except Exception as e_copy:
+            logger.warning(f"Direct PostgreSQL binary COPY notice for batch {batch_id}: {e_copy}")
+            return None
 
     def _bulk_insert(
         self,

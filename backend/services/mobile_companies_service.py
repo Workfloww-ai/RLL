@@ -344,7 +344,16 @@ def get_companies_summary(
             "brands": comp_brands
         })
 
-    response_list.sort(key=lambda x: (not x["isPinned"], -x["cases"]))
+    def _pinned_sort_rank(c: Dict[str, Any]) -> int:
+        c_name = (c.get("name") or "").lower().strip()
+        c_id = (c.get("id") or "").lower().strip()
+        if "rajasthan" in c_name or "rll" in c_id or "rajasthan" in c_id:
+            return 1
+        if c.get("isPinned") or "diageo" in c_name or "inbrew" in c_name:
+            return 2
+        return 99
+
+    response_list.sort(key=lambda x: (_pinned_sort_rank(x), -x["cases"], x.get("name", "")))
     mount_total += (time.perf_counter() - t_mount_res_start)
 
     total_service_time = time.perf_counter() - t_service_start

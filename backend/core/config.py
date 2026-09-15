@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     SUPABASE_SECRET_KEY: str = ""
     NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: str = ""
     SUPABASE_SERVICE_ROLE_KEY: str = ""
+
+    # Direct PostgreSQL connection (Port 5432 / 6543) for high-speed COPY streaming
+    DATABASE_URL: str = ""
+    DIRECT_URL: str = ""
     
     # JWT Configuration
     JWT_SECRET: str = ""

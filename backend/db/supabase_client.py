@@ -282,6 +282,25 @@ def execute_in_db_resolution(batch_id: int) -> Optional[Dict[str, Any]]:
         logger.warning(f"execute_in_db_resolution RPC failed, falling back to python resolution: {e}")
         return None
 
+def resolve_sales_facts_rpc(batch_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Phase 3: High-performance set-based foreign key resolution procedure invocation.
+    Performs native PostgreSQL hash joins against dimension tables and atomic fact insertion.
+    Strictly excludes company 'Others'.
+    """
+    client = get_supabase_client()
+    if not client or not batch_id:
+        return None
+    try:
+        res = client.rpc("resolve_and_insert_sales_facts", {
+            "p_batch_id": str(batch_id),
+            "p_tenant_id": str(tenant_id) if tenant_id else "00000000-0000-0000-0000-000000000000"
+        }).execute()
+        return res.data
+    except Exception as e:
+        logger.error(f"resolve_sales_facts_rpc error for batch {batch_id}: {e}")
+        return None
+
 def get_table_approx_count(table_name: str) -> int:
     """
     Fast 0.1ms relation tuple estimation via pg_class reltuples.

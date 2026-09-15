@@ -53,6 +53,10 @@ def validate_password_complexity(password: str) -> None:
             detail="Password must contain at least one special character (!@#$%^&* etc.)."
         )
 
+_USER_CACHE: Dict[str, tuple] = {}
+_USER_CACHE_TTL = 60.0
+
+
 async def get_current_user(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
@@ -89,10 +93,19 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # Fast memory cache check for authenticated user
+    cache_key = str(user_id or email)
+    now_ts = datetime.now(timezone.utc).timestamp()
+    if cache_key in _USER_CACHE:
+        cached_ts, cached_user = _USER_CACHE[cache_key]
+        if now_ts - cached_ts < _USER_CACHE_TTL:
+            return cached_user
+
     # Check for instant user revocation flag in Redis
     if user_id:
         is_revoked = await safe_get(f"rll:revoked:{user_id}")
         if is_revoked:
+            _USER_CACHE.pop(cache_key, None)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Session revoked by administrator. Please log in again.",
@@ -171,6 +184,8 @@ async def get_current_user(
                 detail="User not found",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+    if user_info:
+        _USER_CACHE[cache_key] = (now_ts, user_info)
 
     return user_info
 

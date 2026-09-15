@@ -2018,8 +2018,20 @@ async def get_cascading_groups_endpoint(
     """
     Mobile endpoint: Fetch active groups with total licensees, linked depots, and sales summaries using optimized JSON RPC.
     """
+    clean_p = (period or "MTD").strip()
+    clean_hq = (selected_hq or "All Headquarters").strip()
+    clean_d = date_to or date_from or "latest"
+    redis_key = f"rll:mobile:groups:{clean_d}:{clean_p}:{clean_hq}"
+    from backend.services.cache_service import get_json_cache, set_json_cache
+    cached = await get_json_cache(redis_key)
+    if cached is not None:
+        return cached
+
     from backend.services.mobile_cascading_service import get_cascading_groups
-    return get_cascading_groups(date_from=date_from, date_to=date_to, period=period, selected_hq=selected_hq)
+    groups = get_cascading_groups(date_from=date_from, date_to=date_to, period=period, selected_hq=selected_hq)
+    if groups:
+        await set_json_cache(redis_key, groups, ttl=900)
+    return groups
 
 
 @router.get("/cascading/groups/{group_id}/brands")
