@@ -97,10 +97,21 @@ function MainApp() {
   const [dateFrom, setDateFrom] = useState<string>(initialDbDate);
   const [dateTo, setDateTo] = useState<string>(initialDbDate);
 
+  const isInitialDateSyncRef = useRef(false);
+  const prevFiltersRef = useRef({
+    dateFrom: initialDbDate,
+    dateTo: initialDbDate,
+    period: 'Daily',
+    selectedHq: 'All Headquarters',
+  });
+
   // Dynamic bootstrap: Query latest DB date on mount
   useEffect(() => {
     fetchMobileLatestDate().then((latestDate) => {
-      if (latestDate) {
+      if (latestDate && (!dateFrom || !dateTo)) {
+        isInitialDateSyncRef.current = true;
+        prevFiltersRef.current.dateFrom = latestDate;
+        prevFiltersRef.current.dateTo = latestDate;
         setDateFrom((curr) => (!curr ? latestDate : curr));
         setDateTo((curr) => (!curr ? latestDate : curr));
       }
@@ -289,19 +300,18 @@ function MainApp() {
     });
   }, [Boolean(user)]);
 
-  const prevFiltersRef = useRef({
-    dateFrom: '',
-    dateTo: '',
-    period: 'Daily',
-    selectedHq: 'All Headquarters',
-  });
-
   // Fetch sales data with microsecond performance instrumentation
   useEffect(() => {
     if (!user) return;
 
     let isMounted = true;
     const fetchSalesData = async () => {
+      // Prevent redundant double-fetch when date is auto-bootstrapped from response
+      if (isInitialDateSyncRef.current) {
+        isInitialDateSyncRef.current = false;
+        return;
+      }
+
       const getNow = () => Date.now();
       const tMobileStart = getNow();
 
@@ -345,6 +355,9 @@ function MainApp() {
           const tStateStart = getNow();
           setApiData((prevData: any) => ({ ...(prevData || {}), ...res }));
           if (res.latest_sale_date && (!dateFrom && !dateTo)) {
+            isInitialDateSyncRef.current = true;
+            prevFiltersRef.current.dateFrom = res.latest_sale_date;
+            prevFiltersRef.current.dateTo = res.latest_sale_date;
             setDateFrom(res.latest_sale_date);
             setDateTo(res.latest_sale_date);
           }

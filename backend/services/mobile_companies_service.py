@@ -208,11 +208,20 @@ def get_companies_summary(
         db_fetch_total += (time.perf_counter() - t_mb_start)
         logger.warning(f"Error fetching master_brands_by_company: {e_mb}")
 
-    # 5. Execute company brands summaries in parallel
-    def fetch_company_brands_worker(item):
-        norm_key, g = item
+    # 5. Execute company brands summaries in a single batched RPC call
+    t_brands_rpc_start = time.perf_counter()
+    brands_results = {norm_key: [] for norm_key in grouped_companies}
+    all_company_ids = []
+    cid_to_norm_key = {}
+    for norm_key, g in grouped_companies.items():
+        for cid in g.get("company_ids", []):
+            str_cid = str(cid)
+            all_company_ids.append(str_cid)
+            cid_to_norm_key[str_cid] = norm_key
+
+    if all_company_ids:
         brand_params = {
-            "p_company_ids": g["company_ids"],
+            "p_company_ids": all_company_ids,
             "p_target_date": target_date,
             "p_mtd_start": mtd_start,
             "p_ytd_start": ytd_start,
@@ -221,20 +230,15 @@ def get_companies_summary(
             brand_params["p_hq_id"] = hq_id_filter
         try:
             brand_res = client.rpc("get_mobile_company_brands_summary", brand_params).execute()
-            return norm_key, brand_res.data or []
+            rpc_count += 1
+            for b_row in (brand_res.data or []):
+                b_cid = str(b_row.get("company_id") or "")
+                target_key = cid_to_norm_key.get(b_cid)
+                if target_key:
+                    brands_results[target_key].append(b_row)
         except Exception as e_brands:
-            logger.error(f"Error calling get_mobile_company_brands_summary RPC for {g['name']}: {e_brands}")
-            return norm_key, []
-
-    t_pool_start = time.perf_counter()
-    brands_results = {}
-    company_items = list(grouped_companies.items())
-    if company_items:
-        with ThreadPoolExecutor(max_workers=min(8, len(company_items))) as executor:
-            for n_key, b_data in executor.map(fetch_company_brands_worker, company_items):
-                brands_results[n_key] = b_data
-                rpc_count += 1
-    db_fetch_total += (time.perf_counter() - t_pool_start)
+            logger.error(f"Error calling get_mobile_company_brands_summary RPC in batch: {e_brands}")
+    db_fetch_total += (time.perf_counter() - t_brands_rpc_start)
 
     # 6. Mount final company response list
     t_mount_res_start = time.perf_counter()
