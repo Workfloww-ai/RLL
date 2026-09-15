@@ -1,6 +1,8 @@
+import time
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 from backend.db.supabase_client import get_supabase_client
 from backend.db.company_aliases import normalize_company_name, is_pinned_company
 
@@ -11,17 +13,27 @@ def get_companies_summary(
     date_to: Optional[str] = None,
     selected_hq: Optional[str] = None,
     company_name: Optional[str] = None
-) -> Tuple[List[Dict[str, Any]], str]:
+) -> Tuple[List[Dict[str, Any]], str, Dict[str, Any]]:
     """
     Period-specific Companies sales analytics service.
     Excludes company 'Others' strictly. Supports single company scoping.
-    Returns list of company objects structured for mobile UI.
+    Returns list of company objects structured for mobile UI along with exact DB fetch and mounting metrics.
     Uses sales_daily_summary as the single source of truth.
     """
+    t_service_start = time.perf_counter()
+    db_fetch_total = 0.0
+    mount_total = 0.0
+    rpc_count = 0
+
     client = get_supabase_client()
     if not client:
         logger.error("get_companies_summary: Supabase client unavailable.")
-        return [], target_date or datetime.utcnow().strftime("%Y-%m-%d")
+        return [], target_date or datetime.utcnow().strftime("%Y-%m-%d"), {
+            "db_fetch_ms": 0.0,
+            "mount_data_ms": 0.0,
+            "total_service_ms": 0.0,
+            "rpc_calls": 0
+        }
 
     clean_period = period.strip() if period else "Daily"
     if clean_period not in ("Daily", "MTD", "YTD"):
@@ -30,22 +42,26 @@ def get_companies_summary(
     # Resolve HQ filter if provided
     hq_id_filter = None
     if selected_hq and selected_hq.strip() and selected_hq.strip() != "All Headquarters":
+        t_hq_start = time.perf_counter()
         try:
             clean_hq_target = selected_hq.strip().lower()
             hq_res = client.table("headquarters").select("headquarters_id, name").execute()
+            db_fetch_total += (time.perf_counter() - t_hq_start)
             for h in (hq_res.data or []):
                 h_name = (h.get("name") or "").strip().lower()
                 if h_name == clean_hq_target or clean_hq_target in h_name or h_name in clean_hq_target:
                     hq_id_filter = str(h["headquarters_id"])
                     break
         except Exception as e_hq:
+            db_fetch_total += (time.perf_counter() - t_hq_start)
             logger.warning(f"get_companies_summary: HQ resolution error for '{selected_hq}': {e_hq}")
 
     # Determine target dates
     target_date = date_to
     if not target_date:
-        # Get latest sale date from daily summary
+        t_date_start = time.perf_counter()
         max_res = client.table("sales_daily_summary").select("sale_date").order("sale_date", desc=True).limit(1).execute()
+        db_fetch_total += (time.perf_counter() - t_date_start)
         if max_res.data and max_res.data[0].get("sale_date"):
             target_date = max_res.data[0]["sale_date"]
         else:
@@ -72,47 +88,64 @@ def get_companies_summary(
     if company_name:
         rpc_params["p_company_name"] = company_name.strip()
 
+    t_rpc1_start = time.perf_counter()
     try:
         comp_summary_res = client.rpc("get_mobile_companies_summary", rpc_params).execute()
+        db_fetch_total += (time.perf_counter() - t_rpc1_start)
+        rpc_count += 1
         comp_summary_data = comp_summary_res.data or []
     except Exception as e:
+        db_fetch_total += (time.perf_counter() - t_rpc1_start)
         logger.error(f"Error calling get_mobile_companies_summary RPC: {e}")
-        return [], target_date
+        return [], target_date, {
+            "db_fetch_ms": round(db_fetch_total * 1000, 2),
+            "mount_data_ms": 0.0,
+            "total_service_ms": round((time.perf_counter() - t_service_start) * 1000, 2),
+            "rpc_calls": rpc_count
+        }
 
     # 2. Fetch all registered master companies to ensure all companies are shown irrespective of HQ sales
-    grouped_companies = {}
+    t_mc_start = time.perf_counter()
     try:
         mc_res = client.table("companies").select("company_id, company_name").execute()
-        for mc in (mc_res.data or []):
-            cid = str(mc.get("company_id") or "")
-            cname = str(mc.get("company_name") or "").strip()
-            if not cname or cname.lower() == "others":
-                continue
-            if company_name and cname.lower() != company_name.strip().lower():
-                continue
-            norm_name = normalize_company_name(cname)
-            norm_key = norm_name.lower().replace(" ", "-").replace("/", "-")
-            if norm_key not in grouped_companies:
-                grouped_companies[norm_key] = {
-                    "id": norm_key,
-                    "name": norm_name,
-                    "isPinned": is_pinned_company(norm_name, norm_key),
-                    "hqLocation": selected_hq or "All Headquarters",
-                    "company_ids": [],
-                    "daily_cases": 0.0,
-                    "daily_bottles": 0.0,
-                    "daily_bl": 0.0,
-                    "mtd_cases": 0.0,
-                    "mtd_bottles": 0.0,
-                    "mtd_bl": 0.0,
-                    "ytd_cases": 0.0,
-                    "ytd_bottles": 0.0,
-                    "ytd_bl": 0.0,
-                }
-            if cid and cid not in grouped_companies[norm_key]["company_ids"]:
-                grouped_companies[norm_key]["company_ids"].append(cid)
+        db_fetch_total += (time.perf_counter() - t_mc_start)
+        mc_data = mc_res.data or []
     except Exception as e_mc:
+        db_fetch_total += (time.perf_counter() - t_mc_start)
         logger.warning(f"Error fetching master companies: {e_mc}")
+        mc_data = []
+
+    # 3. Mount and group master companies
+    t_mount_start = time.perf_counter()
+    grouped_companies = {}
+    for mc in mc_data:
+        cid = str(mc.get("company_id") or "")
+        cname = str(mc.get("company_name") or "").strip()
+        if not cname or cname.lower() == "others":
+            continue
+        if company_name and cname.lower() != company_name.strip().lower():
+            continue
+        norm_name = normalize_company_name(cname)
+        norm_key = norm_name.lower().replace(" ", "-").replace("/", "-")
+        if norm_key not in grouped_companies:
+            grouped_companies[norm_key] = {
+                "id": norm_key,
+                "name": norm_name,
+                "isPinned": is_pinned_company(norm_name, norm_key),
+                "hqLocation": selected_hq or "All Headquarters",
+                "company_ids": [],
+                "daily_cases": 0.0,
+                "daily_bottles": 0.0,
+                "daily_bl": 0.0,
+                "mtd_cases": 0.0,
+                "mtd_bottles": 0.0,
+                "mtd_bl": 0.0,
+                "ytd_cases": 0.0,
+                "ytd_bottles": 0.0,
+                "ytd_bl": 0.0,
+            }
+        if cid and cid not in grouped_companies[norm_key]["company_ids"]:
+            grouped_companies[norm_key]["company_ids"].append(cid)
 
     for row in comp_summary_data:
         cid = str(row.get("company_id") or "")
@@ -155,10 +188,14 @@ def get_companies_summary(
         g["ytd_bottles"] += float(row.get("ytd_bottles") or 0.0)
         g["ytd_bl"] += float(row.get("ytd_bl") or 0.0)
 
-    # 3. Fetch master brands per company to ensure 0-sale brands are included in brand count and drilldown
+    mount_total += (time.perf_counter() - t_mount_start)
+
+    # 4. Fetch master brands per company to ensure 0-sale brands are included in brand count and drilldown
+    t_mb_start = time.perf_counter()
     master_brands_by_company = {}
     try:
         mb_res = client.table("brands").select("brand_id, brand_name, company_id").execute()
+        db_fetch_total += (time.perf_counter() - t_mb_start)
         for mb in (mb_res.data or []):
             cid = str(mb.get("company_id") or "")
             bid = str(mb.get("brand_id") or "")
@@ -168,10 +205,12 @@ def get_companies_summary(
                     master_brands_by_company[cid] = []
                 master_brands_by_company[cid].append({"brand_id": bid, "brand_name": bname})
     except Exception as e_mb:
+        db_fetch_total += (time.perf_counter() - t_mb_start)
         logger.warning(f"Error fetching master_brands_by_company: {e_mb}")
 
-    response_list = []
-    for norm_key, g in grouped_companies.items():
+    # 5. Execute company brands summaries in parallel
+    def fetch_company_brands_worker(item):
+        norm_key, g = item
         brand_params = {
             "p_company_ids": g["company_ids"],
             "p_target_date": target_date,
@@ -180,14 +219,28 @@ def get_companies_summary(
         }
         if hq_id_filter:
             brand_params["p_hq_id"] = hq_id_filter
-
         try:
             brand_res = client.rpc("get_mobile_company_brands_summary", brand_params).execute()
-            brands_data = brand_res.data or []
+            return norm_key, brand_res.data or []
         except Exception as e_brands:
             logger.error(f"Error calling get_mobile_company_brands_summary RPC for {g['name']}: {e_brands}")
-            brands_data = []
+            return norm_key, []
 
+    t_pool_start = time.perf_counter()
+    brands_results = {}
+    company_items = list(grouped_companies.items())
+    if company_items:
+        with ThreadPoolExecutor(max_workers=min(8, len(company_items))) as executor:
+            for n_key, b_data in executor.map(fetch_company_brands_worker, company_items):
+                brands_results[n_key] = b_data
+                rpc_count += 1
+    db_fetch_total += (time.perf_counter() - t_pool_start)
+
+    # 6. Mount final company response list
+    t_mount_res_start = time.perf_counter()
+    response_list = []
+    for norm_key, g in grouped_companies.items():
+        brands_data = brands_results.get(norm_key, [])
         comp_brands_map = {}
         # Pre-populate with all master registered brands for this company (cases = 0)
         for cid in g["company_ids"]:
@@ -288,4 +341,14 @@ def get_companies_summary(
         })
 
     response_list.sort(key=lambda x: (not x["isPinned"], -x["cases"]))
-    return response_list, target_date
+    mount_total += (time.perf_counter() - t_mount_res_start)
+
+    total_service_time = time.perf_counter() - t_service_start
+    timing_metrics = {
+        "db_fetch_ms": round(db_fetch_total * 1000, 2),
+        "mount_data_ms": round(mount_total * 1000, 2),
+        "total_service_ms": round(total_service_time * 1000, 2),
+        "rpc_calls": rpc_count,
+    }
+
+    return response_list, target_date, timing_metrics

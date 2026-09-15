@@ -543,6 +543,9 @@ export async function fetchMobileHeadquarters() {
 
   try {
     const data = await apiFetchCached('/mobile/headquarters', 600_000, token || undefined) as any;
+    if (data?.latest_sale_date) {
+      FastStorage.setString('rll_latest_sale_date', data.latest_sale_date);
+    }
     const hqs = data?.headquarters || [];
     logger.info(`fetchMobileHeadquarters: Successfully retrieved ${hqs.length} headquarters.`);
     return hqs;
@@ -550,6 +553,25 @@ export async function fetchMobileHeadquarters() {
     logger.error('fetchMobileHeadquarters: Exception fetching headquarters:', error);
     return ['All Headquarters'];
   }
+}
+
+export async function fetchMobileLatestDate(): Promise<string> {
+  const cached = FastStorage.getString('rll_latest_sale_date');
+  if (cached) return cached;
+
+  try {
+    const res = await apiFetch('/mobile/latest-date');
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.latest_sale_date) {
+        FastStorage.setString('rll_latest_sale_date', data.latest_sale_date);
+        return data.latest_sale_date;
+      }
+    }
+  } catch (err) {
+    logger.warn('fetchMobileLatestDate error:', err);
+  }
+  return '';
 }
 
 export async function clearAllPhoneCaches() {
@@ -575,8 +597,59 @@ export async function clearAuthSession() {
   invalidateApiCache();
 }
 
-export async function fetchCascadingGroups(dateFrom?: string, dateTo?: string, period?: string, selectedHq?: string) {
-  logger.info(`fetchCascadingGroups: Fetching active groups (dateFrom: ${dateFrom}, dateTo: ${dateTo}, period: ${period}, selectedHq: ${selectedHq})`);
+const cascadingAbortControllers = new Map<string, AbortController>();
+
+function getOrResetCascadingAbortController(scope: string): AbortSignal {
+  const existing = cascadingAbortControllers.get(scope);
+  if (existing) {
+    existing.abort();
+  }
+  const controller = new AbortController();
+  cascadingAbortControllers.set(scope, controller);
+  return controller.signal;
+}
+
+export async function fetchCascadingGroups(
+  dateFrom?: string,
+  dateTo?: string,
+  period?: string,
+  selectedHq?: string,
+  forceRefresh: boolean = false,
+  isPrefetch: boolean = false
+) {
+  const cleanHq = selectedHq && selectedHq !== 'All Headquarters' ? selectedHq.trim() : 'All';
+  const fastKey = `rll_v2::groups::${period || 'Daily'}::${cleanHq}::${dateTo || 'latest'}`;
+
+  // 1. FastStorage 0ms synchronous read
+  if (!forceRefresh) {
+    const cached = FastStorage.getObject<any[]>(fastKey);
+    if (cached && Array.isArray(cached) && cached.length > 0) {
+      if (!isPrefetch) {
+        setTimeout(() => {
+          fetchCascadingGroupsNetwork(dateFrom, dateTo, period, selectedHq, fastKey, true).catch(() => {});
+        }, 50);
+      }
+      return cached;
+    }
+  }
+
+  // 2. Fetch from live network
+  return fetchCascadingGroupsNetwork(dateFrom, dateTo, period, selectedHq, fastKey, isPrefetch);
+}
+
+async function fetchCascadingGroupsNetwork(
+  dateFrom?: string,
+  dateTo?: string,
+  period?: string,
+  selectedHq?: string,
+  fastKey?: string,
+  isPrefetch: boolean = false
+) {
+  let signal: AbortSignal | undefined = undefined;
+  if (!isPrefetch) {
+    signal = getOrResetCascadingAbortController('cascading_groups');
+  }
+
   try {
     const params = new URLSearchParams();
     if (dateFrom) params.append('date_from', dateFrom);
@@ -585,21 +658,68 @@ export async function fetchCascadingGroups(dateFrom?: string, dateTo?: string, p
     if (selectedHq && selectedHq !== 'All Headquarters') params.append('selected_hq', selectedHq);
 
     const queryStr = params.toString() ? `?${params.toString()}` : '';
-    const res = await apiFetch(`/mobile/cascading/groups${queryStr}`);
+    const res = await apiFetch(`/mobile/cascading/groups${queryStr}`, signal ? { signal } : undefined);
     if (!res.ok) {
       logger.warn(`fetchCascadingGroups: API returned status ${res.status}`);
       return [];
     }
     const data = await res.json();
-    return data || [];
-  } catch (error) {
+    const result = Array.isArray(data) ? data : [];
+    if (fastKey && result.length > 0) {
+      FastStorage.setObject(fastKey, result);
+    }
+    return result;
+  } catch (error: any) {
+    if (error?.name === 'AbortError' || error?.message?.toLowerCase().includes('aborted')) {
+      logger.info('fetchCascadingGroupsNetwork: Request aborted.');
+      return FastStorage.getObject<any[]>(fastKey || '') || [];
+    }
     logger.error('fetchCascadingGroups: Error fetching groups:', error);
     return [];
   }
 }
 
-export async function fetchGroupBrands(groupId: string, dateFrom?: string, dateTo?: string, period?: string, selectedHq?: string) {
-  logger.info(`fetchGroupBrands: Fetching brand sales for group ${groupId}`);
+export async function fetchGroupBrands(
+  groupId: string,
+  dateFrom?: string,
+  dateTo?: string,
+  period?: string,
+  selectedHq?: string,
+  forceRefresh: boolean = false,
+  isPrefetch: boolean = false
+) {
+  const cleanHq = selectedHq && selectedHq !== 'All Headquarters' ? selectedHq.trim() : 'All';
+  const fastKey = `rll_v2::grp_brands::${groupId}::${period || 'Daily'}::${cleanHq}::${dateTo || 'latest'}`;
+
+  if (!forceRefresh) {
+    const cached = FastStorage.getObject<any[]>(fastKey);
+    if (cached && Array.isArray(cached) && cached.length > 0) {
+      if (!isPrefetch) {
+        setTimeout(() => {
+          fetchGroupBrandsNetwork(groupId, dateFrom, dateTo, period, selectedHq, fastKey, true).catch(() => {});
+        }, 50);
+      }
+      return cached;
+    }
+  }
+
+  return fetchGroupBrandsNetwork(groupId, dateFrom, dateTo, period, selectedHq, fastKey, isPrefetch);
+}
+
+async function fetchGroupBrandsNetwork(
+  groupId: string,
+  dateFrom?: string,
+  dateTo?: string,
+  period?: string,
+  selectedHq?: string,
+  fastKey?: string,
+  isPrefetch: boolean = false
+) {
+  let signal: AbortSignal | undefined = undefined;
+  if (!isPrefetch) {
+    signal = getOrResetCascadingAbortController(`grp_brands_${groupId}`);
+  }
+
   try {
     const params = new URLSearchParams();
     if (dateFrom) params.append('date_from', dateFrom);
@@ -611,21 +731,68 @@ export async function fetchGroupBrands(groupId: string, dateFrom?: string, dateT
     }
 
     const queryStr = params.toString() ? `?${params.toString()}` : '';
-    const res = await apiFetch(`/mobile/cascading/groups/${encodeURIComponent(groupId)}/brands${queryStr}`);
+    const res = await apiFetch(`/mobile/cascading/groups/${encodeURIComponent(groupId)}/brands${queryStr}`, signal ? { signal } : undefined);
     if (!res.ok) {
       logger.warn(`fetchGroupBrands: API returned status ${res.status}`);
       return [];
     }
     const data = await res.json();
-    return data || [];
-  } catch (error) {
+    const result = Array.isArray(data) ? data : [];
+    if (fastKey && result.length > 0) {
+      FastStorage.setObject(fastKey, result);
+    }
+    return result;
+  } catch (error: any) {
+    if (error?.name === 'AbortError' || error?.message?.toLowerCase().includes('aborted')) {
+      logger.info(`fetchGroupBrandsNetwork: Request aborted for ${groupId}.`);
+      return FastStorage.getObject<any[]>(fastKey || '') || [];
+    }
     logger.error(`fetchGroupBrands: Error fetching brand sales for group ${groupId}:`, error);
     return [];
   }
 }
 
-export async function fetchGroupLicensees(groupId: string, dateFrom?: string, dateTo?: string, period?: string, selectedHq?: string) {
-  logger.info(`fetchGroupLicensees: Fetching licensees for group ${groupId}`);
+export async function fetchGroupLicensees(
+  groupId: string,
+  dateFrom?: string,
+  dateTo?: string,
+  period?: string,
+  selectedHq?: string,
+  forceRefresh: boolean = false,
+  isPrefetch: boolean = false
+) {
+  const cleanHq = selectedHq && selectedHq !== 'All Headquarters' ? selectedHq.trim() : 'All';
+  const fastKey = `rll_v2::grp_lic::${groupId}::${period || 'Daily'}::${cleanHq}::${dateTo || 'latest'}`;
+
+  if (!forceRefresh) {
+    const cached = FastStorage.getObject<any[]>(fastKey);
+    if (cached && Array.isArray(cached) && cached.length > 0) {
+      if (!isPrefetch) {
+        setTimeout(() => {
+          fetchGroupLicenseesNetwork(groupId, dateFrom, dateTo, period, selectedHq, fastKey, true).catch(() => {});
+        }, 50);
+      }
+      return cached;
+    }
+  }
+
+  return fetchGroupLicenseesNetwork(groupId, dateFrom, dateTo, period, selectedHq, fastKey, isPrefetch);
+}
+
+async function fetchGroupLicenseesNetwork(
+  groupId: string,
+  dateFrom?: string,
+  dateTo?: string,
+  period?: string,
+  selectedHq?: string,
+  fastKey?: string,
+  isPrefetch: boolean = false
+) {
+  let signal: AbortSignal | undefined = undefined;
+  if (!isPrefetch) {
+    signal = getOrResetCascadingAbortController(`grp_lic_${groupId}`);
+  }
+
   try {
     const params = new URLSearchParams();
     if (dateFrom) params.append('date_from', dateFrom);
@@ -637,21 +804,68 @@ export async function fetchGroupLicensees(groupId: string, dateFrom?: string, da
     }
 
     const queryStr = params.toString() ? `?${params.toString()}` : '';
-    const res = await apiFetch(`/mobile/cascading/groups/${encodeURIComponent(groupId)}/licensees${queryStr}`);
+    const res = await apiFetch(`/mobile/cascading/groups/${encodeURIComponent(groupId)}/licensees${queryStr}`, signal ? { signal } : undefined);
     if (!res.ok) {
       logger.warn(`fetchGroupLicensees: API returned status ${res.status}`);
       return [];
     }
     const data = await res.json();
-    return data || [];
-  } catch (error) {
+    const result = Array.isArray(data) ? data : [];
+    if (fastKey && result.length > 0) {
+      FastStorage.setObject(fastKey, result);
+    }
+    return result;
+  } catch (error: any) {
+    if (error?.name === 'AbortError' || error?.message?.toLowerCase().includes('aborted')) {
+      logger.info(`fetchGroupLicenseesNetwork: Request aborted for ${groupId}.`);
+      return FastStorage.getObject<any[]>(fastKey || '') || [];
+    }
     logger.error(`fetchGroupLicensees: Error fetching licensees for group ${groupId}:`, error);
     return [];
   }
 }
 
-export async function fetchLicenseeBrandSales(licenseeId: string, dateFrom?: string, dateTo?: string, period?: string, selectedHq?: string) {
-  logger.info(`fetchLicenseeBrandSales: Fetching brand sales for licensee ${licenseeId}`);
+export async function fetchLicenseeBrandSales(
+  licenseeId: string,
+  dateFrom?: string,
+  dateTo?: string,
+  period?: string,
+  selectedHq?: string,
+  forceRefresh: boolean = false,
+  isPrefetch: boolean = false
+) {
+  const cleanHq = selectedHq && selectedHq !== 'All Headquarters' ? selectedHq.trim() : 'All';
+  const fastKey = `rll_v2::lic_brands::${licenseeId}::${period || 'Daily'}::${cleanHq}::${dateTo || 'latest'}`;
+
+  if (!forceRefresh) {
+    const cached = FastStorage.getObject<any[]>(fastKey);
+    if (cached && Array.isArray(cached) && cached.length > 0) {
+      if (!isPrefetch) {
+        setTimeout(() => {
+          fetchLicenseeBrandSalesNetwork(licenseeId, dateFrom, dateTo, period, selectedHq, fastKey, true).catch(() => {});
+        }, 50);
+      }
+      return cached;
+    }
+  }
+
+  return fetchLicenseeBrandSalesNetwork(licenseeId, dateFrom, dateTo, period, selectedHq, fastKey, isPrefetch);
+}
+
+async function fetchLicenseeBrandSalesNetwork(
+  licenseeId: string,
+  dateFrom?: string,
+  dateTo?: string,
+  period?: string,
+  selectedHq?: string,
+  fastKey?: string,
+  isPrefetch: boolean = false
+) {
+  let signal: AbortSignal | undefined = undefined;
+  if (!isPrefetch) {
+    signal = getOrResetCascadingAbortController(`lic_brands_${licenseeId}`);
+  }
+
   try {
     const params = new URLSearchParams();
     if (dateFrom) params.append('date_from', dateFrom);
@@ -663,14 +877,22 @@ export async function fetchLicenseeBrandSales(licenseeId: string, dateFrom?: str
     }
 
     const queryStr = params.toString() ? `?${params.toString()}` : '';
-    const res = await apiFetch(`/mobile/cascading/licensees/${encodeURIComponent(licenseeId)}/brand-sales${queryStr}`);
+    const res = await apiFetch(`/mobile/cascading/licensees/${encodeURIComponent(licenseeId)}/brand-sales${queryStr}`, signal ? { signal } : undefined);
     if (!res.ok) {
       logger.warn(`fetchLicenseeBrandSales: API returned status ${res.status}`);
       return [];
     }
     const data = await res.json();
-    return data || [];
-  } catch (error) {
+    const result = Array.isArray(data) ? data : [];
+    if (fastKey && result.length > 0) {
+      FastStorage.setObject(fastKey, result);
+    }
+    return result;
+  } catch (error: any) {
+    if (error?.name === 'AbortError' || error?.message?.toLowerCase().includes('aborted')) {
+      logger.info(`fetchLicenseeBrandSalesNetwork: Request aborted for ${licenseeId}.`);
+      return FastStorage.getObject<any[]>(fastKey || '') || [];
+    }
     logger.error(`fetchLicenseeBrandSales: Error fetching brand sales for licensee ${licenseeId}:`, error);
     return [];
   }
@@ -725,6 +947,9 @@ async function fetchMobileCompaniesNetwork(
     signal = activeCompaniesAbortController.signal;
   }
 
+  const tRequestStart = Date.now();
+  const requestId = `req_comp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
   try {
     const params = new URLSearchParams();
     params.append('period', period);
@@ -733,13 +958,60 @@ async function fetchMobileCompaniesNetwork(
     if (forceRefresh) params.append('refresh', 'true');
 
     const res = await apiFetch(`/mobile/companies?${params.toString()}`, signal ? { signal } : undefined);
+    const tResponseReceived = Date.now();
+    const networkDurationMs = Math.round(tResponseReceived - tRequestStart);
+
     if (!res.ok) {
       logger.warn(`fetchMobileCompaniesNetwork: API status ${res.status}`);
       return null;
     }
-    const data = await res.json();
+
+    const backendDurationMs = res.headers.get('x-backend-duration-ms');
+    const dbFetchMs = res.headers.get('x-db-fetch-ms');
+    const backendMountMs = res.headers.get('x-backend-mount-ms');
+    const cacheStatus = res.headers.get('x-cache-status') || 'MISS';
+
+    const responseText = await res.text();
+    if (!responseText || !responseText.trim()) {
+      logger.warn(`fetchMobileCompaniesNetwork: Received empty response body (0 bytes) from server.`);
+      return null;
+    }
+
+    const responseBytes = responseText.length;
+    const responseKb = (responseBytes / 1024).toFixed(2);
+    const responseMb = (responseBytes / (1024 * 1024)).toFixed(2);
+
+    const tParseStart = Date.now();
+    const data = JSON.parse(responseText);
+    const tParseEnd = Date.now();
+    const jsonParseDurationMs = Math.round(tParseEnd - tParseStart);
+
     if (!data || !Array.isArray(data.companies)) {
       return null;
+    }
+
+    data._requestId = requestId;
+    data._endpoint = '/mobile/companies';
+    data._tRequestStart = tRequestStart;
+    data._tResponseReceived = tResponseReceived;
+    data._networkDurationMs = networkDurationMs;
+    data._responseBytes = responseBytes;
+    data._responseKb = responseKb;
+    data._responseMb = responseMb;
+    data._jsonParseDurationMs = jsonParseDurationMs;
+    data._backendDurationMs = backendDurationMs ? parseFloat(backendDurationMs) : (data.process_time_ms || null);
+    data._dbTimeMs = dbFetchMs ? parseFloat(dbFetchMs) : (data.db_time_ms || null);
+    data._mountTimeMs = backendMountMs ? parseFloat(backendMountMs) : (data.mount_time_ms || data.python_time_ms || null);
+    data._cacheStatus = cacheStatus;
+
+    logger.info(
+      `📊 [MOBILE_COMPANIES_RECEIVED] Request ID: ${requestId} | ` +
+      `Network=${networkDurationMs}ms | Size=${responseKb}KB (${responseMb}MB) | ` +
+      `JSON.parse=${jsonParseDurationMs}ms | Backend=${data._backendDurationMs}ms | Cache=${cacheStatus}`
+    );
+
+    if (data.latest_sale_date) {
+      FastStorage.setString('rll_latest_sale_date', data.latest_sale_date);
     }
 
     if (fastKey && data.companies.length > 0) {
@@ -764,7 +1036,45 @@ async function fetchMobileCompaniesNetwork(
   }
 }
 
-export async function fetchCompanyBrands(companyId: string, dateFrom?: string, dateTo?: string, selectedHq?: string) {
+export async function fetchCompanyBrands(
+  companyId: string,
+  dateFrom?: string,
+  dateTo?: string,
+  selectedHq?: string,
+  forceRefresh: boolean = false,
+  isPrefetch: boolean = false
+) {
+  const cleanHq = selectedHq && selectedHq !== 'All Headquarters' ? selectedHq.trim() : 'All';
+  const fastKey = `rll_v2::comp_brands::${companyId}::${cleanHq}::${dateTo || 'latest'}`;
+
+  if (!forceRefresh) {
+    const cached = FastStorage.getObject<any[]>(fastKey);
+    if (cached && Array.isArray(cached) && cached.length > 0) {
+      if (!isPrefetch) {
+        setTimeout(() => {
+          fetchCompanyBrandsNetwork(companyId, dateFrom, dateTo, selectedHq, fastKey, true).catch(() => {});
+        }, 50);
+      }
+      return cached;
+    }
+  }
+
+  return fetchCompanyBrandsNetwork(companyId, dateFrom, dateTo, selectedHq, fastKey, isPrefetch);
+}
+
+async function fetchCompanyBrandsNetwork(
+  companyId: string,
+  dateFrom?: string,
+  dateTo?: string,
+  selectedHq?: string,
+  fastKey?: string,
+  isPrefetch: boolean = false
+) {
+  let signal: AbortSignal | undefined = undefined;
+  if (!isPrefetch) {
+    signal = getOrResetCascadingAbortController(`comp_brands_${companyId}`);
+  }
+
   logger.info(`fetchCompanyBrands: Fetching brand sales for company ${companyId} (dateFrom: ${dateFrom}, dateTo: ${dateTo}, hq: ${selectedHq})`);
   try {
     const params = new URLSearchParams();
@@ -775,6 +1085,7 @@ export async function fetchCompanyBrands(companyId: string, dateFrom?: string, d
 
     const token = await getAuthToken();
     const res = await apiFetch(`/mobile/cascading/company-brands?${params.toString()}`, {
+      ...(signal ? { signal } : {}),
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     if (!res.ok) {
@@ -782,14 +1093,60 @@ export async function fetchCompanyBrands(companyId: string, dateFrom?: string, d
       return [];
     }
     const data = await res.json();
-    return data || [];
-  } catch (error) {
+    const result = Array.isArray(data) ? data : [];
+    if (fastKey && result.length > 0) {
+      FastStorage.setObject(fastKey, result);
+    }
+    return result;
+  } catch (error: any) {
+    if (error?.name === 'AbortError' || error?.message?.toLowerCase().includes('aborted')) {
+      logger.info(`fetchCompanyBrandsNetwork: Request aborted for company ${companyId}`);
+      return FastStorage.getObject<any[]>(fastKey || '') || [];
+    }
     logger.error(`fetchCompanyBrands error for company ${companyId}:`, error);
     return [];
   }
 }
 
-export async function fetchBrandLicensees(brandId: string, dateFrom?: string, dateTo?: string, selectedHq?: string) {
+export async function fetchBrandLicensees(
+  brandId: string,
+  dateFrom?: string,
+  dateTo?: string,
+  selectedHq?: string,
+  forceRefresh: boolean = false,
+  isPrefetch: boolean = false
+) {
+  const cleanHq = selectedHq && selectedHq !== 'All Headquarters' ? selectedHq.trim() : 'All';
+  const fastKey = `rll_v2::brand_lics::${brandId}::${cleanHq}::${dateTo || 'latest'}`;
+
+  if (!forceRefresh) {
+    const cached = FastStorage.getObject<any[]>(fastKey);
+    if (cached && Array.isArray(cached) && cached.length > 0) {
+      if (!isPrefetch) {
+        setTimeout(() => {
+          fetchBrandLicenseesNetwork(brandId, dateFrom, dateTo, selectedHq, fastKey, true).catch(() => {});
+        }, 50);
+      }
+      return cached;
+    }
+  }
+
+  return fetchBrandLicenseesNetwork(brandId, dateFrom, dateTo, selectedHq, fastKey, isPrefetch);
+}
+
+async function fetchBrandLicenseesNetwork(
+  brandId: string,
+  dateFrom?: string,
+  dateTo?: string,
+  selectedHq?: string,
+  fastKey?: string,
+  isPrefetch: boolean = false
+) {
+  let signal: AbortSignal | undefined = undefined;
+  if (!isPrefetch) {
+    signal = getOrResetCascadingAbortController(`brand_lics_${brandId}`);
+  }
+
   logger.info(`fetchBrandLicensees: Fetching licensee sales for brand ${brandId} (dateFrom: ${dateFrom}, dateTo: ${dateTo}, hq: ${selectedHq})`);
   try {
     const params = new URLSearchParams();
@@ -800,6 +1157,7 @@ export async function fetchBrandLicensees(brandId: string, dateFrom?: string, da
 
     const token = await getAuthToken();
     const res = await apiFetch(`/mobile/cascading/brand-licensees?${params.toString()}`, {
+      ...(signal ? { signal } : {}),
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     if (!res.ok) {
@@ -807,8 +1165,16 @@ export async function fetchBrandLicensees(brandId: string, dateFrom?: string, da
       return [];
     }
     const data = await res.json();
-    return data || [];
-  } catch (error) {
+    const result = Array.isArray(data) ? data : [];
+    if (fastKey && result.length > 0) {
+      FastStorage.setObject(fastKey, result);
+    }
+    return result;
+  } catch (error: any) {
+    if (error?.name === 'AbortError' || error?.message?.toLowerCase().includes('aborted')) {
+      logger.info(`fetchBrandLicenseesNetwork: Request aborted for brand ${brandId}`);
+      return FastStorage.getObject<any[]>(fastKey || '') || [];
+    }
     logger.error(`fetchBrandLicensees error for brand ${brandId}:`, error);
     return [];
   }

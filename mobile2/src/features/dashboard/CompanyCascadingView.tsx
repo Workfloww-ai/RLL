@@ -4,13 +4,15 @@ import {
   Text,
   TextInput,
   StyleSheet,
-  ScrollView,
+  FlatList,
   TouchableOpacity,
   BackHandler,
   RefreshControl,
 } from 'react-native';
 import { Company, Period } from '../../types';
 import { formatNumber } from '../../lib/utils';
+import { FastStorage } from '../../lib/storage';
+import { prefetchTopCascadingCards } from '../../lib/prefetchService';
 import { GroupListSkeletonList, CompanyListSkeletonList } from '../../components/SkeletonLoaders';
 import { fetchCompanyBrands, fetchBrandLicensees } from '../../lib/api';
 import { MetricsCard } from '../../components/MetricsCard';
@@ -92,6 +94,13 @@ export function CompanyCascadingView({
     setBrandLicensees([]);
   }, [dateFrom, dateTo, period, selectedHq]);
 
+  // Predictive prefetch top 3 companies for 0ms drilldown
+  useEffect(() => {
+    if (level === 1 && companies && companies.length > 0) {
+      prefetchTopCascadingCards(companies, 'companies', period, dateFrom, dateTo, selectedHq).catch(() => {});
+    }
+  }, [level, companies, period, dateFrom, dateTo, selectedHq]);
+
   // Handle drilldown trigger from parent
   useEffect(() => {
     if (selectedCompanyFromParent) {
@@ -131,6 +140,7 @@ export function CompanyCascadingView({
 
     const normKey = getNormalizedCompanyKey(companyObjOrId);
     const key = `${normKey}_${cacheKey}`;
+    const fastKey = `rll_comp_brands_${key}`;
 
     if (!forceRefresh && companyBrandsCacheRef.current.has(key)) {
       const cached = companyBrandsCacheRef.current.get(key) || [];
@@ -138,11 +148,29 @@ export function CompanyCascadingView({
       return;
     }
 
+    // Check FastStorage for instant 0ms drill-down
+    if (!forceRefresh) {
+      const cached = FastStorage.getObject<any[]>(fastKey);
+      if (cached && Array.isArray(cached) && cached.length > 0) {
+        companyBrandsCacheRef.current.set(key, cached);
+        setCompanyBrands(cached);
+        setLoading(false);
+        // Background silent revalidation
+        fetchCompanyBrands(targetId, dateFrom, dateTo, selectedHq).then((data) => {
+          const result = data || [];
+          companyBrandsCacheRef.current.set(key, result);
+          if (result.length > 0) FastStorage.setObject(fastKey, result);
+        }).catch(() => {});
+        return;
+      }
+    }
+
     setLoading(true);
     try {
       const data = await fetchCompanyBrands(targetId, dateFrom, dateTo, selectedHq);
       const result = data || [];
       companyBrandsCacheRef.current.set(key, result);
+      if (result.length > 0) FastStorage.setObject(fastKey, result);
       setCompanyBrands(result);
     } catch (e) {
       console.error(`Error loading brands for company ${targetId}:`, e);
@@ -157,9 +185,28 @@ export function CompanyCascadingView({
   // 2. Fetch Licensees for Selected Brand (Level 3)
   const loadBrandLicensees = async (brandId: string, forceRefresh = false) => {
     const key = `${brandId}_${cacheKey}`;
+    const fastKey = `rll_brand_lic_${key}`;
+
     if (!forceRefresh && brandLicenseesCacheRef.current.has(key)) {
       setBrandLicensees(brandLicenseesCacheRef.current.get(key) || []);
       return;
+    }
+
+    // Check FastStorage for instant 0ms drill-down
+    if (!forceRefresh) {
+      const cached = FastStorage.getObject<any[]>(fastKey);
+      if (cached && Array.isArray(cached) && cached.length > 0) {
+        brandLicenseesCacheRef.current.set(key, cached);
+        setBrandLicensees(cached);
+        setLoading(false);
+        // Background silent revalidation
+        fetchBrandLicensees(brandId, dateFrom, dateTo, selectedHq).then((data) => {
+          const result = data || [];
+          brandLicenseesCacheRef.current.set(key, result);
+          if (result.length > 0) FastStorage.setObject(fastKey, result);
+        }).catch(() => {});
+        return;
+      }
     }
 
     setLoading(true);
@@ -167,6 +214,7 @@ export function CompanyCascadingView({
       const data = await fetchBrandLicensees(brandId, dateFrom, dateTo, selectedHq);
       const result = data || [];
       brandLicenseesCacheRef.current.set(key, result);
+      if (result.length > 0) FastStorage.setObject(fastKey, result);
       setBrandLicensees(result);
     } catch (e) {
       console.error(`Error loading licensees for brand ${brandId}:`, e);
@@ -417,6 +465,78 @@ export function CompanyCascadingView({
     }
   };
 
+  // Memoized keyExtractor for virtualized list
+  const keyExtractor = useCallback(
+    (item: any, index: number) => {
+      if (level === 1) return `company-${item.id || item.name || index}`;
+      if (level === 2) return `brand-${item.brand_id || item.id || item.brand_name || index}`;
+      return `licensee-${item.licensee_id || item.id || item.licensee_name || index}`;
+    },
+    [level]
+  );
+
+  // Memoized item renderer preserving 100% exact design and business logic
+  const renderCompanyCascadingItem = useCallback(
+    ({ item, index }: { item: any; index: number }) => {
+      if (level === 1) {
+        return (
+          <CompanyCard
+            key={`company-${item.id || item.name || 'comp'}-${index}`}
+            company={item}
+            period={period}
+            scaleFactor={scaleFactor}
+            onClick={() => handleSelectCompany(item)}
+          />
+        );
+      }
+
+      if (level === 2) {
+        const bCases = getScaledCases(item);
+        const bBottles = getScaledBottles(item);
+        const licCount = Number(item.selling_licensees_count || 0);
+        const licLabel = `${formatNumber(licCount)} ${licCount === 1 ? 'Licensee' : 'Licensees'}`;
+        const subtext = item.pack_size ? `${licLabel}  •  ${item.pack_size}` : licLabel;
+
+        return (
+          <MetricsCard
+            key={`brand-${item.brand_id || item.id || item.brand_name || 'brand'}-${index}`}
+            title={item.brand_name || 'Brand'}
+            subtitle={subtext}
+            metrics={[
+              { label: 'CASES', value: formatNumber(bCases) },
+              { label: 'BOTTLES', value: formatNumber(bBottles) },
+            ]}
+            titleIcon={<WineIcon size={16} color="#0F172A" />}
+            onPress={() => handleSelectBrand(item)}
+          />
+        );
+      }
+
+      // Level 3 (Licensee List)
+      const lCases = getScaledCases(item);
+      const lBottles = getScaledBottles(item);
+      const depotLocationPill = item.depot_name
+        ? (item.depot_name.startsWith('Depot:') ? item.depot_name : `Depot: ${item.depot_name}`)
+        : (selectedHq && selectedHq !== 'All Headquarters' ? `Headquarter: ${selectedHq}` : undefined);
+
+      return (
+        <MetricsCard
+          key={`licensee-${item.licensee_id || item.id || item.licensee_name || 'lic'}-${index}`}
+          title={item.licensee_name || 'Licensee'}
+          subtitle={`Trade: ${item.trade || item.Trade || 'Off'}`}
+          locationPill={depotLocationPill}
+          pillTheme="blue"
+          metrics={[
+            { label: 'CASES', value: formatNumber(lCases) },
+            { label: 'BOTTLES', value: formatNumber(lBottles) },
+          ]}
+          titleIcon={<UsersIcon size={16} color="#0F172A" />}
+        />
+      );
+    },
+    [level, period, scaleFactor, selectedHq, getScaledCases, getScaledBottles, handleSelectCompany, handleSelectBrand]
+  );
+
   return (
     <View style={styles.container}>
       {/* Level 2 or Level 3 Header Banner - Single Compact Row Layout */}
@@ -493,93 +613,46 @@ export function CompanyCascadingView({
         </TouchableOpacity>
       </View>
 
-      {/* Main Content List */}
-      <ScrollView
-        style={styles.scrollContainer}
-        contentContainerStyle={styles.scrollContent}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={handleRefresh}
-            colors={['#0F172A']}
-            tintColor="#0F172A"
-          />
-        }
-      >
-        {(loading || (level === 1 && (parentLoading || (companies.length === 0 && !searchQuery)))) ? (
-          level === 1 ? <CompanyListSkeletonList count={6} /> : <GroupListSkeletonList count={6} />
-        ) : paginatedList.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>
-              {searchQuery
-                ? 'No matching records found'
-                : level === 2
-                ? 'No brands recorded for this company'
-                : level === 3
-                ? 'No licensees found for this brand'
-                : 'No companies available'}
-            </Text>
-          </View>
-        ) : (
-          paginatedList.map((item, index) => {
-            if (level === 1) {
-              return (
-                <CompanyCard
-                  key={`company-${item.id || item.name || 'comp'}-${index}`}
-                  company={item}
-                  period={period}
-                  scaleFactor={scaleFactor}
-                  onClick={() => handleSelectCompany(item)}
-                />
-              );
-            }
-
-            if (level === 2) {
-              const bCases = getScaledCases(item);
-              const bBottles = getScaledBottles(item);
-              const licCount = Number(item.selling_licensees_count || 0);
-              const licLabel = `${formatNumber(licCount)} ${licCount === 1 ? 'Licensee' : 'Licensees'}`;
-              const subtext = item.pack_size ? `${licLabel}  •  ${item.pack_size}` : licLabel;
-
-              return (
-                <MetricsCard
-                  key={`brand-${item.brand_id || item.id || item.brand_name || 'brand'}-${index}`}
-                  title={item.brand_name || 'Brand'}
-                  subtitle={subtext}
-                  metrics={[
-                    { label: 'CASES', value: formatNumber(bCases) },
-                    { label: 'BOTTLES', value: formatNumber(bBottles) },
-                  ]}
-                  titleIcon={<WineIcon size={16} color="#0F172A" />}
-                  onPress={() => handleSelectBrand(item)}
-                />
-              );
-            }
-
-            // Level 3 (Licensee List)
-            const lCases = getScaledCases(item);
-            const lBottles = getScaledBottles(item);
-            const depotLocationPill = item.depot_name
-              ? (item.depot_name.startsWith('Depot:') ? item.depot_name : `Depot: ${item.depot_name}`)
-              : (selectedHq && selectedHq !== 'All Headquarters' ? `Headquarter: ${selectedHq}` : undefined);
-
-            return (
-              <MetricsCard
-                key={`licensee-${item.licensee_id || item.id || item.licensee_name || 'lic'}-${index}`}
-                title={item.licensee_name || 'Licensee'}
-                subtitle={`Trade: ${item.trade || item.Trade || 'Off'}`}
-                locationPill={depotLocationPill}
-                pillTheme="blue"
-                metrics={[
-                  { label: 'CASES', value: formatNumber(lCases) },
-                  { label: 'BOTTLES', value: formatNumber(lBottles) },
-                ]}
-                titleIcon={<UsersIcon size={16} color="#0F172A" />}
-              />
-            );
-          })
-        )}
-      </ScrollView>
+      {/* Main Content Virtualized List */}
+      {(loading || (level === 1 && (parentLoading || (companies.length === 0 && !searchQuery)))) ? (
+        <View style={styles.scrollContainer}>
+          {level === 1 ? <CompanyListSkeletonList count={6} /> : <GroupListSkeletonList count={6} />}
+        </View>
+      ) : (
+        <FlatList
+          style={styles.scrollContainer}
+          contentContainerStyle={styles.scrollContent}
+          data={paginatedList}
+          keyExtractor={keyExtractor}
+          renderItem={renderCompanyCascadingItem}
+          initialNumToRender={10}
+          maxToRenderPerBatch={10}
+          windowSize={5}
+          removeClippedSubviews={true}
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              colors={['#0F172A']}
+              tintColor="#0F172A"
+            />
+          }
+          ListEmptyComponent={
+            <View style={styles.emptyContainer}>
+              <Text style={styles.emptyText}>
+                {searchQuery
+                  ? 'No matching records found'
+                  : level === 2
+                  ? 'No brands recorded for this company'
+                  : level === 3
+                  ? 'No licensees found for this brand'
+                  : 'No companies available'}
+              </Text>
+            </View>
+          }
+        />
+      )}
 
       {/* Pagination Bar */}
       {!loading && totalItems > 0 && (

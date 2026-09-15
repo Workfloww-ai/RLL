@@ -332,7 +332,7 @@ export function TsmView({
           />
         }
       >
-        {loading ? (
+        {loading || (paginatedList.length === 0 && !searchQuery.trim() && (!tsms || tsms.length === 0)) ? (
           <TsmListSkeletonList count={5} />
         ) : paginatedList.length === 0 ? (
           <View style={styles.emptyCard}>

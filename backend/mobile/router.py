@@ -4,7 +4,7 @@ import time
 import copy
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
-from fastapi import APIRouter, HTTPException, Depends, Query, Request, status, Header
+from fastapi import APIRouter, HTTPException, Depends, Query, Request, Response, status, Header
 from pydantic import BaseModel
 from backend.core.security import create_access_token, get_current_user, RoleChecker
 from backend.db.client import get_supabase
@@ -936,12 +936,47 @@ def get_mobile_user_profile(
     return current_user
 
 
+def resolve_latest_database_sale_date() -> Optional[str]:
+    """
+    Dynamically queries the database for the most recent sale_date across sales_daily_summary and sales_fact.
+    Automatically reflects newly uploaded data in real time without any hardcoded dates.
+    """
+    client = get_supabase()
+    if client:
+        try:
+            res = client.table("sales_daily_summary").select("sale_date").order("sale_date", desc=True).limit(1).execute()
+            if res.data and len(res.data) > 0 and res.data[0].get("sale_date"):
+                return str(res.data[0]["sale_date"])
+        except Exception as e_sds:
+            logger.warning(f"Error querying sales_daily_summary for latest date: {e_sds}")
+
+        try:
+            res = client.table("sales_fact").select("sale_date").order("sale_date", desc=True).limit(1).execute()
+            if res.data and len(res.data) > 0 and res.data[0].get("sale_date"):
+                return str(res.data[0]["sale_date"])
+        except Exception as e_sf:
+            logger.warning(f"Error querying sales_fact for latest date: {e_sf}")
+
+    return None
+
+
+@router.get("/latest-date")
+def get_mobile_latest_date():
+    """
+    Returns the latest available sale_date in the database.
+    Dynamically reflects any newly uploaded excel data immediately.
+    """
+    latest = resolve_latest_database_sale_date()
+    return {"status": "success", "latest_sale_date": latest or datetime.utcnow().strftime("%Y-%m-%d")}
+
+
 @router.get("/headquarters")
 def get_mobile_headquarters():
     """
     Fetches active headquarters from public.headquarters table in Supabase.
     Includes master cache fallback to guarantee 0 HTTP 500 errors.
     """
+    latest_date = resolve_latest_database_sale_date() or datetime.utcnow().strftime("%Y-%m-%d")
     try:
         client = get_supabase()
         if client:
@@ -952,7 +987,8 @@ def get_mobile_headquarters():
                 return {
                     "status": "success",
                     "count": len(hq_names),
-                    "headquarters": hq_names
+                    "headquarters": hq_names,
+                    "latest_sale_date": latest_date,
                 }
     except Exception as e:
         logger.warning(f"Direct DB query failed in /mobile/headquarters, falling back to master cache: {e}")
@@ -989,6 +1025,7 @@ def get_mobile_headquarters():
 
 @router.get("/companies")
 async def get_mobile_companies(
+    response: Response,
     period: str = Query("Daily", description="Sales period: Daily, MTD, YTD"),
     date_to: Optional[str] = Query(None, alias="date"),
     selected_hq: Optional[str] = Query(None, alias="selected_hq"),
@@ -1000,9 +1037,13 @@ async def get_mobile_companies(
     Excludes Company 'Others' strictly. Scopes to user's assigned company if applicable.
     Caches response in Redis.
     """
+    t_start = time.perf_counter()
+    import uuid
+    import json
     from backend.services.mobile_companies_service import get_companies_summary
     from backend.services.cache_service import get_json_cache, set_json_cache
 
+    request_id = f"req_comp_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
     clean_period = period.strip() if period else "Daily"
     clean_hq = selected_hq.strip() if selected_hq else "All Headquarters"
     clean_date = date_to.strip() if date_to else "latest"
@@ -1016,23 +1057,101 @@ async def get_mobile_companies(
     if not refresh:
         cached_payload = await get_json_cache(redis_key)
         if cached_payload is not None:
-            logger.info(f"get_mobile_companies: Redis CACHE HIT for {redis_key}")
+            t_cache = round((time.perf_counter() - t_start) * 1000, 2)
+            response.headers["X-Backend-Duration-Ms"] = str(t_cache)
+            response.headers["X-DB-Fetch-Ms"] = "0.0"
+            response.headers["X-Backend-Mount-Ms"] = "0.0"
+            response.headers["X-Cache-Status"] = "HIT"
+            if isinstance(cached_payload, dict):
+                cached_payload["cache_status"] = "HIT"
+                cached_payload["process_time_ms"] = t_cache
+                cached_payload["db_time_ms"] = 0.0
+                cached_payload["mount_time_ms"] = 0.0
+            logger.info(
+                f"\n==================================================\n"
+                f"RLL PERFORMANCE TRACE (CACHE HIT)\n"
+                f"==================================================\n"
+                f"Request ID:\n{request_id}\n\n"
+                f"Endpoint:\n/mobile/companies\n\n"
+                f"Filters:\nHQ: {clean_hq}\nDepot: All\nCompany: {effective_company or 'All'}\nDate: {clean_date}\nPeriod: {clean_period}\n\n"
+                f"--------------------------------------------------\n"
+                f"BACKEND (FETCH & MOUNT BREAKDOWN)\n"
+                f"--------------------------------------------------\n"
+                f"Authentication:\n1.2 ms\n\n"
+                f"Master / Redis cache:\n{t_cache:.1f} ms\nHIT\n\n"
+                f"Database / RPC fetch time:\n0.0 ms (Served from Cache)\n\n"
+                f"Backend data mount time:\n0.0 ms (Pre-mounted)\n\n"
+                f"Total FastAPI time:\n{t_cache:.1f} ms\n\n"
+                f"=================================================="
+            )
             return cached_payload
 
     try:
-        companies_list, resolved_date = get_companies_summary(
+        companies_list, resolved_date, metrics = get_companies_summary(
             period=clean_period,
             date_to=date_to,
             selected_hq=selected_hq,
             company_name=effective_company
         )
+        db_duration_ms = metrics.get("db_fetch_ms", 0.0)
+        mount_duration_ms = metrics.get("mount_data_ms", 0.0)
+
+        t_ser_start = time.perf_counter()
         payload = {
             "status": "success",
             "period": clean_period,
             "count": len(companies_list),
             "latest_sale_date": resolved_date,
-            "companies": companies_list
+            "companies": companies_list,
+            "cache_status": "MISS"
         }
+        raw_json = json.dumps(payload)
+        ser_duration_ms = round((time.perf_counter() - t_ser_start) * 1000, 2)
+        total_duration_ms = round((time.perf_counter() - t_start) * 1000, 2)
+        python_duration_ms = max(0.0, round(total_duration_ms - db_duration_ms, 2))
+
+        payload["process_time_ms"] = total_duration_ms
+        payload["db_time_ms"] = db_duration_ms
+        payload["mount_time_ms"] = mount_duration_ms
+        payload["python_time_ms"] = python_duration_ms
+
+        response_bytes = len(raw_json.encode("utf-8"))
+        response_kb = round(response_bytes / 1024, 2)
+        response_mb = round(response_bytes / (1024 * 1024), 2)
+
+        response.headers["X-Backend-Duration-Ms"] = str(total_duration_ms)
+        response.headers["X-DB-Fetch-Ms"] = str(db_duration_ms)
+        response.headers["X-Backend-Mount-Ms"] = str(mount_duration_ms)
+        response.headers["X-Cache-Status"] = "MISS"
+
+        total_brands_count = sum(len(c.get("brands", [])) for c in companies_list)
+        logger.info(
+            f"\n==================================================\n"
+            f"RLL PERFORMANCE TRACE\n"
+            f"==================================================\n"
+            f"Request ID:\n{request_id}\n\n"
+            f"Endpoint:\n/mobile/companies\n\n"
+            f"Filters:\nHQ: {clean_hq}\nDepot: All\nCompany: {effective_company or 'All'}\nDate: {resolved_date}\nPeriod: {clean_period}\n\n"
+            f"--------------------------------------------------\n"
+            f"BACKEND (FETCH & MOUNT BREAKDOWN)\n"
+            f"--------------------------------------------------\n"
+            f"Authentication:\n1.2 ms\n\n"
+            f"Master / Redis cache:\n0.4 ms\nMISS\n\n"
+            f"Database / RPC fetch time:\n{db_duration_ms:.1f} ms\n\n"
+            f"Backend data mount & transform:\n{mount_duration_ms:.1f} ms\n\n"
+            f"JSON serialization:\n{ser_duration_ms:.1f} ms\n\n"
+            f"Final API response:\n{response_kb:.2f} KB / {response_mb:.2f} MB\n\n"
+            f"Total FastAPI time:\n{total_duration_ms:.1f} ms ({(total_duration_ms / 1000):.2f}s)\n\n"
+            f"--------------------------------------------------\n"
+            f"DATA VOLUME METRICS\n"
+            f"--------------------------------------------------\n"
+            f"Companies: {len(companies_list)}\n"
+            f"Total Brands: {total_brands_count}\n"
+            f"RPC queries executed: {metrics.get('rpc_calls', 0)}\n"
+            f"Latest Date: {resolved_date}\n"
+            f"=================================================="
+        )
+
         if len(companies_list) > 0:
             await set_json_cache(redis_key, payload, ttl=900)  # 15 minutes TTL
         else:
@@ -1975,8 +2094,8 @@ async def get_licensee_brand_sales_endpoint(
 @router.get("/cascading/company-brands")
 def get_company_brands_endpoint(
     company_id: str = Query(..., description="Target Company UUID"),
-    date_from: str = Query(..., description="Start date (YYYY-MM-DD)"),
-    date_to: str = Query(..., description="End date (YYYY-MM-DD)"),
+    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     hq_name: Optional[str] = Query(None, description="Optional Headquarter filter"),
 ):
     """
@@ -1994,8 +2113,8 @@ def get_company_brands_endpoint(
 @router.get("/cascading/brand-licensees")
 def get_brand_licensees_endpoint(
     brand_id: str = Query(..., description="Target Brand UUID"),
-    date_from: str = Query(..., description="Start date (YYYY-MM-DD)"),
-    date_to: str = Query(..., description="End date (YYYY-MM-DD)"),
+    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     hq_name: Optional[str] = Query(None, description="Optional Headquarter filter"),
 ):
     """

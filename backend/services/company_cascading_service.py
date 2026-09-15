@@ -5,6 +5,7 @@ Strictly excludes company "Others" and enforces enterprise business logic standa
 """
 
 from typing import List, Dict, Any, Optional
+from datetime import datetime
 import logging
 from backend.db.supabase_client import (
     fetch_company_brand_sales_db,
@@ -23,8 +24,8 @@ def is_others_company(company_name: Optional[str]) -> bool:
 
 def get_company_brands_sales_service(
     company_id: str,
-    date_from: str,
-    date_to: str,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     hq_name: Optional[str] = None,
     exclude_company: str = "Others"
 ) -> List[Dict[str, Any]]:
@@ -34,6 +35,11 @@ def get_company_brands_sales_service(
     """
     if not company_id:
         return []
+
+    if not date_to or not str(date_to).strip():
+        date_to = datetime.now().strftime("%Y-%m-%d")
+    if not date_from or not str(date_from).strip():
+        date_from = date_to
 
     try:
         raw_data = fetch_company_brand_sales_db(
@@ -71,8 +77,8 @@ def get_company_brands_sales_service(
 
 def get_brand_licensees_sales_service(
     brand_id: str,
-    date_from: str,
-    date_to: str,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     hq_name: Optional[str] = None,
     exclude_company: str = "Others"
 ) -> List[Dict[str, Any]]:
@@ -82,6 +88,11 @@ def get_brand_licensees_sales_service(
     """
     if not brand_id:
         return []
+
+    if not date_to or not str(date_to).strip():
+        date_to = datetime.now().strftime("%Y-%m-%d")
+    if not date_from or not str(date_from).strip():
+        date_from = date_to
 
     try:
         raw_data = fetch_brand_licensees_sales_db(

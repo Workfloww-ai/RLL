@@ -144,8 +144,13 @@ export function DepotsView({
           renderItem={renderDepotItem}
           contentContainerStyle={styles.listContent}
           initialNumToRender={10}
-          maxToRenderPerBatch={8}
+          maxToRenderPerBatch={10}
           windowSize={5}
+          getItemLayout={(_, index) => ({
+            length: 78,
+            offset: 78 * index,
+            index,
+          })}
           removeClippedSubviews={true}
           showsVerticalScrollIndicator={false}
         />

@@ -10,6 +10,7 @@ import {
   BackHandler,
 } from 'react-native';
 import { Period } from '../../types';
+import { FastStorage } from '../../lib/storage';
 import {
   LocationIcon,
   CalendarIcon,
@@ -19,7 +20,9 @@ import {
   CheckCircleIcon,
   XIcon,
 } from '../../components/Icons';
-import LogoSvg from '../../assets/rll logo.svg';
+
+const RllLogoPng = require('../../assets/rll.png');
+const LucidLogoPng = require('../../assets/lucid_logo_nobg.png');
 
 import { useTenant } from '../../context/TenantContext';
 import { Image } from 'react-native';
@@ -237,13 +240,11 @@ export function Header({
       <View style={styles.topRow}>
         <View style={styles.branding}>
           <View style={styles.logoBox}>
-            {config.logoUrl ? (
-              <Image source={{ uri: config.logoUrl }} style={{ width: 28, height: 28, resizeMode: 'contain' }} />
-            ) : (
-              <LogoSvg width={28} height={28} />
-            )}
+            <Image source={LucidLogoPng} style={{ width: 28, height: 28, resizeMode: 'contain' }} />
           </View>
-          <Text style={styles.title}>{config.appName || 'LucidX360'}</Text>
+          <Text style={styles.title} numberOfLines={1} ellipsizeMode="tail">
+            {config.appName || 'LucidX360'}
+          </Text>
         </View>
 
         {/* Minimalist Headquarters Selector Pill */}
@@ -253,7 +254,7 @@ export function Header({
           activeOpacity={0.75}
         >
           <View style={styles.iconBox}>
-            <LocationIcon size={13} color="#FFFFFF" />
+            <LocationIcon size={12} color="#FFFFFF" />
           </View>
           <Text
             style={styles.hqText}
@@ -263,7 +264,7 @@ export function Header({
           >
             {selectedHq}
           </Text>
-          <ChevronDownIcon size={14} color="#FFFFFF" />
+          <ChevronDownIcon size={13} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
 
@@ -312,7 +313,7 @@ export function Header({
                 <CalendarIcon size={13} color="#FFFFFF" />
               </View>
               <Text style={styles.dateInputText} numberOfLines={1}>
-                {formatDateDisplay(dateFrom || dateTo || latestSaleDate || '') || 'Select Date'}
+                {formatDateDisplay(dateFrom || dateTo || latestSaleDate || FastStorage.getString('rll_latest_sale_date') || '')}
               </Text>
             </TouchableOpacity>
 
@@ -332,7 +333,7 @@ export function Header({
                 activeOpacity={0.75}
               >
                 <Text style={styles.rangeInputText} numberOfLines={1}>
-                  {formatShortDateDisplay(dateFrom, dateFrom?.substring(0, 4) !== dateTo?.substring(0, 4)) || 'Start'}
+                  {formatShortDateDisplay(dateFrom || FastStorage.getString('rll_latest_sale_date') || '', dateFrom?.substring(0, 4) !== dateTo?.substring(0, 4))}
                 </Text>
               </TouchableOpacity>
 
@@ -344,7 +345,7 @@ export function Header({
                 activeOpacity={0.75}
               >
                 <Text style={styles.rangeInputText} numberOfLines={1}>
-                  {formatShortDateDisplay(dateTo, true) || 'End'}
+                  {formatShortDateDisplay(dateTo || FastStorage.getString('rll_latest_sale_date') || '', true)}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -620,9 +621,9 @@ export function Header({
 const styles = StyleSheet.create({
   header: {
     backgroundColor: '#0F172A',
-    paddingHorizontal: 16,
-    paddingTop: Platform.OS === 'ios' ? 12 : 12,
-    paddingBottom: 14,
+    paddingHorizontal: 12,
+    paddingTop: Platform.OS === 'ios' ? 12 : 10,
+    paddingBottom: 12,
     borderBottomLeftRadius: 20,
     borderBottomRightRadius: 20,
     shadowColor: '#000000',
@@ -635,36 +636,43 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 10,
+    width: '100%',
   },
   branding: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
+    flex: 1,
+    marginRight: 8,
+    minWidth: 0,
   },
   logoBox: {
-    width: 32,
-    height: 32,
+    width: 28,
+    height: 28,
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 0,
   },
   title: {
     color: '#FFFFFF',
-    fontSize: 17.5,
+    fontSize: 15,
     fontWeight: '800',
     letterSpacing: -0.2,
+    flexShrink: 1,
   },
   hqSelectorPill: {
     flexDirection: 'row',
     backgroundColor: 'rgba(255, 255, 255, 0.12)',
     borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.18)',
     alignItems: 'center',
     gap: 4,
-    maxWidth: 170,
+    flexShrink: 0,
+    maxWidth: 145,
   },
   iconBox: {
     justifyContent: 'center',
@@ -672,9 +680,9 @@ const styles = StyleSheet.create({
   },
   hqText: {
     color: '#FFFFFF',
-    fontSize: 12,
+    fontSize: 11.5,
     fontWeight: '700',
-    flex: 1,
+    flexShrink: 1,
   },
   controlsRow: {
     flexDirection: 'row',

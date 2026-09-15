@@ -73,9 +73,9 @@ export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           tenantId: resolvedTenantId,
           tenantSlug: data.tenant_slug || prev.tenantSlug,
           appName: prev.appName !== defaultTenantConfig.appName ? prev.appName : (data.app_name || 'LucidX360'),
-          logoUrl: prev.logoUrl || data.logo_url || '',
+          logoUrl: (data.logo_url && (data.logo_url.startsWith('http://') || data.logo_url.startsWith('https://'))) ? data.logo_url : '',
           faviconUrl: data.favicon_url || '',
-          splashScreenUrl: data.splash_screen_url || '',
+          splashScreenUrl: (data.splash_screen_url && (data.splash_screen_url.startsWith('http://') || data.splash_screen_url.startsWith('https://'))) ? data.splash_screen_url : '',
           pinnedCompanyName: prev.pinnedCompanyName !== defaultTenantConfig.pinnedCompanyName ? prev.pinnedCompanyName : (data.pinned_company_name || ''),
           excludedCompanies: data.excluded_companies || ['Others'],
         }));

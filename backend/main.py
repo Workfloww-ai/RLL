@@ -120,9 +120,14 @@ async def log_requests(request: Request, call_next):
     start_time = time.time()
     response = await call_next(request)
     duration = time.time() - start_time
+    db_ms = response.headers.get("X-DB-Fetch-Ms")
+    mount_ms = response.headers.get("X-Backend-Mount-Ms")
+    extra_perf = ""
+    if db_ms and mount_ms:
+        extra_perf = f" | DB Fetch: {db_ms}ms | Backend Mount: {mount_ms}ms"
     logger.info(
         f"API Call - Method: {request.method} | Path: {request.url.path} | "
-        f"Status: {response.status_code} | Duration: {duration:.4f}s"
+        f"Status: {response.status_code} | Duration: {duration:.4f}s{extra_perf}"
     )
     return response
 

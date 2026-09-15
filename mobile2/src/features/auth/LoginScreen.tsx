@@ -19,7 +19,8 @@ import {
   ArrowRightIcon,
 } from '../../components/Icons';
 
-import LogoSvg from '../../assets/rll logo.svg';
+const LucidLogoPng = require('../../assets/lucid_logo_nobg.png');
+const RllLogoPng = require('../../assets/rll.png');
 import { sendMobileOTP, verifyMobileOTP } from '../../lib/api';
 import { logger } from '../../lib/logger';
 import { useTenant } from '../../context/TenantContext';
@@ -157,11 +158,7 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         <View style={styles.container}>
           {/* Header Branding */}
           <View style={styles.brandingHeader}>
-            {config.logoUrl ? (
-              <Image source={{ uri: config.logoUrl }} style={{ width: 76, height: 76, resizeMode: 'contain', marginBottom: 12 }} />
-            ) : (
-              <LogoSvg width={76} height={76} style={styles.logoImage} />
-            )}
+            <Image source={LucidLogoPng} style={{ width: 84, height: 84, resizeMode: 'contain', marginBottom: 12 }} />
             <Text style={styles.titleText}>{config.appName || 'LucidX360'}</Text>
           </View>
 

@@ -4,16 +4,16 @@ import {
   Text,
   TextInput,
   StyleSheet,
-  ScrollView,
+  FlatList,
   Modal,
   TouchableOpacity,
   TouchableWithoutFeedback,
   BackHandler,
-  Animated,
   RefreshControl,
 } from 'react-native';
 import { Period } from '../../types';
-import { formatNumber } from '../../lib/utils';
+import { FastStorage } from '../../lib/storage';
+import { prefetchTopCascadingCards } from '../../lib/prefetchService';
 import { GroupListSkeletonList } from '../../components/SkeletonLoaders';
 import {
   fetchCascadingGroups,
@@ -64,14 +64,27 @@ export function GroupsCascadingView({
   const [selectedGroup, setSelectedGroup] = useState<any>(null);
   const [selectedLicensee, setSelectedLicensee] = useState<any>(null);
 
-  // Data lists
-  const [groups, setGroups] = useState<any[]>([]);
+  // Caching refs & keys
+  const cleanHq = selectedHq && selectedHq !== 'All Headquarters' ? selectedHq.trim() : 'All';
+  const groupsFastKey = `rll_v2::groups::${period || 'Daily'}::${cleanHq}::${dateTo || 'latest'}`;
+  const cacheKey = `${dateFrom}_${dateTo}_${period}_${cleanHq}`;
+  const groupsCacheRef = useRef<{ key: string; data: any[] } | null>(null);
+  const groupLicenseesCacheRef = useRef<Map<string, any[]>>(new Map());
+  const groupBrandsCacheRef = useRef<Map<string, any[]>>(new Map());
+  const licenseeBrandsCacheRef = useRef<Map<string, any[]>>(new Map());
+
+  // Data lists - Synchronous instant-paint from FastStorage (0ms on revisit / launch)
+  const [groups, setGroups] = useState<any[]>(() => {
+    const initHq = selectedHq && selectedHq !== 'All Headquarters' ? selectedHq.trim() : 'All';
+    const initKey = `rll_v2::groups::${period || 'Daily'}::${initHq}::${dateTo || 'latest'}`;
+    return FastStorage.getObject<any[]>(initKey) || [];
+  });
   const [groupBrands, setGroupBrands] = useState<any[]>([]);
   const [licensees, setLicensees] = useState<any[]>([]);
   const [licenseeBrands, setLicenseeBrands] = useState<any[]>([]);
 
-  // Filtering & controls
-  const [loading, setLoading] = useState<boolean>(false);
+  // Filtering & controls - loading is false if cached data exists
+  const [loading, setLoading] = useState<boolean>(groups.length === 0);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [sortOption, setSortOption] = useState<SortOptionValue>('az');
@@ -85,14 +98,7 @@ export function GroupsCascadingView({
     [scaleFactor]
   );
 
-  // Caching refs
-  const cacheKey = `${dateFrom}_${dateTo}_${period}_${selectedHq || 'All'}`;
-  const groupsCacheRef = useRef<{ key: string; data: any[] } | null>(null);
-  const groupLicenseesCacheRef = useRef<Map<string, any[]>>(new Map());
-  const groupBrandsCacheRef = useRef<Map<string, any[]>>(new Map());
-  const licenseeBrandsCacheRef = useRef<Map<string, any[]>>(new Map());
-
-  // Reset cache and set loading state on date/period/selectedHq change
+  // Sync Level 1 & Level 2 on date/period/selectedHq change
   useEffect(() => {
     groupsCacheRef.current = null;
     groupLicenseesCacheRef.current.clear();
@@ -101,7 +107,25 @@ export function GroupsCascadingView({
     setLicensees([]);
     setGroupBrands([]);
     setLicenseeBrands([]);
-    setLoading(true);
+
+    if (level === 1) {
+      // Check FastStorage synchronously for the new filter parameters
+      const cached = FastStorage.getObject<any[]>(groupsFastKey);
+      if (cached && Array.isArray(cached) && cached.length > 0) {
+        setGroups(cached);
+        setLoading(false);
+        // Silent background refresh
+        loadGroups(false);
+      } else {
+        setGroups([]);
+        setLoading(true);
+        loadGroups(true);
+      }
+    } else if (level === 2 && selectedGroup) {
+      loadGroupDetails(selectedGroup.group_id);
+    } else if (level === 3 && selectedLicensee) {
+      loadLicenseeBrands(selectedLicensee.licensee_id);
+    }
   }, [dateFrom, dateTo, period, selectedHq]);
 
   // Reset search and pagination
@@ -121,21 +145,26 @@ export function GroupsCascadingView({
     ) {
       setGroups(groupsCacheRef.current.data);
       setLoading(false);
+      prefetchTopCascadingCards(groupsCacheRef.current.data, 'groups', period, dateFrom, dateTo, selectedHq).catch(() => {});
       return;
     }
 
-    setLoading(true);
+    if (showIndicator) setLoading(true);
 
     try {
       const data = await fetchCascadingGroups(dateFrom, dateTo, period, selectedHq);
       const result = data || [];
       if (result.length > 0) {
         groupsCacheRef.current = { key: cacheKey, data: result };
+        FastStorage.setObject(groupsFastKey, result);
+        prefetchTopCascadingCards(result, 'groups', period, dateFrom, dateTo, selectedHq).catch(() => {});
       }
       setGroups(result);
     } catch (e) {
       console.error('Error loading groups:', e);
-      setGroups([]);
+      if (!groups || groups.length === 0) {
+        setGroups([]);
+      }
     } finally {
       setLoading(false);
     }
@@ -144,6 +173,8 @@ export function GroupsCascadingView({
   // 2. Fetch Group Licensees and Group Brands
   const loadGroupDetails = async (groupId: string, forceRefresh = false) => {
     const key = `${groupId}_${cacheKey}`;
+    const fastLicsKey = `rll_grp_lic_${key}`;
+    const fastBrandsKey = `rll_grp_brands_${key}`;
 
     if (
       !forceRefresh &&
@@ -153,6 +184,32 @@ export function GroupsCascadingView({
       setLicensees(groupLicenseesCacheRef.current.get(key) || []);
       setGroupBrands(groupBrandsCacheRef.current.get(key) || []);
       return;
+    }
+
+    // Check FastStorage for instant 0ms drill-down
+    if (!forceRefresh) {
+      const cachedLics = FastStorage.getObject<any[]>(fastLicsKey);
+      const cachedBrands = FastStorage.getObject<any[]>(fastBrandsKey);
+      if (cachedLics && cachedBrands) {
+        groupLicenseesCacheRef.current.set(key, cachedLics);
+        groupBrandsCacheRef.current.set(key, cachedBrands);
+        setLicensees(cachedLics);
+        setGroupBrands(cachedBrands);
+        setLoading(false);
+        // Silent background refresh
+        Promise.all([
+          fetchGroupLicensees(groupId, dateFrom, dateTo, period, selectedHq),
+          fetchGroupBrands(groupId, dateFrom, dateTo, period, selectedHq),
+        ]).then(([licsData, brandsData]) => {
+          const lics = licsData || [];
+          const gBrands = brandsData || [];
+          groupLicenseesCacheRef.current.set(key, lics);
+          groupBrandsCacheRef.current.set(key, gBrands);
+          if (lics.length > 0) FastStorage.setObject(fastLicsKey, lics);
+          if (gBrands.length > 0) FastStorage.setObject(fastBrandsKey, gBrands);
+        }).catch(() => {});
+        return;
+      }
     }
 
     setLoading(true);
@@ -168,6 +225,8 @@ export function GroupsCascadingView({
 
       groupLicenseesCacheRef.current.set(key, lics);
       groupBrandsCacheRef.current.set(key, gBrands);
+      if (lics.length > 0) FastStorage.setObject(fastLicsKey, lics);
+      if (gBrands.length > 0) FastStorage.setObject(fastBrandsKey, gBrands);
 
       setLicensees(lics);
       setGroupBrands(gBrands);
@@ -183,9 +242,30 @@ export function GroupsCascadingView({
   // 3. Fetch Licensee Brands (Level 3)
   const loadLicenseeBrands = async (licenseeId: string, forceRefresh = false) => {
     const key = `${licenseeId}_${cacheKey}`;
+    const fastKey = `rll_lic_brands_${key}`;
+
     if (!forceRefresh && licenseeBrandsCacheRef.current.has(key)) {
       setLicenseeBrands(licenseeBrandsCacheRef.current.get(key) || []);
       return;
+    }
+
+    // Check FastStorage for instant 0ms drill-down
+    if (!forceRefresh) {
+      const cached = FastStorage.getObject<any[]>(fastKey);
+      if (cached && Array.isArray(cached) && cached.length > 0) {
+        licenseeBrandsCacheRef.current.set(key, cached);
+        setLicenseeBrands(cached);
+        setLoading(false);
+        // Silent background refresh
+        fetchLicenseeBrandSales(licenseeId, dateFrom, dateTo, period, selectedHq)
+          .then((data) => {
+            const result = data || [];
+            licenseeBrandsCacheRef.current.set(key, result);
+            if (result.length > 0) FastStorage.setObject(fastKey, result);
+          })
+          .catch(() => {});
+        return;
+      }
     }
 
     setLoading(true);
@@ -193,6 +273,7 @@ export function GroupsCascadingView({
       const data = await fetchLicenseeBrandSales(licenseeId, dateFrom, dateTo, period, selectedHq);
       const result = data || [];
       licenseeBrandsCacheRef.current.set(key, result);
+      if (result.length > 0) FastStorage.setObject(fastKey, result);
       setLicenseeBrands(result);
     } catch (e) {
       console.error(`Error loading brand sales for licensee ${licenseeId}:`, e);
@@ -201,17 +282,6 @@ export function GroupsCascadingView({
       setLoading(false);
     }
   };
-
-  // Sync Level 1 on mount or date/period/HQ changes
-  useEffect(() => {
-    if (level === 1) {
-      loadGroups(true);
-    } else if (level === 2 && selectedGroup) {
-      loadGroupDetails(selectedGroup.group_id);
-    } else if (level === 3 && selectedLicensee) {
-      loadLicenseeBrands(selectedLicensee.licensee_id);
-    }
-  }, [dateFrom, dateTo, period, selectedHq]);
 
   // Selection handlers
   const handleSelectGroup = (g: any) => {
@@ -357,6 +427,133 @@ export function GroupsCascadingView({
     return `Search brands in ${firstName}...`;
   }, [level, activeGroupTab, selectedLicensee]);
 
+  // Memoized keyExtractor for virtualized list
+  const keyExtractor = useCallback(
+    (item: any, index: number) => {
+      if (level === 1) return `grp-${item.group_id || item.id || index}`;
+      if (level === 2) {
+        return activeGroupTab === 'brands'
+          ? `grp-brand-${item.brand_id || item.id || index}`
+          : `grp-lic-${item.licensee_id || item.id || index}`;
+      }
+      return `lic-brand-${item.brand_id || item.id || index}`;
+    },
+    [level, activeGroupTab]
+  );
+
+  // Memoized item renderer preserving 100% exact design and business logic
+  const renderCascadingItem = useCallback(
+    ({ item, index }: { item: any; index: number }) => {
+      // Level 1: Root Group Card (Image 1)
+      if (level === 1) {
+        const cases = Number(
+          Number(item.total_cases ?? item.cases ?? item.mtd_cases ?? 0).toFixed(2)
+        );
+        const bottles = Math.round(
+          Number(item.total_bottles ?? item.bottles ?? item.mtd_bottles ?? 0)
+        );
+
+        return (
+          <MetricsCard
+            key={`grp-${item.group_id || item.id || 'grp'}-${index}`}
+            title={item.group_name}
+            subtitle={`${item.total_licensees || 0} Licensee(s)  •  ${item.total_brands || 0} Brand(s)`}
+            metrics={[
+              { label: 'Cases', value: cases },
+              { label: 'Bottles', value: bottles },
+            ]}
+            pillTheme="blue"
+            onPress={() => handleSelectGroup(item)}
+            scaleFactor={scaleFactor}
+          />
+        );
+      }
+
+      // Level 2: Group Brands View (Image 2)
+      if (level === 2 && activeGroupTab === 'brands') {
+        const cases = Number(Number(item.total_cases ?? 0).toFixed(2));
+        const bottles = Math.round(Number(item.total_bottles ?? 0));
+        const depotPill =
+          item.depot_name && item.depot_name !== 'Unassigned'
+            ? item.depot_name
+            : undefined;
+
+        return (
+          <MetricsCard
+            key={`grp-brand-${item.brand_id || item.id || 'brand'}-${index}`}
+            title={item.brand_name}
+            companyBadge={item.company_name || 'Brand Product'}
+            metrics={[
+              { label: 'Cases', value: cases },
+              { label: 'Bottles', value: bottles },
+            ]}
+            locationPill={depotPill}
+            pillTheme="blue"
+            scaleFactor={scaleFactor}
+          />
+        );
+      }
+
+      // Level 2: Group Licensees View (Image 3)
+      if (level === 2 && activeGroupTab === 'licensees') {
+        const cases = Number(Number(item.total_cases ?? 0).toFixed(2));
+        const bottles = Math.round(Number(item.total_bottles ?? 0));
+        const depotPill =
+          item.depot_name && item.depot_name !== 'Unassigned'
+            ? item.depot_name
+            : item.licensee_depots && item.licensee_depots.length > 0
+              ? item.licensee_depots[0]
+              : undefined;
+
+        return (
+          <MetricsCard
+            key={`grp-lic-${item.licensee_id || item.id || 'lic'}-${index}`}
+            title={item.licensee_name}
+            subtitle={`Trade: ${item.trade || 'Off'}  •  ${item.total_brands || 0} Brand(s)`}
+            metrics={[
+              { label: 'Cases', value: cases },
+              { label: 'Bottles', value: bottles },
+            ]}
+            locationPill={depotPill}
+            pillTheme="blue"
+            onPress={() => handleSelectLicensee(item)}
+            scaleFactor={scaleFactor}
+          />
+        );
+      }
+
+      // Level 3: Licensee Brands View (Image 4)
+      if (level === 3) {
+        const cases = Number(Number(item.total_cases ?? 0).toFixed(2));
+        const bottles = Math.round(Number(item.total_bottles ?? 0));
+        const depotPill =
+          item.depot_name && item.depot_name !== 'Unassigned'
+            ? item.depot_name
+            : item.sales_depots && item.sales_depots.length > 0
+              ? item.sales_depots[0]
+              : undefined;
+
+        return (
+          <MetricsCard
+            key={`lic-brand-${item.brand_id || item.id || 'brand'}-${index}`}
+            title={item.brand_name}
+            companyBadge={item.company_name || 'Brand'}
+            metrics={[
+              { label: 'Cases', value: cases },
+              { label: 'Bottles', value: bottles },
+            ]}
+            locationPill={depotPill}
+            pillTheme="blue"
+            scaleFactor={scaleFactor}
+          />
+        );
+      }
+
+      return null;
+    },
+    [level, activeGroupTab, scaleFactor, handleSelectGroup, handleSelectLicensee]
+  );
+
   return (
     <View style={styles.container}>
       {/* Top Header Bar for Level 2 & Level 3: [ Back Button ] + [ Segmented Tabs ] */}
@@ -449,138 +646,44 @@ export function GroupsCascadingView({
         </TouchableOpacity>
       </View>
 
-      {/* Main List Container */}
-      <ScrollView
-        style={styles.scrollList}
-        contentContainerStyle={styles.scrollContent}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={handleRefresh}
-            colors={['#0284C7', '#0F172A']}
-            tintColor="#0284C7"
-          />
-        }
-      >
-        {loading ? (
+      {/* Main Virtualized List Container */}
+      {loading && paginatedList.length === 0 ? (
+        <View style={styles.scrollList}>
           <GroupListSkeletonList count={5} />
-        ) : paginatedList.length === 0 ? (
-          <View style={styles.emptyCard}>
-            <Text style={styles.emptyText}>
-              {searchQuery.trim() ? 'No items match your search' : 'No data found'}
-            </Text>
-          </View>
-        ) : (
-          paginatedList.map((item, index) => {
-            // Level 1: Root Group Card (Image 1)
-            if (level === 1) {
-              const cases = Number(
-                Number(item.total_cases ?? item.cases ?? item.mtd_cases ?? 0).toFixed(2)
-              );
-              const bottles = Math.round(
-                Number(item.total_bottles ?? item.bottles ?? item.mtd_bottles ?? 0)
-              );
-
-              return (
-                <MetricsCard
-                  key={`grp-${item.group_id || item.id || 'grp'}-${index}`}
-                  title={item.group_name}
-                  subtitle={`${item.total_licensees || 0} Licensee(s)  •  ${item.total_brands || 0} Brand(s)`}
-                  metrics={[
-                    { label: 'Cases', value: cases },
-                    { label: 'Bottles', value: bottles },
-                  ]}
-                  pillTheme="blue"
-                  onPress={() => handleSelectGroup(item)}
-                  scaleFactor={scaleFactor}
-                />
-              );
-            }
-
-            // Level 2: Group Brands View (Image 2)
-            if (level === 2 && activeGroupTab === 'brands') {
-              const cases = Number(Number(item.total_cases ?? 0).toFixed(2));
-              const bottles = Math.round(Number(item.total_bottles ?? 0));
-              const depotPill =
-                item.depot_name && item.depot_name !== 'Unassigned'
-                  ? item.depot_name
-                  : undefined;
-
-              return (
-                <MetricsCard
-                  key={`grp-brand-${item.brand_id || item.id || 'brand'}-${index}`}
-                  title={item.brand_name}
-                  companyBadge={item.company_name || 'Brand Product'}
-                  metrics={[
-                    { label: 'Cases', value: cases },
-                    { label: 'Bottles', value: bottles },
-                  ]}
-                  locationPill={depotPill}
-                  pillTheme="blue"
-                  scaleFactor={scaleFactor}
-                />
-              );
-            }
-
-            // Level 2: Group Licensees View (Image 3)
-            if (level === 2 && activeGroupTab === 'licensees') {
-              const cases = Number(Number(item.total_cases ?? 0).toFixed(2));
-              const bottles = Math.round(Number(item.total_bottles ?? 0));
-              const depotPill =
-                item.depot_name && item.depot_name !== 'Unassigned'
-                  ? item.depot_name
-                  : item.licensee_depots && item.licensee_depots.length > 0
-                    ? item.licensee_depots[0]
-                    : undefined;
-
-              return (
-                <MetricsCard
-                  key={`grp-lic-${item.licensee_id || item.id || 'lic'}-${index}`}
-                  title={item.licensee_name}
-                  subtitle={`Trade: ${item.trade || 'Off'}  •  ${item.total_brands || 0} Brand(s)`}
-                  metrics={[
-                    { label: 'Cases', value: cases },
-                    { label: 'Bottles', value: bottles },
-                  ]}
-                  locationPill={depotPill}
-                  pillTheme="blue"
-                  onPress={() => handleSelectLicensee(item)}
-                  scaleFactor={scaleFactor}
-                />
-              );
-            }
-
-            // Level 3: Licensee Brands View (Image 4)
-            if (level === 3) {
-              const cases = Number(Number(item.total_cases ?? 0).toFixed(2));
-              const bottles = Math.round(Number(item.total_bottles ?? 0));
-              const depotPill =
-                item.depot_name && item.depot_name !== 'Unassigned'
-                  ? item.depot_name
-                  : item.sales_depots && item.sales_depots.length > 0
-                    ? item.sales_depots[0]
-                    : undefined;
-
-              return (
-                <MetricsCard
-                  key={`lic-brand-${item.brand_id || item.id || 'brand'}-${index}`}
-                  title={item.brand_name}
-                  companyBadge={item.company_name || 'Brand'}
-                  metrics={[
-                    { label: 'Cases', value: cases },
-                    { label: 'Bottles', value: bottles },
-                  ]}
-                  locationPill={depotPill}
-                  pillTheme="blue"
-                  scaleFactor={scaleFactor}
-                />
-              );
-            }
-
-            return null;
-          })
-        )}
-      </ScrollView>
+        </View>
+      ) : (
+        <FlatList
+          style={styles.scrollList}
+          contentContainerStyle={styles.scrollContent}
+          data={paginatedList}
+          keyExtractor={keyExtractor}
+          renderItem={renderCascadingItem}
+          initialNumToRender={10}
+          maxToRenderPerBatch={10}
+          windowSize={5}
+          removeClippedSubviews={true}
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              colors={['#0284C7', '#0F172A']}
+              tintColor="#0284C7"
+            />
+          }
+          ListEmptyComponent={
+            loading || (!searchQuery.trim() && (level === 1 ? groups.length === 0 : level === 2 ? (activeGroupTab === 'brands' ? groupBrands.length === 0 : licensees.length === 0) : licenseeBrands.length === 0)) ? (
+              <GroupListSkeletonList count={5} />
+            ) : (
+              <View style={styles.emptyCard}>
+                <Text style={styles.emptyText}>
+                  {searchQuery.trim() ? 'No items match your search' : 'No data found'}
+                </Text>
+              </View>
+            )
+          }
+        />
+      )}
 
       {/* Pagination Bar */}
       <PaginationBar

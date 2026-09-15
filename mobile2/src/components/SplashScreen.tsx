@@ -1,7 +1,8 @@
 import React, { useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Animated, Image } from 'react-native';
-import LogoSvg from '../assets/rll logo.svg';
 import { useTenant } from '../context/TenantContext';
+
+const RllLogoPng = require('../assets/rll.png');
 
 interface SplashScreenProps {
   onFinish?: () => void;
@@ -42,11 +43,7 @@ export function SplashScreen({ onFinish }: SplashScreenProps) {
         ]}
       >
         <View style={styles.logoContainer}>
-          {splashImgUrl ? (
-            <Image source={{ uri: splashImgUrl }} style={{ width: 120, height: 120, resizeMode: 'contain' }} />
-          ) : (
-            <LogoSvg width={120} height={120} />
-          )}
+          <Image source={RllLogoPng} style={{ width: 120, height: 120, resizeMode: 'contain' }} />
         </View>
 
         <View style={styles.textContainer}>

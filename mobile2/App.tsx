@@ -28,11 +28,13 @@ import { secureStorage } from './src/lib/secureStorage';
 import { Company, Period, ViewMode } from './src/types';
 import { formatNumber, normalizeCompanyList } from './src/lib/utils';
 import { getDynamicCardDimensions } from './src/lib/responsive';
+import { FastStorage } from './src/lib/storage';
 import {
   fetchMobileSales,
   fetchMobileCompanies,
   fetchUserProfile,
   fetchMobileHeadquarters,
+  fetchMobileLatestDate,
   clearAuthSession,
   clearAllPhoneCaches,
   hydratePersistentCache,
@@ -90,9 +92,20 @@ function MainApp() {
   }, []);
   const [user, setUser] = useState<any>(null);
   const [loadingSession, setLoadingSession] = useState(true);
+  const initialDbDate = FastStorage.getString('rll_latest_sale_date') || '';
   const [period, setPeriod] = useState<Period>('Daily');
-  const [dateFrom, setDateFrom] = useState<string>('');
-  const [dateTo, setDateTo] = useState<string>('');
+  const [dateFrom, setDateFrom] = useState<string>(initialDbDate);
+  const [dateTo, setDateTo] = useState<string>(initialDbDate);
+
+  // Dynamic bootstrap: Query latest DB date on mount
+  useEffect(() => {
+    fetchMobileLatestDate().then((latestDate) => {
+      if (latestDate) {
+        setDateFrom((curr) => (!curr ? latestDate : curr));
+        setDateTo((curr) => (!curr ? latestDate : curr));
+      }
+    });
+  }, []);
   const [viewMode, setViewMode] = useState<ViewMode>('companies');
   const [viewModeHistory, setViewModeHistory] = useState<ViewMode[]>(['companies']);
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
@@ -141,6 +154,9 @@ function MainApp() {
   const [showSortModal, setShowSortModal] = useState<boolean>(false);
 
   const handleTabChange = useCallback((newMode: ViewMode) => {
+    if (newMode === 'tsm' && (!apiData || !Array.isArray(apiData.tsms) || apiData.tsms.length === 0)) {
+      setLoadingSalesData(true);
+    }
     setViewMode((currentMode) => {
       if (newMode !== currentMode) {
         setViewModeHistory((prev) => [...prev, newMode]);
@@ -148,7 +164,7 @@ function MainApp() {
       }
       return currentMode;
     });
-  }, []);
+  }, [apiData]);
 
   // Hardware BackHandler for tab history & modals
   useEffect(() => {
@@ -224,8 +240,11 @@ function MainApp() {
         if (cachedUser && token) {
           logger.info(`App: Found active session for user: ${JSON.parse(cachedUser).email}`);
           setPeriod('Daily');
-          setDateFrom('');
-          setDateTo('');
+          const latestDbDate = FastStorage.getString('rll_latest_sale_date') || '';
+          if (latestDbDate) {
+            setDateFrom(latestDbDate);
+            setDateTo(latestDbDate);
+          }
           setViewMode('companies');
           const parsed = JSON.parse(cachedUser);
           setUser(parsed);
@@ -342,12 +361,7 @@ function MainApp() {
                   const pData = t.data?.[period] || t.data?.Daily || { cases: 0 };
                   return (pData.cases || 0) === 0;
                 }))
-                : viewMode === 'depots'
-                  ? (!res.depots || res.depots.length === 0 || res.depots.every((d: any) => {
-                    const pData = d.data?.[period] || d.data?.Daily || { cases: 0 };
-                    return (pData.cases || 0) === 0;
-                  }))
-                  : false;
+                : false;
 
           if (userHasExplicitDate && isEmptyData) {
             setShowNoDataModal(true);
@@ -371,32 +385,34 @@ function MainApp() {
             const totalEndToEndMs = Math.round(tFullMount - (res._tRequestStart || tMobileStart));
             const endToEndSec = (totalEndToEndMs / 1000).toFixed(2);
 
+            const endpoint = res._endpoint || (viewMode === 'companies' ? '/mobile/companies' : '/mobile/sales');
+            const dbFetchTime = res._dbTimeMs ?? res.db_time_ms ?? res.process_time_ms ?? 'N/A';
+            const mountTime = res._mountTimeMs ?? res.mount_time_ms ?? res.python_time_ms ?? 'N/A';
+            const totalBackendTime = res._backendDurationMs ?? res.process_time_ms ?? 'N/A';
+
             logger.info(
               `\n==================================================\n` +
               `RLL PERFORMANCE TRACE\n` +
               `==================================================\n\n` +
               `Request ID:\n${res._requestId || 'N/A'}\n\n` +
-              `Endpoint:\n/mobile/sales\n\n` +
+              `Endpoint:\n${endpoint}\n\n` +
               `Filters:\nHQ: ${selectedHq}\nDepot: All\nCompany: All\nDate: ${dateFrom || 'Default'}\nPeriod: ${period}\n\n` +
               `--------------------------------------------------\n` +
-              `BACKEND\n` +
+              `BACKEND (FETCH & MOUNT BREAKDOWN)\n` +
               `--------------------------------------------------\n` +
               `Authentication:\n1.2 ms\n\n` +
-              `Master cache:\n0.4 ms\nHIT\n\n` +
-              `Sales cache:\n0.1 ms\n${res._cacheStatus || 'MISS'}\n\n` +
-              `Supabase RPC:\n${res.process_time_ms ?? 'N/A'} ms\n\n` +
-              `RPC payload:\n${res._responseKb || 'N/A'} KB / ${res._responseMb || 'N/A'} MB\n\n` +
-              `RPC deserialization:\n0.1 ms\n\n` +
-              `Python transformation:\n${res.process_time_ms ?? 'N/A'} ms\n\n` +
+              `Master / Redis cache:\n0.4 ms\n${res._cacheStatus || 'MISS'}\n\n` +
+              `Database / RPC fetch time:\n${dbFetchTime} ms\n\n` +
+              `Backend data mount & transform:\n${mountTime} ms\n\n` +
               `JSON serialization:\n2.4 ms\n\n` +
               `Final API response:\n${res._responseKb || 'N/A'} KB / ${res._responseMb || 'N/A'} MB\n\n` +
-              `Total FastAPI time:\n${res._backendDurationMs ?? res.process_time_ms ?? 'N/A'} ms\n\n` +
+              `Total FastAPI time:\n${totalBackendTime} ms\n\n` +
               `--------------------------------------------------\n` +
               `NETWORK\n` +
               `--------------------------------------------------\n` +
               `Mobile request → response:\n${res._networkDurationMs ?? 'N/A'} ms\n\n` +
               `--------------------------------------------------\n` +
-              `REACT NATIVE\n` +
+              `REACT NATIVE (FRONTEND MOUNT BREAKDOWN)\n` +
               `--------------------------------------------------\n` +
               `JSON.parse:\n${res._jsonParseDurationMs ?? 0} ms\n\n` +
               `Frontend transformation:\n${frontendTransformMs} ms\n\n` +
@@ -640,8 +656,11 @@ function MainApp() {
           <LoginScreen
             onLoginSuccess={(loggedInUser) => {
               setPeriod('Daily');
-              setDateFrom('');
-              setDateTo('');
+              const latestDbDate = FastStorage.getString('rll_latest_sale_date') || '';
+              if (latestDbDate) {
+                setDateFrom(latestDbDate);
+                setDateTo(latestDbDate);
+              }
               setViewMode('companies');
               setUser(loggedInUser);
               updateWithUser(loggedInUser);
@@ -661,7 +680,7 @@ function MainApp() {
                 selectedHq={selectedHq}
                 setSelectedHq={setSelectedHq}
                 headquartersList={headquartersList}
-                latestSaleDate={apiData?.latest_sale_date}
+                latestSaleDate={apiData?.latest_sale_date || FastStorage.getString('rll_latest_sale_date') || ''}
                 fetchTimeMs={apiData?._fetchTimeMs}
                 processTimeMs={apiData?.process_time_ms}
               />
