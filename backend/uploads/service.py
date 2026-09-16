@@ -25,6 +25,53 @@ from backend.services.cache_service import invalidate_analytics_cache
 logger = logging.getLogger(__name__)
 
 
+class UploadStageTimer:
+    """
+    Real-time high-resolution stage timer for Excel upload pipeline.
+    Formats logs matching standard benchmark layout:
+    ========================================================================
+                          RLL INGESTION STAGE TIMINGS                      
+    ========================================================================
+    [UPLOAD] Stage Name              MM:SS
+    ========================================================================
+    """
+    def __init__(self, start_time: Optional[float] = None):
+        self.start_time = start_time or time.time()
+        self.last_time = self.start_time
+        self.history: List[tuple] = []
+        self._header_printed = False
+
+    def mark(self, stage_name: str):
+        now = time.time()
+        elapsed = max(0, now - self.start_time)
+        mins = int(elapsed // 60)
+        secs = int(elapsed % 60)
+        time_str = f"{mins:02d}:{secs:02d}"
+        
+        if not self._header_printed:
+            banner_top = (
+                "========================================================================\n"
+                "                      RLL INGESTION STAGE TIMINGS                      \n"
+                "========================================================================"
+            )
+            print(banner_top, flush=True)
+            logger.info("========================================================================")
+            logger.info("                      RLL INGESTION STAGE TIMINGS                      ")
+            logger.info("========================================================================")
+            self._header_printed = True
+
+        self.history.append((stage_name, time_str))
+        log_line = f"[UPLOAD] {stage_name:<26} {time_str}"
+        print(log_line, flush=True)
+        logger.info(log_line)
+
+        if stage_name.lower() in {"completed", "failed", "aborted"}:
+            banner_bottom = "========================================================================"
+            print(banner_bottom, flush=True)
+            logger.info(banner_bottom)
+
+
+
 
 # ============================================================
 # GOVERNMENT EXCEL COLUMNS
@@ -205,6 +252,26 @@ class ImportPipelineEngine:
             return ""
 
         return " ".join(value.split())
+
+    @staticmethod
+    def _normalize_licensee_name(name: str) -> str:
+        """
+        Strip trailing government shop codes and address suffixes from raw licensee names.
+
+        Government Excel files append extra info after the actual licensee name, e.g.:
+          '001 Sulochana Mewara Asind(M) - Ward No. 1 To 25 Total Ward - 25 (Shop No. 1)     -0601001'
+        becomes:
+          '001 Sulochana Mewara Asind(M)'
+
+        Pattern: trailing whitespace + hyphen + 6-7 digit shop code at end of string.
+        """
+        import re
+        if not name:
+            return name
+        # Strip trailing shop code: optional spaces, hyphen, 6-7 digit number, optional spaces
+        cleaned = re.sub(r'\s*-\s*\d{6,7}\s*$', '', name).strip()
+        # Normalize internal whitespace
+        return " ".join(cleaned.split()) if cleaned else name
 
     @staticmethod
     def _normalize_header(value) -> str:
@@ -676,6 +743,9 @@ class ImportPipelineEngine:
         start_time = time.time()
         started_at_iso = datetime.now().isoformat()
 
+        timer = UploadStageTimer(start_time=start_time)
+        timer.mark("File received")
+
         # Phase 2 Advisory Lock & Pipeline Guard Check
         lock_res = self.acquire_pipeline_lock(batch_id)
         if not lock_res.get("acquired"):
@@ -717,6 +787,8 @@ class ImportPipelineEngine:
             if dataframe.empty:
                 raise ValueError("Uploaded file contains no data rows.")
 
+            timer.mark("Excel parsed")
+
             column_map = self._build_column_map(dataframe)
             logger.info("Excel column mapping for batch %s: %s", batch_id, column_map)
 
@@ -736,7 +808,8 @@ class ImportPipelineEngine:
             def get_series(col_key, default=""):
                 col_name = column_map.get(col_key)
                 if col_name and col_name in dataframe.columns:
-                    return dataframe[col_name].fillna("").astype(str).str.strip()
+                    s = dataframe[col_name].fillna("").astype(str)
+                    return s.str.replace(r'\s+', ' ', regex=True).str.strip()
                 return pd.Series([default] * total_rows, index=dataframe.index)
 
             s_date = get_series("Date")
@@ -832,8 +905,17 @@ class ImportPipelineEngine:
             ]
             brand_cache = master_service.bulk_resolve_brands(brand_items)
             packaging_cache = master_service.bulk_resolve_packagings(unique_packagings)
+            # Parse dates vectorized
+            def parse_date_val(d):
+                try:
+                    return self._parse_date(d)
+                except Exception:
+                    return datetime.today().strftime("%Y-%m-%d")
+
+            map_date = s_date.apply(parse_date_val)
+
             self._sync_user_hierarchy(s_ase, s_asm, s_depot, depot_cache)
-            self._populate_user_sales_fact(batch_id, s_date, s_company, s_ase, s_brand, s_cases, s_btl, s_bl, company_cache, brand_cache, tenant_id=tenant_id)
+            self._populate_user_sales_fact(batch_id, map_date, s_company, s_ase, s_brand, s_cases, s_btl, s_bl, company_cache, brand_cache, tenant_id=tenant_id, timer=timer)
 
             # Vectorized ID Resolution
             clean_fn = master_service._clean
@@ -844,20 +926,11 @@ class ImportPipelineEngine:
             map_packaging = s_packing.map(lambda x: packaging_cache.get(clean_fn(x)))
             map_hq = s_hq.map(lambda x: hq_cache.get(clean_fn(x)) or hq_cache.get(clean_no_space(x)))
 
-            # Parse dates vectorized
-            def parse_date_val(d):
-                try:
-                    return self._parse_date(d)
-                except Exception:
-                    return datetime.today().strftime("%Y-%m-%d")
-
-            map_date = s_date.apply(parse_date_val)
-
             # Build Raw Staging DataFrame & Records
             raw_df = pd.DataFrame({
                 "tenant_id": tenant_id,
                 "batch_id": batch_id,
-                "sale_date_raw": s_date,
+                "sale_date_raw": map_date,
                 "company_raw": s_company,
                 "licensee_raw": s_licensee,
                 "trade_raw": s_trade,
@@ -1006,7 +1079,8 @@ class ImportPipelineEngine:
                     res_sql = self._execute_direct_copy_staging(
                         raw_records=raw_records,
                         batch_id=batch_id,
-                        tenant_id=tenant_id
+                        tenant_id=tenant_id,
+                        timer=timer,
                     )
 
                     # Phase 3 Fallback: If direct COPY not available, stage via PostgREST and invoke RPC
@@ -1014,7 +1088,7 @@ class ImportPipelineEngine:
                         self._bulk_insert(
                             table="staging_raw_sales_upload",
                             records=raw_records,
-                            chunk_size=5000,
+                            chunk_size=10000,
                             batch_id=batch_id,
                         )
                         from backend.db.supabase_client import resolve_sales_facts_rpc
@@ -1056,15 +1130,17 @@ class ImportPipelineEngine:
                             use_sql_resolution = True
                             imported_rows = res_sql.get("imported_rows", imported_rows)
                             logger.info(f"Batch {batch_id}: Set-based SQL resolution succeeded. Inserted {imported_rows} facts.")
+                            timer.mark("sales_fact inserted")
                 except Exception as e_sql_res:
                     logger.warning(f"Batch {batch_id}: Staging/SQL resolution notice: {e_sql_res}. Continuing with fallback.")
 
-            # Bulk Insert Raw Records into raw_sales_upload for permanent audit archive
-            if raw_records:
+            # Bulk Insert Raw Records into raw_sales_upload ONLY if SQL resolution was NOT used
+            # (If SQL resolution succeeded, staging table was already processed and raw_sales_upload is temporary/purged anyway)
+            if raw_records and not use_sql_resolution:
                 self._bulk_insert(
                     table="raw_sales_upload",
                     records=raw_records,
-                    chunk_size=5000,
+                    chunk_size=10000,
                     batch_id=batch_id,
                 )
 
@@ -1114,9 +1190,10 @@ class ImportPipelineEngine:
                 self._bulk_insert(
                     table="sales_fact",
                     records=fact_records,
-                    chunk_size=5000,
+                    chunk_size=10000,
                     batch_id=batch_id,
                 )
+                timer.mark("sales_fact inserted")
 
             # Step 10 - Trigger Incremental Analytics Summaries & Validation ONLY after complete sales_fact ingestion
             if fact_records and imported_rows > 0:
@@ -1130,7 +1207,8 @@ class ImportPipelineEngine:
 
                 agg_res = incremental_engine.process_batch_incremental_aggregation(
                     batch_id=batch_id,
-                    sale_dates=distinct_dates
+                    sale_dates=distinct_dates,
+                    timer=timer,
                 )
 
                 if not agg_res.get("success"):
@@ -1140,10 +1218,13 @@ class ImportPipelineEngine:
                 if distinct_dates:
                     self._update_batch(batch_id=batch_id, status="validating")
                     val_res = analytics_validator.validate_date_accuracy(target_date=str(distinct_dates[0]).split("T")[0])
+                    timer.mark("validation")
                     if val_res.get("is_accurate"):
                         logger.info(f"Batch {batch_id}: Incremental analytics 100% verified accurate against legacy RPC.")
                     else:
                         logger.warning(f"Batch {batch_id}: Accuracy validation notice: {val_res.get('mismatches')}")
+                else:
+                    timer.mark("validation")
 
             processing_time = round(time.time() - start_time, 2)
             if local_batch:
@@ -1166,6 +1247,8 @@ class ImportPipelineEngine:
                     logger.info(f"Batch {batch_id}: Phase 5 Post-load edge cache pre-warming result: {prewarm_res}")
                 except Exception as cache_err:
                     logger.warning(f"Batch {batch_id}: Cache invalidation/pre-warming notice: {cache_err}")
+
+            timer.mark("completed")
 
             completed_at_iso = datetime.now().isoformat()
             distinct_dates_count = len(distinct_dates) if fact_records else 0
@@ -2152,7 +2235,8 @@ class ImportPipelineEngine:
         self,
         raw_records: List[Dict[str, Any]],
         batch_id: Any,
-        tenant_id: Optional[str] = None
+        tenant_id: Optional[str] = None,
+        timer: Optional[UploadStageTimer] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Phase 4: Direct PostgreSQL Binary COPY Streaming Pipeline.
@@ -2215,11 +2299,15 @@ class ImportPipelineEngine:
                         records=clean_tuples,
                         columns=staging_columns
                     )
+                    if timer:
+                        timer.mark("COPY staging")
                     logger.info(f"Batch {batch_id}: Executing set-based SQL resolution procedure...")
                     row_res = await conn.fetchval(
                         "SELECT resolve_and_insert_sales_facts($1, $2)",
                         t_b_id, t_t_id
                     )
+                    if timer:
+                        timer.mark("FK resolution")
                     await conn.execute(
                         "DELETE FROM staging_raw_sales_upload WHERE batch_id = $1",
                         t_b_id
@@ -2743,7 +2831,8 @@ class ImportPipelineEngine:
         s_bl: pd.Series,
         company_cache: Dict[str, str],
         brand_cache: Dict[str, str],
-        tenant_id: Optional[str] = None
+        tenant_id: Optional[str] = None,
+        timer: Optional[UploadStageTimer] = None,
     ):
         """
         Inserts normalized non-Others sales facts into public.user_sales_fact at the ASE/User level.
@@ -2815,11 +2904,73 @@ class ImportPipelineEngine:
                         except Exception as e_del_usf:
                             logger.warning(f"Batch {batch_id}: Error purging user_sales_fact for batch_id={batch_id_str}: {e_del_usf}")
 
+                # Fast Path: Direct PostgreSQL Binary COPY Streaming for user_sales_fact
+                from backend.db.direct_pool import direct_postgres_pool
+                if direct_postgres_pool.is_available():
+                    try:
+                        import uuid
+                        import concurrent.futures
+                        async def _stream_usf():
+                            async with direct_postgres_pool.acquire_connection() as conn:
+                                if conn:
+                                    usf_cols = ["tenant_id", "user_id", "company_id", "brand_id", "sale_date", "cases", "bottles", "bl", "batch_id"]
+                                    clean_tuples = []
+                                    for r in fact_records:
+                                        d_val = r["sale_date"]
+                                        if isinstance(d_val, str):
+                                            try:
+                                                d_val = datetime.strptime(d_val.split("T")[0], "%Y-%m-%d").date()
+                                            except Exception:
+                                                pass
+                                        clean_tuples.append((
+                                            uuid.UUID(str(r["tenant_id"])),
+                                            uuid.UUID(str(r["user_id"])),
+                                            uuid.UUID(str(r["company_id"])),
+                                            uuid.UUID(str(r["brand_id"])),
+                                            d_val,
+                                            float(r["cases"]),
+                                            float(r["bottles"]),
+                                            float(r["bl"]),
+                                            uuid.UUID(str(r["batch_id"])),
+                                        ))
+                                    await conn.copy_records_to_table(
+                                        "user_sales_fact",
+                                        records=clean_tuples,
+                                        columns=usf_cols
+                                    )
+                                    return True
+                            return False
+
+                        try:
+                            loop = asyncio.get_event_loop()
+                        except RuntimeError:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+
+                        copied = False
+                        if loop.is_running():
+                            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                                copied = executor.submit(asyncio.run, _stream_usf()).result()
+                        else:
+                            copied = loop.run_until_complete(_stream_usf())
+
+                        if copied:
+                            logger.info(f"Batch {batch_id}: Streamed {len(fact_records)} user_sales_fact records via direct binary COPY.")
+                            if timer:
+                                timer.mark("user_sales_fact inserted")
+                            return
+                    except Exception as e_usf_copy:
+                        logger.warning(f"Batch {batch_id}: user_sales_fact direct COPY fallback to REST: {e_usf_copy}")
+
                 self._bulk_insert(
                     table="user_sales_fact",
                     records=fact_records,
-                    chunk_size=5000
+                    chunk_size=10000
                 )
+                if timer:
+                    timer.mark("user_sales_fact inserted")
+            elif timer:
+                timer.mark("user_sales_fact inserted")
         except Exception as e_usf:
             logger.warning(f"_populate_user_sales_fact error: {e_usf}")
 

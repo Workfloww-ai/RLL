@@ -796,9 +796,12 @@ class UserService:
             return {"users": 0, "mappings": 0}
 
         try:
-            # 1. Query distinct raw personnel & depot mappings
-            res = client.table("raw_sales_upload").select("ase_raw, asm_tsm_raw, depot_raw").eq("batch_id", batch_id).execute()
+            # 1. Query distinct raw personnel & depot mappings from staging_raw_sales_upload (or fallback to raw_sales_upload)
+            res = client.table("staging_raw_sales_upload").select("ase_raw, asm_tsm_raw, depot_raw").eq("batch_id", batch_id).execute()
             raw_rows = res.data or []
+            if not raw_rows:
+                res = client.table("raw_sales_upload").select("ase_raw, asm_tsm_raw, depot_raw").eq("batch_id", batch_id).execute()
+                raw_rows = res.data or []
             if not raw_rows:
                 return {"users": 0, "mappings": 0}
 

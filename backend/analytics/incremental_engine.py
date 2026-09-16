@@ -49,6 +49,7 @@ class IncrementalAnalyticsEngine:
         batch_id: Optional[Union[int, str]],
         sale_dates: List[Union[str, date]],
         enable_legacy_rpcs: bool = False,
+        timer: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         Executes incremental aggregation for all dates and financial months affected by a sales batch.
@@ -57,6 +58,9 @@ class IncrementalAnalyticsEngine:
         """
         t_start = time.perf_counter()
         if not sale_dates:
+            if timer:
+                timer.mark("daily summary")
+                timer.mark("monthly summary")
             return {
                 "success": True,
                 "batch_id": batch_id,
@@ -68,6 +72,9 @@ class IncrementalAnalyticsEngine:
         client = get_supabase()
         if not client:
             logger.info(f"[ANALYTICS MOCK] Processed batch {batch_id} for {len(sale_dates)} dates.")
+            if timer:
+                timer.mark("daily summary")
+                timer.mark("monthly summary")
             return {
                 "success": True,
                 "batch_id": batch_id,
@@ -157,6 +164,9 @@ class IncrementalAnalyticsEngine:
                 logger.warning(f"[ANALYTICS] Daily summary aggregation notice for date {s_date} after retries.")
                 success = False
 
+        if timer:
+            timer.mark("daily summary")
+
         # 2b. Post-Aggregation Completeness Verification
         # Ensure that every single date in sorted_dates has rows in sales_daily_summary
         for s_date in sorted_dates:
@@ -214,6 +224,9 @@ class IncrementalAnalyticsEngine:
                 except Exception as e_chunk:
                     logger.error(f"[ANALYTICS] Failed depot-chunked monthly aggregation for month_start {m_start}: {e_chunk}", exc_info=True)
                     success = False
+
+        if timer:
+            timer.mark("monthly summary")
 
         # 4. Redis Cache Pattern Invalidation (Event-Driven)
         redis_keys_deleted = 0

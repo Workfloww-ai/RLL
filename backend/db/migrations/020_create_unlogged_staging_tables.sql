@@ -30,6 +30,26 @@ CREATE UNLOGGED TABLE IF NOT EXISTS public.staging_raw_sales_upload (
 -- Index for batch-scoped queries and fast resolution joins
 CREATE INDEX IF NOT EXISTS idx_staging_batch_id ON public.staging_raw_sales_upload (batch_id);
 
+-- B-Tree Expression Indexes on Master Tables for 1-second B-Tree Index Joins
+CREATE INDEX IF NOT EXISTS idx_brands_lower_name ON public.brands (LOWER(TRIM(brand_name)));
+CREATE INDEX IF NOT EXISTS idx_licensees_lower_name ON public.licensees (LOWER(TRIM(licensee_name)));
+CREATE INDEX IF NOT EXISTS idx_depots_lower_name ON public.depots (LOWER(TRIM(name)));
+CREATE INDEX IF NOT EXISTS idx_packagings_lower_name ON public.packagings (LOWER(TRIM(packing_raw)));
+CREATE INDEX IF NOT EXISTS idx_headquarters_lower_name ON public.headquarters (LOWER(TRIM(name)));
+
+-- Helper functions for space-resilient text normalization
+CREATE OR REPLACE FUNCTION public.norm_text(p_text TEXT)
+RETURNS TEXT
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT REGEXP_REPLACE(LOWER(TRIM(COALESCE(p_text, ''))), '\s+', ' ', 'g');
+$$;
+
+CREATE OR REPLACE FUNCTION public.norm_text_nospace(p_text TEXT)
+RETURNS TEXT
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT REGEXP_REPLACE(LOWER(TRIM(COALESCE(p_text, ''))), '[\s\-_.]+', '', 'g');
+$$;
+
 -- 2. Set-Based Foreign Key Resolution and Atomic Fact Insertion Procedure
 CREATE OR REPLACE FUNCTION public.resolve_and_insert_sales_facts(
     p_batch_id UUID,
@@ -59,6 +79,77 @@ BEGIN
         );
     END IF;
 
+    -- Step 0: Auto-create missing master companies, brands, licensees, packagings, and depots
+    -- 0a. Missing Companies
+    INSERT INTO public.companies (company_id, company_name, is_active)
+    SELECT gen_random_uuid(), s.company_raw, true
+    FROM (
+        SELECT DISTINCT LOWER(TRIM(company_raw)) AS comp_clean, TRIM(company_raw) AS company_raw
+        FROM public.staging_raw_sales_upload
+        WHERE batch_id = p_batch_id
+          AND company_raw IS NOT NULL AND TRIM(company_raw) <> ''
+          AND LOWER(TRIM(company_raw)) NOT IN ('others', 'other')
+    ) s
+    LEFT JOIN public.companies c ON LOWER(TRIM(c.company_name)) = s.comp_clean
+    WHERE c.company_id IS NULL
+    ON CONFLICT (company_name) DO NOTHING;
+
+    -- 0b. Missing Brands
+    INSERT INTO public.brands (brand_id, brand_name, company_id, is_active)
+    SELECT DISTINCT ON (LOWER(TRIM(s.brand_name_raw)))
+        gen_random_uuid(),
+        TRIM(s.brand_name_raw),
+        c.company_id,
+        true
+    FROM public.staging_raw_sales_upload s
+    LEFT JOIN public.companies c ON LOWER(TRIM(c.company_name)) = LOWER(TRIM(s.company_raw))
+    LEFT JOIN public.brands b ON LOWER(TRIM(b.brand_name)) = LOWER(TRIM(s.brand_name_raw))
+    WHERE s.batch_id = p_batch_id
+      AND s.brand_name_raw IS NOT NULL AND TRIM(s.brand_name_raw) <> ''
+      AND b.brand_id IS NULL
+    ON CONFLICT (brand_name) DO NOTHING;
+
+    -- 0c. Missing Licensees
+    INSERT INTO public.licensees (licensee_id, licensee_name, trade, is_active)
+    SELECT DISTINCT ON (LOWER(TRIM(s.licensee_raw)))
+        gen_random_uuid(),
+        TRIM(s.licensee_raw),
+        CASE WHEN LOWER(TRIM(s.trade_raw)) = 'on' THEN 'On' ELSE 'Off' END,
+        true
+    FROM public.staging_raw_sales_upload s
+    LEFT JOIN public.licensees l ON LOWER(TRIM(l.licensee_name)) = LOWER(TRIM(s.licensee_raw))
+    WHERE s.batch_id = p_batch_id
+      AND s.licensee_raw IS NOT NULL AND TRIM(s.licensee_raw) <> ''
+      AND l.licensee_id IS NULL
+    ON CONFLICT (licensee_name) DO NOTHING;
+
+    -- 0d. Missing Packagings
+    INSERT INTO public.packagings (packaging_id, packing_raw, bottle_size_ml, is_active)
+    SELECT DISTINCT ON (LOWER(TRIM(s.packing_raw)))
+        gen_random_uuid(),
+        TRIM(s.packing_raw),
+        750.0,
+        true
+    FROM public.staging_raw_sales_upload s
+    LEFT JOIN public.packagings p ON LOWER(TRIM(p.packing_raw)) = LOWER(TRIM(s.packing_raw))
+    WHERE s.batch_id = p_batch_id
+      AND s.packing_raw IS NOT NULL AND TRIM(s.packing_raw) <> ''
+      AND p.packaging_id IS NULL
+    ON CONFLICT (packing_raw) DO NOTHING;
+
+    -- 0e. Missing Depots
+    INSERT INTO public.depots (depot_id, name, is_active)
+    SELECT DISTINCT ON (LOWER(TRIM(s.depot_raw)))
+        gen_random_uuid(),
+        TRIM(s.depot_raw),
+        true
+    FROM public.staging_raw_sales_upload s
+    LEFT JOIN public.depots d ON LOWER(TRIM(d.name)) = LOWER(TRIM(s.depot_raw))
+    WHERE s.batch_id = p_batch_id
+      AND s.depot_raw IS NOT NULL AND TRIM(s.depot_raw) <> ''
+      AND d.depot_id IS NULL
+    ON CONFLICT (name) DO NOTHING;
+
     -- Step 1: Detect unmapped dimensions and insert diagnostic errors into upload_validation_errors
     -- 1a. Unmapped Depots
     INSERT INTO public.upload_validation_errors (error_id, batch_id, column_name, error_message, created_at)
@@ -66,7 +157,7 @@ BEGIN
         gen_random_uuid(),
         p_batch_id,
         'depot_raw',
-        'Unmapped Depot name: ''' || COALESCE(s.depot_raw, '') || '''',
+        'Unmapped Depot name: ' || quote_literal(COALESCE(s.depot_raw, '')),
         NOW()
     FROM public.staging_raw_sales_upload s
     LEFT JOIN public.depots d ON LOWER(TRIM(d.name)) = LOWER(TRIM(s.depot_raw))
@@ -80,7 +171,7 @@ BEGIN
         gen_random_uuid(),
         p_batch_id,
         'licensee_raw',
-        'Unmapped Licensee name: ''' || COALESCE(s.licensee_raw, '') || '''',
+        'Unmapped Licensee name: ' || quote_literal(COALESCE(s.licensee_raw, '')),
         NOW()
     FROM public.staging_raw_sales_upload s
     LEFT JOIN public.licensees l ON LOWER(TRIM(l.licensee_name)) = LOWER(TRIM(s.licensee_raw))
@@ -94,7 +185,7 @@ BEGIN
         gen_random_uuid(),
         p_batch_id,
         'brand_name_raw',
-        'Unmapped Brand name: ''' || COALESCE(s.brand_name_raw, '') || '''',
+        'Unmapped Brand name: ' || quote_literal(COALESCE(s.brand_name_raw, '')),
         NOW()
     FROM public.staging_raw_sales_upload s
     LEFT JOIN public.brands b ON LOWER(TRIM(b.brand_name)) = LOWER(TRIM(s.brand_name_raw))
@@ -108,7 +199,7 @@ BEGIN
         gen_random_uuid(),
         p_batch_id,
         'packing_raw',
-        'Unmapped Packaging/Size: ''' || COALESCE(s.packing_raw, '') || '''',
+        'Unmapped Packaging/Size: ' || quote_literal(COALESCE(s.packing_raw, '')),
         NOW()
     FROM public.staging_raw_sales_upload s
     LEFT JOIN public.packagings p ON LOWER(TRIM(p.packing_raw)) = LOWER(TRIM(s.packing_raw))
@@ -122,7 +213,7 @@ BEGIN
         gen_random_uuid(),
         p_batch_id,
         'hq_raw',
-        'Unmapped Headquarters: ''' || COALESCE(s.hq_raw, '') || '''',
+        'Unmapped Headquarters: ' || quote_literal(COALESCE(s.hq_raw, '')),
         NOW()
     FROM public.staging_raw_sales_upload s
     LEFT JOIN public.headquarters h ON (
@@ -140,7 +231,6 @@ BEGIN
 
     -- Step 2: Atomic all-or-nothing rollback on validation failure
     IF v_unmapped_rows > 0 THEN
-        -- Clean up staging rows for this failed batch
         DELETE FROM public.staging_raw_sales_upload WHERE batch_id = p_batch_id;
 
         RETURN jsonb_build_object(
@@ -160,9 +250,13 @@ BEGIN
         SELECT
             gen_random_uuid() AS fact_id,
             s.tenant_id,
-            s.batch_id,
-            to_date(s.sale_date_raw, 'YYYY-MM-DD') AS sale_date,
-            l.licensee_id,
+            CASE
+                WHEN s.sale_date_raw ~ '^\d{4}-\d{2}-\d{2}' THEN to_date(s.sale_date_raw, 'YYYY-MM-DD')
+                WHEN s.sale_date_raw ~ '^\d{2}-\d{2}-\d{4}' THEN to_date(s.sale_date_raw, 'DD-MM-YYYY')
+                WHEN s.sale_date_raw ~ '^\d{2}/\d{2}/\d{4}' THEN to_date(s.sale_date_raw, 'DD/MM/YYYY')
+                WHEN s.sale_date_raw ~ '^\d{2}-\d{2}-\d{2}' THEN to_date(s.sale_date_raw, 'DD-MM-YY')
+                ELSE to_date(s.sale_date_raw, 'YYYY-MM-DD')
+            END AS sale_date,
             b.brand_id,
             p.packaging_id,
             d.depot_id,

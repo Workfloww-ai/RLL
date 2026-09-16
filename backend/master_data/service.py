@@ -534,9 +534,12 @@ class MasterService:
 
             for row in result.data or []:
                 key = self._clean(row.get("brand_name"))
+                no_space_key = self._clean_no_space(row.get("brand_name"))
 
                 if key:
                     self._brand_cache[key] = row["brand_id"]
+                if no_space_key:
+                    self._brand_cache[no_space_key] = row["brand_id"]
 
             # ---------------- PACKAGINGS ----------------
 
@@ -549,9 +552,12 @@ class MasterService:
 
             for row in result.data or []:
                 key = self._clean(row.get("packing_raw"))
+                no_space_key = self._clean_no_space(row.get("packing_raw"))
 
                 if key:
                     self._packaging_cache[key] = row["packaging_id"]
+                if no_space_key:
+                    self._packaging_cache[no_space_key] = row["packaging_id"]
 
             logger.info(
                 "Successfully prefetched master caches: Groups=%d, Offices=%d, Circles=%d, Depots=%d, Licensees=%d, Brands=%d, Packagings=%d.",
@@ -771,17 +777,35 @@ class MasterService:
             missing[name] = (k_clean, k_norm, display)
 
         if missing and client:
-            for name, (k_clean, k_norm, disp) in missing.items():
-                try:
-                    payload = {"company_name": disp, "is_active": True}
-                    res = client.table("companies").insert(payload).execute()
-                    if res.data:
-                        c_id = str(res.data[0].get("company_id") or res.data[0].get("id"))
-                        self._company_cache[k_clean] = c_id
-                        self._company_cache[k_norm] = c_id
-                        upsert_company_alias(raw_name=name, norm_key=k_norm, company_id=c_id, source="auto")
-                except Exception as e_comp:
-                    logger.warning(f"bulk_resolve_companies insert notice for {name}: {e_comp}")
+            # Bulk insert all missing companies in one call instead of N individual inserts
+            bulk_payloads = [{"company_name": disp, "is_active": True} for _, (_, _, disp) in missing.items()]
+            try:
+                res = client.table("companies").upsert(bulk_payloads, on_conflict="company_name").execute()
+                for row in res.data or []:
+                    c_id = str(row.get("company_id") or row.get("id") or "")
+                    c_name = row.get("company_name", "")
+                    if c_id and c_name:
+                        k_c = self._clean(c_name)
+                        k_n = self._clean_company(c_name)
+                        self._company_cache[k_c] = c_id
+                        self._company_cache[k_n] = c_id
+                        # also register alias for each original raw name that maps to this company
+                        for raw_name, (k_clean, k_norm, disp) in missing.items():
+                            if disp == c_name:
+                                upsert_company_alias(raw_name=raw_name, norm_key=k_norm, company_id=c_id, source="auto")
+            except Exception as e_comp:
+                logger.warning(f"bulk_resolve_companies bulk insert notice: {e_comp}")
+                # Fallback: individual inserts if bulk fails
+                for name, (k_clean, k_norm, disp) in missing.items():
+                    try:
+                        res = client.table("companies").insert({"company_name": disp, "is_active": True}).execute()
+                        if res.data:
+                            c_id = str(res.data[0].get("company_id") or res.data[0].get("id"))
+                            self._company_cache[k_clean] = c_id
+                            self._company_cache[k_norm] = c_id
+                            upsert_company_alias(raw_name=name, norm_key=k_norm, company_id=c_id, source="auto")
+                    except Exception as e_single:
+                        logger.warning(f"bulk_resolve_companies single insert notice for {name}: {e_single}")
 
         return self._company_cache
 
@@ -826,11 +850,21 @@ class MasterService:
         client = get_supabase()
         missing = {}
         existing_hq_updates = {}
+        import re
         for item in licensee_items:
             name = item.get("licensee_name")
             display = self._display(name)
             key = self._clean(name)
             hq_id = item.get("headquarters_id")
+            
+            # Secondary fallback for raw names with trailing shop codes/addresses if exact name not in cache
+            if key and key not in self._licensee_cache and name:
+                stripped_name = re.sub(r'\s*-\s*\d{6,7}\s*$', '', name).strip()
+                stripped_key = self._clean(stripped_name)
+                if stripped_key and stripped_key in self._licensee_cache:
+                    self._licensee_cache[key] = self._licensee_cache[stripped_key]
+                    self._licensee_hq_cache[key] = self._licensee_hq_cache.get(stripped_key)
+
             if key and key not in self._licensee_cache:
                 trade = self._display(item.get("trade"))
                 if trade.lower() == "off":
@@ -858,12 +892,18 @@ class MasterService:
                     self._licensee_hq_cache[key] = hq_id
 
         if existing_hq_updates and client:
-            logger.info(f"bulk_resolve_licensees: Updating headquarters for {len(existing_hq_updates)} licensees whose HQ changed or was missing.")
+            logger.info(f"bulk_resolve_licensees: Bulk-updating headquarters for {len(existing_hq_updates)} licensees in one upsert.")
             try:
-                for lic_id, hq_id in existing_hq_updates.items():
-                    client.table("licensees").update({"headquarters_id": hq_id}).eq("licensee_id", lic_id).execute()
+                # Build a single upsert payload instead of N individual PATCHes
+                hq_update_payloads = [
+                    {"licensee_id": lic_id, "headquarters_id": hq_id}
+                    for lic_id, hq_id in existing_hq_updates.items()
+                ]
+                for chunk_start in range(0, len(hq_update_payloads), 500):
+                    chunk = hq_update_payloads[chunk_start:chunk_start + 500]
+                    client.table("licensees").upsert(chunk, on_conflict="licensee_id").execute()
             except Exception as e_hq_up:
-                logger.warning(f"bulk_resolve_licensees existing HQ update notice: {e_hq_up}")
+                logger.warning(f"bulk_resolve_licensees bulk HQ update notice: {e_hq_up}")
 
         if missing and client:
             payloads = list(missing.values())
