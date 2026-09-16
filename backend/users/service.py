@@ -70,6 +70,18 @@ class UserService:
             except Exception as e_ud:
                 logger.warning(f"Error fetching user_depot: {e_ud}")
 
+            # 5b. Fetch hierarchy mapping from public.ase_tsm_mapping
+            hierarchy_map: Dict[str, str] = {}
+            try:
+                atm_res = client.table("ase_tsm_mapping").select("ase_user_id, tsm_user_id").execute()
+                for atm in (atm_res.data or []):
+                    ase_id = str(atm.get("ase_user_id") or "")
+                    tsm_id = str(atm.get("tsm_user_id") or "")
+                    if ase_id and tsm_id:
+                        hierarchy_map[ase_id] = tsm_id
+            except Exception as e_atm:
+                logger.warning(f"Error fetching ase_tsm_mapping in list_users: {e_atm}")
+
             # 6. Build final list
             user_dict_by_id = {str(u["user_id"]): u for u in raw_users}
             result = []
@@ -79,7 +91,7 @@ class UserService:
                 last_name = u.get("last_name") or ""
                 full_name = f"{first_name} {last_name}".strip() or u.get("email") or "Unnamed User"
 
-                manager_id = u.get("manager_id")
+                manager_id = u.get("manager_id") or hierarchy_map.get(uid)
                 manager_name = "Unassigned"
                 if manager_id and str(manager_id) in user_dict_by_id:
                     mgr_obj = user_dict_by_id[str(manager_id)]
@@ -784,10 +796,31 @@ class UserService:
             depot_val = str(row[depot_col]).strip() if depot_col and pd.notna(row[depot_col]) else "Unassigned"
             hq_val = str(row[hq_col]).strip() if hq_col and pd.notna(row[hq_col]) else "Unassigned"
 
-            # Check 1: User already exists in DB with exact name
+            # Check 1: User already exists in DB with exact name -> Update with real Excel data
             if full_name_clean in existing_names:
-                skipped_count += 1
-                logger.info(f"Roster row skipped: User '{full_name}' already exists in database.")
+                existing_u = existing_names[full_name_clean]
+                u_id = str(existing_u.get("user_id") or existing_u.get("id") or "")
+                if u_id:
+                    try:
+                        update_payload = {
+                            "first_name": fn,
+                            "last_name": ln,
+                            "email": email_val,
+                            "phone": clean_ph,
+                            "role": role_val,
+                            "depot_name": depot_val,
+                            "headquarters": hq_val,
+                            "is_active": True
+                        }
+                        res = self.update_user(u_id, update_payload)
+                        imported_count += 1
+                        pass1_records.append({
+                            "user": res or existing_u,
+                            "target_manager": manager_val
+                        })
+                        logger.info(f"Updated user '{full_name}' ({u_id}) with real email '{email_val}', phone '{clean_ph}', role '{role_val}'.")
+                    except Exception as e_upd:
+                        logger.warning(f"Notice updating existing user '{full_name}': {e_upd}")
                 continue
 
             # Check 2: Email or Phone matches existing DB user but name differs (Typo / Discrepancy)
