@@ -461,6 +461,7 @@ class ImportPipelineEngine:
 
         temp_tables = [
             "raw_sales_upload",
+            "staging_raw_sales_upload",
             "batch_chunks",
             "upload_pipeline_logs",
         ]

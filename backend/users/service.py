@@ -928,14 +928,17 @@ class UserService:
                         user_role_cache[ase_name] = ase_ur_id
 
                 tsm_ur_id = user_role_cache.get(tsm_name) if tsm_name else None
-                if mgr_id:
-                    client.table("ase_tsm_mapping").insert({
-                        "ase_user_id": u_id,
-                        "tsm_user_id": mgr_id,
-                        "ase_user_role_id": ase_ur_id,
-                        "tsm_user_role_id": tsm_ur_id
-                    }).execute()
-                    mappings_count += 1
+                if mgr_id and mgr_id != u_id:
+                    try:
+                        client.table("ase_tsm_mapping").upsert({
+                            "ase_user_id": u_id,
+                            "tsm_user_id": mgr_id,
+                            "ase_user_role_id": ase_ur_id,
+                            "tsm_user_role_id": tsm_ur_id
+                        }, on_conflict="tsm_user_id,ase_user_id").execute()
+                        mappings_count += 1
+                    except Exception as exc_map:
+                        logger.warning(f"ase_tsm_mapping notice for {ase_name} -> {tsm_name}: {exc_map}")
 
                 # Insert user_depot records
                 for d_id in user_depots.get(ase_name, set()):

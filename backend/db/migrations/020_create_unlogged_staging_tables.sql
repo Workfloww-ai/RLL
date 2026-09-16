@@ -250,6 +250,7 @@ BEGIN
         SELECT
             gen_random_uuid() AS fact_id,
             s.tenant_id,
+            s.batch_id,
             CASE
                 WHEN s.sale_date_raw ~ '^\d{4}-\d{2}-\d{2}' THEN to_date(s.sale_date_raw, 'YYYY-MM-DD')
                 WHEN s.sale_date_raw ~ '^\d{2}-\d{2}-\d{4}' THEN to_date(s.sale_date_raw, 'DD-MM-YYYY')
@@ -257,6 +258,7 @@ BEGIN
                 WHEN s.sale_date_raw ~ '^\d{2}-\d{2}-\d{2}' THEN to_date(s.sale_date_raw, 'DD-MM-YY')
                 ELSE to_date(s.sale_date_raw, 'YYYY-MM-DD')
             END AS sale_date,
+            l.licensee_id,
             b.brand_id,
             p.packaging_id,
             d.depot_id,
