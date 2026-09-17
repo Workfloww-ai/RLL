@@ -153,19 +153,35 @@ export function TsmView({
     return () => subscription.remove();
   }, [level, handleGoBack, showSortModal, showPerPageModal]);
 
-  // 1. Filter Root TSMs by HQ Selection and Search Query
+  // 1. Filter Root TSMs by Search Query (Backend already applies selectedHq filter)
   const filteredTsms = useMemo(() => {
     return tsms.filter((t) => {
-      const matchHq =
-        selectedHq === 'All Headquarters' ||
-        (t.hqLocation && t.hqLocation.toLowerCase() === selectedHq.toLowerCase());
       const matchSearch =
         !searchQuery.trim() ||
         t.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
         (t.hqLocation && t.hqLocation.toLowerCase().includes(searchQuery.toLowerCase()));
-      return matchHq && matchSearch;
+      return matchSearch;
     });
-  }, [tsms, selectedHq, searchQuery]);
+  }, [tsms, searchQuery]);
+
+  const getPeriodData = useCallback(
+    (itemData: any) => {
+      if (!itemData) return { cases: 0, bottles: 0, bl: 0.0 };
+      const rawP = String(period || 'Daily').trim();
+      const upperP = rawP.toUpperCase() === 'MTD' ? 'MTD' : rawP.toUpperCase() === 'YTD' ? 'YTD' : 'Daily';
+      const lowerP = rawP.toLowerCase();
+      return (
+        itemData[upperP] ||
+        itemData[rawP] ||
+        itemData[lowerP] ||
+        itemData.Daily ||
+        itemData.MTD ||
+        itemData.YTD ||
+        { cases: 0, bottles: 0, bl: 0.0 }
+      );
+    },
+    [period]
+  );
 
   const activeRawList = useMemo(() => {
     if (level === 1) return filteredTsms;
@@ -174,7 +190,7 @@ export function TsmView({
       if (activeTsmTab === 'companies') {
         const comps = (selectedTsm as any)?.companies || selectedTsm?.brands || [];
         return comps.filter((item: any) => {
-          const raw = item.data?.[period] || { cases: 0, bottles: 0 };
+          const raw = getPeriodData(item.data);
           return (raw.cases || 0) > 0 || (raw.bottles || 0) > 0;
         });
       }
@@ -183,10 +199,10 @@ export function TsmView({
 
     const aseComps = (selectedAse as any)?.companies || (selectedAse as any)?.brands || (selectedTsm as any)?.companies || [];
     return aseComps.filter((item: any) => {
-      const raw = item.data?.[period] || { cases: 0, bottles: 0 };
+      const raw = getPeriodData(item.data);
       return (raw.cases || 0) > 0 || (raw.bottles || 0) > 0;
     });
-  }, [level, activeTsmTab, filteredTsms, selectedTsm, selectedAse, period]);
+  }, [level, activeTsmTab, filteredTsms, selectedTsm, selectedAse, getPeriodData]);
 
   const filteredAndSortedList = useMemo(() => {
     let result = [...activeRawList];
@@ -204,8 +220,8 @@ export function TsmView({
       const nameA = (a.name || a.brandName || a.company_name || '').toLowerCase();
       const nameB = (b.name || b.brandName || b.company_name || '').toLowerCase();
 
-      const aRaw = a.data?.[period] || { cases: 0, bottles: 0 };
-      const bRaw = b.data?.[period] || { cases: 0, bottles: 0 };
+      const aRaw = getPeriodData(a.data);
+      const bRaw = getPeriodData(b.data);
       const casesA = Number(((aRaw.cases || a.total_cases || 0) * scaleFactor).toFixed(2));
       const casesB = Number(((bRaw.cases || b.total_cases || 0) * scaleFactor).toFixed(2));
 
@@ -217,7 +233,7 @@ export function TsmView({
     });
 
     return result;
-  }, [activeRawList, level, searchQuery, sortOption, period, scaleFactor]);
+  }, [activeRawList, level, searchQuery, sortOption, scaleFactor, getPeriodData]);
 
   const totalItems = filteredAndSortedList.length;
   const totalPages = Math.ceil(totalItems / perPage) || 1;
@@ -344,11 +360,12 @@ export function TsmView({
           paginatedList.map((item: any, index: number) => {
             // Level 1: Root TSM Card (Image 1)
             if (level === 1) {
-              const rawData = item.data?.[period] || { cases: 0, bottles: 0 };
+              const rawData = getPeriodData(item.data);
               const cases = Number(((rawData.cases || 0) * scaleFactor).toFixed(2));
               const bottles = Math.round((rawData.bottles || 0) * scaleFactor);
               const aseCount = item.ases?.length || 0;
-              const companyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.brands?.filter((b: any) => (b.data?.[period]?.cases || 0) > 0 || (b.data?.[period]?.bottles || 0) > 0).length || 0);
+              const normalizedP = (period || 'Daily').toUpperCase() === 'MTD' ? 'MTD' : (period || 'Daily').toUpperCase() === 'YTD' ? 'YTD' : 'Daily';
+              const companyCount = item.companyCount?.[normalizedP] ?? item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.brands?.filter((b: any) => (getPeriodData(b.data).cases || 0) > 0 || (getPeriodData(b.data).bottles || 0) > 0).length || 0);
               const hqName = item.hqLocation || 'All Headquarters';
 
               return (
@@ -368,9 +385,9 @@ export function TsmView({
               );
             }
 
-            // Level 2: TSM Companies View (Image 2)
+            // Level 2: TSM Companies List View (Image 2)
             if (level === 2 && activeTsmTab === 'companies') {
-              const rawData = item.data?.[period] || { cases: 0, bottles: 0 };
+              const rawData = getPeriodData(item.data);
               const cases = Number(((rawData.cases || item.total_cases || 0) * scaleFactor).toFixed(2));
               const bottles = Math.round((rawData.bottles || item.total_bottles || 0) * scaleFactor);
               const compName = item.brandName || item.company_name || item.name || 'Company';
@@ -390,10 +407,11 @@ export function TsmView({
 
             // Level 2: TSM ASEs List View (Image 3)
             if (level === 2 && activeTsmTab === 'ase') {
-              const rawData = item.data?.[period] || { cases: 0, bottles: 0 };
+              const rawData = getPeriodData(item.data);
               const cases = Number(((rawData.cases || 0) * scaleFactor).toFixed(2));
               const bottles = Math.round((rawData.bottles || 0) * scaleFactor);
-              const companyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.brands?.filter((b: any) => (b.data?.[period]?.cases || 0) > 0 || (b.data?.[period]?.bottles || 0) > 0).length || 0);
+              const normalizedP = (period || 'Daily').toUpperCase() === 'MTD' ? 'MTD' : (period || 'Daily').toUpperCase() === 'YTD' ? 'YTD' : 'Daily';
+              const companyCount = item.companyCount?.[normalizedP] ?? item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.brands?.filter((b: any) => (getPeriodData(b.data).cases || 0) > 0 || (getPeriodData(b.data).bottles || 0) > 0).length || 0);
 
               return (
                 <MetricsCard
@@ -413,7 +431,7 @@ export function TsmView({
 
             // Level 3: ASE Companies View (Image 4)
             if (level === 3) {
-              const rawData = item.data?.[period] || { cases: 0, bottles: 0 };
+              const rawData = getPeriodData(item.data);
               const cases = Number(((rawData.cases || item.total_cases || 0) * scaleFactor).toFixed(2));
               const bottles = Math.round((rawData.bottles || item.total_bottles || 0) * scaleFactor);
               const compName = item.brandName || item.company_name || item.name || 'Company';

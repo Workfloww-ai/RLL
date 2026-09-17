@@ -1710,7 +1710,7 @@ async def get_mobile_sales(
     for row in all_usf_records:
         c_id_raw = str(row.get("company_id") or "")
         comp_name = companies_lookup.get(c_id_raw)
-        if not comp_name:
+        if not comp_name or comp_name.strip().lower() == "others":
             continue
 
         uid = str(row.get("user_id") or "")
@@ -1829,9 +1829,22 @@ async def get_mobile_sales(
                         tb_map[brand_id]["data"][period_key]["bottles"] += metrics["bottles"]
                         tb_map[brand_id]["data"][period_key]["bl"] += metrics["bl"]
 
+    def _apply_decimal_cases(data_dict: dict):
+        if not isinstance(data_dict, dict):
+            return
+        for tf in ["Daily", "MTD", "YTD"]:
+            if tf in data_dict and isinstance(data_dict[tf], dict):
+                raw_cases = float(data_dict[tf].get("cases") or 0.0)
+                raw_btl = float(data_dict[tf].get("bottles") or 0.0)
+                data_dict[tf]["cases"] = round(raw_cases + (raw_btl / 100.0), 2)
+                data_dict[tf]["bottles"] = round(raw_btl, 2)
+
     formatted_companies = []
     for c_id, c_data in master_companies.items():
         c_data["brands"] = list(c_data.pop("brands_map").values())
+        _apply_decimal_cases(c_data.get("data"))
+        for b_obj in c_data["brands"]:
+            _apply_decimal_cases(b_obj.get("data"))
         if selected_hq != "All Headquarters" and c_data.get("hqLocation") and c_data["hqLocation"] != "All Headquarters":
             if c_data["hqLocation"].lower() != selected_hq.lower():
                 continue
@@ -1840,6 +1853,9 @@ async def get_mobile_sales(
     formatted_depots = []
     for d_id, d_data in master_depots.items():
         d_data["brands"] = list(d_data.pop("brands_map").values())
+        _apply_decimal_cases(d_data.get("data"))
+        for b_obj in d_data["brands"]:
+            _apply_decimal_cases(b_obj.get("data"))
         if selected_hq != "All Headquarters" and d_data.get("hqName"):
             if d_data["hqName"].lower() != selected_hq.lower():
                 continue
@@ -1850,6 +1866,13 @@ async def get_mobile_sales(
         t_data = dict(raw_t_data)
         t_data["companies"] = list(t_data.get("companies_map", {}).values())
         t_data["brands"] = list(t_data.get("brands_map", {}).values())
+        
+        _apply_decimal_cases(t_data.get("data"))
+        for c_obj in t_data["companies"]:
+            _apply_decimal_cases(c_obj.get("data"))
+        for b_obj in t_data["brands"]:
+            _apply_decimal_cases(b_obj.get("data"))
+
         t_data["companyCount"] = {
             "Daily": len(tsm_comp_sets.get(t_id, {}).get("Daily", set())),
             "MTD": len(tsm_comp_sets.get(t_id, {}).get("MTD", set())),
@@ -1866,31 +1889,45 @@ async def get_mobile_sales(
             if d_obj and d_obj.get("hqName"):
                 assigned_hq_names.append(d_obj["hqName"])
 
-        if assigned_hq_names:
-            t_data["hqLocation"] = assigned_hq_names[0]
+        if selected_hq and selected_hq != "All Headquarters":
+            t_data["hqLocation"] = selected_hq
+        elif assigned_hq_names:
+            t_data["hqLocation"] = ", ".join(list(dict.fromkeys(assigned_hq_names)))
         else:
             t_data["hqLocation"] = "All Headquarters"
 
         raw_ase_ids = t_data.pop("ase_ids", [])
-        t_data["ases"] = [
-            {
+        ase_list = []
+        for aid in raw_ase_ids:
+            a_sales_dict = dict(ase_sales.get(aid, {
+                "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+            }))
+            _apply_decimal_cases(a_sales_dict)
+
+            a_companies = list(ase_company_maps.get(aid, {}).values())
+            for ac_obj in a_companies:
+                _apply_decimal_cases(ac_obj.get("data"))
+
+            a_brands = list(ase_brand_maps.get(aid, {}).values())
+            for ab_obj in a_brands:
+                _apply_decimal_cases(ab_obj.get("data"))
+
+            ase_list.append({
                 "id": aid,
                 "name": ase_names_lookup.get(aid, "ASE"),
-                "data": ase_sales.get(aid, {
-                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                }),
+                "data": a_sales_dict,
                 "companyCount": {
                     "Daily": len(ase_comp_sets.get(aid, {}).get("Daily", set())),
                     "MTD": len(ase_comp_sets.get(aid, {}).get("MTD", set())),
                     "YTD": len(ase_comp_sets.get(aid, {}).get("YTD", set())),
                 },
-                "companies": list(ase_company_maps.get(aid, {}).values()),
-                "brands": list(ase_brand_maps.get(aid, {}).values())
-            }
-            for aid in raw_ase_ids
-        ]
+                "companies": a_companies,
+                "brands": a_brands
+            })
+
+        t_data["ases"] = ase_list
 
         if selected_hq != "All Headquarters":
             matches_hq = any(hq.lower() == selected_hq.lower() for hq in assigned_hq_names)
@@ -1900,7 +1937,7 @@ async def get_mobile_sales(
         formatted_tsms.append(t_data)
 
     # Apply controlled payload test limit if requested
-    if test_limit and test_limit > 0:
+    if isinstance(test_limit, int) and test_limit > 0:
         logger.info(f"🧪 [DIAGNOSTIC TEST] Slicing companies, depots, and tsms to limit={test_limit}")
         formatted_companies = formatted_companies[:test_limit]
         formatted_depots = formatted_depots[:test_limit]

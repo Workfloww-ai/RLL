@@ -916,7 +916,7 @@ class ImportPipelineEngine:
             map_date = s_date.apply(parse_date_val)
 
             self._sync_user_hierarchy(s_ase, s_asm, s_depot, depot_cache)
-            self._populate_user_sales_fact(batch_id, map_date, s_company, s_ase, s_brand, s_cases, s_btl, s_bl, company_cache, brand_cache, tenant_id=tenant_id, timer=timer)
+            self._populate_user_sales_fact(batch_id, map_date, s_company, s_ase, s_asm, s_brand, s_cases, s_btl, s_bl, company_cache, brand_cache, tenant_id=tenant_id, timer=timer)
 
             # Vectorized ID Resolution
             clean_fn = master_service._clean
@@ -1188,10 +1188,68 @@ class ImportPipelineEngine:
                         except Exception as e_del:
                             logger.warning(f"Batch {batch_id}: Error purging sales_fact for batch_id={batch_id_str}: {e_del}")
 
+                # Fast Path: Direct PostgreSQL Binary COPY Streaming for sales_fact
+                from backend.db.direct_pool import direct_postgres_pool
+                if direct_postgres_pool.is_available():
+                    try:
+                        import uuid
+                        import concurrent.futures
+                        async def _stream_sf():
+                            async with direct_postgres_pool.acquire_connection() as conn:
+                                if conn:
+                                    sf_cols = ["tenant_id", "licensee_id", "brand_id", "depot_id", "sale_date", "cases", "bottles", "bl", "batch_id"]
+                                    clean_tuples = []
+                                    for r in fact_records:
+                                        d_val = r.get("sale_date")
+                                        if isinstance(d_val, str):
+                                            try:
+                                                d_val = datetime.strptime(d_val.split("T")[0], "%Y-%m-%d").date()
+                                            except Exception:
+                                                pass
+                                        clean_tuples.append((
+                                            uuid.UUID(str(r["tenant_id"])) if r.get("tenant_id") else uuid.UUID("a0000000-0000-0000-0000-000000000001"),
+                                            uuid.UUID(str(r["licensee_id"])),
+                                            uuid.UUID(str(r["brand_id"])),
+                                            uuid.UUID(str(r["depot_id"])),
+                                            d_val,
+                                            float(r.get("cases") or 0.0),
+                                            float(r.get("bottles") or 0.0),
+                                            float(r.get("bl") or 0.0),
+                                            uuid.UUID(str(r["batch_id"])) if r.get("batch_id") else uuid.UUID(batch_id_str),
+                                        ))
+                                    await conn.copy_records_to_table(
+                                        "sales_fact",
+                                        records=clean_tuples,
+                                        columns=sf_cols
+                                    )
+                                    return True
+                            return False
+
+                        try:
+                            loop = asyncio.get_event_loop()
+                        except RuntimeError:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+
+                        copied = False
+                        if loop.is_running():
+                            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                                copied = executor.submit(asyncio.run, _stream_sf()).result()
+                        else:
+                            copied = loop.run_until_complete(_stream_sf())
+
+                        if copied:
+                            logger.info(f"Batch {batch_id}: Streamed {len(fact_records)} sales_fact records via direct binary COPY.")
+                            if timer:
+                                timer.mark("sales_fact inserted")
+                            return
+                    except Exception as e_sf_copy:
+                        logger.warning(f"Batch {batch_id}: sales_fact direct COPY fallback to REST: {e_sf_copy}")
+
                 self._bulk_insert(
                     table="sales_fact",
                     records=fact_records,
-                    chunk_size=10000,
+                    chunk_size=2500,
                     batch_id=batch_id,
                 )
                 timer.mark("sales_fact inserted")
@@ -2738,15 +2796,19 @@ class ImportPipelineEngine:
             user_service = UserService()
 
             u_res = client.table("users").select("user_id, first_name, last_name, email").execute()
-            user_lookup = {}
+            user_lookup_fullname = {}
+            user_lookup_firstname = {}
             for u in (u_res.data or []):
-                fn = u.get("first_name") or ""
-                ln = u.get("last_name") or ""
+                fn = (u.get("first_name") or "").strip()
+                ln = (u.get("last_name") or "").strip()
                 full_name = f"{fn} {ln}".strip().lower()
+                uid_str = str(u["user_id"])
                 if full_name:
-                    user_lookup[full_name] = str(u["user_id"])
+                    user_lookup_fullname[full_name] = uid_str
                 if fn:
-                    user_lookup[fn.lower()] = str(u["user_id"])
+                    fn_lower = fn.lower()
+                    if fn_lower not in user_lookup_firstname:
+                        user_lookup_firstname[fn_lower] = uid_str
 
             roles_map = {
                 'ADMIN': 'f4df9401-fe76-4a27-934d-20a78fb15b8f',
@@ -2764,41 +2826,56 @@ class ImportPipelineEngine:
                 tsm_str = str(tsm_raw or "").strip()
                 depot_str = str(depot_raw or "").strip()
 
-                if not ase_str or ase_str.lower() in ("unassigned", "none", "null"):
-                    continue
-                if not tsm_str or tsm_str.lower() in ("unassigned", "none", "null"):
+                has_ase = bool(ase_str and ase_str.lower() not in ("unassigned", "none", "null", "nan"))
+                has_tsm = bool(tsm_str and tsm_str.lower() not in ("unassigned", "none", "null", "nan"))
+
+                if not has_ase and not has_tsm:
                     continue
 
-                ase_list = [p.strip() for p in ase_str.replace(",", "/").split("/") if p.strip()]
-                tsm_list = [p.strip() for p in tsm_str.replace(",", "/").split("/") if p.strip()]
+                ase_list = [p.strip() for p in ase_str.replace(",", "/").split("/") if p.strip()] if has_ase else []
+                tsm_list = [p.strip() for p in tsm_str.replace(",", "/").split("/") if p.strip()] if has_tsm else []
                 depot_id = depot_cache.get(clean_fn(depot_str))
 
+                created_tsm_uids = []
                 for tsm_name in tsm_list:
                     tsm_key = tsm_name.lower()
-                    if tsm_key not in user_lookup:
+                    tsm_uid = user_lookup_fullname.get(tsm_key) or user_lookup_firstname.get(tsm_key)
+                    if not tsm_uid:
                         t_parts = tsm_name.split(" ", 1)
                         fn = t_parts[0]
                         ln = t_parts[1] if len(t_parts) > 1 else ""
                         res = user_service.create_user({"first_name": fn, "last_name": ln, "role": "TSM", "is_active": True})
-                        user_lookup[tsm_key] = res["user_id"]
+                        tsm_uid = res["user_id"]
+                        user_lookup_fullname[tsm_key] = tsm_uid
+                    created_tsm_uids.append(tsm_uid)
+                    if depot_id:
+                        user_depot_pairs.add((tsm_uid, depot_id))
 
-                    tsm_uid = user_lookup[tsm_key]
+                created_ase_uids = []
+                for ase_name in ase_list:
+                    ase_key = ase_name.lower()
+                    ase_uid = user_lookup_fullname.get(ase_key) or user_lookup_firstname.get(ase_key)
+                    if not ase_uid:
+                        a_parts = ase_name.split(" ", 1)
+                        fn = a_parts[0]
+                        ln = a_parts[1] if len(a_parts) > 1 else ""
+                        res = user_service.create_user({"first_name": fn, "last_name": ln, "role": "ASE", "is_active": True})
+                        ase_uid = res["user_id"]
+                        user_lookup_fullname[ase_key] = ase_uid
+                    created_ase_uids.append(ase_uid)
+                    if depot_id:
+                        user_depot_pairs.add((ase_uid, depot_id))
 
-                    for ase_name in ase_list:
-                        ase_key = ase_name.lower()
-                        if ase_key not in user_lookup:
-                            a_parts = ase_name.split(" ", 1)
-                            fn = a_parts[0]
-                            ln = a_parts[1] if len(a_parts) > 1 else ""
-                            res = user_service.create_user({"first_name": fn, "last_name": ln, "role": "ASE", "is_active": True})
-                            user_lookup[ase_key] = res["user_id"]
+                for t_uid in created_tsm_uids:
+                    for a_uid in created_ase_uids:
+                        tsm_ase_pairs.add((t_uid, a_uid))
 
-                        ase_uid = user_lookup[ase_key]
-                        tsm_ase_pairs.add((tsm_uid, ase_uid))
-
-                        if depot_id:
-                            user_depot_pairs.add((ase_uid, depot_id))
-                            user_depot_pairs.add((tsm_uid, depot_id))
+            tsms_in_file = set(t_uid for t_uid, _ in tsm_ase_pairs)
+            for t_uid in tsms_in_file:
+                try:
+                    client.table("ase_tsm_mapping").delete().eq("tsm_user_id", t_uid).execute()
+                except Exception as e_del:
+                    logger.debug(f"Notice deleting old ase_tsm_mapping for TSM {t_uid}: {e_del}")
 
             for t_uid, a_uid in tsm_ase_pairs:
                 try:
@@ -2826,6 +2903,7 @@ class ImportPipelineEngine:
         s_date: pd.Series,
         s_company: pd.Series,
         s_ase: pd.Series,
+        s_asm: pd.Series,
         s_brand: pd.Series,
         s_cases: pd.Series,
         s_btl: pd.Series,
@@ -2837,6 +2915,7 @@ class ImportPipelineEngine:
     ):
         """
         Inserts normalized non-Others sales facts into public.user_sales_fact at the ASE/User level.
+        Falls back to TSM (s_asm) level if ASE is unassigned or unmapped.
         """
         client = get_supabase()
         if not client:
@@ -2846,37 +2925,71 @@ class ImportPipelineEngine:
 
         try:
             u_res = client.table("users").select("user_id, first_name, last_name").execute()
-            user_lookup = {}
+            user_lookup_fullname = {}
+            user_lookup_firstname = {}
             for u in (u_res.data or []):
-                fn = u.get("first_name") or ""
-                ln = u.get("last_name") or ""
+                fn = (u.get("first_name") or "").strip()
+                ln = (u.get("last_name") or "").strip()
                 full_name = f"{fn} {ln}".strip().lower()
+                uid_str = str(u["user_id"])
                 if full_name:
-                    user_lookup[full_name] = str(u["user_id"])
+                    user_lookup_fullname[full_name] = uid_str
+                    user_lookup_fullname[full_name.rstrip(".").rstrip()] = uid_str
                 if fn:
-                    user_lookup[fn.lower()] = str(u["user_id"])
+                    fn_lower = fn.lower()
+                    if fn_lower not in user_lookup_firstname:
+                        user_lookup_firstname[fn_lower] = uid_str
 
             clean_fn = master_service._clean
 
             fact_records = []
-            for dt, comp_raw, ase_raw, brand_raw, cases, btl, bl in zip(
-                s_date, s_company, s_ase, s_brand, s_cases, s_btl, s_bl
+            for dt, comp_raw, ase_raw, asm_raw, brand_raw, cases, btl, bl in zip(
+                s_date, s_company, s_ase, s_asm, s_brand, s_cases, s_btl, s_bl
             ):
                 comp_clean = str(comp_raw or "").strip()
-                if not comp_clean or comp_clean.lower() == "others":
+                if not comp_clean:
                     continue
 
                 ase_clean = str(ase_raw or "").strip()
-                if not ase_clean or ase_clean.lower() in ("unassigned", "none", "null"):
-                    continue
+                asm_clean = str(asm_raw or "").strip()
 
-                first_ase = ase_clean.replace(",", "/").split("/")[0].strip()
-                user_id = user_lookup.get(ase_clean.lower()) or user_lookup.get(first_ase.lower())
+                user_id = None
+                # 1. Try resolving ASE user if ASE column is provided and not unassigned/none/null
+                if ase_clean and ase_clean.lower() not in ("unassigned", "none", "null"):
+                    first_ase = ase_clean.replace(",", "/").split("/")[0].strip()
+                    user_id = (
+                        user_lookup_fullname.get(ase_clean.lower())
+                        or user_lookup_fullname.get(ase_clean.lower().rstrip(".").rstrip())
+                        or user_lookup_fullname.get(first_ase.lower())
+                        or user_lookup_fullname.get(first_ase.lower().rstrip(".").rstrip())
+                        or user_lookup_firstname.get(ase_clean.lower())
+                        or user_lookup_firstname.get(first_ase.lower())
+                    )
+                # 2. Fall back to TSM/ASM ONLY if ASE was unassigned/empty in the row
+                elif asm_clean and asm_clean.lower() not in ("unassigned", "none", "null"):
+                    first_asm = asm_clean.replace(",", "/").split("/")[0].strip()
+                    user_id = (
+                        user_lookup_fullname.get(asm_clean.lower())
+                        or user_lookup_fullname.get(asm_clean.lower().rstrip(".").rstrip())
+                        or user_lookup_fullname.get(first_asm.lower())
+                        or user_lookup_fullname.get(first_asm.lower().rstrip(".").rstrip())
+                        or user_lookup_firstname.get(asm_clean.lower())
+                        or user_lookup_firstname.get(first_asm.lower())
+                    )
+
                 if not user_id:
                     continue
 
-                company_id = company_cache.get(master_service._clean_company(comp_clean)) or company_cache.get(clean_fn(comp_clean))
-                brand_id = brand_cache.get(clean_fn(brand_raw))
+                c_key1 = master_service._clean_company(comp_clean)
+                c_key2 = comp_clean.lower().rstrip(".").rstrip()
+                company_id = company_cache.get(c_key1) or company_cache.get(c_key2) or company_cache.get(clean_fn(comp_clean))
+
+                b_clean = str(brand_raw or "").strip()
+                b_key1 = clean_fn(b_clean)
+                b_key2 = b_clean.lower().rstrip(".").rstrip()
+                b_key3 = clean_fn(b_clean.rstrip(".").rstrip())
+                brand_id = brand_cache.get(b_key1) or brand_cache.get(b_key2) or brand_cache.get(b_key3)
+
                 if not company_id or not brand_id:
                     continue
 
@@ -2966,7 +3079,7 @@ class ImportPipelineEngine:
                 self._bulk_insert(
                     table="user_sales_fact",
                     records=fact_records,
-                    chunk_size=10000
+                    chunk_size=2500
                 )
                 if timer:
                     timer.mark("user_sales_fact inserted")

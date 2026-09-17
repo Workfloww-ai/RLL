@@ -279,9 +279,6 @@ BEGIN
             OR REPLACE(LOWER(TRIM(h.name)), ' ', '') = REPLACE(LOWER(TRIM(s.hq_raw)), ' ', '')
         )
         WHERE s.batch_id = p_batch_id
-          -- STRICT OTHERS COMPANY EXCLUSION RULE
-          AND LOWER(TRIM(COALESCE(s.company_raw, ''))) NOT IN ('others', 'other')
-          AND (c.company_name IS NULL OR LOWER(TRIM(c.company_name)) NOT IN ('others', 'other'))
     ),
     inserted AS (
         INSERT INTO public.sales_fact (

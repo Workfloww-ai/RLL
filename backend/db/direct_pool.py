@@ -65,6 +65,7 @@ class DirectPostgresPoolManager:
                     min_size=1,
                     max_size=10,
                     command_timeout=120.0,
+                    statement_cache_size=0,
                     ssl=ssl_ctx
                 )
                 logger.info("Direct PostgreSQL asyncpg pool established successfully.")

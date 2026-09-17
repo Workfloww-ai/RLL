@@ -20,35 +20,50 @@ class UserService:
     def list_users(self) -> List[Dict[str, Any]]:
         client = get_supabase()
         if not client:
-            return self.in_memory_users
+            return []
 
         try:
-            # 1. Fetch users
+            # 1. Fetch users strictly from public.users
             users_res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, created_at").execute()
             raw_users = users_res.data if users_res.data is not None else []
 
             if not raw_users:
-                return self.in_memory_users
+                return []
 
             # 2. Fetch roles map
-            roles_res = client.table("roles").select("role_id, role_name").execute()
-            roles_map = {str(r["role_id"]): r.get("role_name", "ASE") for r in (roles_res.data or []) if r.get("role_id")}
+            roles_map = {}
+            try:
+                roles_res = client.table("roles").select("role_id, role_name").execute()
+                roles_map = {str(r["role_id"]): r.get("role_name", "ASE") for r in (roles_res.data or []) if r.get("role_id")}
+            except Exception as e_r:
+                logger.warning(f"Notice fetching roles: {e_r}")
 
             # 3. Fetch user_roles
-            user_roles_res = client.table("user_roles").select("user_id, role_id, is_active").execute()
             role_by_user_id: Dict[str, str] = {}
-            for ur in (user_roles_res.data or []):
-                if ur.get("is_active", True):
-                    uid = str(ur["user_id"])
-                    rid = str(ur.get("role_id") or "")
-                    role_by_user_id[uid] = roles_map.get(rid, "ASE")
+            try:
+                user_roles_res = client.table("user_roles").select("user_id, role_id, is_active").execute()
+                for ur in (user_roles_res.data or []):
+                    if ur.get("is_active", True):
+                        uid = str(ur["user_id"])
+                        rid = str(ur.get("role_id") or "")
+                        role_by_user_id[uid] = roles_map.get(rid, "ASE")
+            except Exception as e_ur:
+                logger.warning(f"Notice fetching user_roles: {e_ur}")
 
             # 4. Fetch depots & headquarters map
-            depots_res = client.table("depots").select("depot_id, name, headquarters_id").execute()
-            depots_map = {str(d["depot_id"]): d for d in (depots_res.data or []) if d.get("depot_id")}
+            depots_map = {}
+            try:
+                depots_res = client.table("depots").select("depot_id, name, headquarters_id").execute()
+                depots_map = {str(d["depot_id"]): d for d in (depots_res.data or []) if d.get("depot_id")}
+            except Exception:
+                pass
 
-            hq_res = client.table("headquarters").select("headquarters_id, name").execute()
-            hq_map = {str(h["headquarters_id"]): h.get("name", "Unassigned") for h in (hq_res.data or []) if h.get("headquarters_id")}
+            hq_map = {}
+            try:
+                hq_res = client.table("headquarters").select("headquarters_id, name").execute()
+                hq_map = {str(h["headquarters_id"]): h.get("name", "Unassigned") for h in (hq_res.data or []) if h.get("headquarters_id")}
+            except Exception:
+                pass
 
             # 5. Fetch user_depot mapping
             user_depot_info: Dict[str, Dict[str, str]] = {}
@@ -82,7 +97,7 @@ class UserService:
             except Exception as e_atm:
                 logger.warning(f"Error fetching ase_tsm_mapping in list_users: {e_atm}")
 
-            # 6. Build final list
+            # 6. Build final list strictly matching public.users
             user_dict_by_id = {str(u["user_id"]): u for u in raw_users}
             result = []
             for u in raw_users:
@@ -128,7 +143,7 @@ class UserService:
             return result
         except Exception as e:
             logger.error(f"Error fetching users from Supabase: {e}")
-            return self.in_memory_users
+            return []
 
             # 2. Fallback to raw_sales_upload if users table is empty
             raw_res = client.table("raw_sales_upload").select("raw_id, ase_raw, asm_tsm_raw, is_active").execute()
