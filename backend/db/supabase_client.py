@@ -971,6 +971,7 @@ def call_mobile_sales_rpc_v3(
     """
     client = get_supabase_client()
     if not client:
+        logger.warning("call_mobile_sales_rpc_v3: No Supabase client available.")
         return []
     try:
         params: Dict[str, Any] = {
@@ -982,7 +983,7 @@ def call_mobile_sales_rpc_v3(
         res = client.rpc("get_mobile_sales_summary", params).execute()
         return res.data or []
     except Exception as e:
-        logger.error(f"call_mobile_sales_rpc_v3 error: {e}")
+        logger.error(f"call_mobile_sales_rpc_v3 notice: {_clean_error_msg(e)}")
         return []
 
 
@@ -1007,7 +1008,7 @@ def call_mobile_tsm_sales_rpc(
         res = client.rpc("get_mobile_tsm_sales_summary", params).execute()
         return res.data or []
     except Exception as e:
-        logger.error(f"call_mobile_tsm_sales_rpc error (start={start_date}, end={end_date}): {e}")
+        logger.error(f"call_mobile_tsm_sales_rpc notice (start={start_date}, end={end_date}): {_clean_error_msg(e)}")
         return []
 
 
@@ -1050,7 +1051,7 @@ def call_mobile_sales_json_rpc(
 
         return data
     except Exception as e:
-        logger.error(f"call_mobile_sales_json_rpc error (target={target_date}, mtd={mtd_start}, ytd={ytd_start}, hq={hq_id}): {e}")
+        logger.error(f"call_mobile_sales_json_rpc notice (target={target_date}): {_clean_error_msg(e)}")
         return {"companies": [], "depots": []}
 
 

@@ -469,7 +469,8 @@ def prewarm_mobile_sales() -> Dict[str, Any]:
                     from backend.db.redis_client import safe_set
                     try:
                         loop = asyncio.get_running_loop()
-                        loop.create_task(safe_set(redis_key, res, ttl=300))
+                        import json
+                        loop.create_task(safe_set(redis_key, json.dumps(res, default=str), ttl=300))
                     except RuntimeError:
                         pass
                 except Exception as e_red:

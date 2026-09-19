@@ -33,11 +33,12 @@ class AnalyticsValidator:
         limit = 1000
         others_id = self._get_others_company_id(client)
         while True:
-            q = client.table("sales_daily_summary").select("company_id, brand_id, depot_id, total_cases, total_bottles, total_bl").eq("sale_date", target_date)
+            q = client.table("sales_daily_summary").select("summary_id, company_id, brand_id, depot_id, total_cases, total_bottles, total_bl").eq("sale_date", target_date)
             if hq_id:
                 q = q.eq("headquarters_id", hq_id)
             if others_id:
                 q = q.neq("company_id", others_id)
+            q = q.order("summary_id")
             res = q.range(offset, offset + limit - 1).execute()
             rows = res.data or []
             all_rows.extend(rows)
@@ -53,11 +54,12 @@ class AnalyticsValidator:
         limit = 1000
         others_id = self._get_others_company_id(client)
         while True:
-            q = client.table("sales_monthly_summary").select("company_id, brand_id, depot_id, total_cases, total_bottles, total_bl").eq("month_start", month_start)
+            q = client.table("sales_monthly_summary").select("summary_id, company_id, brand_id, depot_id, total_cases, total_bottles, total_bl").eq("month_start", month_start)
             if hq_id:
                 q = q.eq("headquarters_id", hq_id)
             if others_id:
                 q = q.neq("company_id", others_id)
+            q = q.order("summary_id")
             res = q.range(offset, offset + limit - 1).execute()
             rows = res.data or []
             all_rows.extend(rows)
@@ -73,11 +75,12 @@ class AnalyticsValidator:
         limit = 1000
         others_id = self._get_others_company_id(client)
         while True:
-            q = client.table("sales_daily_summary").select("total_cases").gte("sale_date", mtd_start).lte("sale_date", target_date)
+            q = client.table("sales_daily_summary").select("summary_id, total_cases").gte("sale_date", mtd_start).lte("sale_date", target_date)
             if hq_id:
                 q = q.eq("headquarters_id", hq_id)
             if others_id:
                 q = q.neq("company_id", others_id)
+            q = q.order("summary_id")
             res = q.range(offset, offset + limit - 1).execute()
             rows = res.data or []
             all_rows.extend(rows)

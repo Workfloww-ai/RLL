@@ -1043,7 +1043,7 @@ class ImportPipelineEngine:
                 client = get_supabase()
                 if client and batch_id:
                     batch_id_str = str(batch_id).strip()
-                    if len(batch_id_str) == 36 or "-" in batch_id_str:
+                    if batch_id_str:
                         try:
                             client.table("sales_fact").delete().eq("batch_id", batch_id_str).execute()
                             logger.info(f"Batch {batch_id}: Purged existing sales_fact records for batch_id={batch_id_str}.")
@@ -2647,7 +2647,7 @@ class ImportPipelineEngine:
                 # Phase 3 Batch-Scoped Replacement: Purge existing user sales facts for this specific batch_id once before insert
                 if batch_id:
                     batch_id_str = str(batch_id).strip()
-                    if len(batch_id_str) == 36 or "-" in batch_id_str:
+                    if batch_id_str:
                         try:
                             client.table("user_sales_fact").delete().eq("batch_id", batch_id_str).execute()
                             logger.info(f"Batch {batch_id}: Purged existing user_sales_fact records for batch_id={batch_id_str}.")

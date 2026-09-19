@@ -20,20 +20,46 @@ router = APIRouter(prefix="/master-data", tags=["Master Data"], dependencies=[au
 
 
 async def invalidate_master_and_user_caches():
-    """Purge Redis caches when depots or headquarters master data change."""
+    """Purge Redis caches when master data changes."""
     await safe_delete("rll:cache:depots_list")
     await safe_delete("rll:cache:headquarters_list")
+    await safe_delete("rll:cache:offices_list")
+    await safe_delete("rll:cache:circles_list")
+    await safe_delete("rll:cache:licensees_list")
+    await safe_delete("rll:cache:brands_list")
+    await safe_delete("rll:cache:packing_sizes_list")
+    await safe_delete("rll:cache:system_settings_dict")
     await safe_delete("rll:cache:users_list")
 
 
 @router.get("/offices", response_model=List[OfficeResponse])
 async def get_offices():
-    return master_service.get_offices()
+    cached = await safe_get("rll:cache:offices_list")
+    if cached:
+        try:
+            return json.loads(cached)
+        except Exception as e:
+            logger.warning(f"Error parsing cached offices_list: {e}")
+
+    data = master_service.get_offices()
+    if data:
+        await safe_set("rll:cache:offices_list", json.dumps(data), ttl=86400)
+    return data
 
 
 @router.get("/circles", response_model=List[CircleResponse])
 async def get_circles():
-    return master_service.get_circles()
+    cached = await safe_get("rll:cache:circles_list")
+    if cached:
+        try:
+            return json.loads(cached)
+        except Exception as e:
+            logger.warning(f"Error parsing cached circles_list: {e}")
+
+    data = master_service.get_circles()
+    if data:
+        await safe_set("rll:cache:circles_list", json.dumps(data), ttl=86400)
+    return data
 
 
 @router.get("/headquarters", response_model=List[HeadquartersResponse])
@@ -86,17 +112,47 @@ async def delete_depot(depot_id: str, _admin=Depends(admin_only)):
 
 @router.get("/licensees", response_model=List[LicenseeResponse])
 async def get_licensees():
-    return master_service.get_licensees()
+    cached = await safe_get("rll:cache:licensees_list")
+    if cached:
+        try:
+            return json.loads(cached)
+        except Exception as e:
+            logger.warning(f"Error parsing cached licensees_list: {e}")
+
+    data = master_service.get_licensees()
+    if data:
+        await safe_set("rll:cache:licensees_list", json.dumps(data), ttl=86400)
+    return data
 
 
 @router.get("/brands", response_model=List[BrandResponse])
 async def get_brands():
-    return master_service.get_brands()
+    cached = await safe_get("rll:cache:brands_list")
+    if cached:
+        try:
+            return json.loads(cached)
+        except Exception as e:
+            logger.warning(f"Error parsing cached brands_list: {e}")
+
+    data = master_service.get_brands()
+    if data:
+        await safe_set("rll:cache:brands_list", json.dumps(data), ttl=86400)
+    return data
 
 
 @router.get("/packing-sizes", response_model=List[PackingSizeResponse])
 async def get_packing_sizes():
-    return master_service.get_packing_sizes()
+    cached = await safe_get("rll:cache:packing_sizes_list")
+    if cached:
+        try:
+            return json.loads(cached)
+        except Exception as e:
+            logger.warning(f"Error parsing cached packing_sizes_list: {e}")
+
+    data = master_service.get_packing_sizes()
+    if data:
+        await safe_set("rll:cache:packing_sizes_list", json.dumps(data), ttl=86400)
+    return data
 
 
 from pydantic import BaseModel
@@ -110,17 +166,29 @@ class SystemSettingUpdate(BaseModel):
 @router.get("/settings")
 async def get_system_settings():
     """Fetch global system settings (e.g. TSM/ASE Data Restriction Toggle)."""
+    cached_dict = await safe_get("rll:cache:system_settings_dict")
+    if cached_dict:
+        try:
+            return json.loads(cached_dict)
+        except Exception as e:
+            logger.warning(f"Error parsing cached system_settings_dict: {e}")
+
+    cached_restriction = await safe_get("rll:setting:tsm_ase_data_restriction_enabled")
+    if cached_restriction:
+        return {"tsm_ase_data_restriction_enabled": cached_restriction}
+
     client = get_supabase()
     if client:
         try:
-            res = client.table("system_settings").select("*").execute()
+            res = client.table("system_settings").select("setting_key, setting_value").execute()
             if res.data:
-                return {item["setting_key"]: item["setting_value"] for item in res.data}
+                data = {item["setting_key"]: item["setting_value"] for item in res.data}
+                await safe_set("rll:cache:system_settings_dict", json.dumps(data), ttl=86400)
+                return data
         except Exception as e:
             logger.warning(f"Error fetching system settings from DB: {e}")
-    
-    cached_val = await safe_get("rll:setting:tsm_ase_data_restriction_enabled") or "true"
-    return {"tsm_ase_data_restriction_enabled": cached_val}
+
+    return {"tsm_ase_data_restriction_enabled": "true"}
 
 
 @router.post("/settings")
@@ -138,6 +206,7 @@ async def update_system_setting(payload: SystemSettingUpdate, _admin=Depends(adm
                 client.table("system_settings").upsert({"setting_key": key, "setting_value": val}).execute()
             except Exception as e2:
                 logger.error(f"Error updating system_settings table: {e2}")
-    
+
     await safe_set(f"rll:setting:{key}", val, ttl=86400 * 30)
+    await safe_delete("rll:cache:system_settings_dict")
     return {"success": True, "setting_key": key, "setting_value": val}
