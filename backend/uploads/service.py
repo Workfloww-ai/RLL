@@ -386,8 +386,8 @@ class ImportPipelineEngine:
 
         try:
             from backend.db.supabase_client import purge_batch_data_fast_rpc
-            if purge_batch_data_fast_rpc(str(batch_id)):
-                logger.info(f"Batch {batch_id}: Cleaned up temporary staging tables in single RPC call.")
+            if purge_batch_data_fast_rpc(str(batch_id), chunk_size=10000):
+                logger.info(f"Batch {batch_id}: Cleaned up temporary staging tables in chunked RPC call.")
                 return
         except Exception as e_rpc:
             logger.debug(f"purge_batch_data_fast_rpc notice for batch {batch_id}: {e_rpc}")
@@ -398,9 +398,19 @@ class ImportPipelineEngine:
             "upload_pipeline_logs",
         ]
 
+        b_str = str(batch_id).strip()
         for table_name in temp_tables:
             try:
-                client.table(table_name).delete().eq("batch_id", batch_id).execute()
+                # Chunked fallback delete to avoid RETURNING * PostgREST overhead
+                while True:
+                    sub_res = client.table(table_name).select("raw_id" if table_name == "raw_sales_upload" else "id").eq("batch_id", b_str).limit(5000).execute()
+                    rows = sub_res.data or []
+                    if not rows:
+                        break
+                    pks = [r.get("raw_id") or r.get("id") for r in rows if r.get("raw_id") or r.get("id")]
+                    if not pks:
+                        break
+                    client.table(table_name).delete().in_("raw_id" if table_name == "raw_sales_upload" else "id", pks).execute()
                 logger.info(f"Batch {batch_id}: Cleaned up temporary {table_name} table.")
             except Exception as exc:
                 logger.warning(f"Phase 1 Cleanup notice for table '{table_name}' batch {batch_id}: {exc}")
@@ -1091,9 +1101,10 @@ class ImportPipelineEngine:
             final_status = "loaded" if imported_rows > 0 else "failed"
             self._update_batch(batch_id=batch_id, row_count=total_rows, status=final_status)
 
-            # Phase 1 Automatic Post-Ingestion Cleanup: purge raw_sales_upload, batch_chunks, upload_pipeline_logs ONLY once status is loaded
+            # Phase 1 Automatic Post-Ingestion Cleanup: purge raw_sales_upload in non-blocking background thread
             if final_status == "loaded":
-                self._purge_batch_temporary_data(batch_id)
+                import threading
+                threading.Thread(target=self._purge_batch_temporary_data, args=(batch_id,), daemon=True).start()
 
             if final_status == "loaded":
                 from backend.services.cache_service import invalidate_analytics_cache_sync, prewarm_cache_egress_sync

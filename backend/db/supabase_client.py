@@ -9,6 +9,26 @@ def get_supabase_client() -> Optional[Client]:
     """Returns a singleton Supabase Client instance using optimized HTTP/1.1 connection pool."""
     from backend.db.client import get_supabase
     return get_supabase()
+
+def _clean_error_msg(e: Any) -> str:
+    """Safely extracts a readable string message from any exception or Supabase error object, truncating raw HTML responses if needed."""
+    if isinstance(e, dict):
+        msg = e.get("message") or e.get("details") or str(e)
+    else:
+        msg = str(e)
+    msg_lower = msg.lower()
+    if "<html>" in msg_lower or "<!doctype html>" in msg_lower:
+        if "521" in msg or "web server is down" in msg_lower:
+            return "Supabase HTTP 521: Web server is down (Cloudflare connection failure)"
+        elif "520" in msg:
+            return "Supabase HTTP 520: Web server returned an unknown response"
+        elif "502" in msg or "bad gateway" in msg_lower:
+            return "Supabase HTTP 502: Bad Gateway"
+        elif "504" in msg or "gateway timeout" in msg_lower:
+            return "Supabase HTTP 504: Gateway Timeout"
+        return msg[:200] + "... [HTML response truncated]"
+    return msg
+
 # ---------------------------------------------------------------------------
 # Database Advisory Lock & Concurrency Control Helpers
 # ---------------------------------------------------------------------------
@@ -297,19 +317,19 @@ def get_table_approx_count(table_name: str) -> int:
         logger.debug(f"get_approx_table_count notice for '{table_name}': {e}")
         return 0
 
-def purge_batch_data_fast_rpc(batch_id: str) -> bool:
+def purge_batch_data_fast_rpc(batch_id: str, chunk_size: int = 10000) -> bool:
     """
-    Fast index-seeking batch purging stored procedure execution.
-    Eliminates unindexed PostgREST DELETE table scan locks.
+    Fast chunked batch purging stored procedure execution (10,000 rows per loop commit).
+    Eliminates monolithic transaction locks, WAL write amplification, and PostgREST DELETE timeouts.
     """
     client = get_supabase_client()
     if not client or not batch_id:
         return True
     try:
-        client.rpc("purge_batch_data_fast", {"p_batch_id": str(batch_id)}).execute()
+        client.rpc("purge_batch_data_fast", {"p_batch_id": str(batch_id), "p_chunk_size": chunk_size}).execute()
         return True
     except Exception as e:
-        logger.warning(f"purge_batch_data_fast_rpc notice for batch '{batch_id}': {e}")
+        logger.warning(f"purge_batch_data_fast_rpc notice for batch '{batch_id}': {_clean_error_msg(e)}")
         return False
 # ---------------------------------------------------------------------------
 # Master Table Upsert Helpers
