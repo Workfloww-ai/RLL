@@ -313,15 +313,8 @@ function MainApp() {
       }
 
       try {
-        let res: any = null;
-        if (viewMode === 'companies') {
-          const compRes = await fetchMobileCompanies(period, dateTo, selectedHq);
-          if (compRes && Array.isArray(compRes.companies)) {
-            res = compRes;
-          }
-        } else {
-          res = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq);
-        }
+        let res: any = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq);
+
         if (res && isMounted) {
           const tStateStart = getNow();
           setApiData((prevData: any) => ({ ...(prevData || {}), ...res }));

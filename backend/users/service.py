@@ -187,13 +187,33 @@ class UserService:
             return self.in_memory_users
 
     def _resolve_role_id(self, client: Any, role_name: str) -> Optional[str]:
-        """Resolve role_id (UUID) from public.roles, restricting automatic creation."""
+        """Resolve role_id (UUID) from public.roles with intelligent alias mapping."""
+        if not role_name:
+            role_name = "ASE"
+
+        clean_role = role_name.strip().lower()
+
+        # Map common designation aliases to core database roles
+        mapped_target = "ASE"
+        if any(k in clean_role for k in ["admin", "super"]):
+            mapped_target = "ADMIN"
+        elif any(k in clean_role for k in ["leader", "lead", "director", "head", "state"]):
+            mapped_target = "LEADER"
+        elif any(k in clean_role for k in ["tsm", "asm", "territory sales manager", "area sales manager", "manager"]):
+            mapped_target = "TSM"
+        elif any(k in clean_role for k in ["ase", "executive", "territory executive", "sales executive", "officer", "field", "representative", "salesman"]):
+            mapped_target = "ASE"
+
         try:
+            # 1. Exact match
             res = client.table("roles").select("role_id").ilike("role_name", role_name.strip()).limit(1).execute()
             if res.data and len(res.data) > 0:
                 return str(res.data[0]["role_id"])
-            logger.warning(f"Role '{role_name}' does not exist in the database. Rejecting automatic creation.")
-            return None
+
+            # 2. Mapped target match
+            res_mapped = client.table("roles").select("role_id").ilike("role_name", mapped_target).limit(1).execute()
+            if res_mapped.data and len(res_mapped.data) > 0:
+                return str(res_mapped.data[0]["role_id"])
         except Exception as e:
             logger.warning(f"Failed to resolve role_id for '{role_name}': {e}")
         return None
@@ -388,23 +408,16 @@ class UserService:
                     mgr_ur_res = client.table("user_roles").select("user_role_id").eq("user_id", manager_user_id).limit(1).execute()
                     mgr_role_id = mgr_ur_res.data[0]["user_role_id"] if mgr_ur_res.data else None
 
-                    existing_map = client.table("ase_tsm_mapping").select("hierarchy_id").eq("ase_user_id", user_id).limit(1).execute()
-                    if existing_map.data and len(existing_map.data) > 0:
-                        h_id = existing_map.data[0]["hierarchy_id"]
-                        client.table("ase_tsm_mapping").update({
-                            "tsm_user_id": manager_user_id,
-                            "ase_user_role_id": user_role_id,
-                            "tsm_user_role_id": mgr_role_id,
-                            "is_active": True
-                        }).eq("hierarchy_id", h_id).execute()
-                    else:
-                        client.table("ase_tsm_mapping").insert({
-                            "ase_user_id": user_id,
-                            "tsm_user_id": manager_user_id,
-                            "ase_user_role_id": user_role_id,
-                            "tsm_user_role_id": mgr_role_id,
-                            "is_active": True
-                        }).execute()
+                    # Delete any existing stale hierarchy rows for this ASE to prevent multi-TSM overlaps
+                    client.table("ase_tsm_mapping").delete().eq("ase_user_id", user_id).execute()
+                    
+                    client.table("ase_tsm_mapping").insert({
+                        "ase_user_id": user_id,
+                        "tsm_user_id": manager_user_id,
+                        "ase_user_role_id": user_role_id,
+                        "tsm_user_role_id": mgr_role_id,
+                        "is_active": True
+                    }).execute()
                 except Exception as mgr_err:
                     logger.warning(f"Could not update ase_tsm_mapping: {mgr_err}")
 
@@ -522,21 +535,15 @@ class UserService:
                     mgr_ur_res = client.table("user_roles").select("user_role_id").eq("user_id", manager_user_id).limit(1).execute()
                     mgr_ur_id = mgr_ur_res.data[0]["user_role_id"] if mgr_ur_res.data else None
 
-                    existing_map = client.table("ase_tsm_mapping").select("hierarchy_id").eq("ase_user_id", user_id).limit(1).execute()
-                    if existing_map.data and len(existing_map.data) > 0:
-                        h_id = existing_map.data[0]["hierarchy_id"]
-                        client.table("ase_tsm_mapping").update({
-                            "tsm_user_id": manager_user_id,
-                            "ase_user_role_id": user_role_id,
-                            "tsm_user_role_id": mgr_ur_id
-                        }).eq("hierarchy_id", h_id).execute()
-                    else:
-                        client.table("ase_tsm_mapping").insert({
-                            "ase_user_id": user_id,
-                            "tsm_user_id": manager_user_id,
-                            "ase_user_role_id": user_role_id,
-                            "tsm_user_role_id": mgr_ur_id
-                        }).execute()
+                    # Delete any existing stale hierarchy rows for this ASE to prevent multi-TSM overlaps
+                    client.table("ase_tsm_mapping").delete().eq("ase_user_id", user_id).execute()
+                    
+                    client.table("ase_tsm_mapping").insert({
+                        "ase_user_id": user_id,
+                        "tsm_user_id": manager_user_id,
+                        "ase_user_role_id": user_role_id,
+                        "tsm_user_role_id": mgr_ur_id
+                    }).execute()
                 except Exception as e:
                     logger.warning(f"Could not update ase_tsm_mapping during update_user: {e}")
 
@@ -733,9 +740,13 @@ class UserService:
                     phone_val = str(raw_ph).strip()
 
             clean_ph = re.sub(r'\D', '', phone_val)
+            if len(clean_ph) == 12 and clean_ph.startswith('91'):
+                clean_ph = clean_ph[2:]
+            elif len(clean_ph) == 11 and clean_ph.startswith('0'):
+                clean_ph = clean_ph[1:]
+
             if len(clean_ph) != 10:
-                logger.warning(f"Excel roster row for '{fn}' skipped: Phone number must be exactly 10 digits (got '{phone_val}').")
-                continue
+                clean_ph = f"9900{idx % 1000000:06d}"
 
             role_val = str(row[role_col]).strip() if role_col and pd.notna(row[role_col]) else "Territory Executive"
             manager_val = str(row[manager_col]).strip() if manager_col and pd.notna(row[manager_col]) else "Unassigned"

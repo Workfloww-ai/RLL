@@ -2561,14 +2561,16 @@ class ImportPipelineEngine:
                             user_depot_pairs.add((ase_uid, depot_id))
                             user_depot_pairs.add((tsm_uid, depot_id))
 
-            for t_uid, a_uid in tsm_ase_pairs:
-                try:
-                    client.table("ase_tsm_mapping").upsert(
-                        {"tsm_user_id": t_uid, "ase_user_id": a_uid},
-                        on_conflict="tsm_user_id, ase_user_id"
-                    ).execute()
-                except Exception:
-                    pass
+            # NOTE: Headcount hierarchy (ase_tsm_mapping) is managed EXCLUSIVELY by the User Management Portal
+            # and Headcount Roster uploads. Sales Excel ingestion must NEVER mutate employee reporting lines.
+            # for t_uid, a_uid in tsm_ase_pairs:
+            #     try:
+            #         client.table("ase_tsm_mapping").upsert(
+            #             {"tsm_user_id": t_uid, "ase_user_id": a_uid},
+            #             on_conflict="tsm_user_id, ase_user_id"
+            #         ).execute()
+            #     except Exception:
+            #         pass
 
             for u_uid, d_uid in user_depot_pairs:
                 try:
