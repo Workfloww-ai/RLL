@@ -2536,26 +2536,15 @@ class ImportPipelineEngine:
 
                 for tsm_name in tsm_list:
                     tsm_key = tsm_name.lower()
-                    if tsm_key not in user_lookup:
-                        t_parts = tsm_name.split(" ", 1)
-                        fn = t_parts[0]
-                        ln = t_parts[1] if len(t_parts) > 1 else ""
-                        res = user_service.create_user({"first_name": fn, "last_name": ln, "role": "TSM", "is_active": True})
-                        user_lookup[tsm_key] = res["user_id"]
-
-                    tsm_uid = user_lookup[tsm_key]
+                    tsm_uid = user_lookup.get(tsm_key)
+                    if not tsm_uid:
+                        continue
 
                     for ase_name in ase_list:
                         ase_key = ase_name.lower()
-                        if ase_key not in user_lookup:
-                            a_parts = ase_name.split(" ", 1)
-                            fn = a_parts[0]
-                            ln = a_parts[1] if len(a_parts) > 1 else ""
-                            res = user_service.create_user({"first_name": fn, "last_name": ln, "role": "ASE", "is_active": True})
-                            user_lookup[ase_key] = res["user_id"]
-
-                        ase_uid = user_lookup[ase_key]
-                        tsm_ase_pairs.add((tsm_uid, ase_uid))
+                        ase_uid = user_lookup.get(ase_key)
+                        if not ase_uid:
+                            continue
 
                         if depot_id:
                             user_depot_pairs.add((ase_uid, depot_id))
@@ -2607,16 +2596,26 @@ class ImportPipelineEngine:
         tenant_id = tenant_id or "a0000000-0000-0000-0000-000000000001"
 
         try:
-            u_res = client.table("users").select("user_id, first_name, last_name").execute()
+            u_res = client.table("users").select("user_id, first_name, last_name, email, is_active").execute()
+            all_u = u_res.data or []
+            # Sort active users first so active user_ids take precedence in user_lookup
+            all_u.sort(key=lambda x: 0 if x.get("is_active") else 1)
+
             user_lookup = {}
-            for u in (u_res.data or []):
-                fn = u.get("first_name") or ""
-                ln = u.get("last_name") or ""
-                full_name = f"{fn} {ln}".strip().lower()
-                if full_name:
-                    user_lookup[full_name] = str(u["user_id"])
-                if fn:
-                    user_lookup[fn.lower()] = str(u["user_id"])
+            for u in all_u:
+                uid = str(u["user_id"])
+                fn = (u.get("first_name") or "").strip().lower()
+                ln = (u.get("last_name") or "").strip().lower()
+                full_name = f"{fn} {ln}".strip()
+                email = str(u.get("email") or "").lower()
+                prefix = email.split("@")[0].strip()
+
+                if full_name and full_name not in user_lookup:
+                    user_lookup[full_name] = uid
+                if prefix and prefix not in user_lookup:
+                    user_lookup[prefix] = uid
+                if fn and fn not in user_lookup:
+                    user_lookup[fn] = uid
 
             clean_fn = master_service._clean
 

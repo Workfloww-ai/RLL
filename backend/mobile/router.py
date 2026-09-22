@@ -175,10 +175,10 @@ def _fetch_fresh_master_lookups():
                 tsm_role_ids.append(str(r["role_id"]))
 
         if tsm_role_ids:
-            ur_res = client.table("user_roles").select("user_id").in_("role_id", tsm_role_ids).execute()
+            ur_res = client.table("user_roles").select("user_id").in_("role_id", tsm_role_ids).eq("is_active", True).execute()
             tsm_user_ids = [str(ur["user_id"]) for ur in (ur_res.data or []) if ur.get("user_id")]
             if tsm_user_ids:
-                u_res = client.table("users").select("user_id, first_name, last_name, email").in_("user_id", tsm_user_ids).execute()
+                u_res = client.table("users").select("user_id, first_name, last_name, email").in_("user_id", tsm_user_ids).eq("is_active", True).execute()
                 tsm_name_to_id = {}
                 for u in (u_res.data or []):
                     u_id = str(u["user_id"])
@@ -272,6 +272,46 @@ def _fetch_fresh_master_lookups():
     except Exception as e:
         logger.warning(f"Error fetching master TSMs: {e}")
 
+    # Build comprehensive user_alias_map for fallback matching
+    user_alias_map = {}
+    try:
+        all_u_res = client.table("users").select("user_id, first_name, last_name, email, is_active").execute()
+        all_users = all_u_res.data or []
+        active_users = [u for u in all_users if u.get("is_active")]
+
+        def _clean_str(s):
+            return "".join(c for c in str(s or "").lower() if c.isalnum())
+
+        def _first_word(s):
+            parts = str(s or "").strip().lower().replace(".", " ").replace("_", " ").split()
+            return _clean_str(parts[0]) if parts else ""
+
+        active_by_full = {_clean_str(f"{u.get('first_name','')} {u.get('last_name','')}"): str(u["user_id"]) for u in active_users}
+        active_by_first = {_first_word(u.get('first_name','')): str(u["user_id"]) for u in active_users if _first_word(u.get('first_name',''))}
+        active_by_prefix = {_first_word(str(u.get('email') or '').split('@')[0]): str(u["user_id"]) for u in active_users if _first_word(str(u.get('email') or '').split('@')[0])}
+
+        for u in all_users:
+            uid = str(u["user_id"])
+            if u.get("is_active"):
+                user_alias_map[uid] = uid
+            else:
+                fn = str(u.get("first_name") or "").strip()
+                ln = str(u.get("last_name") or "").strip()
+                full_name = f"{fn} {ln}".strip()
+                email = str(u.get("email") or "")
+                prefix = email.split("@")[0]
+
+                act_id = (
+                    active_by_full.get(_clean_str(full_name)) or
+                    active_by_prefix.get(_first_word(prefix)) or
+                    active_by_first.get(_first_word(fn)) or
+                    active_by_first.get(_first_word(full_name))
+                )
+                if act_id:
+                    user_alias_map[uid] = act_id
+    except Exception as e_alias:
+        logger.warning(f"Error building user_alias_map: {e_alias}")
+
     hq_name_to_id = {v.lower(): k for k, v in hq_lookup.items() if v}
 
     return {
@@ -285,7 +325,8 @@ def _fetch_fresh_master_lookups():
         "tsm_depot_lookup": tsm_depot_lookup,
         "user_depots_map": user_depots_map,
         "tsm_ase_lookup": tsm_ase_lookup,
-        "ase_names_lookup": ase_names_lookup
+        "ase_names_lookup": ase_names_lookup,
+        "user_alias_map": user_alias_map,
     }
 
 def get_cached_master_lookups():
@@ -1473,6 +1514,7 @@ async def get_mobile_sales(
             db_map[brand_id]["data"][period_key]["bottles"] += metrics["bottles"]
             db_map[brand_id]["data"][period_key]["bl"] += metrics["bl"]
 
+    user_alias_map = master_cache.get("user_alias_map", {})
     member_to_tsms = {}
     ase_assigned_tsm = {}
 
@@ -1492,6 +1534,13 @@ async def get_mobile_sales(
                 member_to_tsms[aid].add(tid)
             else:
                 logger.warning(f"⚠️ [PERMANENT GUARDRAIL] ASE {aid} is mapped to multiple TSMs ({ase_assigned_tsm[aid]} vs {tid}). Retaining primary TSM {ase_assigned_tsm[aid]}.")
+
+    # Expand member_to_tsms to include all alias user_ids
+    for inactive_id, active_id in user_alias_map.items():
+        if active_id in member_to_tsms:
+            if inactive_id not in member_to_tsms:
+                member_to_tsms[inactive_id] = set()
+            member_to_tsms[inactive_id].update(member_to_tsms[active_id])
 
     all_known_ase_ids = {aid for aids in tsm_ase_lookup.values() for aid in aids}
     ase_sales = {
@@ -1520,8 +1569,9 @@ async def get_mobile_sales(
         if not comp_name or comp_name.strip().lower() == "others":
             continue
 
-        uid = str(row.get("user_id") or "")
-        target_tsm_ids = member_to_tsms.get(uid, set())
+        raw_uid = str(row.get("user_id") or "")
+        uid = user_alias_map.get(raw_uid, raw_uid)
+        target_tsm_ids = member_to_tsms.get(raw_uid) or member_to_tsms.get(uid, set())
         if not target_tsm_ids:
             continue
 
