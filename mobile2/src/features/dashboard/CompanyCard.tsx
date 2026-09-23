@@ -58,16 +58,11 @@ export const CompanyCard = React.memo(function CompanyCard({
           </View>
         </View>
 
-        {/* Right Section: Metrics (Cases & Bottles) + Chevron Arrow */}
+        {/* Right Section: Metrics (Cases) + Chevron Arrow */}
         <View style={styles.metricsRightRow}>
           <View style={styles.metricCell}>
             <Text style={styles.casesValue}>{formatNumber(cases)}</Text>
             <Text style={styles.metricLabel}>CASES</Text>
-          </View>
-
-          <View style={styles.metricCell}>
-            <Text style={styles.bottlesValue}>{formatNumber(bottles)}</Text>
-            <Text style={styles.metricLabel}>BOTTLES</Text>
           </View>
 
           <ChevronRightIcon size={15} color="#94A3B8" />

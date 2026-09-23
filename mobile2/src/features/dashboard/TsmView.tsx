@@ -236,6 +236,16 @@ export function TsmView({
     return `Search companies for ${firstName}...`;
   }, [level, activeTsmTab, selectedAse]);
 
+  const getSortOptionLabel = (option: SortOptionValue): string => {
+    switch (option) {
+      case 'az': return 'A to Z';
+      case 'za': return 'Z to A';
+      case 'cases_desc': return 'High to Low';
+      case 'cases_asc': return 'Low to High';
+      default: return 'A to Z';
+    }
+  };
+
   return (
     <View style={styles.container}>
       {level > 1 && (
@@ -307,13 +317,7 @@ export function TsmView({
         >
           <SwapVertIcon size={14} color="#64748B" />
           <Text style={styles.sortText} numberOfLines={1}>
-            {sortOption === 'az'
-              ? 'Name (A to Z)'
-              : sortOption === 'za'
-              ? 'Name (Z to A)'
-              : sortOption === 'cases_desc'
-              ? 'Cases: (High to Low)'
-              : 'Cases: (Low to High)'}
+            {getSortOptionLabel(sortOption)}
           </Text>
           <ChevronDownIcon size={14} color="#94A3B8" />
         </TouchableOpacity>
@@ -358,7 +362,6 @@ export function TsmView({
                   subtitle={`${aseCount} ASE(s)  •  ${companyCount} Companies`}
                   metrics={[
                     { label: 'Cases', value: cases },
-                    { label: 'Bottles', value: bottles },
                   ]}
                   locationPill={hqName}
                   pillTheme="blue"
@@ -381,7 +384,6 @@ export function TsmView({
                   title={compName}
                   metrics={[
                     { label: 'Cases', value: cases },
-                    { label: 'Bottles', value: bottles },
                   ]}
                   scaleFactor={scaleFactor}
                 />
@@ -402,7 +404,6 @@ export function TsmView({
                   subtitle={`${companyCount} Companies`}
                   metrics={[
                     { label: 'Cases', value: cases },
-                    { label: 'Bottles', value: bottles },
                   ]}
                   pillTheme="blue"
                   onPress={() => handleSelectAse(item)}
@@ -424,7 +425,6 @@ export function TsmView({
                   title={compName}
                   metrics={[
                     { label: 'Cases', value: cases },
-                    { label: 'Bottles', value: bottles },
                   ]}
                   scaleFactor={scaleFactor}
                 />

@@ -24,6 +24,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState, AppStateStatus } from 'react-native';
 import { logger } from './src/lib/logger';
 import { secureStorage } from './src/lib/secureStorage';
+import { FastStorage } from './src/lib/storage';
 
 import { Company, Period, ViewMode } from './src/types';
 import { formatNumber, normalizeCompanyList } from './src/lib/utils';
@@ -91,8 +92,8 @@ function MainApp() {
   const [user, setUser] = useState<any>(null);
   const [loadingSession, setLoadingSession] = useState(true);
   const [period, setPeriod] = useState<Period>('Daily');
-  const [dateFrom, setDateFrom] = useState<string>('');
-  const [dateTo, setDateTo] = useState<string>('');
+  const [dateFrom, setDateFrom] = useState<string>(() => FastStorage.getString('rll_latest_sale_date') || '');
+  const [dateTo, setDateTo] = useState<string>(() => FastStorage.getString('rll_latest_sale_date') || '');
   const [viewMode, setViewMode] = useState<ViewMode>('companies');
   const [viewModeHistory, setViewModeHistory] = useState<ViewMode[]>(['companies']);
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
@@ -223,9 +224,10 @@ function MainApp() {
         const token = await secureStorage.getItem('rll_mobile_token');
         if (cachedUser && token) {
           logger.info(`App: Found active session for user: ${JSON.parse(cachedUser).email}`);
+          const cachedLatest = FastStorage.getString('rll_latest_sale_date') || '';
           setPeriod('Daily');
-          setDateFrom('');
-          setDateTo('');
+          setDateFrom(cachedLatest);
+          setDateTo(cachedLatest);
           setViewMode('companies');
           const parsed = JSON.parse(cachedUser);
           setUser(parsed);
@@ -669,9 +671,7 @@ function MainApp() {
                 </View>
                 <Text style={styles.metricsSummaryText}>
                   <Text style={styles.boldText}>{formatNumber(totalSummary.cases)}</Text>{' '}
-                  <Text style={styles.lightText}>cases</Text>  •  {' '}
-                  <Text style={styles.boldText}>{formatNumber(totalSummary.bottles)}</Text>{' '}
-                  <Text style={styles.lightText}>btl</Text>
+                  <Text style={styles.lightText}>Cases</Text>
                 </Text>
               </View>
             )}

@@ -1,17 +1,15 @@
 import { Metrics, Period } from '../types';
 
-export function formatNumber(val: number): string {
-  if (val === undefined || val === null) return '0';
+export function formatNumber(val: number, minimumFractionDigits: number = 2): string {
+  if (val === undefined || val === null) return '0.00';
   
-  // Custom simple Indian numbering format formatting or basic local format
-  // since Intl.NumberFormat might behave slightly differently across Hermes/React Native environments
   try {
     return new Intl.NumberFormat('en-IN', {
       maximumFractionDigits: 2,
-      minimumFractionDigits: val % 1 !== 0 ? 2 : 0,
+      minimumFractionDigits: minimumFractionDigits,
     }).format(val);
   } catch (e) {
-    return val.toLocaleString();
+    return Number(val).toFixed(2);
   }
 }
 

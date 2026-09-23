@@ -49,10 +49,6 @@ export function CompanyCardSkeleton({ cardStyle }: { cardStyle?: object }) {
             <View style={styles.skeletonValue} />
             <View style={styles.skeletonLabel} />
           </View>
-          <View style={styles.metricCell}>
-            <View style={styles.skeletonValue} />
-            <View style={styles.skeletonLabel} />
-          </View>
           <View style={styles.skeletonChevron} />
         </View>
       </View>
@@ -88,10 +84,6 @@ export function GroupCardSkeleton() {
         </View>
 
         <View style={styles.metricsRightRow}>
-          <View style={styles.metricCell}>
-            <View style={styles.skeletonValue} />
-            <View style={styles.skeletonLabel} />
-          </View>
           <View style={styles.metricCell}>
             <View style={styles.skeletonValue} />
             <View style={styles.skeletonLabel} />
@@ -135,10 +127,6 @@ export function TsmCardSkeleton() {
             <View style={styles.skeletonValue} />
             <View style={styles.skeletonLabel} />
           </View>
-          <View style={styles.metricCell}>
-            <View style={styles.skeletonValue} />
-            <View style={styles.skeletonLabel} />
-          </View>
           <View style={styles.skeletonChevron} />
         </View>
       </View>
@@ -171,10 +159,6 @@ export function DepotCardSkeleton() {
         </View>
 
         <View style={styles.metricsRightRow}>
-          <View style={styles.metricCell}>
-            <View style={styles.skeletonValue} />
-            <View style={styles.skeletonLabel} />
-          </View>
           <View style={styles.metricCell}>
             <View style={styles.skeletonValue} />
             <View style={styles.skeletonLabel} />

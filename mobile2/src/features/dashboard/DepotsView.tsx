@@ -94,10 +94,6 @@ export function DepotsView({
                 <Text style={styles.metricValuePrimary}>{formatNumber(cases)}</Text>
                 <Text style={styles.metricLabel}>CASES</Text>
               </View>
-              <View style={styles.metricCell}>
-                <Text style={styles.metricValueSecondary}>{formatNumber(bottles)}</Text>
-                <Text style={styles.metricLabel}>BOTTLES</Text>
-              </View>
               <ChevronRightIcon size={16} color="#94A3B8" />
             </View>
           </View>
@@ -209,10 +205,6 @@ export function DepotsView({
                           <View style={styles.metricCell}>
                             <Text style={styles.metricValuePrimary}>{formatNumber(bCases)}</Text>
                             <Text style={styles.metricLabel}>CASES</Text>
-                          </View>
-                          <View style={styles.metricCell}>
-                            <Text style={styles.metricValueSecondary}>{formatNumber(bBottles)}</Text>
-                            <Text style={styles.metricLabel}>BOTTLES</Text>
                           </View>
                         </View>
                       </View>

@@ -8,6 +8,7 @@ import {
   FlatList,
   Platform,
   BackHandler,
+  StatusBar,
 } from 'react-native';
 import { Period } from '../../types';
 import {
@@ -65,6 +66,21 @@ function formatShortDateDisplay(dateStr: string, includeYear: boolean = false): 
   }
   return dateStr;
 }
+
+function getDisplayHeaderTitle(appName?: string): string {
+  if (!appName) return 'RLL';
+  const trimmed = appName.trim();
+  if (
+    trimmed.toLowerCase().includes('rajasthan liquor') ||
+    trimmed.toLowerCase() === 'lucidx360' ||
+    trimmed.toLowerCase() === 'rll'
+  ) {
+    return 'RLL';
+  }
+  return trimmed;
+}
+
+const isValidHttpUrl = (url?: string) => Boolean(url && (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:')));
 
 const monthNames = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -237,13 +253,15 @@ export function Header({
       <View style={styles.topRow}>
         <View style={styles.branding}>
           <View style={styles.logoBox}>
-            {config.logoUrl ? (
-              <Image source={{ uri: config.logoUrl }} style={{ width: 28, height: 28, resizeMode: 'contain' }} />
+            {isValidHttpUrl(config.logoUrl) ? (
+              <Image source={{ uri: config.logoUrl }} style={{ width: 22, height: 22, resizeMode: 'contain' }} />
             ) : (
-              <LogoSvg width={28} height={28} />
+              <LogoSvg width={22} height={22} />
             )}
           </View>
-          <Text style={styles.title}>{config.appName || 'LucidX360'}</Text>
+          <Text style={styles.title} numberOfLines={1}>
+            {getDisplayHeaderTitle(config.appName)}
+          </Text>
         </View>
 
         {/* Minimalist Headquarters Selector Pill */}
@@ -619,59 +637,77 @@ export function Header({
 
 const styles = StyleSheet.create({
   header: {
-    backgroundColor: '#0F172A',
+    backgroundColor: '#090D16',
     paddingHorizontal: 16,
-    paddingTop: Platform.OS === 'ios' ? 12 : 12,
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 28) + 8 : 14,
     paddingBottom: 14,
-    borderBottomLeftRadius: 20,
-    borderBottomRightRadius: 20,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
+    borderBottomWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
     shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 4,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
+    elevation: 8,
   },
   topRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 14,
+    gap: 8,
   },
   branding: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
+    flex: 1,
+    flexShrink: 1,
+    marginRight: 6,
   },
   logoBox: {
-    width: 32,
-    height: 32,
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.25)',
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 0,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 3,
+    elevation: 3,
   },
   title: {
     color: '#FFFFFF',
-    fontSize: 17.5,
-    fontWeight: '800',
-    letterSpacing: -0.2,
+    fontSize: 20,
+    fontWeight: '900',
+    letterSpacing: 1.0,
+    flexShrink: 1,
   },
   hqSelectorPill: {
     flexDirection: 'row',
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.18)',
+    borderColor: 'rgba(255, 255, 255, 0.14)',
     alignItems: 'center',
-    gap: 4,
-    maxWidth: 170,
+    gap: 5,
+    maxWidth: 160,
+    flexShrink: 0,
   },
   iconBox: {
     justifyContent: 'center',
     alignItems: 'center',
   },
   hqText: {
-    color: '#FFFFFF',
+    color: '#F1F5F9',
     fontSize: 12,
     fontWeight: '700',
     flex: 1,
@@ -684,17 +720,17 @@ const styles = StyleSheet.create({
   },
   periodSwitcher: {
     flexDirection: 'row',
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 14,
     padding: 3,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
+    borderColor: 'rgba(255, 255, 255, 0.12)',
     alignItems: 'center',
   },
   periodBtn: {
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    borderRadius: 9,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 11,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -702,30 +738,30 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
+    shadowOpacity: 0.18,
     shadowRadius: 4,
-    elevation: 2,
+    elevation: 3,
   },
   periodBtnText: {
-    fontSize: 11.5,
+    fontSize: 12,
     color: '#94A3B8',
     fontWeight: '700',
   },
   periodBtnTextActive: {
     color: '#0F172A',
-    fontWeight: '800',
+    fontWeight: '900',
   },
   dateControlsPill: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
-    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 14,
     paddingHorizontal: 8,
-    paddingVertical: 5,
+    paddingVertical: 6,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.18)',
+    borderColor: 'rgba(255, 255, 255, 0.14)',
     overflow: 'hidden',
   },
   rangeInlineContainer: {
