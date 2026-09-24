@@ -207,10 +207,6 @@ export function BrandModal({
               <Text style={styles.metricLabel}>TOTAL CASES</Text>
               <Text style={styles.metricValue}>{formatNumber(companyCases)}</Text>
             </View>
-            <View style={[styles.metricItem, styles.metricBorderLeft]}>
-              <Text style={styles.metricLabel}>TOTAL BOTTLES</Text>
-              <Text style={styles.metricValue}>{formatNumber(companyBottles)}</Text>
-            </View>
           </View>
 
           {/* Single Ultra-Compact 40px Control Bar with Inline Dropdown */}
@@ -287,10 +283,6 @@ export function BrandModal({
                       <View style={styles.metricCell}>
                         <Text style={styles.brandMetricValPrimary}>{formatNumber(bCases)}</Text>
                         <Text style={styles.brandMetricLabel}>CASES</Text>
-                      </View>
-                      <View style={styles.metricCell}>
-                        <Text style={styles.brandMetricValSecondary}>{formatNumber(bBottles)}</Text>
-                        <Text style={styles.brandMetricLabel}>BOTTLES</Text>
                       </View>
                     </View>
                   </View>

@@ -68,6 +68,7 @@ interface UploadErrorViewerProps {
 
 export default function UploadErrorViewer({ initialBatchId, refreshTrigger = 0, onRefreshRequested }: UploadErrorViewerProps) {
   const [loading, setLoading] = useState<boolean>(true);
+  const [fetchFailed, setFetchFailed] = useState<boolean>(false);
   const [viewMode, setViewMode] = useState<'grouped' | 'detailed'>('grouped');
   const [selectedBatch, setSelectedBatch] = useState<string>(initialBatchId || 'all');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
@@ -85,11 +86,14 @@ export default function UploadErrorViewer({ initialBatchId, refreshTrigger = 0, 
   useEffect(() => {
     if (initialBatchId && initialBatchId !== selectedBatch) {
       setSelectedBatch(initialBatchId);
+      setSelectedCategory('all');
+      setSearchQuery('');
     }
   }, [initialBatchId]);
 
   const fetchErrors = async () => {
     setLoading(true);
+    setFetchFailed(false);
     try {
       const token = localStorage.getItem('token');
       const headers: Record<string, string> = {};
@@ -113,9 +117,11 @@ export default function UploadErrorViewer({ initialBatchId, refreshTrigger = 0, 
         setTotalErrors(data.total_errors || 0);
       } else {
         console.warn('Failed to fetch upload errors, status:', res.status);
+        setFetchFailed(true);
       }
     } catch (err) {
       console.error('Error loading upload errors:', err);
+      setFetchFailed(true);
     } finally {
       setLoading(false);
     }
@@ -250,7 +256,11 @@ export default function UploadErrorViewer({ initialBatchId, refreshTrigger = 0, 
             <div className="relative">
               <select
                 value={selectedBatch}
-                onChange={(e) => setSelectedBatch(e.target.value)}
+                onChange={(e) => {
+                  setSelectedBatch(e.target.value);
+                  setSelectedCategory('all');
+                  setSearchQuery('');
+                }}
                 className="text-xs font-semibold text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 pr-8 focus:outline-none focus:ring-2 focus:ring-[#0D3B8E]/20 transition-all cursor-pointer appearance-none"
               >
                 <option value="all">All Recent Ingestions</option>
@@ -395,6 +405,20 @@ export default function UploadErrorViewer({ initialBatchId, refreshTrigger = 0, 
             <p className="text-xs font-bold text-slate-700">Analyzing Ingestion Diagnostics...</p>
             <p className="text-[11px] text-slate-400 mt-0.5">Fetching and categorizing validation records from backend</p>
           </div>
+        ) : fetchFailed ? (
+          <div className="py-12 px-6 rounded-2xl bg-amber-50/70 border border-amber-200 flex flex-col items-center justify-center text-center">
+            <AlertTriangle className="w-6 h-6 text-amber-600 mb-2" />
+            <h3 className="text-sm font-bold text-amber-950">Diagnostics Server Notice</h3>
+            <p className="text-xs text-amber-800 mt-1 max-w-md font-medium">
+              Could not fetch diagnostic logs from backend server. Please verify your connection or click refresh.
+            </p>
+            <button 
+              onClick={fetchErrors}
+              className="mt-3 px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-all cursor-pointer"
+            >
+              Retry Loading Diagnostics
+            </button>
+          </div>
         ) : totalErrors === 0 ? (
           /* Healthy / Zero Error State */
           <div className="py-12 px-6 rounded-2xl bg-emerald-50/50 border border-emerald-200/80 flex flex-col items-center justify-center text-center">
@@ -410,8 +434,16 @@ export default function UploadErrorViewer({ initialBatchId, refreshTrigger = 0, 
           /* Grouped Summary View */
           <div className="space-y-3.5">
             {filteredIssues.length === 0 ? (
-              <div className="text-center py-8 text-slate-400 text-xs font-medium">
-                No issues match your search criteria.
+              <div className="py-10 px-6 rounded-2xl bg-slate-50 border border-slate-200/80 text-center">
+                <p className="text-xs font-bold text-slate-700">No issues match the active category/search filter</p>
+                {selectedCategory !== 'all' && (
+                  <button
+                    onClick={() => setSelectedCategory('all')}
+                    className="mt-2 text-xs font-bold text-[#0D3B8E] hover:underline cursor-pointer"
+                  >
+                    View All {totalErrors} Issues Across Batch →
+                  </button>
+                )}
               </div>
             ) : (
               filteredIssues.map((issue) => {
@@ -522,9 +554,10 @@ export default function UploadErrorViewer({ initialBatchId, refreshTrigger = 0, 
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold text-[10px] uppercase tracking-wider">
+                    <th className="py-3 px-4">Row #</th>
                     <th className="py-3 px-4">Category</th>
                     <th className="py-3 px-4">Entity / Column</th>
-                    <th className="py-3 px-4">Issue Description & Action</th>
+                    <th className="py-3 px-4">Issue Description & Action Required</th>
                     <th className="py-3 px-4">Batch ID</th>
                     <th className="py-3 px-4 text-right">Timestamp</th>
                   </tr>
@@ -532,42 +565,60 @@ export default function UploadErrorViewer({ initialBatchId, refreshTrigger = 0, 
                 <tbody className="divide-y divide-slate-100">
                   {filteredErrors.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="py-8 text-center text-slate-400 font-medium">
+                      <td colSpan={6} className="py-8 text-center text-slate-400 font-medium">
                         No errors match the current filter.
                       </td>
                     </tr>
                   ) : (
-                    filteredErrors.slice(0, 150).map((err) => (
-                      <tr key={err.error_id} className="hover:bg-slate-50/60 transition-colors">
-                        <td className="py-3 px-4 whitespace-nowrap">
-                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${getCategoryBadgeClass(err.category)}`}>
-                            {getCategoryIcon(err.category)}
-                            <span>{err.category}</span>
-                          </span>
-                        </td>
-                        <td className="py-3 px-4 font-bold text-slate-800 whitespace-nowrap">
-                          {err.column_name || err.entity}
-                        </td>
-                        <td className="py-3 px-4 max-w-md">
-                          <p className="font-bold text-slate-900 text-xs">{err.friendly_title}</p>
-                          <p className="text-[11px] text-slate-500 mt-0.5">{err.friendly_explanation}</p>
-                          {err.raw_message && (
-                            <details className="mt-1 text-[10px] text-slate-400">
-                              <summary className="cursor-pointer hover:text-slate-600 font-medium">Show raw message</summary>
-                              <pre className="mt-1 p-1.5 bg-slate-100 text-slate-700 rounded text-[10px] whitespace-pre-wrap font-mono">
-                                {err.raw_message}
-                              </pre>
-                            </details>
-                          )}
-                        </td>
-                        <td className="py-3 px-4 text-slate-500 font-mono text-[11px] whitespace-nowrap">
-                          {err.batch_id ? `#${err.batch_id.slice(0, 8)}` : '—'}
-                        </td>
-                        <td className="py-3 px-4 text-right text-slate-400 whitespace-nowrap font-medium text-[11px]">
-                          {err.created_at ? new Date(err.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : '—'}
-                        </td>
-                      </tr>
-                    ))
+                    filteredErrors.slice(0, 150).map((err) => {
+                      const rowNum = err.excel_row_number || (err.raw_message && err.raw_message.match(/\[Row\s*#?(\d+)\]/i)?.[1]) || '—';
+                      const actionText = err.suggested_action || err.resolution;
+                      return (
+                        <tr key={err.error_id} className="hover:bg-slate-50/60 transition-colors">
+                          <td className="py-3 px-4 whitespace-nowrap">
+                            <span className="px-2 py-0.5 rounded text-[11px] font-mono font-extrabold bg-amber-100 text-amber-900 border border-amber-300">
+                              Row #{rowNum}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 whitespace-nowrap">
+                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${getCategoryBadgeClass(err.category)}`}>
+                              {getCategoryIcon(err.category)}
+                              <span>{err.category}</span>
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 whitespace-nowrap">
+                            <p className="font-bold text-slate-900">{err.entity || err.column_name}</p>
+                            <p className="text-[10px] text-slate-400 font-mono">col: {err.column_name || 'raw'}</p>
+                          </td>
+                          <td className="py-3 px-4 max-w-lg">
+                            <p className="font-bold text-slate-900 text-xs">{err.friendly_title}</p>
+                            <p className="text-[11px] text-slate-600 mt-0.5">{err.friendly_explanation}</p>
+                            
+                            {actionText && (
+                              <div className="mt-1.5 p-2 bg-amber-50/90 border border-amber-200 rounded-lg text-[11px] text-amber-900 font-medium flex items-start gap-1.5">
+                                <Lightbulb className="w-3.5 h-3.5 text-amber-700 shrink-0 mt-0.5" />
+                                <span><strong>Action Needed:</strong> {actionText}</span>
+                              </div>
+                            )}
+
+                            {err.raw_message && (
+                              <details className="mt-1 text-[10px] text-slate-400">
+                                <summary className="cursor-pointer hover:text-slate-600 font-medium">Show raw message</summary>
+                                <pre className="mt-1 p-1.5 bg-slate-100 text-slate-700 rounded text-[10px] whitespace-pre-wrap font-mono">
+                                  {err.raw_message}
+                                </pre>
+                              </details>
+                            )}
+                          </td>
+                          <td className="py-3 px-4 text-slate-500 font-mono text-[11px] whitespace-nowrap">
+                            {err.batch_id ? `#${err.batch_id.slice(0, 8)}` : '—'}
+                          </td>
+                          <td className="py-3 px-4 text-right text-slate-400 whitespace-nowrap font-medium text-[11px]">
+                            {err.created_at ? new Date(err.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : '—'}
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>

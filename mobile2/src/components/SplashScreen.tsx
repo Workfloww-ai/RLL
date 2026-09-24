@@ -29,6 +29,7 @@ export function SplashScreen({ onFinish }: SplashScreenProps) {
   }, [fadeAnim, scaleAnim]);
 
   const splashImgUrl = config.splashScreenUrl || config.logoUrl;
+  const isValidHttpUrl = (url?: string) => Boolean(url && (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:')));
 
   return (
     <View style={styles.container}>
@@ -42,7 +43,7 @@ export function SplashScreen({ onFinish }: SplashScreenProps) {
         ]}
       >
         <View style={styles.logoContainer}>
-          {splashImgUrl ? (
+          {isValidHttpUrl(splashImgUrl) ? (
             <Image source={{ uri: splashImgUrl }} style={{ width: 120, height: 120, resizeMode: 'contain' }} />
           ) : (
             <LogoSvg width={120} height={120} />

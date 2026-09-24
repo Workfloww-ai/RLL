@@ -460,6 +460,9 @@ export async function fetchMobileSales(
       data._jsonParseDurationMs = jsonParseDurationMs;
       data._backendDurationMs = backendDurationMs ? parseFloat(backendDurationMs) : null;
       data._cacheStatus = cacheStatus;
+      if (data.latest_sale_date) {
+        FastStorage.setString('rll_latest_sale_date', data.latest_sale_date);
+      }
     }
 
     let totCases = 0;
@@ -742,6 +745,9 @@ async function fetchMobileCompaniesNetwork(
       return null;
     }
 
+    if (data.latest_sale_date) {
+      FastStorage.setString('rll_latest_sale_date', data.latest_sale_date);
+    }
     if (fastKey && data.companies.length > 0) {
       FastStorage.setObject(fastKey, data);
     }

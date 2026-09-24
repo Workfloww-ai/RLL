@@ -188,3 +188,22 @@ class RoleChecker:
             detail=f"Permission denied: user role '{user_role}' is not authorized for this operation"
         )
 
+
+class StrictRoleChecker:
+    """Role checker that requires an EXACT match with allowed_roles without automatic admin fallback."""
+    def __init__(self, allowed_roles: List[str]):
+        self.allowed_roles = [r.lower() for r in allowed_roles]
+
+    def __call__(self, current_user: dict = Depends(get_current_user)):
+        user_role = (current_user.get("role_name") or current_user.get("role") or "").strip().lower()
+        if user_role in self.allowed_roles:
+            return current_user
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Permission denied: operation restricted to roles {self.allowed_roles}. Current role '{user_role}' is not authorized."
+        )
+
+
+developer_only = StrictRoleChecker(["developer"])
+
+

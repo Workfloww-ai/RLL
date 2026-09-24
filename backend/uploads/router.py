@@ -193,13 +193,29 @@ async def get_upload_batch(batch_id: str):
     })
 
 
+def extract_entity_val(msg: str) -> str:
+    """Extract single-quoted string or clean entity name from error message."""
+    m_quote = re.search(r"'(.*?)'", msg)
+    if m_quote and m_quote.group(1).strip():
+        val = m_quote.group(1).strip()
+        if not val.lower().startswith("row #") and not val.lower().startswith("row_"):
+            return val
+    m_colon = re.search(r':\s*(?:Licensee|Depot|Brand|Company|Headquarters|HQ|ASE|ASM/TSM|TSM)?\s*["\']?([^"\'\n:]+?)["\']?\s+(?:is not|was not|does not|specified)', msg, re.IGNORECASE)
+    if m_colon and m_colon.group(1).strip():
+        return m_colon.group(1).strip()
+    return "Unmapped Value"
+
 def humanize_upload_error(column_name: Optional[str], raw_message: str) -> Dict[str, Any]:
     """
     Translates raw backend/database error strings into clear, friendly, and actionable UI diagnostics.
     """
     msg = (raw_message or "").strip()
     col = (column_name or "").strip()
-    
+    val = extract_entity_val(msg)
+
+    row_match = re.search(r'\[Row\s*#?(\d+)\]', msg)
+    row_str = f"Row #{row_match.group(1)}" if row_match else ""
+
     # 1. Network / Socket / Timeout errors
     if "[Errno 35]" in msg or "Resource temporarily unavailable" in msg:
         return {
@@ -223,62 +239,133 @@ def humanize_upload_error(column_name: Optional[str], raw_message: str) -> Dict[
             "entity": "Database Request",
             "group_key": "db_timeout"
         }
-        
+
     # 2. Master Data Mapping Errors
-    if "Unmapped Headquarters" in msg or col.lower() in ("hq_raw", "headquarters", "hq"):
-        match = re.search(r"'(.*?)'", msg) or re.search(r':\s*(.*)', msg)
-        hq_name = match.group(1).strip() if match else "Unknown"
+    if "UNMAPPED_LICENSEE" in msg or "Unmapped Licensee" in msg or col.lower() in ("licensee_raw", "licensee_name", "licensee"):
         return {
             "category": "Master Data Mapping",
             "category_key": "master_mapping",
-            "severity": "warning",
-            "friendly_title": f"Unmapped Headquarters: '{hq_name}'",
-            "friendly_explanation": f"The headquarters '{hq_name}' in the Excel file is not recognized in the system master catalog.",
-            "suggested_action": f"Register '{hq_name}' under Territory Management or check Excel spelling.",
-            "entity": f"Headquarters: {hq_name}",
-            "group_key": f"unmapped_hq_{hq_name}"
+            "severity": "critical",
+            "friendly_title": f"Unmapped Licensee: '{val}'",
+            "friendly_explanation": f"{row_str + ': ' if row_str else ''}Licensee '{val}' in the Excel upload is not registered in the Licensee master catalog.",
+            "suggested_action": f"Add Licensee '{val}' to the Licensee Master Catalog or correct its spelling in the Excel file.",
+            "entity": f"Licensee: {val}",
+            "group_key": f"unmapped_licensee_{val.lower().replace(' ', '_')}"
         }
-    elif "Unmapped Depot" in msg or col.lower() in ("depot_raw", "depot_name", "depot"):
-        match = re.search(r"'(.*?)'", msg) or re.search(r':\s*(.*)', msg)
-        depot_name = match.group(1).strip() if match else "Unknown"
+    elif "UNMAPPED_DEPOT" in msg or "Unmapped Depot" in msg or col.lower() in ("depot_raw", "depot_name", "depot"):
         return {
             "category": "Master Data Mapping",
             "category_key": "master_mapping",
-            "severity": "warning",
-            "friendly_title": f"Unmapped Depot: '{depot_name}'",
-            "friendly_explanation": f"Depot '{depot_name}' does not match any registered depot in the database.",
-            "suggested_action": f"Add '{depot_name}' in Depot Masters or update alias.",
-            "entity": f"Depot: {depot_name}",
-            "group_key": f"unmapped_depot_{depot_name}"
+            "severity": "critical",
+            "friendly_title": f"Unmapped Depot: '{val}'",
+            "friendly_explanation": f"{row_str + ': ' if row_str else ''}Depot '{val}' in the Excel upload is not registered in the Depot master catalog.",
+            "suggested_action": f"Add Depot '{val}' to Depot Master Catalog or correct its spelling in the Excel file.",
+            "entity": f"Depot: {val}",
+            "group_key": f"unmapped_depot_{val.lower().replace(' ', '_')}"
         }
-    elif "Unmapped Licensee" in msg or col.lower() in ("licensee_raw", "licensee_name", "licensee"):
-        match = re.search(r"'(.*?)'", msg) or re.search(r':\s*(.*)', msg)
-        lic_name = match.group(1).strip() if match else "Unknown"
+    elif "UNMAPPED_BRAND" in msg or "Unmapped Brand" in msg or col.lower() in ("brand_raw", "brand_name", "brand"):
         return {
             "category": "Master Data Mapping",
             "category_key": "master_mapping",
-            "severity": "warning",
-            "friendly_title": f"Unmapped Licensee: '{lic_name}'",
-            "friendly_explanation": f"Licensee '{lic_name}' is not recognized in the licensee registry.",
-            "suggested_action": f"Ensure '{lic_name}' is configured in Licensee Master records.",
-            "entity": f"Licensee: {lic_name}",
-            "group_key": f"unmapped_licensee_{lic_name}"
+            "severity": "critical",
+            "friendly_title": f"Unmapped Brand: '{val}'",
+            "friendly_explanation": f"{row_str + ': ' if row_str else ''}Brand '{val}' in the Excel upload is not registered in the Brand master catalog.",
+            "suggested_action": f"Add Brand '{val}' to Brand Master Catalog or correct its spelling in the Excel file.",
+            "entity": f"Brand: {val}",
+            "group_key": f"unmapped_brand_{val.lower().replace(' ', '_')}"
         }
-    elif "Unmapped Brand" in msg or col.lower() in ("brand_raw", "brand_name", "brand"):
-        match = re.search(r"'(.*?)'", msg) or re.search(r':\s*(.*)', msg)
-        brand_name = match.group(1).strip() if match else "Unknown"
+    elif "UNMAPPED_COMPANY" in msg or "Unmapped Company" in msg or col.lower() in ("company_raw", "company_name", "company"):
         return {
             "category": "Master Data Mapping",
             "category_key": "master_mapping",
-            "severity": "warning",
-            "friendly_title": f"Unmapped Brand: '{brand_name}'",
-            "friendly_explanation": f"Brand '{brand_name}' was not found in the liquor brand master.",
-            "suggested_action": f"Register '{brand_name}' under Brand Master catalog.",
-            "entity": f"Brand: {brand_name}",
-            "group_key": f"unmapped_brand_{brand_name}"
+            "severity": "critical",
+            "friendly_title": f"Unmapped Company: '{val}'",
+            "friendly_explanation": f"{row_str + ': ' if row_str else ''}Company '{val}' in the Excel upload is not registered in the Company master catalog.",
+            "suggested_action": f"Add Company '{val}' to Company Master Catalog or correct its spelling in the Excel file.",
+            "entity": f"Company: {val}",
+            "group_key": f"unmapped_company_{val.lower().replace(' ', '_')}"
         }
-        
-    # 3. Database Insertion & Table Errors
+    elif "UNMAPPED_HQ" in msg or "Unmapped Headquarters" in msg or col.lower() in ("hq_raw", "headquarters", "hq"):
+        return {
+            "category": "Master Data Mapping",
+            "category_key": "master_mapping",
+            "severity": "critical",
+            "friendly_title": f"Unmapped Headquarters: '{val}'",
+            "friendly_explanation": f"{row_str + ': ' if row_str else ''}Headquarters '{val}' in the Excel upload is not registered in the Headquarters master catalog.",
+            "suggested_action": f"Add Headquarters '{val}' under Territory Management or correct its spelling in the Excel file.",
+            "entity": f"Headquarters: {val}",
+            "group_key": f"unmapped_hq_{val.lower().replace(' ', '_')}"
+        }
+
+    # 3. Employee Hierarchy & Mapping Errors
+    if "ASE_TSM_MAPPING_MISMATCH" in msg:
+        return {
+            "category": "Employee Hierarchy",
+            "category_key": "employee_mapping",
+            "severity": "critical",
+            "friendly_title": f"ASE -> ASM/TSM Hierarchy Mismatch: '{val}'",
+            "friendly_explanation": msg,
+            "suggested_action": "Correct employee reporting line in User Management or update the source Excel file.",
+            "entity": f"Hierarchy Mismatch: {val}",
+            "group_key": f"ase_tsm_mapping_mismatch_{val.lower().replace(' ', '_')}"
+        }
+    elif "UNMAPPED_ASE" in msg:
+        return {
+            "category": "Employee Hierarchy",
+            "category_key": "employee_mapping",
+            "severity": "critical",
+            "friendly_title": f"Unregistered ASE Personnel: '{val}'",
+            "friendly_explanation": f"{row_str + ': ' if row_str else ''}ASE '{val}' is not registered in User Management.",
+            "suggested_action": f"Create/activate ASE user profile for '{val}' in User Management (Headcount Roster).",
+            "entity": f"ASE Personnel: {val}",
+            "group_key": f"unmapped_ase_{val.lower().replace(' ', '_')}"
+        }
+    elif "UNMAPPED_TSM" in msg:
+        return {
+            "category": "Employee Hierarchy",
+            "category_key": "employee_mapping",
+            "severity": "critical",
+            "friendly_title": f"Unregistered ASM/TSM Personnel: '{val}'",
+            "friendly_explanation": f"{row_str + ': ' if row_str else ''}ASM/TSM '{val}' is not registered in User Management.",
+            "suggested_action": f"Create/activate ASM/TSM user profile for '{val}' in User Management (Headcount Roster).",
+            "entity": f"ASM/TSM Personnel: {val}",
+            "group_key": f"unmapped_tsm_{val.lower().replace(' ', '_')}"
+        }
+    elif "MISSING_ASE_TSM_MAPPING" in msg:
+        return {
+            "category": "Employee Hierarchy",
+            "category_key": "employee_mapping",
+            "severity": "critical",
+            "friendly_title": f"Missing Approved Manager for ASE: '{val}'",
+            "friendly_explanation": f"{row_str + ': ' if row_str else ''}ASE '{val}' is registered but has no approved ASM/TSM manager assigned.",
+            "suggested_action": f"Assign an approved ASM/TSM manager to ASE '{val}' in User Management.",
+            "entity": f"Employee Hierarchy: {val}",
+            "group_key": f"missing_ase_tsm_mapping_{val.lower().replace(' ', '_')}"
+        }
+    elif "DATE_ERROR" in msg or "Invalid or unparseable sale date" in msg or col.lower() in ("sale_date_raw", "sale_date", "date"):
+        return {
+            "category": "Data Validation",
+            "category_key": "validation",
+            "severity": "critical",
+            "friendly_title": f"Invalid Date Format: '{val or 'Unparseable Date'}'",
+            "friendly_explanation": f"{row_str + ': ' if row_str else ''}Sale date '{val}' in the Excel file is invalid or unparseable.",
+            "suggested_action": "Format the sale date column as a valid date (YYYY-MM-DD or DD/MM/YYYY) in the Excel file.",
+            "entity": f"Sale Date: {val or 'Unparseable'}",
+            "group_key": f"date_error_{val.lower().replace(' ', '_')}"
+        }
+    elif "INVALID_CASE" in msg:
+        return {
+            "category": "Data Validation",
+            "category_key": "validation",
+            "severity": "critical",
+            "friendly_title": "Invalid Case Quantity",
+            "friendly_explanation": msg,
+            "suggested_action": "Ensure Case column contains a valid non-negative numeric quantity.",
+            "entity": "Case Quantity",
+            "group_key": "invalid_case_quantity"
+        }
+
+    # 4. Database Insertion & Table Errors
     if "failed insertion in table" in msg or col in ("user_sales_fact", "sales_fact", "raw_sales_upload"):
         table_name = col or "sales_fact"
         return {
@@ -292,7 +379,7 @@ def humanize_upload_error(column_name: Optional[str], raw_message: str) -> Dict[
             "group_key": f"insertion_failure_{table_name}"
         }
 
-    # 4. File Structure & Header Validation
+    # 5. File Structure & Header Validation
     if col in ("FILE_VALIDATION", "FILE_INIT_ERROR") or "column" in msg.lower() or "header" in msg.lower():
         return {
             "category": "File Validation",
@@ -324,10 +411,28 @@ async def get_batch_logs(batch_id: str):
     client = get_supabase()
     if client:
         try:
-            res = client.table("upload_validation_errors").select("error_id, batch_id, raw_id, column_name, error_message, created_at").eq("batch_id", batch_id).order("created_at", desc=True).limit(500).execute()
+            res = client.table("error_logs").select("id, error_message, context, created_at").eq("source", "VALIDATION_ERROR").order("created_at", desc=True).limit(500).execute()
             if res.data:
                 formatted = []
                 for item in res.data:
+                    ctx = item.get("context") or {}
+                    b_id = ctx.get("upload_batch_id") or ctx.get("batch_id")
+                    if str(b_id) == str(batch_id):
+                        formatted.append({
+                            "upload_log_id": str(item.get("id") or uuid.uuid4()),
+                            "upload_batch_id": str(b_id or batch_id),
+                            "row_number": ctx.get("excel_row_number") or ctx.get("row_number"),
+                            "column_name": ctx.get("field_name") or ctx.get("column_name"),
+                            "error_message": item.get("error_message") or ctx.get("error_message"),
+                            "created_at": item.get("created_at") or datetime.utcnow(),
+                        })
+                if formatted:
+                    return formatted
+
+            res_val = client.table("upload_validation_errors").select("error_id, batch_id, raw_id, column_name, error_message, created_at").eq("batch_id", batch_id).order("created_at", desc=True).limit(500).execute()
+            if res_val.data:
+                formatted = []
+                for item in res_val.data:
                     formatted.append({
                         "upload_log_id": item.get("error_id") or str(uuid.uuid4()),
                         "upload_batch_id": item.get("batch_id") or batch_id,
@@ -341,6 +446,15 @@ async def get_batch_logs(batch_id: str):
             logger.warning(f"Failed to fetch logs from Supabase for batch {batch_id}: {e}")
     return logs
 
+
+def _matches_batch_id(b_id_val: Any, requested_id: Optional[str]) -> bool:
+    if not requested_id or str(requested_id).strip().lower() in ("all", "none", ""):
+        return True
+    if not b_id_val:
+        return False
+    s1 = str(b_id_val).strip().lower()
+    s2 = str(requested_id).strip().lower()
+    return s1 == s2 or s1.startswith(s2) or s2.startswith(s1)
 
 @router.get("/errors")
 async def get_upload_errors(
@@ -357,22 +471,61 @@ async def get_upload_errors(
 
     if client:
         try:
-            query = client.table("upload_validation_errors").select("error_id, batch_id, raw_id, column_name, error_message, created_at").order("created_at", desc=True)
-            if batch_id and batch_id != "all":
-                query = query.eq("batch_id", batch_id)
-            res = query.limit(limit).execute()
+            query = client.table("error_logs").select("id, error_message, context, created_at").eq("source", "VALIDATION_ERROR").order("created_at", desc=True)
+            res = query.limit(limit * 4).execute()
             if res.data:
-                raw_errors = res.data
+                for item in res.data:
+                    ctx = item.get("context") or {}
+                    b_id = ctx.get("upload_batch_id") or ctx.get("batch_id")
+                    if not _matches_batch_id(b_id, batch_id):
+                        continue
+                    raw_errors.append({
+                        "error_id": str(item.get("id")),
+                        "batch_id": str(b_id or "N/A"),
+                        "column_name": ctx.get("field_name") or ctx.get("column_name") or "General",
+                        "error_message": item.get("error_message") or ctx.get("error_message") or "",
+                        "created_at": item.get("created_at"),
+                        "excel_row_number": ctx.get("excel_row_number") or ctx.get("row_number"),
+                        "error_code": ctx.get("error_code"),
+                        "severity": ctx.get("severity"),
+                        "actual_value": ctx.get("actual_value"),
+                        "expected_value": ctx.get("expected_value"),
+                        "ase": ctx.get("ase"),
+                        "asm_tsm": ctx.get("asm_tsm"),
+                        "approved_asm_tsm": ctx.get("approved_asm_tsm"),
+                        "hq": ctx.get("hq"),
+                        "depot": ctx.get("depot"),
+                        "licensee": ctx.get("licensee"),
+                        "company": ctx.get("company"),
+                        "brand": ctx.get("brand"),
+                        "resolution": ctx.get("resolution"),
+                    })
+
+            if not raw_errors:
+                res_val = client.table("upload_validation_errors").select("error_id, batch_id, raw_id, column_name, error_message, created_at").order("created_at", desc=True).limit(limit * 2).execute()
+                if res_val.data:
+                    for item in res_val.data:
+                        b_id = item.get("batch_id")
+                        if not _matches_batch_id(b_id, batch_id):
+                            continue
+                        raw_errors.append({
+                            "error_id": str(item.get("error_id")),
+                            "batch_id": str(b_id or "N/A"),
+                            "column_name": item.get("column_name"),
+                            "error_message": item.get("error_message"),
+                            "created_at": item.get("created_at"),
+                        })
         except Exception as e:
-            logger.warning(f"Error querying upload_validation_errors: {e}")
+            logger.warning(f"Error querying error_logs / upload_validation_errors: {e}")
 
     # Also pull from in-memory upload_logs_db if DB yielded nothing
     if not raw_errors and upload_logs_db:
         for log in upload_logs_db:
-            if not batch_id or batch_id == "all" or str(log.get("upload_batch_id")) == str(batch_id) or str(log.get("batch_id")) == str(batch_id):
+            b_id = log.get("upload_batch_id") or log.get("batch_id")
+            if _matches_batch_id(b_id, batch_id):
                 raw_errors.append({
                     "error_id": log.get("upload_log_id") or str(uuid.uuid4()),
-                    "batch_id": log.get("upload_batch_id") or log.get("batch_id"),
+                    "batch_id": str(b_id or "N/A"),
                     "column_name": log.get("column_name"),
                     "error_message": log.get("error_message"),
                     "created_at": log.get("created_at") or datetime.utcnow().isoformat()
@@ -399,37 +552,61 @@ async def get_upload_errors(
     grouped_map: Dict[str, Dict[str, Any]] = {}
     category_counts: Dict[str, int] = {
         "Master Data Mapping": 0,
+        "Employee Hierarchy": 0,
         "System & Network": 0,
         "Database Insertion": 0,
         "File Validation": 0,
         "Data Validation": 0
     }
 
+    # Pass 1: Compute category counts for ALL raw errors in batch
     for item in raw_errors:
         col = item.get("column_name")
         raw_msg = item.get("error_message") or ""
         human = humanize_upload_error(col, raw_msg)
         cat = human["category"]
-
-        # Filter by category if requested
-        if category and category.lower() != "all" and human["category_key"] != category.lower() and cat.lower() != category.lower():
-            continue
-
         category_counts[cat] = category_counts.get(cat, 0) + 1
+
+    # Pass 2: Filter by requested category for detailed list and top issues
+    for item in raw_errors:
+        col = item.get("column_name")
+        raw_msg = item.get("error_message") or ""
+        human = humanize_upload_error(col, raw_msg)
+        cat = human["category"]
+        cat_key = human.get("category_key", "").lower().strip()
+
+        if category and category.lower() not in ("all", "none", ""):
+            req_cat = category.lower().strip()
+            if req_cat != cat.lower().strip() and req_cat != cat_key:
+                continue
 
         error_entry = {
             "error_id": str(item.get("error_id") or uuid.uuid4()),
             "batch_id": str(item.get("batch_id") or "N/A"),
             "column_name": col or "General",
+            "field_name": col or "General",
             "raw_message": raw_msg,
             "friendly_title": human["friendly_title"],
             "friendly_explanation": human["friendly_explanation"],
-            "suggested_action": human["suggested_action"],
+            "suggested_action": item.get("resolution") or human["suggested_action"],
+            "resolution": item.get("resolution") or human["suggested_action"],
             "category": cat,
-            "category_key": human["category_key"],
-            "severity": human["severity"],
+            "category_key": cat_key,
+            "severity": item.get("severity") or human["severity"],
             "entity": human["entity"],
-            "created_at": item.get("created_at")
+            "created_at": item.get("created_at"),
+            "excel_row_number": item.get("excel_row_number"),
+            "error_code": item.get("error_code"),
+            "actual_value": item.get("actual_value"),
+            "expected_value": item.get("expected_value"),
+            "ase": item.get("ase"),
+            "asm_tsm": item.get("asm_tsm"),
+            "approved_asm_tsm": item.get("approved_asm_tsm"),
+            "hq": item.get("hq"),
+            "depot": item.get("depot"),
+            "licensee": item.get("licensee"),
+            "company": item.get("company"),
+            "brand": item.get("brand"),
         }
         processed_errors.append(error_entry)
 
@@ -456,7 +633,7 @@ async def get_upload_errors(
     top_issues = sorted(list(grouped_map.values()), key=lambda x: x["affected_count"], reverse=True)
 
     return {
-        "total_errors": len(processed_errors),
+        "total_errors": len(raw_errors),
         "category_counts": category_counts,
         "top_issues": top_issues,
         "errors": processed_errors,

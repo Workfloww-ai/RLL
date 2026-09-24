@@ -11,8 +11,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from backend.db.supabase_client import call_mobile_sales_rpc, call_mobile_sales_rpc_v3, get_supabase_client
 from backend.db.company_aliases import normalize_company_name, is_pinned_company
+from backend.services.company_cascading_service import is_others_company
 
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Response Cache (TTL-based, keyed by query params)
@@ -218,7 +220,7 @@ def build_sales_response(
     for c in master["comp_db"]:
         raw_c_name = c.get("company_name") or ""
         c_name = normalize_company_name(raw_c_name)
-        if not c_name or c_name == "Others":
+        if not c_name or is_others_company(c_name):
             continue
         c_id = _normalize_id(c_name)
         companies_map[c_id] = {
@@ -251,7 +253,7 @@ def build_sales_response(
 
         raw_comp_name = comp_meta.get("company_name") or "Others"
         comp_name = normalize_company_name(raw_comp_name)
-        if not comp_name or comp_name == "Others":
+        if not comp_name or is_others_company(comp_name):
             continue
         brand_name = brand_meta.get("brand_name") or "Generic Brand"
         depot_name = depot_meta.get("name") or "Central Depot"
@@ -469,7 +471,8 @@ def prewarm_mobile_sales() -> Dict[str, Any]:
                     from backend.db.redis_client import safe_set
                     try:
                         loop = asyncio.get_running_loop()
-                        loop.create_task(safe_set(redis_key, res, ttl=300))
+                        import json
+                        loop.create_task(safe_set(redis_key, json.dumps(res, default=str), ttl=300))
                     except RuntimeError:
                         pass
                 except Exception as e_red:

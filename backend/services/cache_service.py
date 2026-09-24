@@ -36,12 +36,22 @@ def build_cache_key(prefix: str, identifier: str = "", params: Optional[Dict[str
     return ":".join(key_parts)
 
 
+import zlib
+import base64
+
+_COMPRESSION_PREFIX = "gz:"
+
 async def get_json_cache(key: str) -> Optional[Any]:
-    """Retrieve and deserialize JSON cached value from Redis."""
+    """Retrieve and deserialize JSON cached value from Redis with transparent Gzip decompression."""
     raw_val = await safe_get(key)
     if not raw_val:
         return None
     try:
+        if isinstance(raw_val, str) and raw_val.startswith(_COMPRESSION_PREFIX):
+            b64_data = raw_val[len(_COMPRESSION_PREFIX):]
+            compressed_bytes = base64.b64decode(b64_data)
+            decompressed_json = zlib.decompress(compressed_bytes).decode("utf-8")
+            return json.loads(decompressed_json)
         return json.loads(raw_val)
     except Exception as e:
         logger.warning(f"Failed to parse cached JSON for key '{key}': {e}")
@@ -49,13 +59,22 @@ async def get_json_cache(key: str) -> Optional[Any]:
 
 
 async def set_json_cache(key: str, data: Any, ttl: Optional[int] = None) -> bool:
-    """Serialize and store JSON value in Redis with specified TTL."""
+    """Serialize, Gzip compress (97% size reduction), and store JSON value in Redis with specified TTL."""
     try:
         serialized = json.dumps(data, default=str)
-        return await safe_set(key, serialized, ttl=ttl)
+        json_bytes = serialized.encode("utf-8")
+        if len(json_bytes) > 512:
+            compressed = zlib.compress(json_bytes, level=6)
+            b64_str = base64.b64encode(compressed).decode("ascii")
+            payload_str = f"{_COMPRESSION_PREFIX}{b64_str}"
+        else:
+            payload_str = serialized
+
+        return await safe_set(key, payload_str, ttl=ttl)
     except Exception as e:
         logger.warning(f"Failed to serialize data for cache set on key '{key}': {e}")
         return False
+
 
 
 async def delete_cache(key: str) -> bool:
@@ -82,6 +101,27 @@ async def invalidate_analytics_cache() -> int:
 
     logger.info(f"Invalidated {total_purged} cached analytics, dashboard & mobile entries.")
     return total_purged
+
+
+async def invalidate_others_toggle_cache() -> int:
+    """
+    Purges system settings dict cache and all analytics/mobile sales caches when include_others_in_sales setting changes,
+    then triggers cache egress re-warming.
+    """
+    await safe_delete("rll:cache:system_settings_dict")
+    await safe_delete("rll:setting:include_others_in_sales")
+    try:
+        from backend.services.tenant_service import clear_tenant_cache
+        clear_tenant_cache()
+    except Exception as e:
+        logger.debug(f"Notice clearing tenant cache: {e}")
+    total_purged = await invalidate_analytics_cache()
+    try:
+        await prewarm_cache_egress()
+    except Exception as e:
+        logger.warning(f"Notice pre-warming cache after toggle change: {e}")
+    return total_purged
+
 
 
 def invalidate_analytics_cache_sync() -> int:

@@ -9,6 +9,26 @@ def get_supabase_client() -> Optional[Client]:
     """Returns a singleton Supabase Client instance using optimized HTTP/1.1 connection pool."""
     from backend.db.client import get_supabase
     return get_supabase()
+
+def _clean_error_msg(e: Any) -> str:
+    """Safely extracts a readable string message from any exception or Supabase error object, truncating raw HTML responses if needed."""
+    if isinstance(e, dict):
+        msg = e.get("message") or e.get("details") or str(e)
+    else:
+        msg = str(e)
+    msg_lower = msg.lower()
+    if "<html>" in msg_lower or "<!doctype html>" in msg_lower:
+        if "521" in msg or "web server is down" in msg_lower:
+            return "Supabase HTTP 521: Web server is down (Cloudflare connection failure)"
+        elif "520" in msg:
+            return "Supabase HTTP 520: Web server returned an unknown response"
+        elif "502" in msg or "bad gateway" in msg_lower:
+            return "Supabase HTTP 502: Bad Gateway"
+        elif "504" in msg or "gateway timeout" in msg_lower:
+            return "Supabase HTTP 504: Gateway Timeout"
+        return msg[:200] + "... [HTML response truncated]"
+    return msg
+
 # ---------------------------------------------------------------------------
 # Database Advisory Lock & Concurrency Control Helpers
 # ---------------------------------------------------------------------------
@@ -172,27 +192,165 @@ def log_pipeline_step(batch_id: int, step: str, status: str, message: Optional[s
         }).execute()
     except Exception as e:
         logger.warning(f"log_pipeline_step error for batch_id={batch_id}: {e}")
-def log_validation_errors(errors: List[Dict[str, Any]]):
-    """Bulk-inserts validation errors in batches of 500."""
+def log_validation_errors(errors: List[Dict[str, Any]], max_samples_per_pattern: int = 5, max_total_db_records: int = 100):
+    """
+    Intelligently deduplicates repetitive validation errors before database insertion.
+    - Groups errors by unique issue pattern (error_code + column + entity + actual_value).
+    - Tracks total affected row count for each pattern.
+    - Stores up to max_samples_per_pattern representative sample rows per unique pattern for detailed UI inspection.
+    - Caps total inserted DB records to max_total_db_records (preventing DB table spamming & slow HTTP chunking).
+    """
     if not errors:
         return
     client = get_supabase_client()
     if not client:
         logger.info(f"[Mock] log_validation_errors count={len(errors)}")
         return
+
+    import uuid
+
+    # Step 1: Group raw errors by pattern key
+    grouped_patterns: Dict[str, Dict[str, Any]] = {}
+    pattern_order = []
+
+    for err in errors:
+        b_id = err.get("upload_batch_id") or err.get("batch_id")
+        col_name = err.get("field_name") or err.get("column_name") or "General"
+        err_code = err.get("error_code") or "VALIDATION_ERROR"
+        act_val = str(err.get("actual_value") or "").strip()
+        exp_val = str(err.get("expected_value") or "").strip()
+        entity = err.get("ase") or err.get("asm_tsm") or err.get("licensee") or err.get("depot") or err.get("brand") or err.get("hq") or err.get("company") or act_val or "General"
+
+        pattern_key = f"{err_code}|{col_name}|{entity}|{act_val}"
+
+        if pattern_key not in grouped_patterns:
+            pattern_order.append(pattern_key)
+            grouped_patterns[pattern_key] = {
+                "pattern_key": pattern_key,
+                "error_code": err_code,
+                "field_name": col_name,
+                "column_name": col_name,
+                "actual_value": act_val,
+                "expected_value": exp_val,
+                "sample_errors": [],
+                "affected_rows": [],
+                "total_count": 0,
+                "template_err": err
+            }
+
+        group = grouped_patterns[pattern_key]
+        group["total_count"] += 1
+        row_n = err.get("excel_row_number") or err.get("row_number")
+        if row_n and len(group["affected_rows"]) < 20:
+            group["affected_rows"].append(row_n)
+
+        if len(group["sample_errors"]) < max_samples_per_pattern:
+            group["sample_errors"].append(err)
+
+    # Step 2: Build deduplicated error records for error_logs
+    deduped_error_log_records = []
+    deduped_legacy_records = []
+
+    for key in pattern_order:
+        group = grouped_patterns[key]
+        tot_cnt = group["total_count"]
+        samples = group["sample_errors"]
+        tmpl = group["template_err"]
+
+        b_id = tmpl.get("upload_batch_id") or tmpl.get("batch_id")
+        col_name = tmpl.get("field_name") or tmpl.get("column_name")
+        err_msg = tmpl.get("error_message") or "Validation error"
+
+        for sample in samples:
+            if len(deduped_error_log_records) >= max_total_db_records:
+                break
+
+            s_row = sample.get("excel_row_number") or sample.get("row_number")
+            s_msg = sample.get("error_message") or err_msg
+
+            ctx = {
+                "upload_batch_id": str(b_id) if b_id else None,
+                "filename": sample.get("filename") or tmpl.get("filename"),
+                "excel_row_number": s_row,
+                "error_code": sample.get("error_code") or group["error_code"],
+                "severity": sample.get("severity") or tmpl.get("severity") or "CRITICAL",
+                "field_name": col_name,
+                "column_name": col_name,
+                "actual_value": sample.get("actual_value") if sample.get("actual_value") is not None else group["actual_value"],
+                "expected_value": sample.get("expected_value") if sample.get("expected_value") is not None else group["expected_value"],
+                "ase": sample.get("ase") or tmpl.get("ase"),
+                "asm_tsm": sample.get("asm_tsm") or tmpl.get("asm_tsm"),
+                "approved_asm_tsm": sample.get("approved_asm_tsm") or tmpl.get("approved_asm_tsm"),
+                "hq": sample.get("hq") or tmpl.get("hq"),
+                "depot": sample.get("depot") or tmpl.get("depot"),
+                "licensee": sample.get("licensee") or tmpl.get("licensee"),
+                "company": sample.get("company") or tmpl.get("company"),
+                "brand": sample.get("brand") or tmpl.get("brand"),
+                "error_message": s_msg,
+                "resolution": sample.get("resolution") or tmpl.get("resolution") or tmpl.get("suggested_action"),
+                "total_pattern_affected_count": tot_cnt,
+            }
+
+            deduped_error_log_records.append({
+                "source": "VALIDATION_ERROR",
+                "error_message": s_msg,
+                "context": ctx
+            })
+
+            rec_leg = {
+                "batch_id": str(b_id or "").strip() or None,
+                "column_name": col_name,
+                "error_message": s_msg
+            }
+            raw_val = sample.get("raw_id")
+            if raw_val:
+                try:
+                    uuid.UUID(str(raw_val).strip())
+                    rec_leg["raw_id"] = str(raw_val).strip()
+                except Exception:
+                    pass
+            deduped_legacy_records.append(rec_leg)
+
+        if len(deduped_error_log_records) >= max_total_db_records:
+            break
+
+    # Step 3: Insert deduplicated records into error_logs in 1 fast batch call
     try:
-        for i in range(0, len(errors), 500):
-            client.table("upload_validation_errors").insert(errors[i:i + 500]).execute()
-    except Exception as e:
-        logger.error(f"log_validation_errors error: {e}")
+        if deduped_error_log_records:
+            client.table("error_logs").insert(deduped_error_log_records).execute()
+            logger.info(f"log_validation_errors deduplicated {len(errors)} raw error(s) into {len(deduped_error_log_records)} DB log record(s) across {len(grouped_patterns)} distinct issue pattern(s).")
+    except Exception as e_el:
+        logger.error(f"Failed to insert deduplicated validation errors into error_logs: {e_el}")
+
+    try:
+        if deduped_legacy_records:
+            client.table("upload_validation_errors").insert(deduped_legacy_records).execute()
+    except Exception as e_leg:
+        logger.warning(f"Notice inserting upload_validation_errors: {e_leg}")
 
 def log_upload_validation_error(batch_id: Optional[str], error_message: str, column_name: Optional[str] = None, raw_id: Optional[Any] = None) -> bool:
-    """Inserts a single validation error record into upload_validation_errors reliably."""
+    """Inserts a single validation error record into error_logs and upload_validation_errors reliably."""
     client = get_supabase_client()
     if not client:
         logger.info(f"[Mock Validation Error] batch_id={batch_id}, column={column_name}, msg={error_message}")
         return True
     try:
+        b_uuid = str(batch_id).strip() if batch_id else None
+        try:
+            client.table("error_logs").insert({
+                "source": "VALIDATION_ERROR",
+                "error_message": error_message,
+                "context": {
+                    "upload_batch_id": b_uuid,
+                    "column_name": column_name,
+                    "field_name": column_name,
+                    "error_message": error_message,
+                    "severity": "CRITICAL"
+                }
+            }).execute()
+        except Exception as e_el:
+            logger.warning(f"log_upload_validation_error failed to insert into error_logs: {e_el}")
+
         raw_uuid = None
         if raw_id is not None:
             raw_str = str(raw_id).strip()
@@ -203,8 +361,6 @@ def log_upload_validation_error(batch_id: Optional[str], error_message: str, col
             except Exception:
                 if not error_message.startswith("[Row "):
                     error_message = f"[Row #{raw_str}] {error_message}"
-
-        b_uuid = str(batch_id).strip() if batch_id else None
 
         data = {
             "batch_id": b_uuid,
@@ -297,19 +453,19 @@ def get_table_approx_count(table_name: str) -> int:
         logger.debug(f"get_approx_table_count notice for '{table_name}': {e}")
         return 0
 
-def purge_batch_data_fast_rpc(batch_id: str) -> bool:
+def purge_batch_data_fast_rpc(batch_id: str, chunk_size: int = 10000) -> bool:
     """
-    Fast index-seeking batch purging stored procedure execution.
-    Eliminates unindexed PostgREST DELETE table scan locks.
+    Fast chunked batch purging stored procedure execution (10,000 rows per loop commit).
+    Eliminates monolithic transaction locks, WAL write amplification, and PostgREST DELETE timeouts.
     """
     client = get_supabase_client()
     if not client or not batch_id:
         return True
     try:
-        client.rpc("purge_batch_data_fast", {"p_batch_id": str(batch_id)}).execute()
+        client.rpc("purge_batch_data_fast", {"p_batch_id": str(batch_id), "p_chunk_size": chunk_size}).execute()
         return True
     except Exception as e:
-        logger.warning(f"purge_batch_data_fast_rpc notice for batch '{batch_id}': {e}")
+        logger.warning(f"purge_batch_data_fast_rpc notice for batch '{batch_id}': {_clean_error_msg(e)}")
         return False
 # ---------------------------------------------------------------------------
 # Master Table Upsert Helpers
@@ -673,14 +829,16 @@ def fetch_cascading_groups_db(date_from: str, date_to: str) -> List[Dict[str, An
                 break
             g_offset += 1000
 
-        # 2. Exclude company Others brands
-        b_res = client.table("brands").select("brand_id, company_id, companies!inner(company_name)").execute()
+        # 2. Exclude company Others/Other brands ONLY if toggle is OFF
         excluded_brand_ids = set()
-        for b in (b_res.data or []):
-            comp_obj = b.get("companies") or {}
-            cname = comp_obj.get("company_name", "") if isinstance(comp_obj, dict) else ""
-            if cname and cname.lower().strip() == "others":
-                excluded_brand_ids.add(str(b["brand_id"]))
+        from backend.services.tenant_service import get_include_others_setting_sync
+        if not get_include_others_setting_sync():
+            b_res = client.table("brands").select("brand_id, company_id, companies!inner(company_name)").execute()
+            for b in (b_res.data or []):
+                comp_obj = b.get("companies") or {}
+                cname = comp_obj.get("company_name", "") if isinstance(comp_obj, dict) else ""
+                if cname and cname.lower().strip() in ("others", "other"):
+                    excluded_brand_ids.add(str(b["brand_id"]))
 
         # 3. Query sales_daily_summary for target_date with range pagination
         daily_groups: Dict[str, Dict[str, float]] = {}
@@ -771,11 +929,12 @@ def fetch_group_licensees_db(
 
         b_res = client.table("brands").select("brand_id, companies!inner(company_name)").execute()
         excluded_brand_ids = set()
-        for b in (b_res.data or []):
-            comp_obj = b.get("companies") or {}
-            cname = comp_obj.get("company_name", "") if isinstance(comp_obj, dict) else ""
-            if cname and cname.lower().strip() == "others":
-                excluded_brand_ids.add(str(b["brand_id"]))
+        if not get_include_others_setting_sync():
+            for b in (b_res.data or []):
+                comp_obj = b.get("companies") or {}
+                cname = comp_obj.get("company_name", "") if isinstance(comp_obj, dict) else ""
+                if cname and cname.lower().strip() in ("others", "other"):
+                    excluded_brand_ids.add(str(b["brand_id"]))
 
         res = client.table("licensees").select("licensee_id, licensee_name, trade, depot_id, depots(name)").eq("group_id", group_id).eq("is_active", True).execute()
         lic_map = {}
@@ -873,8 +1032,9 @@ def fetch_licensee_brand_sales_db(
             brand_obj = sms.get("brands") or {}
             comp_obj = brand_obj.get("companies") if isinstance(brand_obj, dict) else {}
             cname = comp_obj.get("company_name", "") if isinstance(comp_obj, dict) else ""
-            if cname and cname.lower().strip() == "others":
-                continue
+            if not get_include_others_setting_sync():
+                if cname and cname.lower().strip() in ("others", "other"):
+                    continue
 
             bid = str(brand_obj.get("brand_id") or sms.get("brand_id"))
             bname = brand_obj.get("brand_name") or "Unknown Brand"
@@ -971,6 +1131,7 @@ def call_mobile_sales_rpc_v3(
     """
     client = get_supabase_client()
     if not client:
+        logger.warning("call_mobile_sales_rpc_v3: No Supabase client available.")
         return []
     try:
         params: Dict[str, Any] = {
@@ -982,7 +1143,7 @@ def call_mobile_sales_rpc_v3(
         res = client.rpc("get_mobile_sales_summary", params).execute()
         return res.data or []
     except Exception as e:
-        logger.error(f"call_mobile_sales_rpc_v3 error: {e}")
+        logger.error(f"call_mobile_sales_rpc_v3 notice: {_clean_error_msg(e)}")
         return []
 
 
@@ -1007,7 +1168,7 @@ def call_mobile_tsm_sales_rpc(
         res = client.rpc("get_mobile_tsm_sales_summary", params).execute()
         return res.data or []
     except Exception as e:
-        logger.error(f"call_mobile_tsm_sales_rpc error (start={start_date}, end={end_date}): {e}")
+        logger.error(f"call_mobile_tsm_sales_rpc notice (start={start_date}, end={end_date}): {_clean_error_msg(e)}")
         return []
 
 
@@ -1050,7 +1211,7 @@ def call_mobile_sales_json_rpc(
 
         return data
     except Exception as e:
-        logger.error(f"call_mobile_sales_json_rpc error (target={target_date}, mtd={mtd_start}, ytd={ytd_start}, hq={hq_id}): {e}")
+        logger.error(f"call_mobile_sales_json_rpc notice (target={target_date}): {_clean_error_msg(e)}")
         return {"companies": [], "depots": []}
 
 

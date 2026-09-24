@@ -12,7 +12,57 @@ from backend.db.supabase_client import get_supabase_client
 logger = logging.getLogger(__name__)
 
 _TENANT_CACHE: Dict[str, Any] = {}
-_TENANT_CACHE_TTL = 600.0  # 10 minutes cache TTL
+_INCLUDE_OTHERS_LOCAL_CACHE: Optional[bool] = None
+_INCLUDE_OTHERS_CACHE_TIME: float = 0.0
+
+
+def get_include_others_setting_sync() -> bool:
+    """
+    Synchronous helper returning whether company Others is included in sales calculations (default: True).
+    Reads system_settings table from Supabase PostgreSQL with 60-second in-memory caching.
+    """
+    global _INCLUDE_OTHERS_LOCAL_CACHE, _INCLUDE_OTHERS_CACHE_TIME
+    now = time.time()
+    if _INCLUDE_OTHERS_LOCAL_CACHE is not None and (now - _INCLUDE_OTHERS_CACHE_TIME) < 60.0:
+        return _INCLUDE_OTHERS_LOCAL_CACHE
+
+    val = True
+    client = get_supabase_client()
+    if client:
+        try:
+            res = client.table("system_settings").select("setting_value").eq("setting_key", "include_others_in_sales").limit(1).execute()
+            if res.data and len(res.data) > 0:
+                val_str = str(res.data[0].get("setting_value", "true")).strip().lower()
+                val = (val_str == "true")
+        except Exception as e:
+            logger.debug(f"Notice reading include_others_in_sales setting (using default True): {e}")
+
+    _INCLUDE_OTHERS_LOCAL_CACHE = val
+    _INCLUDE_OTHERS_CACHE_TIME = now
+    return val
+
+
+async def get_include_others_setting_async() -> bool:
+    """
+    Async helper returning whether company Others is included in sales calculations (default: True).
+    Checks Redis cache first then Supabase PostgreSQL.
+    """
+    from backend.db.redis_client import safe_get, safe_set
+    cached = await safe_get("rll:setting:include_others_in_sales")
+    if cached is not None:
+        return str(cached).strip().lower() == "true"
+
+    val = get_include_others_setting_sync()
+    await safe_set("rll:setting:include_others_in_sales", "true" if val else "false", ttl=86400 * 30)
+    return val
+
+
+def clear_tenant_cache():
+    """Clear local tenant cache entries."""
+    global _TENANT_CACHE, _INCLUDE_OTHERS_LOCAL_CACHE, _INCLUDE_OTHERS_CACHE_TIME
+    _TENANT_CACHE.clear()
+    _INCLUDE_OTHERS_LOCAL_CACHE = None
+    _INCLUDE_OTHERS_CACHE_TIME = 0.0
 
 
 def get_tenant_config_service(
@@ -33,6 +83,9 @@ def get_tenant_config_service(
             return entry["data"]
 
     client = get_supabase_client()
+    include_others = get_include_others_setting_sync()
+    excluded = [] if include_others else ["Others"]
+
     default_config = {
         "status": "success",
         "tenant_id": "a0000000-0000-0000-0000-000000000001",
@@ -42,7 +95,7 @@ def get_tenant_config_service(
         "favicon_url": "",
         "splash_screen_url": "",
         "pinned_company_name": "Rajasthan Liquor Limited",
-        "excluded_companies": ["Others"],
+        "excluded_companies": excluded,
     }
 
     if not client:
@@ -65,7 +118,7 @@ def get_tenant_config_service(
                 "favicon_url": str(res.data.get("favicon_url") or ""),
                 "splash_screen_url": str(res.data.get("splash_screen_url") or ""),
                 "pinned_company_name": str(res.data.get("pinned_company_name") or "Rajasthan Liquor Limited"),
-                "excluded_companies": res.data.get("excluded_companies") or ["Others"],
+                "excluded_companies": excluded,
             }
             _TENANT_CACHE[cache_key] = {"timestamp": now, "data": config_data}
             return config_data
@@ -74,3 +127,4 @@ def get_tenant_config_service(
 
     _TENANT_CACHE[cache_key] = {"timestamp": now, "data": default_config}
     return default_config
+

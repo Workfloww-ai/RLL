@@ -108,7 +108,7 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
                     if rname:
                         active_roles.append(rname)
             
-            preferred_role = next((r for r in active_roles if r.lower() in ["admin", "super_admin", "super admin", "leader"]), None)
+            preferred_role = next((r for r in active_roles if r.lower() in ["admin", "super_admin", "super admin", "leader", "team_leader", "team leader", "developer"]), None)
             if preferred_role:
                 role_name = preferred_role
             elif active_roles:
@@ -116,12 +116,12 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
     except Exception as r_err:
         logger.warning(f"Error resolving roles for user {email}: {r_err}")
 
-    # Guardrail: Enforce Web-only roles
-    if role_name.lower() not in ["admin", "super_admin", "super admin", "leader"]:
+    # Guardrail: Enforce Web-only roles (Admin, Super Admin, Leader, Team Leader, Developer)
+    if role_name.lower() not in ["admin", "super_admin", "super admin", "leader", "team_leader", "team leader", "developer"]:
         logger.warning(f"Web login access denied for user {email} (role '{role_name}' lacks Web permissions)")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access Denied: Web Dashboard is restricted to Administrators only."
+            detail="Access Denied: Web Dashboard is restricted to Administrators and Developers only."
         )
 
     user_data = {

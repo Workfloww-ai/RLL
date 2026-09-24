@@ -1,12 +1,13 @@
 import io
 import os
+import re
 import time
 import logging
 import tempfile
 import asyncio
 from datetime import datetime
 from typing import Dict, Any, List, Optional
-
+import re
 # pyrefly: ignore [missing-import]
 from fastapi import UploadFile
 import pandas as pd
@@ -38,15 +39,12 @@ MANDATORY_COLUMNS = [
     "Group Name",
     "H.Q.",
     "DEO_OFFICE_NAME",
-    "CIRCLE_OFFICE_NAME",
     "DEPOT_NAME",
     "ASE",
     "ASM/TSM",
     "BRAND_NAME",
     "PACKING_IN_ML",
     "TOTAL_CASE",
-    "TOTAL_BTL",
-    "TOTAL_BL",
 ]
 
 
@@ -258,19 +256,18 @@ class ImportPipelineEngine:
     @staticmethod
     def _parse_date(value) -> str:
         """
-        Convert Government Excel dates into PostgreSQL DATE.
+        Convert Government Excel dates into PostgreSQL DATE format (YYYY-MM-DD).
 
-        Examples:
-
-            01.05.26
-                -> 2026-05-01
-
-            01.06.26
-                -> 2026-06-01
-
-            01/05/2026
-                -> 2026-05-01
+        Supports formats:
+            - 02.04.26, 02.04.2026, 2.4.26 (DD.MM.YY / DD.MM.YYYY)
+            - 02/04/26, 02/04/2026 (DD/MM/YY / DD/MM/YYYY)
+            - 02-04-26, 02-04-2026 (DD-MM-YY / DD-MM-YYYY)
+            - 2026-04-02 (YYYY-MM-DD)
+            - 02-Apr-26, 02-Apr-2026
+            - Excel numeric serial numbers (e.g. 46114, 46114.0)
+            - Timestamps with time portions (e.g. '02.04.26 00:00:00')
         """
+        from datetime import date as date_cls
 
         if value is None:
             raise ValueError("Date is empty.")
@@ -278,19 +275,36 @@ class ImportPipelineEngine:
         try:
             if pd.isna(value):
                 raise ValueError("Date is empty.")
-        except TypeError:
+        except (TypeError, ValueError):
             pass
 
-        if isinstance(value, pd.Timestamp):
+        if isinstance(value, (pd.Timestamp, datetime, date_cls)):
             return value.strftime("%Y-%m-%d")
 
-        if isinstance(value, datetime):
-            return value.strftime("%Y-%m-%d")
+        # Handle numeric Excel serial numbers (e.g. 46114 or 46114.0)
+        if isinstance(value, (int, float)):
+            if 30000 <= value <= 60000:
+                try:
+                    dt = pd.to_datetime(value, unit="D", origin="1899-12-30")
+                    return dt.strftime("%Y-%m-%d")
+                except Exception:
+                    pass
 
         text = str(value).strip()
-
-        if not text:
+        if not text or text.lower() in ("nan", "none", "null", "nat", ""):
             raise ValueError("Date is empty.")
+
+        # Clean numeric string Excel serial numbers (e.g. '46114' or '46114.0')
+        try:
+            num_val = float(text)
+            if 30000 <= num_val <= 60000:
+                dt = pd.to_datetime(num_val, unit="D", origin="1899-12-30")
+                return dt.strftime("%Y-%m-%d")
+        except (ValueError, TypeError):
+            pass
+
+        # Strip time component if present (e.g., '02.04.26 00:00:00' or '2026-04-02T00:00:00')
+        clean_text = text.split("T")[0].split(" ")[0].strip()
 
         formats = [
             "%d.%m.%y",
@@ -300,37 +314,28 @@ class ImportPipelineEngine:
             "%d-%m-%y",
             "%d-%m-%Y",
             "%Y-%m-%d",
+            "%Y/%m/%d",
+            "%Y.%m.%d",
+            "%d-%b-%y",
+            "%d-%b-%Y",
+            "%d %b %Y",
+            "%d %b %y",
+            "%d-%B-%Y",
+            "%d %B %Y",
         ]
 
         for date_format in formats:
             try:
-                parsed = datetime.strptime(
-                    text,
-                    date_format,
-                )
-
-                return parsed.strftime(
-                    "%Y-%m-%d"
-                )
-
+                parsed = datetime.strptime(clean_text, date_format)
+                return parsed.strftime("%Y-%m-%d")
             except ValueError:
                 continue
 
         try:
-            parsed = pd.to_datetime(
-                text,
-                dayfirst=True,
-                errors="raise",
-            )
-
-            return parsed.strftime(
-                "%Y-%m-%d"
-            )
-
+            parsed = pd.to_datetime(clean_text, dayfirst=True, errors="raise")
+            return parsed.strftime("%Y-%m-%d")
         except Exception:
-            raise ValueError(
-                f"Invalid Date value: {value}"
-            )
+            raise ValueError(f"Invalid Date value: {value}")
 
     @staticmethod
     def _normalize_trade(value) -> str:
@@ -386,8 +391,8 @@ class ImportPipelineEngine:
 
         try:
             from backend.db.supabase_client import purge_batch_data_fast_rpc
-            if purge_batch_data_fast_rpc(str(batch_id)):
-                logger.info(f"Batch {batch_id}: Cleaned up temporary staging tables in single RPC call.")
+            if purge_batch_data_fast_rpc(str(batch_id), chunk_size=10000):
+                logger.info(f"Batch {batch_id}: Cleaned up temporary staging tables in chunked RPC call.")
                 return
         except Exception as e_rpc:
             logger.debug(f"purge_batch_data_fast_rpc notice for batch {batch_id}: {e_rpc}")
@@ -398,9 +403,19 @@ class ImportPipelineEngine:
             "upload_pipeline_logs",
         ]
 
+        b_str = str(batch_id).strip()
         for table_name in temp_tables:
             try:
-                client.table(table_name).delete().eq("batch_id", batch_id).execute()
+                # Chunked fallback delete to avoid RETURNING * PostgREST overhead
+                while True:
+                    sub_res = client.table(table_name).select("raw_id" if table_name == "raw_sales_upload" else "id").eq("batch_id", b_str).limit(5000).execute()
+                    rows = sub_res.data or []
+                    if not rows:
+                        break
+                    pks = [r.get("raw_id") or r.get("id") for r in rows if r.get("raw_id") or r.get("id")]
+                    if not pks:
+                        break
+                    client.table(table_name).delete().in_("raw_id" if table_name == "raw_sales_upload" else "id", pks).execute()
                 logger.info(f"Batch {batch_id}: Cleaned up temporary {table_name} table.")
             except Exception as exc:
                 logger.warning(f"Phase 1 Cleanup notice for table '{table_name}' batch {batch_id}: {exc}")
@@ -519,23 +534,20 @@ class ImportPipelineEngine:
         except Exception as exc:
             logger.warning(f"Phase 2 release_pipeline_lock notice for batch {batch_id}: {exc}")
 
-        # Drop the data from raw_sales_upload table after advisory locks are released
+        # Always drop staging records from raw_sales_upload after pipeline completes/fails.
+        # Diagnostics are securely preserved in error_logs (source='VALIDATION_ERROR').
         try:
             client = get_supabase()
-            if client:
-                b_str = str(batch_id).strip() if batch_id is not None else ""
-                if len(b_str) == 36 and "-" in b_str:
-                    try:
-                        client.rpc("purge_batch_data_fast", {"p_batch_id": b_str}).execute()
-                        logger.info(f"Batch {batch_id}: Purged raw_sales_upload via purge_batch_data_fast RPC after advisory lock release.")
-                    except Exception:
-                        client.table("raw_sales_upload").delete().eq("batch_id", b_str).execute()
-                        logger.info(f"Batch {batch_id}: Dropped staging records from raw_sales_upload after advisory lock release.")
-                else:
-                    client.table("raw_sales_upload").delete().neq("raw_id", "00000000-0000-0000-0000-000000000000").execute()
-                    logger.info("Dropped staging records from raw_sales_upload after advisory lock release.")
+            if client and batch_id:
+                b_str = str(batch_id).strip()
+                try:
+                    client.rpc("purge_batch_data_fast", {"p_batch_id": b_str}).execute()
+                    logger.info(f"Batch {batch_id}: Purged raw_sales_upload via purge_batch_data_fast RPC.")
+                except Exception:
+                    client.table("raw_sales_upload").delete().eq("batch_id", b_str).execute()
+                    logger.info(f"Batch {batch_id}: Purged staging records from raw_sales_upload.")
         except Exception as exc_drop:
-            logger.warning(f"Notice dropping raw_sales_upload for batch {batch_id} after lock release: {exc_drop}")
+            logger.warning(f"Notice purging raw_sales_upload for batch {batch_id} after lock release: {exc_drop}")
 
     # ========================================================
     # CREATE UPLOAD BATCH
@@ -832,8 +844,8 @@ class ImportPipelineEngine:
             ]
             brand_cache = master_service.bulk_resolve_brands(brand_items)
             packaging_cache = master_service.bulk_resolve_packagings(unique_packagings)
+            # Sync user depot mapping (non-destructive)
             self._sync_user_hierarchy(s_ase, s_asm, s_depot, depot_cache)
-            self._populate_user_sales_fact(batch_id, s_date, s_company, s_ase, s_brand, s_cases, s_btl, s_bl, company_cache, brand_cache, tenant_id=tenant_id)
 
             # Vectorized ID Resolution
             clean_fn = master_service._clean
@@ -876,6 +888,397 @@ class ImportPipelineEngine:
             })
             raw_records = raw_df.to_dict("records")
 
+            # 1. Stage Data into raw_sales_upload FIRST
+            if raw_records:
+                self._bulk_insert(
+                    table="raw_sales_upload",
+                    records=raw_records,
+                    chunk_size=5000,
+                    batch_id=batch_id,
+                )
+
+            # Fetch staging raw_ids for detailed row error linking in Diagnostic Center
+            client = get_supabase()
+            staged_raw_ids = []
+            if client:
+                try:
+                    res_raw = client.table("raw_sales_upload").select("raw_id").eq("batch_id", str(batch_id)).execute()
+                    if res_raw and res_raw.data:
+                        staged_raw_ids = [r.get("raw_id") for r in res_raw.data]
+                except Exception as e_rids:
+                    logger.warning(f"Batch {batch_id}: Notice fetching staged raw_ids: {e_rids}")
+
+            # 2. Fetch User Management hierarchy for strict employee mapping validation
+            user_id_by_name: Dict[str, str] = {}
+            user_name_by_id: Dict[str, str] = {}
+            user_manager_by_id: Dict[str, str] = {}
+
+            if client:
+                try:
+                    u_res = client.table("users").select("user_id, first_name, last_name, email, is_active").execute()
+                    if u_res and u_res.data:
+                        all_users = u_res.data
+                        all_users.sort(key=lambda x: 0 if x.get("is_active") else 1)
+                        for u in all_users:
+                            uid = str(u["user_id"])
+                            fn = (u.get("first_name") or "").strip()
+                            ln = (u.get("last_name") or "").strip()
+                            full_name = f"{fn} {ln}".strip()
+                            full_name_clean = re.sub(r'\s+', ' ', full_name).lower()
+                            email = str(u.get("email") or "").lower()
+                            prefix = email.split("@")[0].strip()
+
+                            if full_name_clean and full_name_clean not in user_id_by_name:
+                                user_id_by_name[full_name_clean] = uid
+                                user_name_by_id[uid] = full_name
+                            if prefix and prefix not in user_id_by_name:
+                                user_id_by_name[prefix] = uid
+                            if fn and fn.lower() not in user_id_by_name:
+                                user_id_by_name[fn.lower()] = uid
+
+                    atm_res = client.table("ase_tsm_mapping").select("ase_user_id, tsm_user_id").execute()
+                    if atm_res and atm_res.data:
+                        for m in atm_res.data:
+                            a_uid = str(m.get("ase_user_id") or "").strip()
+                            t_uid = str(m.get("tsm_user_id") or "").strip()
+                            if a_uid and t_uid:
+                                user_manager_by_id[a_uid] = t_uid
+                except Exception as e_um:
+                    logger.warning(f"Batch {batch_id}: Exception fetching User Management hierarchy: {e_um}")
+
+            def _resolve_user_id(name_str: str) -> Optional[str]:
+                if not name_str or name_str.lower() in ("unassigned", "none", "null", "nan"):
+                    return None
+                c_name = re.sub(r'\s+', ' ', name_str.strip()).lower()
+                if c_name in user_id_by_name:
+                    return user_id_by_name[c_name]
+                first_part = c_name.replace(",", "/").split("/")[0].strip()
+                if first_part in user_id_by_name:
+                    return user_id_by_name[first_part]
+                words = c_name.split()
+                if words and words[0] in user_id_by_name:
+                    return user_id_by_name[words[0]]
+                return None
+
+            # 3. Comprehensive Row-by-Row Pre-Promotion Validation
+            validation_error_records = []
+
+            for idx in range(total_rows):
+                row_num = idx + 2  # Excel 1-indexed row number (header is row 1)
+                r_id = staged_raw_ids[idx] if idx < len(staged_raw_ids) else None
+
+                raw_date = str(s_date.iloc[idx] or "").strip()
+                raw_depot = str(s_depot.iloc[idx] or "").strip()
+                raw_licensee = str(s_licensee.iloc[idx] or "").strip()
+                raw_brand = str(s_brand.iloc[idx] or "").strip()
+                raw_packing = str(s_packing.iloc[idx] or "").strip()
+                raw_hq = str(s_hq.iloc[idx] or "").strip()
+                raw_ase = str(s_ase.iloc[idx] or "").strip()
+                raw_asm = str(s_asm.iloc[idx] or "").strip()
+                raw_company = str(s_company.iloc[idx] or "").strip()
+                val_case = s_cases.iloc[idx]
+
+                approved_tsm_name_curr = None
+                if raw_ase and raw_ase.lower() not in ("unassigned", "none", "null", "nan"):
+                    ase_u = _resolve_user_id(raw_ase)
+                    if ase_u:
+                        app_tsm_u = user_manager_by_id.get(ase_u)
+                        if app_tsm_u:
+                            approved_tsm_name_curr = user_name_by_id.get(app_tsm_u)
+
+                # A0. Validate Sale Date Field
+                parsed_dt_val = None
+                if raw_date and raw_date.lower() not in ("nan", "none", "null", ""):
+                    try:
+                        parsed_dt_val = self._parse_date(raw_date)
+                    except Exception:
+                        parsed_dt_val = None
+
+                if not raw_date or raw_date.lower() in ("nan", "none", "null", "") or not parsed_dt_val:
+                    validation_error_records.append({
+                        "upload_batch_id": str(batch_id),
+                        "batch_id": str(batch_id),
+                        "filename": filename,
+                        "excel_row_number": row_num,
+                        "error_code": "DATE_ERROR",
+                        "severity": "CRITICAL",
+                        "field_name": "Date",
+                        "column_name": "sale_date_raw",
+                        "actual_value": raw_date,
+                        "expected_value": "Valid Date (YYYY-MM-DD or DD/MM/YYYY)",
+                        "ase": raw_ase,
+                        "asm_tsm": raw_asm,
+                        "approved_asm_tsm": approved_tsm_name_curr,
+                        "hq": raw_hq,
+                        "depot": raw_depot,
+                        "licensee": raw_licensee,
+                        "company": raw_company,
+                        "brand": raw_brand,
+                        "raw_id": r_id,
+                        "error_message": f"[Row #{row_num}] DATE_ERROR: Invalid or unparseable sale date '{raw_date}'. Expected valid date format.",
+                        "resolution": "Format the sale date column as a valid date in the Excel file."
+                    })
+
+                # A. Validate Case Quantity Field
+                if pd.isna(val_case) or val_case < 0:
+                    validation_error_records.append({
+                        "upload_batch_id": str(batch_id),
+                        "batch_id": str(batch_id),
+                        "filename": filename,
+                        "excel_row_number": row_num,
+                        "error_code": "INVALID_CASE",
+                        "severity": "CRITICAL",
+                        "field_name": "Case",
+                        "column_name": "total_case",
+                        "actual_value": str(val_case),
+                        "expected_value": "Non-negative numeric value",
+                        "ase": raw_ase,
+                        "asm_tsm": raw_asm,
+                        "approved_asm_tsm": approved_tsm_name_curr,
+                        "hq": raw_hq,
+                        "depot": raw_depot,
+                        "licensee": raw_licensee,
+                        "company": raw_company,
+                        "brand": raw_brand,
+                        "raw_id": r_id,
+                        "error_message": f"[Row #{row_num}] INVALID_CASE: Case quantity must be a non-negative number. Received: '{val_case}'.",
+                        "resolution": "Enter a valid non-negative numeric case quantity."
+                    })
+
+                # B. Validate Master Data Resolutions
+                if pd.isna(map_depot.iloc[idx]):
+                    validation_error_records.append({
+                        "upload_batch_id": str(batch_id),
+                        "batch_id": str(batch_id),
+                        "filename": filename,
+                        "excel_row_number": row_num,
+                        "error_code": "UNMAPPED_DEPOT",
+                        "severity": "CRITICAL",
+                        "field_name": "DEPOT NAME",
+                        "column_name": "depot_raw",
+                        "actual_value": raw_depot,
+                        "expected_value": "Registered Depot in Master Catalog",
+                        "ase": raw_ase,
+                        "asm_tsm": raw_asm,
+                        "approved_asm_tsm": approved_tsm_name_curr,
+                        "hq": raw_hq,
+                        "depot": raw_depot,
+                        "licensee": raw_licensee,
+                        "company": raw_company,
+                        "brand": raw_brand,
+                        "raw_id": r_id,
+                        "error_message": f"[Row #{row_num}] UNMAPPED_DEPOT: Depot '{raw_depot}' is not registered in Depot master catalog.",
+                        "resolution": "Register Depot in Depot master catalog or correct spelling."
+                    })
+
+                if pd.isna(map_licensee.iloc[idx]):
+                    validation_error_records.append({
+                        "upload_batch_id": str(batch_id),
+                        "batch_id": str(batch_id),
+                        "filename": filename,
+                        "excel_row_number": row_num,
+                        "error_code": "UNMAPPED_LICENSEE",
+                        "severity": "CRITICAL",
+                        "field_name": "LICENSEE NAME",
+                        "column_name": "licensee_raw",
+                        "actual_value": raw_licensee,
+                        "expected_value": "Registered Licensee in Master Catalog",
+                        "ase": raw_ase,
+                        "asm_tsm": raw_asm,
+                        "approved_asm_tsm": approved_tsm_name_curr,
+                        "hq": raw_hq,
+                        "depot": raw_depot,
+                        "licensee": raw_licensee,
+                        "company": raw_company,
+                        "brand": raw_brand,
+                        "raw_id": r_id,
+                        "error_message": f"[Row #{row_num}] UNMAPPED_LICENSEE: Licensee '{raw_licensee}' is not registered in Licensee master catalog.",
+                        "resolution": "Register Licensee in Licensee master catalog or correct spelling."
+                    })
+
+                if pd.isna(map_brand.iloc[idx]):
+                    validation_error_records.append({
+                        "upload_batch_id": str(batch_id),
+                        "batch_id": str(batch_id),
+                        "filename": filename,
+                        "excel_row_number": row_num,
+                        "error_code": "UNMAPPED_BRAND",
+                        "severity": "CRITICAL",
+                        "field_name": "BRAND NAME",
+                        "column_name": "brand_name_raw",
+                        "actual_value": raw_brand,
+                        "expected_value": "Registered Brand in Master Catalog",
+                        "ase": raw_ase,
+                        "asm_tsm": raw_asm,
+                        "approved_asm_tsm": approved_tsm_name_curr,
+                        "hq": raw_hq,
+                        "depot": raw_depot,
+                        "licensee": raw_licensee,
+                        "company": raw_company,
+                        "brand": raw_brand,
+                        "raw_id": r_id,
+                        "error_message": f"[Row #{row_num}] UNMAPPED_BRAND: Brand '{raw_brand}' is not registered in Brand master catalog.",
+                        "resolution": "Register Brand in Brand master catalog or correct spelling."
+                    })
+
+                if pd.isna(map_packaging.iloc[idx]):
+                    validation_error_records.append({
+                        "upload_batch_id": str(batch_id),
+                        "batch_id": str(batch_id),
+                        "filename": filename,
+                        "excel_row_number": row_num,
+                        "error_code": "UNMAPPED_PACKAGING",
+                        "severity": "CRITICAL",
+                        "field_name": "PACKING IN ML",
+                        "column_name": "packing_raw",
+                        "actual_value": raw_packing,
+                        "expected_value": "Registered Packaging Size",
+                        "ase": raw_ase,
+                        "asm_tsm": raw_asm,
+                        "approved_asm_tsm": approved_tsm_name_curr,
+                        "hq": raw_hq,
+                        "depot": raw_depot,
+                        "licensee": raw_licensee,
+                        "company": raw_company,
+                        "brand": raw_brand,
+                        "raw_id": r_id,
+                        "error_message": f"[Row #{row_num}] UNMAPPED_PACKAGING: Packaging size '{raw_packing}' is not registered in Packaging master catalog.",
+                        "resolution": "Register Packaging size in Packaging catalog."
+                    })
+
+                if pd.isna(map_hq.iloc[idx]):
+                    validation_error_records.append({
+                        "upload_batch_id": str(batch_id),
+                        "batch_id": str(batch_id),
+                        "filename": filename,
+                        "excel_row_number": row_num,
+                        "error_code": "UNMAPPED_HQ",
+                        "severity": "CRITICAL",
+                        "field_name": "H.Q.",
+                        "column_name": "hq_raw",
+                        "actual_value": raw_hq,
+                        "expected_value": "Registered Headquarters in Master Catalog",
+                        "ase": raw_ase,
+                        "asm_tsm": raw_asm,
+                        "approved_asm_tsm": approved_tsm_name_curr,
+                        "hq": raw_hq,
+                        "depot": raw_depot,
+                        "licensee": raw_licensee,
+                        "company": raw_company,
+                        "brand": raw_brand,
+                        "raw_id": r_id,
+                        "error_message": f"[Row #{row_num}] UNMAPPED_HQ: Headquarters '{raw_hq}' is not registered in Headquarters master catalog.",
+                        "resolution": "Register Headquarters in HQ catalog or correct spelling."
+                    })
+
+                # C. Validate Employee Hierarchy against User Management
+                if raw_ase and raw_ase.lower() not in ("unassigned", "none", "null", "nan"):
+                    ase_uid = _resolve_user_id(raw_ase)
+
+                    if not ase_uid:
+                        validation_error_records.append({
+                            "upload_batch_id": str(batch_id),
+                            "batch_id": str(batch_id),
+                            "filename": filename,
+                            "excel_row_number": row_num,
+                            "error_code": "UNMAPPED_ASE",
+                            "severity": "CRITICAL",
+                            "field_name": "ASE",
+                            "column_name": "ase_raw",
+                            "actual_value": raw_ase,
+                            "expected_value": "Active user registered in User Management",
+                            "ase": raw_ase,
+                            "asm_tsm": raw_asm,
+                            "approved_asm_tsm": None,
+                            "hq": raw_hq,
+                            "depot": raw_depot,
+                            "licensee": raw_licensee,
+                            "company": raw_company,
+                            "brand": raw_brand,
+                            "raw_id": r_id,
+                            "error_message": f"[Row #{row_num}] UNMAPPED_ASE: ASE '{raw_ase}' is not registered in User Management.",
+                            "resolution": "Create or activate ASE user profile in User Management."
+                        })
+                    else:
+                        approved_tsm_uid = user_manager_by_id.get(ase_uid)
+                        if not approved_tsm_uid:
+                            validation_error_records.append({
+                                "upload_batch_id": str(batch_id),
+                                "batch_id": str(batch_id),
+                                "filename": filename,
+                                "excel_row_number": row_num,
+                                "error_code": "MISSING_ASE_TSM_MAPPING",
+                                "severity": "CRITICAL",
+                                "field_name": "ASE",
+                                "column_name": "ase_raw",
+                                "actual_value": raw_ase,
+                                "expected_value": "Approved ASM/TSM assignment in User Management",
+                                "ase": raw_ase,
+                                "asm_tsm": raw_asm,
+                                "approved_asm_tsm": None,
+                                "hq": raw_hq,
+                                "depot": raw_depot,
+                                "licensee": raw_licensee,
+                                "company": raw_company,
+                                "brand": raw_brand,
+                                "raw_id": r_id,
+                                "error_message": f"[Row #{row_num}] MISSING_ASE_TSM_MAPPING: ASE '{raw_ase}' does not have an approved ASM/TSM mapping in User Management.",
+                                "resolution": "Assign an approved ASM/TSM to this ASE in User Management."
+                            })
+                        else:
+                            approved_tsm_name = user_name_by_id.get(approved_tsm_uid, "Approved ASM/TSM")
+                            if raw_asm and raw_asm.lower() not in ("unassigned", "none", "null", "nan"):
+                                uploaded_asm_uid = _resolve_user_id(raw_asm)
+
+                                if not uploaded_asm_uid:
+                                    validation_error_records.append({
+                                        "upload_batch_id": str(batch_id),
+                                        "batch_id": str(batch_id),
+                                        "filename": filename,
+                                        "excel_row_number": row_num,
+                                        "error_code": "UNMAPPED_TSM",
+                                        "severity": "CRITICAL",
+                                        "field_name": "ASM/TSM",
+                                        "column_name": "asm_tsm_raw",
+                                        "actual_value": raw_asm,
+                                        "expected_value": "Active ASM/TSM registered in User Management",
+                                        "ase": raw_ase,
+                                        "asm_tsm": raw_asm,
+                                        "approved_asm_tsm": approved_tsm_name,
+                                        "hq": raw_hq,
+                                        "depot": raw_depot,
+                                        "licensee": raw_licensee,
+                                        "company": raw_company,
+                                        "brand": raw_brand,
+                                        "raw_id": r_id,
+                                        "error_message": f"[Row #{row_num}] UNMAPPED_TSM: ASM/TSM '{raw_asm}' specified in sales record is not registered in User Management.",
+                                        "resolution": "Create or activate ASM/TSM user profile in User Management."
+                                    })
+                                elif uploaded_asm_uid != approved_tsm_uid:
+                                    validation_error_records.append({
+                                        "upload_batch_id": str(batch_id),
+                                        "batch_id": str(batch_id),
+                                        "filename": filename,
+                                        "excel_row_number": row_num,
+                                        "error_code": "ASE_TSM_MAPPING_MISMATCH",
+                                        "severity": "CRITICAL",
+                                        "field_name": "ASM/TSM",
+                                        "column_name": "asm_tsm_raw",
+                                        "actual_value": raw_asm,
+                                        "expected_value": approved_tsm_name,
+                                        "ase": raw_ase,
+                                        "asm_tsm": raw_asm,
+                                        "approved_asm_tsm": approved_tsm_name,
+                                        "hq": raw_hq,
+                                        "depot": raw_depot,
+                                        "licensee": raw_licensee,
+                                        "company": raw_company,
+                                        "brand": raw_brand,
+                                        "raw_id": r_id,
+                                        "error_message": f"[Row #{row_num}] ASE_TSM_MAPPING_MISMATCH: ASE '{raw_ase}' is currently mapped to '{approved_tsm_name}' in User Management, but the uploaded sales record specifies '{raw_asm}'.",
+                                        "resolution": "Update sales record to specify approved ASM/TSM or reassign mapping in User Management."
+                                    })
+
             # Build Sales Fact DataFrame & Records
             fact_df = pd.DataFrame({
                 "tenant_id": tenant_id,
@@ -895,76 +1298,27 @@ class ImportPipelineEngine:
             valid_fact_df = fact_df[valid_mask].copy()
             fact_records = valid_fact_df.to_dict("records")
 
-            imported_rows = len(fact_records)
-            failed_rows = total_rows - imported_rows
+            failed_rows = len(validation_error_records)
+            imported_rows = total_rows if failed_rows == 0 else 0
 
             if local_batch:
                 local_batch["imported_rows"] = imported_rows
                 local_batch["failed_rows"] = failed_rows
 
-            # Populate detailed error logs in upload_validation_errors table for failed rows
-            if failed_rows > 0:
-                validation_error_records = []
+            # 4. IF VALIDATION FAILS: HALT IMMEDIATELY AND PERSIST DIAGNOSTICS TO ERROR_LOGS
+            if validation_error_records:
                 try:
-                    invalid_indices = fact_df[~valid_mask].index
-                    for idx in invalid_indices:
-                        # Check Depot resolution
-                        if pd.isna(map_depot.iloc[idx]):
-                            raw_val = str(s_depot.iloc[idx]).strip() if idx < len(s_depot) and pd.notna(s_depot.iloc[idx]) else ""
-                            validation_error_records.append({
-                                "batch_id": str(batch_id),
-                                "column_name": "depot_raw",
-                                "error_message": f"Unmapped Depot name: '{raw_val}'" if raw_val else "Missing Depot name"
-                            })
-
-                        # Check Licensee resolution
-                        if pd.isna(map_licensee.iloc[idx]):
-                            raw_val = str(s_licensee.iloc[idx]).strip() if idx < len(s_licensee) and pd.notna(s_licensee.iloc[idx]) else ""
-                            validation_error_records.append({
-                                "batch_id": str(batch_id),
-                                "column_name": "licensee_raw",
-                                "error_message": f"Unmapped Licensee name: '{raw_val}'" if raw_val else "Missing Licensee name"
-                            })
-
-                        # Check Brand resolution
-                        if pd.isna(map_brand.iloc[idx]):
-                            raw_val = str(s_brand.iloc[idx]).strip() if idx < len(s_brand) and pd.notna(s_brand.iloc[idx]) else ""
-                            validation_error_records.append({
-                                "batch_id": str(batch_id),
-                                "column_name": "brand_name_raw",
-                                "error_message": f"Unmapped Brand name: '{raw_val}'" if raw_val else "Missing Brand name"
-                            })
-
-                        # Check Packaging resolution
-                        if pd.isna(map_packaging.iloc[idx]):
-                            raw_val = str(s_packing.iloc[idx]).strip() if idx < len(s_packing) and pd.notna(s_packing.iloc[idx]) else ""
-                            validation_error_records.append({
-                                "batch_id": str(batch_id),
-                                "column_name": "packing_raw",
-                                "error_message": f"Unmapped Packaging/Size: '{raw_val}'" if raw_val else "Missing Packaging size"
-                            })
-
-                        # Check Headquarters resolution
-                        if pd.isna(map_hq.iloc[idx]):
-                            raw_val = str(s_hq.iloc[idx]).strip() if idx < len(s_hq) and pd.notna(s_hq.iloc[idx]) else ""
-                            validation_error_records.append({
-                                "batch_id": str(batch_id),
-                                "column_name": "hq_raw",
-                                "error_message": f"Unmapped Headquarters: '{raw_val}'" if raw_val else "Missing Headquarters"
-                            })
-
-                    if validation_error_records:
-                        from backend.db.supabase_client import log_validation_errors
-                        log_validation_errors(validation_error_records)
-                        logger.info(f"Batch {batch_id}: Successfully logged {len(validation_error_records)} detailed error records into upload_validation_errors table.")
+                    from backend.db.supabase_client import log_validation_errors
+                    log_validation_errors(validation_error_records)
+                    logger.info(f"Batch {batch_id}: Logged {len(validation_error_records)} detailed validation errors into error_logs table.")
                 except Exception as e_err_log:
                     logger.warning(f"Batch {batch_id}: Exception logging detailed validation errors: {e_err_log}")
 
-                # ATOMIC ALL-OR-NOTHING: Rollback to 0 and halt pipeline immediately!
-                first_err = validation_error_records[0]["error_message"] if validation_error_records else "Validation error"
-                failure_reason = f"Upload aborted and rolled back to 0: {failed_rows} rows failed data validation ({first_err})."
+                first_err = validation_error_records[0]["error_message"]
+                failure_reason = f"Upload validation failed for {failed_rows} issue(s): {first_err}"
                 logger.warning(f"Batch {batch_id}: {failure_reason}")
 
+                # Rollback partial production writes (if any)
                 self._cleanup_failed_batch(batch_id)
 
                 processing_time = round(time.time() - start_time, 2)
@@ -983,9 +1337,6 @@ class ImportPipelineEngine:
                     batch_id=batch_id,
                     status="failed",
                     row_count=total_rows,
-                    imported_rows=0,
-                    failed_rows=failed_rows,
-                    remarks=failure_reason
                 )
 
                 self._pipeline_log(
@@ -995,41 +1346,22 @@ class ImportPipelineEngine:
                     message=failure_reason,
                 )
 
+                # Purge raw_sales_upload AFTER error_logs diagnostic persistence is confirmed
+                try:
+                    client_p = get_supabase()
+                    if client_p and batch_id:
+                        client_p.table("raw_sales_upload").delete().eq("batch_id", str(batch_id)).execute()
+                        logger.info(f"Batch {batch_id}: Purged raw_sales_upload staging rows after confirming diagnostic persistence in error_logs.")
+                except Exception as e_purge:
+                    logger.warning(f"Notice purging raw_sales_upload for batch {batch_id}: {e_purge}")
+
                 self.release_pipeline_lock(batch_id)
                 return local_batch
 
-            # Step 7 - Bulk Insert Raw Records in chunks with progress
-            if raw_records:
-                self._bulk_insert(
-                    table="raw_sales_upload",
-                    records=raw_records,
-                    chunk_size=5000,
-                    batch_id=batch_id,
-                )
+            # 5. ATOMIC PROMOTION TO PRODUCTION (ALL VALIDATIONS PASSED)
+            self._update_batch(batch_id=batch_id, status="validated")
 
-            # Populate users, roles and reporting hierarchy from raw staging data
-            try:
-                from backend.users.service import user_service
-                u_stats = user_service.populate_users_and_hierarchy_from_raw(batch_id)
-                logger.info(f"Batch {batch_id}: Populated {u_stats.get('users', 0)} users & {u_stats.get('mappings', 0)} hierarchy mappings.")
-                try:
-                    from backend.db.redis_client import safe_delete
-                    import asyncio
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.create_task(safe_delete("rll:cache:users_list"))
-                        asyncio.create_task(safe_delete("rll:cache:depots_list"))
-                        asyncio.create_task(safe_delete("rll:cache:headquarters_list"))
-                except Exception as c_err:
-                    logger.warning(f"Cache invalidation notice during upload: {c_err}")
-            except Exception as u_err:
-                logger.warning(f"Batch {batch_id}: User population notice: {u_err}")
-
-            # Step 8 - Validation Status
-            if fact_records:
-                self._update_batch(batch_id=batch_id, status="validated")
-
-            # Step 9 - Bulk Insert Sales Fact Records in chunks with progress
+            # Bulk Insert Sales Fact Records
             if fact_records:
                 distinct_dates = list({str(r.get("sale_date", "")).strip() for r in fact_records if r.get("sale_date")})
                 try:
@@ -1038,17 +1370,14 @@ class ImportPipelineEngine:
                 except Exception as e_cal:
                     logger.warning(f"dim_calendar population notice: {e_cal}")
 
-                # Phase 3 Batch-Scoped Replacement: Purge existing sales facts for this specific batch_id
-                # to prevent duplication on retry while preserving facts belonging to other upload batches.
-                client = get_supabase()
+                # Purge existing sales facts for this batch_id before insert
                 if client and batch_id:
                     batch_id_str = str(batch_id).strip()
-                    if len(batch_id_str) == 36 or "-" in batch_id_str:
+                    if batch_id_str:
                         try:
                             client.table("sales_fact").delete().eq("batch_id", batch_id_str).execute()
-                            logger.info(f"Batch {batch_id}: Purged existing sales_fact records for batch_id={batch_id_str}.")
                         except Exception as e_del:
-                            logger.warning(f"Batch {batch_id}: Error purging sales_fact for batch_id={batch_id_str}: {e_del}")
+                            logger.warning(f"Batch {batch_id}: Error purging sales_fact: {e_del}")
 
                 self._bulk_insert(
                     table="sales_fact",
@@ -1056,6 +1385,12 @@ class ImportPipelineEngine:
                     chunk_size=5000,
                     batch_id=batch_id,
                 )
+
+            # Populate user_sales_fact (including Company = Others)
+            self._populate_user_sales_fact(
+                batch_id, s_date, s_company, s_ase, s_brand, s_cases, s_btl, s_bl,
+                company_cache, brand_cache, tenant_id=tenant_id
+            )
 
             # Step 10 - Trigger Incremental Analytics Summaries & Validation ONLY after complete sales_fact ingestion
             if fact_records and imported_rows > 0:
@@ -1091,9 +1426,10 @@ class ImportPipelineEngine:
             final_status = "loaded" if imported_rows > 0 else "failed"
             self._update_batch(batch_id=batch_id, row_count=total_rows, status=final_status)
 
-            # Phase 1 Automatic Post-Ingestion Cleanup: purge raw_sales_upload, batch_chunks, upload_pipeline_logs ONLY once status is loaded
+            # Phase 1 Automatic Post-Ingestion Cleanup: purge raw_sales_upload in non-blocking background thread
             if final_status == "loaded":
-                self._purge_batch_temporary_data(batch_id)
+                import threading
+                threading.Thread(target=self._purge_batch_temporary_data, args=(batch_id,), daemon=True).start()
 
             if final_status == "loaded":
                 from backend.services.cache_service import invalidate_analytics_cache_sync, prewarm_cache_egress_sync
@@ -1268,12 +1604,8 @@ class ImportPipelineEngine:
         )
 
         circle_office_name = self._clean_text(
-            row[
-                column_map[
-                    "CIRCLE_OFFICE_NAME"
-                ]
-            ]
-        )
+            row[column_map["CIRCLE_OFFICE_NAME"]]
+        ) if "CIRCLE_OFFICE_NAME" in column_map else ""
 
         depot_name = self._clean_text(
             row[
@@ -1312,16 +1644,12 @@ class ImportPipelineEngine:
         )
 
         total_btl = self._number(
-            row[
-                column_map["TOTAL_BTL"]
-            ]
-        )
+            row[column_map["TOTAL_BTL"]]
+        ) if "TOTAL_BTL" in column_map else 0.0
 
         total_bl = self._number(
-            row[
-                column_map["TOTAL_BL"]
-            ]
-        )
+            row[column_map["TOTAL_BL"]]
+        ) if "TOTAL_BL" in column_map else 0.0
 
         # ----------------------------------------------------
         # Validate mandatory textual values.
@@ -1346,9 +1674,6 @@ class ImportPipelineEngine:
 
             "DEO_OFFICE_NAME":
                 deo_office_name,
-
-            "CIRCLE_OFFICE_NAME":
-                circle_office_name,
 
             "DEPOT_NAME":
                 depot_name,
@@ -1465,8 +1790,6 @@ class ImportPipelineEngine:
             "BRAND_NAME",
             "PACKING_IN_ML",
             "TOTAL_CASE",
-            "TOTAL_BTL",
-            "TOTAL_BL",
         }
 
         missing_columns = []
@@ -2030,10 +2353,9 @@ class ImportPipelineEngine:
 
         try:
             client.table("raw_sales_upload").delete().eq("batch_id", b_str).execute()
-        except Exception as exc:
-            logger.warning(f"Cleanup warning for raw_sales_upload batch {b_str}: {exc}")
-
-        self._purge_batch_temporary_data(batch_id)
+            logger.info(f"Atomic Rollback: Purged raw_sales_upload staging records for batch {b_str}.")
+        except Exception as exc_r:
+            logger.warning(f"Notice purging raw_sales_upload in _cleanup_failed_batch: {exc_r}")
 
     def _record_batch_chunk(
         self,
@@ -2476,99 +2798,11 @@ class ImportPipelineEngine:
 
     def _sync_user_hierarchy(self, s_ase: pd.Series, s_asm: pd.Series, s_depot: pd.Series, depot_cache: Dict[str, str]):
         """
-        Extracts ASE, ASM/TSM, and DEPOT relationships from uploaded DataFrame 
-        and updates public.users, public.user_roles, public.ase_tsm_mapping, and public.user_depot.
+        No-op: Employee Hierarchy (ase_tsm_mapping) and User-Depot mappings are managed
+        EXCLUSIVELY by User Management. Sales Excel ingestion must NEVER create, modify, or overwrite
+        employee hierarchy or user assignments.
         """
-        client = get_supabase()
-        if not client:
-            return
-
-        try:
-            from backend.users.service import UserService
-            user_service = UserService()
-
-            u_res = client.table("users").select("user_id, first_name, last_name, email").execute()
-            user_lookup = {}
-            for u in (u_res.data or []):
-                fn = u.get("first_name") or ""
-                ln = u.get("last_name") or ""
-                full_name = f"{fn} {ln}".strip().lower()
-                if full_name:
-                    user_lookup[full_name] = str(u["user_id"])
-                if fn:
-                    user_lookup[fn.lower()] = str(u["user_id"])
-
-            roles_map = {
-                'ADMIN': 'f4df9401-fe76-4a27-934d-20a78fb15b8f',
-                'TSM': '10b28dc0-6fc6-4b99-be09-1fb6e0b35b5f',
-                'ASE': '44abfc51-8fb9-4b9b-8e1e-041d4930a5a5',
-                'LEADER': '196372d0-d03f-4834-ab55-8674a81811d4'
-            }
-
-            tsm_ase_pairs = set()
-            user_depot_pairs = set()
-            clean_fn = master_service._clean
-
-            for ase_raw, tsm_raw, depot_raw in zip(s_ase, s_asm, s_depot):
-                ase_str = str(ase_raw or "").strip()
-                tsm_str = str(tsm_raw or "").strip()
-                depot_str = str(depot_raw or "").strip()
-
-                if not ase_str or ase_str.lower() in ("unassigned", "none", "null"):
-                    continue
-                if not tsm_str or tsm_str.lower() in ("unassigned", "none", "null"):
-                    continue
-
-                ase_list = [p.strip() for p in ase_str.replace(",", "/").split("/") if p.strip()]
-                tsm_list = [p.strip() for p in tsm_str.replace(",", "/").split("/") if p.strip()]
-                depot_id = depot_cache.get(clean_fn(depot_str))
-
-                for tsm_name in tsm_list:
-                    tsm_key = tsm_name.lower()
-                    if tsm_key not in user_lookup:
-                        t_parts = tsm_name.split(" ", 1)
-                        fn = t_parts[0]
-                        ln = t_parts[1] if len(t_parts) > 1 else ""
-                        res = user_service.create_user({"first_name": fn, "last_name": ln, "role": "TSM", "is_active": True})
-                        user_lookup[tsm_key] = res["user_id"]
-
-                    tsm_uid = user_lookup[tsm_key]
-
-                    for ase_name in ase_list:
-                        ase_key = ase_name.lower()
-                        if ase_key not in user_lookup:
-                            a_parts = ase_name.split(" ", 1)
-                            fn = a_parts[0]
-                            ln = a_parts[1] if len(a_parts) > 1 else ""
-                            res = user_service.create_user({"first_name": fn, "last_name": ln, "role": "ASE", "is_active": True})
-                            user_lookup[ase_key] = res["user_id"]
-
-                        ase_uid = user_lookup[ase_key]
-                        tsm_ase_pairs.add((tsm_uid, ase_uid))
-
-                        if depot_id:
-                            user_depot_pairs.add((ase_uid, depot_id))
-                            user_depot_pairs.add((tsm_uid, depot_id))
-
-            for t_uid, a_uid in tsm_ase_pairs:
-                try:
-                    client.table("ase_tsm_mapping").upsert(
-                        {"tsm_user_id": t_uid, "ase_user_id": a_uid},
-                        on_conflict="tsm_user_id, ase_user_id"
-                    ).execute()
-                except Exception:
-                    pass
-
-            for u_uid, d_uid in user_depot_pairs:
-                try:
-                    client.table("user_depot").upsert(
-                        {"user_id": u_uid, "depot_id": d_uid},
-                        on_conflict="user_id, depot_id"
-                    ).execute()
-                except Exception:
-                    pass
-        except Exception as e_sync:
-            logger.warning(f"_sync_user_hierarchy error: {e_sync}")
+        return
 
     def _populate_user_sales_fact(
         self,
@@ -2594,16 +2828,26 @@ class ImportPipelineEngine:
         tenant_id = tenant_id or "a0000000-0000-0000-0000-000000000001"
 
         try:
-            u_res = client.table("users").select("user_id, first_name, last_name").execute()
+            u_res = client.table("users").select("user_id, first_name, last_name, email, is_active").execute()
+            all_u = u_res.data or []
+            # Sort active users first so active user_ids take precedence in user_lookup
+            all_u.sort(key=lambda x: 0 if x.get("is_active") else 1)
+
             user_lookup = {}
-            for u in (u_res.data or []):
-                fn = u.get("first_name") or ""
-                ln = u.get("last_name") or ""
-                full_name = f"{fn} {ln}".strip().lower()
-                if full_name:
-                    user_lookup[full_name] = str(u["user_id"])
-                if fn:
-                    user_lookup[fn.lower()] = str(u["user_id"])
+            for u in all_u:
+                uid = str(u["user_id"])
+                fn = (u.get("first_name") or "").strip().lower()
+                ln = (u.get("last_name") or "").strip().lower()
+                full_name = f"{fn} {ln}".strip()
+                email = str(u.get("email") or "").lower()
+                prefix = email.split("@")[0].strip()
+
+                if full_name and full_name not in user_lookup:
+                    user_lookup[full_name] = uid
+                if prefix and prefix not in user_lookup:
+                    user_lookup[prefix] = uid
+                if fn and fn not in user_lookup:
+                    user_lookup[fn] = uid
 
             clean_fn = master_service._clean
 
@@ -2612,7 +2856,7 @@ class ImportPipelineEngine:
                 s_date, s_company, s_ase, s_brand, s_cases, s_btl, s_bl
             ):
                 comp_clean = str(comp_raw or "").strip()
-                if not comp_clean or comp_clean.lower() == "others":
+                if not comp_clean:
                     continue
 
                 ase_clean = str(ase_raw or "").strip()
@@ -2647,7 +2891,7 @@ class ImportPipelineEngine:
                 # Phase 3 Batch-Scoped Replacement: Purge existing user sales facts for this specific batch_id once before insert
                 if batch_id:
                     batch_id_str = str(batch_id).strip()
-                    if len(batch_id_str) == 36 or "-" in batch_id_str:
+                    if batch_id_str:
                         try:
                             client.table("user_sales_fact").delete().eq("batch_id", batch_id_str).execute()
                             logger.info(f"Batch {batch_id}: Purged existing user_sales_fact records for batch_id={batch_id_str}.")

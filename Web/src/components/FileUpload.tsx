@@ -13,6 +13,53 @@ interface FileUploadProps {
   onErrorOccurred?: (batchId?: string | number) => void;
 }
 
+function formatLaymanShortError(msg: string): string {
+  if (!msg) return 'Validation error';
+  const rowMatch = msg.match(/\[Row\s*#?(\d+)\]/i);
+  const rowNum = rowMatch ? `Row #${rowMatch[1]}` : '';
+
+  const valMatch = msg.match(/'(.*?)'/);
+  const val = valMatch ? valMatch[1] : '';
+
+  if (msg.includes('UNMAPPED_ASE')) {
+    return `${rowNum ? rowNum + ': ' : ''}Unregistered ASE Personnel — '${val || 'Unknown'}'`;
+  }
+  if (msg.includes('UNMAPPED_TSM')) {
+    return `${rowNum ? rowNum + ': ' : ''}Unregistered ASM/TSM Personnel — '${val || 'Unknown'}'`;
+  }
+  if (msg.includes('UNMAPPED_LICENSEE')) {
+    return `${rowNum ? rowNum + ': ' : ''}Unmapped Licensee — '${val || 'Unknown'}'`;
+  }
+  if (msg.includes('UNMAPPED_DEPOT')) {
+    return `${rowNum ? rowNum + ': ' : ''}Unmapped Depot — '${val || 'Unknown'}'`;
+  }
+  if (msg.includes('UNMAPPED_BRAND')) {
+    return `${rowNum ? rowNum + ': ' : ''}Unmapped Brand — '${val || 'Unknown'}'`;
+  }
+  if (msg.includes('UNMAPPED_COMPANY')) {
+    return `${rowNum ? rowNum + ': ' : ''}Unmapped Company — '${val || 'Unknown'}'`;
+  }
+  if (msg.includes('UNMAPPED_HQ')) {
+    return `${rowNum ? rowNum + ': ' : ''}Unmapped Headquarters — '${val || 'Unknown'}'`;
+  }
+  if (msg.includes('MISSING_ASE_TSM_MAPPING')) {
+    return `${rowNum ? rowNum + ': ' : ''}Missing Approved Manager for ASE — '${val || 'Unknown'}'`;
+  }
+  if (msg.includes('ASE_TSM_MAPPING_MISMATCH')) {
+    return `${rowNum ? rowNum + ': ' : ''}Reporting Line Mismatch for ASE — '${val || 'Unknown'}'`;
+  }
+  if (msg.includes('INVALID_CASE')) {
+    return `${rowNum ? rowNum + ': ' : ''}Invalid Case Quantity`;
+  }
+  if (msg.includes('DATE_ERROR')) {
+    return `${rowNum ? rowNum + ': ' : ''}Invalid Date Format — '${val || 'Unparseable Date'}'`;
+  }
+
+  let cleanMsg = msg.replace(/^Upload validation failed for \d+ issue\(s\):\s*/i, '').strip?.() || msg;
+  cleanMsg = cleanMsg.replace(/\[Row\s*#?\d+\]\s*/i, '');
+  return rowNum ? `${rowNum}: ${cleanMsg}` : cleanMsg;
+}
+
 export default function FileUpload({ title, instructions, accept = ".xlsx, .xls, .xlsb, .csv, .numbers", uploadEndpoint, onUploadComplete, onErrorOccurred }: FileUploadProps) {
   const [uploadState, setUploadState] = useState<FileUploadState>({ status: 'idle', progress: 0 });
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -569,34 +616,36 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                   )}
                 </div>
 
-                <p className="text-xs text-rose-700 mt-1 max-w-md font-medium">
+                <p className="text-xs text-rose-700 mt-1 max-w-md font-semibold">
                   {uploadState.errorMessage?.includes('[Errno 35]') 
                     ? 'Connection buffer stalled during insertion. The database was momentarily saturated.'
-                    : uploadState.errorMessage}
+                    : (uploadState.errorLogs && uploadState.errorLogs.length > 0
+                        ? `Upload rejected due to ${uploadState.errorLogs.length} unmapped issue(s). Data safely held to prevent corruption.`
+                        : (uploadState.errorMessage ? formatLaymanShortError(uploadState.errorMessage) : 'Upload rejected due to mapping errors.'))}
                 </p>
 
                 {uploadState.errorLogs && uploadState.errorLogs.length > 0 && (
-                  <div className="mt-3 w-full bg-rose-50/80 border border-rose-200 rounded-xl p-3 text-left max-h-32 overflow-y-auto">
+                  <div className="mt-3 w-full bg-rose-50/80 border border-rose-200 rounded-xl p-3 text-left max-h-36 overflow-y-auto">
                     <p className="text-[10px] font-bold text-rose-800 uppercase tracking-wider mb-1">
                       Detected Issues ({uploadState.errorLogs.length}):
                     </p>
                     <ul className="list-disc list-inside text-xs text-rose-700 space-y-1">
-                      {uploadState.errorLogs.slice(0, 3).map((log, i) => (
-                        <li key={i} className="truncate">{log}</li>
+                      {uploadState.errorLogs.slice(0, 5).map((log, i) => (
+                        <li key={i} className="truncate font-semibold">{formatLaymanShortError(log)}</li>
                       ))}
                     </ul>
                   </div>
                 )}
 
                 <div className="flex flex-wrap items-center justify-center gap-2.5 mt-4">
-                  {uploadState.batchId && (
+                  {/* {uploadState.batchId && (
                     <button 
                       onClick={(e) => { e.stopPropagation(); checkBatchStatusDirectly(); }}
                       className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition-colors text-xs font-bold cursor-pointer shadow-xs flex items-center gap-1.5"
                     >
                       <RefreshCw size={12} /> Check Live DB Status
                     </button>
-                  )}
+                  )} */}
                   <button 
                     onClick={(e) => { e.stopPropagation(); resetUpload(); }}
                     className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl transition-colors text-xs font-bold cursor-pointer"

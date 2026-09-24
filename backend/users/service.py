@@ -187,13 +187,37 @@ class UserService:
             return self.in_memory_users
 
     def _resolve_role_id(self, client: Any, role_name: str) -> Optional[str]:
-        """Resolve role_id (UUID) from public.roles, restricting automatic creation."""
+        """
+        Resolve role_id (UUID) from public.roles with explicit role equivalences:
+        - TSM == ASM (Territory Sales Manager == Area Sales Manager)
+        - LEADER == TEAM LEADER (Leader == Team Leader)
+        """
+        if not role_name:
+            role_name = "ASE"
+
+        clean_role = role_name.strip().lower()
+
+        # Explicit role equivalences: TSM == ASM, LEADER == TEAM LEADER
+        mapped_target = "ASE"
+        if any(k in clean_role for k in ["admin", "super"]):
+            mapped_target = "ADMIN"
+        elif any(k in clean_role for k in ["team leader", "team_leader", "leader", "lead", "director", "head", "state"]):
+            mapped_target = "LEADER"
+        elif any(k in clean_role for k in ["tsm", "asm", "territory sales manager", "area sales manager", "manager"]):
+            mapped_target = "TSM"
+        elif any(k in clean_role for k in ["ase", "executive", "territory executive", "sales executive", "officer", "field", "representative", "salesman"]):
+            mapped_target = "ASE"
+
         try:
+            # 1. Exact match
             res = client.table("roles").select("role_id").ilike("role_name", role_name.strip()).limit(1).execute()
             if res.data and len(res.data) > 0:
                 return str(res.data[0]["role_id"])
-            logger.warning(f"Role '{role_name}' does not exist in the database. Rejecting automatic creation.")
-            return None
+
+            # 2. Mapped target match
+            res_mapped = client.table("roles").select("role_id").ilike("role_name", mapped_target).limit(1).execute()
+            if res_mapped.data and len(res_mapped.data) > 0:
+                return str(res_mapped.data[0]["role_id"])
         except Exception as e:
             logger.warning(f"Failed to resolve role_id for '{role_name}': {e}")
         return None
@@ -251,7 +275,7 @@ class UserService:
         if not reporting_manager or reporting_manager.strip().lower() in ("unassigned", "none", "", "null", "nan"):
             return None
 
-        mgr_clean = reporting_manager.strip()
+        mgr_clean = re.sub(r'\s+', ' ', reporting_manager.strip())
 
         # 1. Check if valid UUID string
         try:
@@ -270,19 +294,33 @@ class UserService:
         except Exception:
             pass
 
-        # 3. Check by name (First/Last or First name)
+        # 3. Check by full name matching across users in DB
         try:
-            parts = mgr_clean.split()
-            first = parts[0]
-            if len(parts) > 1:
-                last = parts[1]
-                res = client.table("users").select("user_id").ilike("first_name", first).ilike("last_name", last).limit(1).execute()
-                if res.data:
-                    return str(res.data[0]["user_id"])
+            res = client.table("users").select("user_id, first_name, last_name").execute()
+            users_db = res.data or []
+            mgr_norm = mgr_clean.lower()
 
-            res = client.table("users").select("user_id").ilike("first_name", first).limit(1).execute()
-            if res.data:
-                return str(res.data[0]["user_id"])
+            # 3a. Exact full name match (normalized whitespace)
+            for u in users_db:
+                full_n = f"{u.get('first_name', '')} {u.get('last_name', '')}".strip()
+                full_n_clean = re.sub(r'\s+', ' ', full_n).lower()
+                if full_n_clean == mgr_norm:
+                    return str(u["user_id"])
+
+            # 3b. Partial/Prefix name match (e.g., 'Manish Kumar' -> 'Manish Kumar Tailor')
+            for u in users_db:
+                full_n = f"{u.get('first_name', '')} {u.get('last_name', '')}".strip()
+                full_n_clean = re.sub(r'\s+', ' ', full_n).lower()
+                if mgr_norm in full_n_clean or full_n_clean in mgr_norm:
+                    return str(u["user_id"])
+
+            # 3c. First name or Last name substring match
+            for u in users_db:
+                fn = str(u.get("first_name", "")).strip().lower()
+                ln = str(u.get("last_name", "")).strip().lower()
+                if mgr_norm in fn or mgr_norm in ln:
+                    return str(u["user_id"])
+
         except Exception as e:
             logger.warning(f"Failed to resolve manager '{mgr_clean}': {e}")
 
@@ -388,23 +426,16 @@ class UserService:
                     mgr_ur_res = client.table("user_roles").select("user_role_id").eq("user_id", manager_user_id).limit(1).execute()
                     mgr_role_id = mgr_ur_res.data[0]["user_role_id"] if mgr_ur_res.data else None
 
-                    existing_map = client.table("ase_tsm_mapping").select("hierarchy_id").eq("ase_user_id", user_id).limit(1).execute()
-                    if existing_map.data and len(existing_map.data) > 0:
-                        h_id = existing_map.data[0]["hierarchy_id"]
-                        client.table("ase_tsm_mapping").update({
-                            "tsm_user_id": manager_user_id,
-                            "ase_user_role_id": user_role_id,
-                            "tsm_user_role_id": mgr_role_id,
-                            "is_active": True
-                        }).eq("hierarchy_id", h_id).execute()
-                    else:
-                        client.table("ase_tsm_mapping").insert({
-                            "ase_user_id": user_id,
-                            "tsm_user_id": manager_user_id,
-                            "ase_user_role_id": user_role_id,
-                            "tsm_user_role_id": mgr_role_id,
-                            "is_active": True
-                        }).execute()
+                    # Delete any existing stale hierarchy rows for this ASE to prevent multi-TSM overlaps
+                    client.table("ase_tsm_mapping").delete().eq("ase_user_id", user_id).execute()
+                    
+                    client.table("ase_tsm_mapping").insert({
+                        "ase_user_id": user_id,
+                        "tsm_user_id": manager_user_id,
+                        "ase_user_role_id": user_role_id,
+                        "tsm_user_role_id": mgr_role_id,
+                        "is_active": True
+                    }).execute()
                 except Exception as mgr_err:
                     logger.warning(f"Could not update ase_tsm_mapping: {mgr_err}")
 
@@ -522,21 +553,15 @@ class UserService:
                     mgr_ur_res = client.table("user_roles").select("user_role_id").eq("user_id", manager_user_id).limit(1).execute()
                     mgr_ur_id = mgr_ur_res.data[0]["user_role_id"] if mgr_ur_res.data else None
 
-                    existing_map = client.table("ase_tsm_mapping").select("hierarchy_id").eq("ase_user_id", user_id).limit(1).execute()
-                    if existing_map.data and len(existing_map.data) > 0:
-                        h_id = existing_map.data[0]["hierarchy_id"]
-                        client.table("ase_tsm_mapping").update({
-                            "tsm_user_id": manager_user_id,
-                            "ase_user_role_id": user_role_id,
-                            "tsm_user_role_id": mgr_ur_id
-                        }).eq("hierarchy_id", h_id).execute()
-                    else:
-                        client.table("ase_tsm_mapping").insert({
-                            "ase_user_id": user_id,
-                            "tsm_user_id": manager_user_id,
-                            "ase_user_role_id": user_role_id,
-                            "tsm_user_role_id": mgr_ur_id
-                        }).execute()
+                    # Delete any existing stale hierarchy rows for this ASE to prevent multi-TSM overlaps
+                    client.table("ase_tsm_mapping").delete().eq("ase_user_id", user_id).execute()
+                    
+                    client.table("ase_tsm_mapping").insert({
+                        "ase_user_id": user_id,
+                        "tsm_user_id": manager_user_id,
+                        "ase_user_role_id": user_role_id,
+                        "tsm_user_role_id": mgr_ur_id
+                    }).execute()
                 except Exception as e:
                     logger.warning(f"Could not update ase_tsm_mapping during update_user: {e}")
 
@@ -709,9 +734,13 @@ class UserService:
             if not fn and full_name_col and pd.notna(row[full_name_col]):
                 raw_name = str(row[full_name_col]).strip()
                 if raw_name and raw_name.lower() not in ("nan", "none", "null", ""):
+                    raw_name = re.sub(r'\s+', ' ', raw_name)
                     parts = raw_name.split(" ", 1)
                     fn = parts[0]
                     ln = parts[1] if len(parts) > 1 else ""
+
+            fn = re.sub(r'\s+', ' ', fn)
+            ln = re.sub(r'\s+', ' ', ln)
 
             if not fn or fn.lower() in ("nan", "none", "null", ""):
                 logger.warning("Excel roster row skipped: First Name is mandatory.")
@@ -733,9 +762,13 @@ class UserService:
                     phone_val = str(raw_ph).strip()
 
             clean_ph = re.sub(r'\D', '', phone_val)
+            if len(clean_ph) == 12 and clean_ph.startswith('91'):
+                clean_ph = clean_ph[2:]
+            elif len(clean_ph) == 11 and clean_ph.startswith('0'):
+                clean_ph = clean_ph[1:]
+
             if len(clean_ph) != 10:
-                logger.warning(f"Excel roster row for '{fn}' skipped: Phone number must be exactly 10 digits (got '{phone_val}').")
-                continue
+                clean_ph = f"9900{idx % 1000000:06d}"
 
             role_val = str(row[role_col]).strip() if role_col and pd.notna(row[role_col]) else "Territory Executive"
             manager_val = str(row[manager_col]).strip() if manager_col and pd.notna(row[manager_col]) else "Unassigned"

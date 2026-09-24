@@ -357,6 +357,16 @@ export function GroupsCascadingView({
     return `Search brands in ${firstName}...`;
   }, [level, activeGroupTab, selectedLicensee]);
 
+  const getSortOptionLabel = (option: SortOptionValue): string => {
+    switch (option) {
+      case 'az': return 'A to Z';
+      case 'za': return 'Z to A';
+      case 'cases_desc': return 'High to Low';
+      case 'cases_asc': return 'Low to High';
+      default: return 'A to Z';
+    }
+  };
+
   return (
     <View style={styles.container}>
       {/* Top Header Bar for Level 2 & Level 3: [ Back Button ] + [ Segmented Tabs ] */}
@@ -421,14 +431,6 @@ export function GroupsCascadingView({
           ) : null}
         </View>
 
-        <TouchableOpacity
-          style={styles.refreshPillBtn}
-          onPress={handleRefresh}
-          activeOpacity={0.75}
-        >
-          <RefreshIcon size={14} color="#0F172A" />
-        </TouchableOpacity>
-
         {/* Sort Pill Button */}
         <TouchableOpacity
           style={styles.sortPillBtn}
@@ -437,13 +439,7 @@ export function GroupsCascadingView({
         >
           <SwapVertIcon size={14} color="#64748B" />
           <Text style={styles.sortText} numberOfLines={1}>
-            {sortOption === 'az'
-              ? 'Name (A to Z)'
-              : sortOption === 'za'
-                ? 'Name (Z to A)'
-                : sortOption === 'cases_desc'
-                  ? 'Cases: (High to Low)'
-                  : 'Cases: (Low to High)'}
+            {getSortOptionLabel(sortOption)}
           </Text>
           <ChevronDownIcon size={14} color="#94A3B8" />
         </TouchableOpacity>
@@ -488,7 +484,6 @@ export function GroupsCascadingView({
                   subtitle={`${item.total_licensees || 0} Licensee(s)  •  ${item.total_brands || 0} Brand(s)`}
                   metrics={[
                     { label: 'Cases', value: cases },
-                    { label: 'Bottles', value: bottles },
                   ]}
                   pillTheme="blue"
                   onPress={() => handleSelectGroup(item)}
@@ -513,7 +508,6 @@ export function GroupsCascadingView({
                   companyBadge={item.company_name || 'Brand Product'}
                   metrics={[
                     { label: 'Cases', value: cases },
-                    { label: 'Bottles', value: bottles },
                   ]}
                   locationPill={depotPill}
                   pillTheme="blue"
@@ -540,7 +534,6 @@ export function GroupsCascadingView({
                   subtitle={`Trade: ${item.trade || 'Off'}  •  ${item.total_brands || 0} Brand(s)`}
                   metrics={[
                     { label: 'Cases', value: cases },
-                    { label: 'Bottles', value: bottles },
                   ]}
                   locationPill={depotPill}
                   pillTheme="blue"
@@ -568,7 +561,6 @@ export function GroupsCascadingView({
                   companyBadge={item.company_name || 'Brand'}
                   metrics={[
                     { label: 'Cases', value: cases },
-                    { label: 'Bottles', value: bottles },
                   ]}
                   locationPill={depotPill}
                   pillTheme="blue"

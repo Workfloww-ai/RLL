@@ -8,6 +8,8 @@ import {
   TouchableOpacity,
   BackHandler,
   RefreshControl,
+  Modal,
+  TouchableWithoutFeedback,
 } from 'react-native';
 import { Company, Period } from '../../types';
 import { formatNumber } from '../../lib/utils';
@@ -325,14 +327,6 @@ export function CompanyCascadingView({
   const filteredAndSortedList = useMemo(() => {
     let result = [...activeRawList];
 
-    // Filter out "Others" company (AGENTS.md Rule 7 & BUSINESS_LOGIC_SPEC.md Section 4)
-    if (level === 1) {
-      result = result.filter(c => {
-        const name = (c.name || '').trim().toLowerCase();
-        return name !== 'others' && name !== 'others company' && !name.startsWith('others ');
-      });
-    }
-
     // Search query filter
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
@@ -438,10 +432,6 @@ export function CompanyCascadingView({
               <Text style={styles.metricValuePrimary}>{formatNumber(headerMetrics.cases)}</Text>
               <Text style={styles.metricLabelPrimary}>CASES</Text>
             </View>
-            <View style={styles.metricBadgeSecondary}>
-              <Text style={styles.metricValueSecondary}>{formatNumber(headerMetrics.bottles)}</Text>
-              <Text style={styles.metricLabelSecondary}>BTL</Text>
-            </View>
           </View>
         </View>
       )}
@@ -472,14 +462,6 @@ export function CompanyCascadingView({
             </TouchableOpacity>
           ) : null}
         </View>
-
-        <TouchableOpacity
-          style={styles.refreshButton}
-          onPress={handleRefresh}
-          activeOpacity={0.7}
-        >
-          <RefreshIcon size={15} color="#0F172A" />
-        </TouchableOpacity>
 
         <TouchableOpacity
           style={styles.sortButton}
@@ -548,7 +530,6 @@ export function CompanyCascadingView({
                   subtitle={subtext}
                   metrics={[
                     { label: 'CASES', value: formatNumber(bCases) },
-                    { label: 'BOTTLES', value: formatNumber(bBottles) },
                   ]}
                   titleIcon={<WineIcon size={16} color="#0F172A" />}
                   onPress={() => handleSelectBrand(item)}
@@ -572,7 +553,6 @@ export function CompanyCascadingView({
                 pillTheme="blue"
                 metrics={[
                   { label: 'CASES', value: formatNumber(lCases) },
-                  { label: 'BOTTLES', value: formatNumber(lBottles) },
                 ]}
                 titleIcon={<UsersIcon size={16} color="#0F172A" />}
               />
@@ -603,6 +583,52 @@ export function CompanyCascadingView({
         }}
         onClose={() => setShowSortModal(false)}
       />
+
+      {/* Items Per Page Modal */}
+      <Modal
+        visible={showPerPageModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowPerPageModal(false)}
+      >
+        <TouchableWithoutFeedback onPress={() => setShowPerPageModal(false)}>
+          <View style={styles.modalOverlay}>
+            <TouchableWithoutFeedback>
+              <View style={styles.perPageModalCard}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>Items Per Page</Text>
+                  <TouchableOpacity onPress={() => setShowPerPageModal(false)}>
+                    <XIcon size={18} color="#64748B" />
+                  </TouchableOpacity>
+                </View>
+                {[15, 25, 50, 100].map((num) => (
+                  <TouchableOpacity
+                    key={num}
+                    style={[
+                      styles.perPageOptionRow,
+                      perPage === num && styles.perPageOptionSelected,
+                    ]}
+                    onPress={() => {
+                      setPerPage(num);
+                      setCurrentPage(1);
+                      setShowPerPageModal(false);
+                    }}
+                  >
+                    <Text
+                      style={[
+                        styles.perPageOptionText,
+                        perPage === num && styles.perPageOptionTextSelected,
+                      ]}
+                    >
+                      {num} items
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </TouchableWithoutFeedback>
+          </View>
+        </TouchableWithoutFeedback>
+      </Modal>
     </View>
   );
 }
@@ -752,5 +778,51 @@ const styles = StyleSheet.create({
     color: '#64748B',
     fontWeight: '600',
     textAlign: 'center',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  perPageModalCard: {
+    width: '100%',
+    maxWidth: 320,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  perPageOptionRow: {
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    marginBottom: 4,
+  },
+  perPageOptionSelected: {
+    backgroundColor: '#F0F9FF',
+  },
+  perPageOptionText: {
+    color: '#334155',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  perPageOptionTextSelected: {
+    color: '#0284C7',
+    fontWeight: '700',
   },
 });

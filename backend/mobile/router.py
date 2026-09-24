@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from backend.core.security import create_access_token, get_current_user, RoleChecker
 from backend.db.client import get_supabase
 from backend.db.company_aliases import normalize_company_name, is_pinned_company
+from backend.services.company_cascading_service import is_others_company
 from backend.db.supabase_client import (
     call_mobile_sales_rpc,
     call_mobile_tsm_sales_rpc,
@@ -36,128 +37,11 @@ _MASTER_CACHE = {
 }
 _MASTER_CACHE_TTL = 300  # 5-minute TTL for master data lookups (companies, depots, HQs)
 
-# Sales endpoint response cache with 1-second TTL for real-time updates
+# Sales endpoint response cache with 15-minute TTL for instant screen loading (<150ms)
 _SALES_RESPONSE_CACHE: Dict[str, Dict[str, Any]] = {}
-_SALES_RESPONSE_TTL = 1
+_SALES_RESPONSE_TTL = 900  # 15 minutes TTL for mobile sales analytics responses
 
-def _fetch_fresh_master_lookups():
-    client = get_supabase()
-    companies_lookup: Dict[str, str] = {}
-    brands_lookup: Dict[str, Dict[str, Any]] = {}
-    hq_lookup: Dict[str, str] = {}
-    master_depots = {}
-    hq_name_lookup = {}
 
-    try:
-        rpc_res = client.rpc("get_master_lookups_json").execute()
-        master_json = rpc_res.data or {}
-        raw_companies = master_json.get("companies") or []
-        raw_brands = master_json.get("brands") or []
-        raw_hqs = master_json.get("headquarters") or []
-        raw_depots = master_json.get("depots") or []
-
-        for c in raw_companies:
-            if c.get("company_id") and c.get("company_name"):
-                companies_lookup[str(c["company_id"])] = c["company_name"]
-
-        for b in raw_brands:
-            if b.get("brand_id") and b.get("brand_name"):
-                brands_lookup[str(b["brand_id"])] = {
-                    "name": b["brand_name"],
-                    "company_id": str(b["company_id"]) if b.get("company_id") else None
-                }
-
-        for h in raw_hqs:
-            if h.get("headquarters_id") and h.get("name"):
-                hq_lookup[str(h["headquarters_id"])] = h["name"]
-
-        for d in raw_depots:
-            d_id = str(d.get("depot_id"))
-            d_name = d.get("name")
-            hq_id = str(d.get("headquarters_id") or "")
-            hq_name = hq_lookup.get(hq_id, "Unassigned")
-            hq_name_lookup[d_id] = hq_name
-            master_depots[d_id] = {
-                "id": d_id,
-                "name": d_name,
-                "hqName": hq_name,
-                "data": {
-                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                },
-                "brands_map": {}
-            }
-    except Exception as e_rpc:
-        logger.warning(f"Error fetching get_master_lookups_json RPC: {e_rpc}, falling back to table queries...")
-        try:
-            c_res = client.table("companies").select("company_id, company_name").execute()
-            for c in (c_res.data or []):
-                if c.get("company_id") and c.get("company_name"):
-                    companies_lookup[str(c["company_id"])] = c["company_name"]
-        except Exception as e_c:
-            logger.warning(f"Error fetching companies_lookup: {e_c}")
-
-        try:
-            b_res = client.table("brands").select("brand_id, brand_name, company_id").execute()
-            for b in (b_res.data or []):
-                if b.get("brand_id") and b.get("brand_name"):
-                    brands_lookup[str(b["brand_id"])] = {
-                        "name": b["brand_name"],
-                        "company_id": str(b["company_id"]) if b.get("company_id") else None
-                    }
-        except Exception as e_b:
-            logger.warning(f"Error fetching brands_lookup: {e_b}")
-
-        try:
-            h_res = client.table("headquarters").select("headquarters_id, name").execute()
-            for h in (h_res.data or []):
-                if h.get("headquarters_id") and h.get("name"):
-                    hq_lookup[str(h["headquarters_id"])] = h["name"]
-        except Exception as e_h:
-            logger.warning(f"Error fetching hq_lookup: {e_h}")
-
-        try:
-            d_res = client.table("depots").select("depot_id, name, headquarters_id").execute()
-            for d in (d_res.data or []):
-                d_id = str(d.get("depot_id"))
-                d_name = d.get("name")
-                hq_id = str(d.get("headquarters_id") or "")
-                hq_name = hq_lookup.get(hq_id, "Unassigned")
-                hq_name_lookup[d_id] = hq_name
-                master_depots[d_id] = {
-                    "id": d_id,
-                    "name": d_name,
-                    "hqName": hq_name,
-                    "data": {
-                        "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                        "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                        "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                    },
-                    "brands_map": {}
-                }
-        except Exception as e:
-            logger.warning(f"Error fetching master depots: {e}")
-
-    master_companies = {}
-    for c_id_raw, c_name in companies_lookup.items():
-        if not c_name or c_name == "Others":
-            continue
-        norm_name = normalize_company_name(c_name)
-        c_key = norm_name.lower().replace(" ", "-").replace("/", "-")
-        master_companies[c_key] = {
-            "id": c_key,
-            "company_id": str(c_id_raw),
-            "name": norm_name,
-            "isPinned": is_pinned_company(norm_name, c_key),
-            "hqLocation": "All Headquarters",
-            "data": {
-                "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-            },
-            "brands_map": {}
-        }
 def _fetch_single_tsm_lookup(user_id: str) -> Optional[Dict[str, Any]]:
     client = get_supabase()
     if not client or not user_id:
@@ -236,7 +120,7 @@ def _fetch_fresh_master_lookups():
 
     master_companies = {}
     for c_id_raw, c_name in companies_lookup.items():
-        if not c_name or c_name == "Others":
+        if not c_name or is_others_company(c_name):
             continue
         norm_name = normalize_company_name(c_name)
         c_key = norm_name.lower().replace(" ", "-").replace("/", "-")
@@ -292,26 +176,56 @@ def _fetch_fresh_master_lookups():
                 tsm_role_ids.append(str(r["role_id"]))
 
         if tsm_role_ids:
-            ur_res = client.table("user_roles").select("user_id").in_("role_id", tsm_role_ids).execute()
+            ur_res = client.table("user_roles").select("user_id").in_("role_id", tsm_role_ids).eq("is_active", True).execute()
             tsm_user_ids = [str(ur["user_id"]) for ur in (ur_res.data or []) if ur.get("user_id")]
             if tsm_user_ids:
-                u_res = client.table("users").select("user_id, first_name, last_name, email").in_("user_id", tsm_user_ids).execute()
+                u_res = client.table("users").select("user_id, first_name, last_name, email").in_("user_id", tsm_user_ids).eq("is_active", True).execute()
+                tsm_name_to_id = {}
                 for u in (u_res.data or []):
                     u_id = str(u["user_id"])
+                    email = str(u.get("email") or "").lower()
                     full_name = f"{u.get('first_name', '')} {u.get('last_name', '')}".strip() or "TSM Manager"
-                    master_tsms[u_id] = {
-                        "id": u_id,
-                        "name": full_name,
-                        "hqLocation": "All Headquarters",
-                        "depot_ids": set(),
-                        "data": {
-                            "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                            "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                            "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                        },
-                        "companies_map": {},
-                        "brands_map": {}
-                    }
+                    norm_name = full_name.lower().strip()
+
+                    # Deduplicate TSMs by normalized name so @rll.co.in and @rll.com don't produce duplicate cards
+                    if norm_name in tsm_name_to_id:
+                        primary_id = tsm_name_to_id[norm_name]
+                        if ".com" in email and ".co.in" not in email:
+                            old_obj = master_tsms.pop(primary_id, None)
+                            tsm_name_to_id[norm_name] = u_id
+                            existing_aliases = old_obj.get("alias_ids", set()) if old_obj else set()
+                            master_tsms[u_id] = {
+                                "id": u_id,
+                                "name": full_name,
+                                "hqLocation": "All Headquarters",
+                                "depot_ids": old_obj.get("depot_ids", set()) if old_obj else set(),
+                                "data": {
+                                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                                    "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                                    "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                                },
+                                "companies_map": {},
+                                "brands_map": {},
+                                "alias_ids": existing_aliases | {primary_id, u_id}
+                            }
+                        else:
+                            master_tsms[primary_id]["alias_ids"].add(u_id)
+                    else:
+                        tsm_name_to_id[norm_name] = u_id
+                        master_tsms[u_id] = {
+                            "id": u_id,
+                            "name": full_name,
+                            "hqLocation": "All Headquarters",
+                            "depot_ids": set(),
+                            "data": {
+                                "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                                "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                                "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                            },
+                            "companies_map": {},
+                            "brands_map": {},
+                            "alias_ids": {u_id}
+                        }
 
         ud_res = client.table("user_depot").select("user_id, depot_id").execute()
         for ud in (ud_res.data or []):
@@ -323,8 +237,13 @@ def _fetch_fresh_master_lookups():
 
         atm_res = client.table("ase_tsm_mapping").select("tsm_user_id, ase_user_id").execute()
         for atm in (atm_res.data or []):
-            tid = str(atm.get("tsm_user_id"))
+            raw_tid = str(atm.get("tsm_user_id"))
             aid = str(atm.get("ase_user_id"))
+            tid = raw_tid
+            for master_id, t_obj in master_tsms.items():
+                if raw_tid in t_obj.get("alias_ids", set()):
+                    tid = master_id
+                    break
             if tid not in tsm_ase_lookup:
                 tsm_ase_lookup[tid] = set()
             tsm_ase_lookup[tid].add(aid)
@@ -341,7 +260,8 @@ def _fetch_fresh_master_lookups():
                 logger.warning(f"Error fetching ASE names: {e}")
 
         for tid, t_obj in master_tsms.items():
-            t_obj["depot_ids"].update(user_depots_map.get(tid, set()))
+            for alias_id in t_obj.get("alias_ids", {tid}):
+                t_obj["depot_ids"].update(user_depots_map.get(alias_id, set()))
             ase_ids_for_tsm = tsm_ase_lookup.get(tid, set())
             t_obj["ase_ids"] = list(ase_ids_for_tsm)
             for aid in ase_ids_for_tsm:
@@ -352,6 +272,46 @@ def _fetch_fresh_master_lookups():
                 tsm_depot_lookup[did].add(tid)
     except Exception as e:
         logger.warning(f"Error fetching master TSMs: {e}")
+
+    # Build comprehensive user_alias_map for fallback matching
+    user_alias_map = {}
+    try:
+        all_u_res = client.table("users").select("user_id, first_name, last_name, email, is_active").execute()
+        all_users = all_u_res.data or []
+        active_users = [u for u in all_users if u.get("is_active")]
+
+        def _clean_str(s):
+            return "".join(c for c in str(s or "").lower() if c.isalnum())
+
+        def _first_word(s):
+            parts = str(s or "").strip().lower().replace(".", " ").replace("_", " ").split()
+            return _clean_str(parts[0]) if parts else ""
+
+        active_by_full = {_clean_str(f"{u.get('first_name','')} {u.get('last_name','')}"): str(u["user_id"]) for u in active_users}
+        active_by_first = {_first_word(u.get('first_name','')): str(u["user_id"]) for u in active_users if _first_word(u.get('first_name',''))}
+        active_by_prefix = {_first_word(str(u.get('email') or '').split('@')[0]): str(u["user_id"]) for u in active_users if _first_word(str(u.get('email') or '').split('@')[0])}
+
+        for u in all_users:
+            uid = str(u["user_id"])
+            if u.get("is_active"):
+                user_alias_map[uid] = uid
+            else:
+                fn = str(u.get("first_name") or "").strip()
+                ln = str(u.get("last_name") or "").strip()
+                full_name = f"{fn} {ln}".strip()
+                email = str(u.get("email") or "")
+                prefix = email.split("@")[0]
+
+                act_id = (
+                    active_by_full.get(_clean_str(full_name)) or
+                    active_by_prefix.get(_first_word(prefix)) or
+                    active_by_first.get(_first_word(fn)) or
+                    active_by_first.get(_first_word(full_name))
+                )
+                if act_id:
+                    user_alias_map[uid] = act_id
+    except Exception as e_alias:
+        logger.warning(f"Error building user_alias_map: {e_alias}")
 
     hq_name_to_id = {v.lower(): k for k, v in hq_lookup.items() if v}
 
@@ -366,7 +326,8 @@ def _fetch_fresh_master_lookups():
         "tsm_depot_lookup": tsm_depot_lookup,
         "user_depots_map": user_depots_map,
         "tsm_ase_lookup": tsm_ase_lookup,
-        "ase_names_lookup": ase_names_lookup
+        "ase_names_lookup": ase_names_lookup,
+        "user_alias_map": user_alias_map,
     }
 
 def get_cached_master_lookups():
@@ -1012,7 +973,9 @@ async def get_mobile_companies(
     user_company = current_user.get("company_name")
     effective_company = user_company if (user_company and user_role not in ["admin", "super_admin", "super admin"]) else None
 
-    redis_key = f"rll:mobile:companies:{clean_period}:{clean_hq}:{clean_date}:{effective_company or 'all'}"
+    from backend.services.tenant_service import get_include_others_setting_async
+    inc_others_str = "inc1" if await get_include_others_setting_async() else "inc0"
+    redis_key = f"rll:mobile:companies:{clean_period}:{clean_hq}:{clean_date}:{effective_company or 'all'}:{inc_others_str}"
     if not refresh:
         cached_payload = await get_json_cache(redis_key)
         if cached_payload is not None:
@@ -1135,7 +1098,9 @@ async def get_mobile_sales(
     else:
         selected_period = "Daily"
 
-    cache_key = f"{selected_period}:{selected_hq}:{date_from}:{date_to}:{user_role}:{user_id}:{test_limit or 'all'}"
+    from backend.services.tenant_service import get_include_others_setting_async
+    inc_others_str = "inc1" if await get_include_others_setting_async() else "inc0"
+    cache_key = f"{selected_period}:{selected_hq}:{date_from}:{date_to}:{user_role}:{user_id}:{test_limit or 'all'}:{inc_others_str}"
     
     # D. Sales response cache timing
     t_sales_cache_start = time.perf_counter()
@@ -1238,25 +1203,22 @@ async def get_mobile_sales(
     if user_role == "tsm":
         if user_id in master_tsms:
             allowed_depots.update(master_tsms[user_id]["depot_ids"])
-            master_tsms = {user_id: master_tsms[user_id]}
         else:
             single_tsm = _fetch_single_tsm_lookup(user_id)
             if single_tsm:
-                master_tsms = {user_id: single_tsm}
                 allowed_depots.update(single_tsm.get("depot_ids", set()))
-            else:
-                master_tsms = {}
     elif user_role == "ase":
         allowed_depots = set(user_depots_map.get(user_id, []))
-        master_tsms = {}
+
 
     latest_sale_date = None
     try:
-        max_res = client.table("dashboard_summary_daily").select("sale_date").order("sale_date", desc=True).limit(1).execute()
+        max_res = client.table("sales_daily_summary").select("sale_date").order("sale_date", desc=True).limit(1).execute()
         if max_res.data and max_res.data[0].get("sale_date"):
             latest_sale_date = max_res.data[0]["sale_date"]
     except Exception as e:
-        logger.warning(f"Error fetching latest sale date: {e}")
+        logger.warning(f"Error fetching latest sale date from sales_daily_summary: {e}")
+
 
     if not latest_sale_date:
         latest_sale_date = datetime.utcnow().strftime("%Y-%m-%d")
@@ -1320,9 +1282,11 @@ async def get_mobile_sales(
     # I. Python transformation timing
     t_transform_start = time.perf_counter()
 
+
+
     grouped_comp_rows = {}
     for cid_raw, cname_raw in companies_lookup.items():
-        if not cname_raw or cname_raw.lower() == "others":
+        if not cname_raw or is_others_company(cname_raw):
             continue
         norm_name = normalize_company_name(cname_raw)
         comp_id = norm_name.lower().replace(" ", "-").replace("/", "-")
@@ -1347,7 +1311,7 @@ async def get_mobile_sales(
     for row in company_records:
         cid = str(row.get("company_id") or "")
         cname = str(row.get("company_name") or "").strip()
-        if not cname or cname.lower() == "others":
+        if not cname or is_others_company(cname):
             continue
 
         norm_name = normalize_company_name(cname)
@@ -1555,17 +1519,33 @@ async def get_mobile_sales(
             db_map[brand_id]["data"][period_key]["bottles"] += metrics["bottles"]
             db_map[brand_id]["data"][period_key]["bl"] += metrics["bl"]
 
+    user_alias_map = master_cache.get("user_alias_map", {})
     member_to_tsms = {}
-    for tid in master_tsms.keys():
+    ase_assigned_tsm = {}
+
+    for tid, t_obj in master_tsms.items():
         if tid not in member_to_tsms:
             member_to_tsms[tid] = set()
         member_to_tsms[tid].add(tid)
+        
         for aid in tsm_ase_lookup.get(tid, set()):
             if aid == tid:
                 continue
-            if aid not in member_to_tsms:
-                member_to_tsms[aid] = set()
-            member_to_tsms[aid].add(tid)
+            # Enforce 1-to-1 ASE to TSM mapping so an ASE's sales are NEVER double-counted across multiple TSMs
+            if aid not in ase_assigned_tsm:
+                ase_assigned_tsm[aid] = tid
+                if aid not in member_to_tsms:
+                    member_to_tsms[aid] = set()
+                member_to_tsms[aid].add(tid)
+            else:
+                logger.warning(f"⚠️ [PERMANENT GUARDRAIL] ASE {aid} is mapped to multiple TSMs ({ase_assigned_tsm[aid]} vs {tid}). Retaining primary TSM {ase_assigned_tsm[aid]}.")
+
+    # Expand member_to_tsms to include all alias user_ids
+    for inactive_id, active_id in user_alias_map.items():
+        if active_id in member_to_tsms:
+            if inactive_id not in member_to_tsms:
+                member_to_tsms[inactive_id] = set()
+            member_to_tsms[inactive_id].update(member_to_tsms[active_id])
 
     all_known_ase_ids = {aid for aids in tsm_ase_lookup.values() for aid in aids}
     ase_sales = {
@@ -1591,11 +1571,12 @@ async def get_mobile_sales(
     for row in all_usf_records:
         c_id_raw = str(row.get("company_id") or "")
         comp_name = companies_lookup.get(c_id_raw)
-        if not comp_name:
+        if not comp_name or is_others_company(comp_name):
             continue
 
-        uid = str(row.get("user_id") or "")
-        target_tsm_ids = member_to_tsms.get(uid, set())
+        raw_uid = str(row.get("user_id") or "")
+        uid = user_alias_map.get(raw_uid, raw_uid)
+        target_tsm_ids = member_to_tsms.get(raw_uid) or member_to_tsms.get(uid, set())
         if not target_tsm_ids:
             continue
 
@@ -1712,7 +1693,12 @@ async def get_mobile_sales(
 
     formatted_companies = []
     for c_id, c_data in master_companies.items():
-        c_data["brands"] = list(c_data.pop("brands_map").values())
+        all_b = list(c_data.pop("brands_map", {}).values())
+        c_data["brands"] = [
+            b for b in all_b
+            if (b.get("data", {}).get(selected_period, {}).get("cases", 0) > 0 or
+                b.get("data", {}).get(selected_period, {}).get("bottles", 0) > 0)
+        ]
         if selected_hq != "All Headquarters" and c_data.get("hqLocation") and c_data["hqLocation"] != "All Headquarters":
             if c_data["hqLocation"].lower() != selected_hq.lower():
                 continue
@@ -1720,7 +1706,12 @@ async def get_mobile_sales(
 
     formatted_depots = []
     for d_id, d_data in master_depots.items():
-        d_data["brands"] = list(d_data.pop("brands_map").values())
+        all_b = list(d_data.pop("brands_map", {}).values())
+        d_data["brands"] = [
+            b for b in all_b
+            if (b.get("data", {}).get(selected_period, {}).get("cases", 0) > 0 or
+                b.get("data", {}).get(selected_period, {}).get("bottles", 0) > 0)
+        ]
         if selected_hq != "All Headquarters" and d_data.get("hqName"):
             if d_data["hqName"].lower() != selected_hq.lower():
                 continue
@@ -1730,7 +1721,13 @@ async def get_mobile_sales(
     for t_id, raw_t_data in master_tsms.items():
         t_data = dict(raw_t_data)
         t_data["companies"] = list(t_data.get("companies_map", {}).values())
-        t_data["brands"] = list(t_data.get("brands_map", {}).values())
+        all_tb = list(t_data.get("brands_map", {}).values())
+        t_data["brands"] = [
+            b for b in all_tb
+            if (b.get("data", {}).get(selected_period, {}).get("cases", 0) > 0 or
+                b.get("data", {}).get(selected_period, {}).get("bottles", 0) > 0)
+        ]
+
         t_data["companyCount"] = {
             "Daily": len(tsm_comp_sets.get(t_id, {}).get("Daily", set())),
             "MTD": len(tsm_comp_sets.get(t_id, {}).get("MTD", set())),
@@ -1738,6 +1735,7 @@ async def get_mobile_sales(
         }
         depot_ids_list = list(t_data.get("depot_ids", set()))
         t_data.pop("depot_ids", None)
+        t_data.pop("alias_ids", None)
         t_data.pop("companies_map", None)
         t_data.pop("brands_map", None)
 
@@ -1748,9 +1746,18 @@ async def get_mobile_sales(
                 assigned_hq_names.append(d_obj["hqName"])
 
         if assigned_hq_names:
-            t_data["hqLocation"] = assigned_hq_names[0]
+            from collections import Counter
+            hq_counts = Counter(assigned_hq_names)
+            t_data["hqLocation"] = hq_counts.most_common(1)[0][0]
         else:
             t_data["hqLocation"] = "All Headquarters"
+
+        if selected_hq and selected_hq != "All Headquarters":
+            clean_sel_hq = selected_hq.strip().lower()
+            matches_hq = any(hq.strip().lower() == clean_sel_hq for hq in assigned_hq_names)
+            if not matches_hq and len(assigned_hq_names) > 0:
+                continue
+            t_data["hqLocation"] = selected_hq
 
         raw_ase_ids = t_data.pop("ase_ids", [])
         t_data["ases"] = [
@@ -1773,10 +1780,17 @@ async def get_mobile_sales(
             for aid in raw_ase_ids
         ]
 
-        if selected_hq != "All Headquarters":
-            matches_hq = any(hq.lower() == selected_hq.lower() for hq in assigned_hq_names)
-            if not matches_hq:
+        if selected_hq and selected_hq != "All Headquarters":
+            clean_sel_hq = selected_hq.strip().lower()
+            matches_hq = any(hq.strip().lower() == clean_sel_hq for hq in assigned_hq_names) or (t_data.get("hqLocation") and clean_sel_hq in t_data["hqLocation"].strip().lower())
+            if not matches_hq and len(assigned_hq_names) > 0:
                 continue
+
+        # Filter out TSM cards with 0 cases and 0 bottles for the active period
+        tsm_period_cases = t_data.get("data", {}).get(selected_period, {}).get("cases", 0)
+        tsm_period_bottles = t_data.get("data", {}).get(selected_period, {}).get("bottles", 0)
+        if tsm_period_cases == 0 and tsm_period_bottles == 0:
+            continue
 
         formatted_tsms.append(t_data)
 

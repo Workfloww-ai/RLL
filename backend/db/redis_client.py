@@ -46,7 +46,16 @@ async def init_redis() -> Optional[aioredis.Redis]:
             # Ping Redis to verify connection health
             await _redis_client.ping()
             logger.info("Successfully connected to Redis Cloud server.")
+            
+            # Flush existing stale uncompressed cache keys on startup as requested
+            try:
+                await _redis_client.flushdb(asynchronous=True)
+                logger.info("🧹 Flushed all legacy Redis cache keys on server startup.")
+            except Exception as e_flush:
+                logger.warning(f"Flush Redis on startup notice: {e_flush}")
+                
             return _redis_client
+
             
     except (RedisError, ConnectionError, TimeoutError, OSError) as e:
         logger.warning(

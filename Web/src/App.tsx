@@ -101,12 +101,14 @@ export default function App() {
             setUserName(displayName);
             setIsAuthenticated(true);
             localStorage.setItem('user_name', displayName);
+            localStorage.setItem('user', JSON.stringify(data.user));
           }
         } else if (res.status === 401) {
           setIsAuthenticated(false);
           setUserName(null);
           localStorage.removeItem('token');
           localStorage.removeItem('user_name');
+          localStorage.removeItem('user');
         }
       } catch (err) {
         console.debug('Session verification notice:', err);
@@ -128,18 +130,24 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 1500);
       await fetch(`${API_BASE_URL}/auth/logout`, {
         method: 'POST',
         credentials: 'include',
-      });
+        signal: controller.signal
+      }).catch(() => {});
+      clearTimeout(timeoutId);
     } catch (e) {
-      console.error('Logout error:', e);
+      console.error('Logout notice:', e);
+    } finally {
+      setIsAuthenticated(false);
+      setUserName(null);
+      localStorage.removeItem('token');
+      localStorage.removeItem('user_name');
+      localStorage.removeItem('user');
+      localStorage.removeItem('current_view');
     }
-    setIsAuthenticated(false);
-    setUserName(null);
-    localStorage.removeItem('token');
-    localStorage.removeItem('user_name');
-    localStorage.removeItem('current_view');
   };
 
   if (!isAuthenticated) {

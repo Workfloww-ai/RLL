@@ -14,11 +14,15 @@ from backend.db.supabase_client import (
 logger = logging.getLogger(__name__)
 
 def is_others_company(company_name: Optional[str]) -> bool:
-    """Helper to check if company name matches 'Others' exclusion criteria."""
+    """Helper to check if company name matches 'Others' exclusion criteria when inclusion toggle is OFF."""
+    from backend.services.tenant_service import get_include_others_setting_sync
+    if get_include_others_setting_sync():
+        return False
     if not company_name:
         return False
     name = company_name.strip().lower()
-    return name == "others" or name == "others company" or name.startswith("others ")
+    return name in ("others", "other", "others company", "other company") or name.startswith("others ") or name.startswith("other ")
+
 
 
 def get_company_brands_sales_service(

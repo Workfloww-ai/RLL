@@ -27,9 +27,8 @@ class IncrementalAnalyticsEngine:
             return True
 
         batch_id_str = str(batch_id).strip()
-        # Schema guard: Ensure batch_id is valid 36-char UUID format before querying PostgreSQL UUID column
-        if len(batch_id_str) != 36 and "-" not in batch_id_str:
-            logger.info(f"[ANALYTICS] Non-UUID batch_id '{batch_id_str}' passed; skipping live DB deletion.")
+        if not batch_id_str:
+            logger.info("[ANALYTICS] Empty batch_id passed; skipping live DB deletion.")
             return True
 
         try:
