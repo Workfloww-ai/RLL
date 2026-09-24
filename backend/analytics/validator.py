@@ -17,14 +17,21 @@ class AnalyticsValidator:
     """
 
     def _get_others_company_id(self, client) -> Optional[str]:
-        """Resolves company_id for 'Others' company to ensure strict exclusion per Rule #7."""
+        """Resolves company_id for 'Others'/'Other' company when inclusion toggle is OFF."""
+        from backend.services.tenant_service import get_include_others_setting_sync
+        if get_include_others_setting_sync():
+            return None
         try:
-            res = client.table("companies").select("company_id").ilike("company_name", "others").limit(1).execute()
+            res = client.table("companies").select("company_id, company_name").execute()
             if res.data:
-                return res.data[0]["company_id"]
+                for c in res.data:
+                    cname = (c.get("company_name") or "").strip().lower()
+                    if cname in ("others", "other"):
+                        return str(c["company_id"])
         except Exception:
             pass
         return None
+
 
     def _fetch_all_daily_summary_rows(self, client, target_date: str, hq_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Paginated fetcher for sales_daily_summary excluding company 'Others'."""

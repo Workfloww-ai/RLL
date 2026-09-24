@@ -693,14 +693,16 @@ def fetch_cascading_groups_db(date_from: str, date_to: str) -> List[Dict[str, An
                 break
             g_offset += 1000
 
-        # 2. Exclude company Others brands
-        b_res = client.table("brands").select("brand_id, company_id, companies!inner(company_name)").execute()
+        # 2. Exclude company Others/Other brands ONLY if toggle is OFF
         excluded_brand_ids = set()
-        for b in (b_res.data or []):
-            comp_obj = b.get("companies") or {}
-            cname = comp_obj.get("company_name", "") if isinstance(comp_obj, dict) else ""
-            if cname and cname.lower().strip() == "others":
-                excluded_brand_ids.add(str(b["brand_id"]))
+        from backend.services.tenant_service import get_include_others_setting_sync
+        if not get_include_others_setting_sync():
+            b_res = client.table("brands").select("brand_id, company_id, companies!inner(company_name)").execute()
+            for b in (b_res.data or []):
+                comp_obj = b.get("companies") or {}
+                cname = comp_obj.get("company_name", "") if isinstance(comp_obj, dict) else ""
+                if cname and cname.lower().strip() in ("others", "other"):
+                    excluded_brand_ids.add(str(b["brand_id"]))
 
         # 3. Query sales_daily_summary for target_date with range pagination
         daily_groups: Dict[str, Dict[str, float]] = {}
@@ -791,11 +793,12 @@ def fetch_group_licensees_db(
 
         b_res = client.table("brands").select("brand_id, companies!inner(company_name)").execute()
         excluded_brand_ids = set()
-        for b in (b_res.data or []):
-            comp_obj = b.get("companies") or {}
-            cname = comp_obj.get("company_name", "") if isinstance(comp_obj, dict) else ""
-            if cname and cname.lower().strip() == "others":
-                excluded_brand_ids.add(str(b["brand_id"]))
+        if not get_include_others_setting_sync():
+            for b in (b_res.data or []):
+                comp_obj = b.get("companies") or {}
+                cname = comp_obj.get("company_name", "") if isinstance(comp_obj, dict) else ""
+                if cname and cname.lower().strip() in ("others", "other"):
+                    excluded_brand_ids.add(str(b["brand_id"]))
 
         res = client.table("licensees").select("licensee_id, licensee_name, trade, depot_id, depots(name)").eq("group_id", group_id).eq("is_active", True).execute()
         lic_map = {}
@@ -893,8 +896,9 @@ def fetch_licensee_brand_sales_db(
             brand_obj = sms.get("brands") or {}
             comp_obj = brand_obj.get("companies") if isinstance(brand_obj, dict) else {}
             cname = comp_obj.get("company_name", "") if isinstance(comp_obj, dict) else ""
-            if cname and cname.lower().strip() == "others":
-                continue
+            if not get_include_others_setting_sync():
+                if cname and cname.lower().strip() in ("others", "other"):
+                    continue
 
             bid = str(brand_obj.get("brand_id") or sms.get("brand_id"))
             bname = brand_obj.get("brand_name") or "Unknown Brand"

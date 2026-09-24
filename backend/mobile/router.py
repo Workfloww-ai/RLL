@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from backend.core.security import create_access_token, get_current_user, RoleChecker
 from backend.db.client import get_supabase
 from backend.db.company_aliases import normalize_company_name, is_pinned_company
+from backend.services.company_cascading_service import is_others_company
 from backend.db.supabase_client import (
     call_mobile_sales_rpc,
     call_mobile_tsm_sales_rpc,
@@ -119,7 +120,7 @@ def _fetch_fresh_master_lookups():
 
     master_companies = {}
     for c_id_raw, c_name in companies_lookup.items():
-        if not c_name or c_name == "Others":
+        if not c_name or is_others_company(c_name):
             continue
         norm_name = normalize_company_name(c_name)
         c_key = norm_name.lower().replace(" ", "-").replace("/", "-")
@@ -972,7 +973,9 @@ async def get_mobile_companies(
     user_company = current_user.get("company_name")
     effective_company = user_company if (user_company and user_role not in ["admin", "super_admin", "super admin"]) else None
 
-    redis_key = f"rll:mobile:companies:{clean_period}:{clean_hq}:{clean_date}:{effective_company or 'all'}"
+    from backend.services.tenant_service import get_include_others_setting_async
+    inc_others_str = "inc1" if await get_include_others_setting_async() else "inc0"
+    redis_key = f"rll:mobile:companies:{clean_period}:{clean_hq}:{clean_date}:{effective_company or 'all'}:{inc_others_str}"
     if not refresh:
         cached_payload = await get_json_cache(redis_key)
         if cached_payload is not None:
@@ -1095,7 +1098,9 @@ async def get_mobile_sales(
     else:
         selected_period = "Daily"
 
-    cache_key = f"{selected_period}:{selected_hq}:{date_from}:{date_to}:{user_role}:{user_id}:{test_limit or 'all'}"
+    from backend.services.tenant_service import get_include_others_setting_async
+    inc_others_str = "inc1" if await get_include_others_setting_async() else "inc0"
+    cache_key = f"{selected_period}:{selected_hq}:{date_from}:{date_to}:{user_role}:{user_id}:{test_limit or 'all'}:{inc_others_str}"
     
     # D. Sales response cache timing
     t_sales_cache_start = time.perf_counter()
@@ -1281,7 +1286,7 @@ async def get_mobile_sales(
 
     grouped_comp_rows = {}
     for cid_raw, cname_raw in companies_lookup.items():
-        if not cname_raw or cname_raw.lower() == "others":
+        if not cname_raw or is_others_company(cname_raw):
             continue
         norm_name = normalize_company_name(cname_raw)
         comp_id = norm_name.lower().replace(" ", "-").replace("/", "-")
@@ -1306,7 +1311,7 @@ async def get_mobile_sales(
     for row in company_records:
         cid = str(row.get("company_id") or "")
         cname = str(row.get("company_name") or "").strip()
-        if not cname or cname.lower() == "others":
+        if not cname or is_others_company(cname):
             continue
 
         norm_name = normalize_company_name(cname)
@@ -1566,7 +1571,7 @@ async def get_mobile_sales(
     for row in all_usf_records:
         c_id_raw = str(row.get("company_id") or "")
         comp_name = companies_lookup.get(c_id_raw)
-        if not comp_name or comp_name.strip().lower() == "others":
+        if not comp_name or is_others_company(comp_name):
             continue
 
         raw_uid = str(row.get("user_id") or "")

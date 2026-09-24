@@ -2,9 +2,11 @@ import logging
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from backend.db.supabase_client import get_supabase_client
+from backend.services.company_cascading_service import is_others_company
 from backend.db.company_aliases import normalize_company_name, is_pinned_company
 
 logger = logging.getLogger(__name__)
+
 
 def get_companies_summary(
     period: str = "Daily",
@@ -86,7 +88,7 @@ def get_companies_summary(
         for mc in (mc_res.data or []):
             cid = str(mc.get("company_id") or "")
             cname = str(mc.get("company_name") or "").strip()
-            if not cname or cname.lower() == "others":
+            if not cname or is_others_company(cname):
                 continue
             if company_name and cname.lower() != company_name.strip().lower():
                 continue
@@ -117,7 +119,7 @@ def get_companies_summary(
     for row in comp_summary_data:
         cid = str(row.get("company_id") or "")
         cname = str(row.get("company_name") or "").strip()
-        if not cname or cname.lower() == "others":
+        if not cname or is_others_company(cname):
             continue
 
         norm_name = normalize_company_name(cname)

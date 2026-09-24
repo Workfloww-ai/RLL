@@ -327,14 +327,6 @@ export function CompanyCascadingView({
   const filteredAndSortedList = useMemo(() => {
     let result = [...activeRawList];
 
-    // Filter out "Others" company (AGENTS.md Rule 7 & BUSINESS_LOGIC_SPEC.md Section 4)
-    if (level === 1) {
-      result = result.filter(c => {
-        const name = (c.name || '').trim().toLowerCase();
-        return name !== 'others' && name !== 'others company' && !name.startsWith('others ');
-      });
-    }
-
     // Search query filter
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();

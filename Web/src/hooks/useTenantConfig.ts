@@ -20,7 +20,7 @@ const defaultTenantConfig: TenantConfig = {
   faviconUrl: '',
   splashScreenUrl: '',
   pinnedCompanyName: 'Rajasthan Liquor Limited',
-  excludedCompanies: ['Others'],
+  excludedCompanies: [],
 };
 
 export function useTenantConfig() {
@@ -47,7 +47,7 @@ export function useTenantConfig() {
               faviconUrl: data.favicon_url || '',
               splashScreenUrl: data.splash_screen_url || '',
               pinnedCompanyName: data.pinned_company_name || '',
-              excludedCompanies: data.excluded_companies || ['Others'],
+              excludedCompanies: Array.isArray(data.excluded_companies) ? data.excluded_companies : [],
             });
 
             // Dynamically update document title and favicon if provided

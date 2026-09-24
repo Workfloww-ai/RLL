@@ -21,7 +21,7 @@ const defaultTenantConfig: TenantConfig = {
   faviconUrl: '',
   splashScreenUrl: '',
   pinnedCompanyName: 'Rajasthan Liquor Limited',
-  excludedCompanies: ['Others'],
+  excludedCompanies: [],
 };
 
 function getInitialTenantConfig(): TenantConfig {
@@ -119,7 +119,7 @@ export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             faviconUrl: data.favicon_url || '',
             splashScreenUrl: data.splash_screen_url || '',
             pinnedCompanyName: data.pinned_company_name || (prev.pinnedCompanyName !== defaultTenantConfig.pinnedCompanyName ? prev.pinnedCompanyName : 'Rajasthan Liquor Limited'),
-            excludedCompanies: data.excluded_companies || ['Others'],
+            excludedCompanies: Array.isArray(data.excluded_companies) ? data.excluded_companies : [],
           };
           FastStorage.setObject('rll_tenant_config', nextConfig);
           return nextConfig;

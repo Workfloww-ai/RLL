@@ -84,6 +84,9 @@ export default function Login({ onLogin }: LoginProps) {
           localStorage.removeItem('rll_remembered_email');
         }
         localStorage.setItem('token', data.access_token);
+        if (data.user) {
+          localStorage.setItem('user', JSON.stringify(data.user));
+        }
         const displayName = data.user?.first_name 
           ? `${data.user.first_name} ${data.user.last_name || ''}`.trim() 
           : (data.user?.name || fallbackName);

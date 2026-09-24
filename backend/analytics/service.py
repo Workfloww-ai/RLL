@@ -304,8 +304,9 @@ class AnalyticsService:
             c_id = b_meta["company_id"] or 1
             c_name = company_name_lookup.get(c_id, "Others")
 
-            # EXCLUDE 'Others' company (ID 1) as requested
-            if c_id == 1 or c_name.strip().lower() == 'others':
+            # Filter 'Others' company based on include_others_in_sales setting
+            from backend.services.company_cascading_service import is_others_company
+            if is_others_company(c_name):
                 continue
 
             brand_item = {

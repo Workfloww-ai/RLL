@@ -103,6 +103,27 @@ async def invalidate_analytics_cache() -> int:
     return total_purged
 
 
+async def invalidate_others_toggle_cache() -> int:
+    """
+    Purges system settings dict cache and all analytics/mobile sales caches when include_others_in_sales setting changes,
+    then triggers cache egress re-warming.
+    """
+    await safe_delete("rll:cache:system_settings_dict")
+    await safe_delete("rll:setting:include_others_in_sales")
+    try:
+        from backend.services.tenant_service import clear_tenant_cache
+        clear_tenant_cache()
+    except Exception as e:
+        logger.debug(f"Notice clearing tenant cache: {e}")
+    total_purged = await invalidate_analytics_cache()
+    try:
+        await prewarm_cache_egress()
+    except Exception as e:
+        logger.warning(f"Notice pre-warming cache after toggle change: {e}")
+    return total_purged
+
+
+
 def invalidate_analytics_cache_sync() -> int:
     """Synchronous wrapper for invalidate_analytics_cache to use in background sync tasks."""
     try:
