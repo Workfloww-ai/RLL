@@ -187,17 +187,21 @@ class UserService:
             return self.in_memory_users
 
     def _resolve_role_id(self, client: Any, role_name: str) -> Optional[str]:
-        """Resolve role_id (UUID) from public.roles with intelligent alias mapping."""
+        """
+        Resolve role_id (UUID) from public.roles with explicit role equivalences:
+        - TSM == ASM (Territory Sales Manager == Area Sales Manager)
+        - LEADER == TEAM LEADER (Leader == Team Leader)
+        """
         if not role_name:
             role_name = "ASE"
 
         clean_role = role_name.strip().lower()
 
-        # Map common designation aliases to core database roles
+        # Explicit role equivalences: TSM == ASM, LEADER == TEAM LEADER
         mapped_target = "ASE"
         if any(k in clean_role for k in ["admin", "super"]):
             mapped_target = "ADMIN"
-        elif any(k in clean_role for k in ["leader", "lead", "director", "head", "state"]):
+        elif any(k in clean_role for k in ["team leader", "team_leader", "leader", "lead", "director", "head", "state"]):
             mapped_target = "LEADER"
         elif any(k in clean_role for k in ["tsm", "asm", "territory sales manager", "area sales manager", "manager"]):
             mapped_target = "TSM"
@@ -271,7 +275,7 @@ class UserService:
         if not reporting_manager or reporting_manager.strip().lower() in ("unassigned", "none", "", "null", "nan"):
             return None
 
-        mgr_clean = reporting_manager.strip()
+        mgr_clean = re.sub(r'\s+', ' ', reporting_manager.strip())
 
         # 1. Check if valid UUID string
         try:
@@ -290,19 +294,33 @@ class UserService:
         except Exception:
             pass
 
-        # 3. Check by name (First/Last or First name)
+        # 3. Check by full name matching across users in DB
         try:
-            parts = mgr_clean.split()
-            first = parts[0]
-            if len(parts) > 1:
-                last = parts[1]
-                res = client.table("users").select("user_id").ilike("first_name", first).ilike("last_name", last).limit(1).execute()
-                if res.data:
-                    return str(res.data[0]["user_id"])
+            res = client.table("users").select("user_id, first_name, last_name").execute()
+            users_db = res.data or []
+            mgr_norm = mgr_clean.lower()
 
-            res = client.table("users").select("user_id").ilike("first_name", first).limit(1).execute()
-            if res.data:
-                return str(res.data[0]["user_id"])
+            # 3a. Exact full name match (normalized whitespace)
+            for u in users_db:
+                full_n = f"{u.get('first_name', '')} {u.get('last_name', '')}".strip()
+                full_n_clean = re.sub(r'\s+', ' ', full_n).lower()
+                if full_n_clean == mgr_norm:
+                    return str(u["user_id"])
+
+            # 3b. Partial/Prefix name match (e.g., 'Manish Kumar' -> 'Manish Kumar Tailor')
+            for u in users_db:
+                full_n = f"{u.get('first_name', '')} {u.get('last_name', '')}".strip()
+                full_n_clean = re.sub(r'\s+', ' ', full_n).lower()
+                if mgr_norm in full_n_clean or full_n_clean in mgr_norm:
+                    return str(u["user_id"])
+
+            # 3c. First name or Last name substring match
+            for u in users_db:
+                fn = str(u.get("first_name", "")).strip().lower()
+                ln = str(u.get("last_name", "")).strip().lower()
+                if mgr_norm in fn or mgr_norm in ln:
+                    return str(u["user_id"])
+
         except Exception as e:
             logger.warning(f"Failed to resolve manager '{mgr_clean}': {e}")
 
@@ -716,9 +734,13 @@ class UserService:
             if not fn and full_name_col and pd.notna(row[full_name_col]):
                 raw_name = str(row[full_name_col]).strip()
                 if raw_name and raw_name.lower() not in ("nan", "none", "null", ""):
+                    raw_name = re.sub(r'\s+', ' ', raw_name)
                     parts = raw_name.split(" ", 1)
                     fn = parts[0]
                     ln = parts[1] if len(parts) > 1 else ""
+
+            fn = re.sub(r'\s+', ' ', fn)
+            ln = re.sub(r'\s+', ' ', ln)
 
             if not fn or fn.lower() in ("nan", "none", "null", ""):
                 logger.warning("Excel roster row skipped: First Name is mandatory.")

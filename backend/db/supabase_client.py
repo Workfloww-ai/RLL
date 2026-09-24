@@ -192,27 +192,165 @@ def log_pipeline_step(batch_id: int, step: str, status: str, message: Optional[s
         }).execute()
     except Exception as e:
         logger.warning(f"log_pipeline_step error for batch_id={batch_id}: {e}")
-def log_validation_errors(errors: List[Dict[str, Any]]):
-    """Bulk-inserts validation errors in batches of 500."""
+def log_validation_errors(errors: List[Dict[str, Any]], max_samples_per_pattern: int = 5, max_total_db_records: int = 100):
+    """
+    Intelligently deduplicates repetitive validation errors before database insertion.
+    - Groups errors by unique issue pattern (error_code + column + entity + actual_value).
+    - Tracks total affected row count for each pattern.
+    - Stores up to max_samples_per_pattern representative sample rows per unique pattern for detailed UI inspection.
+    - Caps total inserted DB records to max_total_db_records (preventing DB table spamming & slow HTTP chunking).
+    """
     if not errors:
         return
     client = get_supabase_client()
     if not client:
         logger.info(f"[Mock] log_validation_errors count={len(errors)}")
         return
+
+    import uuid
+
+    # Step 1: Group raw errors by pattern key
+    grouped_patterns: Dict[str, Dict[str, Any]] = {}
+    pattern_order = []
+
+    for err in errors:
+        b_id = err.get("upload_batch_id") or err.get("batch_id")
+        col_name = err.get("field_name") or err.get("column_name") or "General"
+        err_code = err.get("error_code") or "VALIDATION_ERROR"
+        act_val = str(err.get("actual_value") or "").strip()
+        exp_val = str(err.get("expected_value") or "").strip()
+        entity = err.get("ase") or err.get("asm_tsm") or err.get("licensee") or err.get("depot") or err.get("brand") or err.get("hq") or err.get("company") or act_val or "General"
+
+        pattern_key = f"{err_code}|{col_name}|{entity}|{act_val}"
+
+        if pattern_key not in grouped_patterns:
+            pattern_order.append(pattern_key)
+            grouped_patterns[pattern_key] = {
+                "pattern_key": pattern_key,
+                "error_code": err_code,
+                "field_name": col_name,
+                "column_name": col_name,
+                "actual_value": act_val,
+                "expected_value": exp_val,
+                "sample_errors": [],
+                "affected_rows": [],
+                "total_count": 0,
+                "template_err": err
+            }
+
+        group = grouped_patterns[pattern_key]
+        group["total_count"] += 1
+        row_n = err.get("excel_row_number") or err.get("row_number")
+        if row_n and len(group["affected_rows"]) < 20:
+            group["affected_rows"].append(row_n)
+
+        if len(group["sample_errors"]) < max_samples_per_pattern:
+            group["sample_errors"].append(err)
+
+    # Step 2: Build deduplicated error records for error_logs
+    deduped_error_log_records = []
+    deduped_legacy_records = []
+
+    for key in pattern_order:
+        group = grouped_patterns[key]
+        tot_cnt = group["total_count"]
+        samples = group["sample_errors"]
+        tmpl = group["template_err"]
+
+        b_id = tmpl.get("upload_batch_id") or tmpl.get("batch_id")
+        col_name = tmpl.get("field_name") or tmpl.get("column_name")
+        err_msg = tmpl.get("error_message") or "Validation error"
+
+        for sample in samples:
+            if len(deduped_error_log_records) >= max_total_db_records:
+                break
+
+            s_row = sample.get("excel_row_number") or sample.get("row_number")
+            s_msg = sample.get("error_message") or err_msg
+
+            ctx = {
+                "upload_batch_id": str(b_id) if b_id else None,
+                "filename": sample.get("filename") or tmpl.get("filename"),
+                "excel_row_number": s_row,
+                "error_code": sample.get("error_code") or group["error_code"],
+                "severity": sample.get("severity") or tmpl.get("severity") or "CRITICAL",
+                "field_name": col_name,
+                "column_name": col_name,
+                "actual_value": sample.get("actual_value") if sample.get("actual_value") is not None else group["actual_value"],
+                "expected_value": sample.get("expected_value") if sample.get("expected_value") is not None else group["expected_value"],
+                "ase": sample.get("ase") or tmpl.get("ase"),
+                "asm_tsm": sample.get("asm_tsm") or tmpl.get("asm_tsm"),
+                "approved_asm_tsm": sample.get("approved_asm_tsm") or tmpl.get("approved_asm_tsm"),
+                "hq": sample.get("hq") or tmpl.get("hq"),
+                "depot": sample.get("depot") or tmpl.get("depot"),
+                "licensee": sample.get("licensee") or tmpl.get("licensee"),
+                "company": sample.get("company") or tmpl.get("company"),
+                "brand": sample.get("brand") or tmpl.get("brand"),
+                "error_message": s_msg,
+                "resolution": sample.get("resolution") or tmpl.get("resolution") or tmpl.get("suggested_action"),
+                "total_pattern_affected_count": tot_cnt,
+            }
+
+            deduped_error_log_records.append({
+                "source": "VALIDATION_ERROR",
+                "error_message": s_msg,
+                "context": ctx
+            })
+
+            rec_leg = {
+                "batch_id": str(b_id or "").strip() or None,
+                "column_name": col_name,
+                "error_message": s_msg
+            }
+            raw_val = sample.get("raw_id")
+            if raw_val:
+                try:
+                    uuid.UUID(str(raw_val).strip())
+                    rec_leg["raw_id"] = str(raw_val).strip()
+                except Exception:
+                    pass
+            deduped_legacy_records.append(rec_leg)
+
+        if len(deduped_error_log_records) >= max_total_db_records:
+            break
+
+    # Step 3: Insert deduplicated records into error_logs in 1 fast batch call
     try:
-        for i in range(0, len(errors), 500):
-            client.table("upload_validation_errors").insert(errors[i:i + 500]).execute()
-    except Exception as e:
-        logger.error(f"log_validation_errors error: {e}")
+        if deduped_error_log_records:
+            client.table("error_logs").insert(deduped_error_log_records).execute()
+            logger.info(f"log_validation_errors deduplicated {len(errors)} raw error(s) into {len(deduped_error_log_records)} DB log record(s) across {len(grouped_patterns)} distinct issue pattern(s).")
+    except Exception as e_el:
+        logger.error(f"Failed to insert deduplicated validation errors into error_logs: {e_el}")
+
+    try:
+        if deduped_legacy_records:
+            client.table("upload_validation_errors").insert(deduped_legacy_records).execute()
+    except Exception as e_leg:
+        logger.warning(f"Notice inserting upload_validation_errors: {e_leg}")
 
 def log_upload_validation_error(batch_id: Optional[str], error_message: str, column_name: Optional[str] = None, raw_id: Optional[Any] = None) -> bool:
-    """Inserts a single validation error record into upload_validation_errors reliably."""
+    """Inserts a single validation error record into error_logs and upload_validation_errors reliably."""
     client = get_supabase_client()
     if not client:
         logger.info(f"[Mock Validation Error] batch_id={batch_id}, column={column_name}, msg={error_message}")
         return True
     try:
+        b_uuid = str(batch_id).strip() if batch_id else None
+        try:
+            client.table("error_logs").insert({
+                "source": "VALIDATION_ERROR",
+                "error_message": error_message,
+                "context": {
+                    "upload_batch_id": b_uuid,
+                    "column_name": column_name,
+                    "field_name": column_name,
+                    "error_message": error_message,
+                    "severity": "CRITICAL"
+                }
+            }).execute()
+        except Exception as e_el:
+            logger.warning(f"log_upload_validation_error failed to insert into error_logs: {e_el}")
+
         raw_uuid = None
         if raw_id is not None:
             raw_str = str(raw_id).strip()
@@ -223,8 +361,6 @@ def log_upload_validation_error(batch_id: Optional[str], error_message: str, col
             except Exception:
                 if not error_message.startswith("[Row "):
                     error_message = f"[Row #{raw_str}] {error_message}"
-
-        b_uuid = str(batch_id).strip() if batch_id else None
 
         data = {
             "batch_id": b_uuid,

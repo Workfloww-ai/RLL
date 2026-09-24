@@ -27,13 +27,13 @@ def sync_headcount_master():
     role_id_map = {r["role_name"].upper(): str(r["role_id"]) for r in (roles_res.data or []) if r.get("role_id")}
     logger.info(f"Roles in Database: {role_id_map}")
 
-    # Map Excel roles to DB core roles
-    # Excel roles: Admin -> ADMIN, Team Leader -> LEADER, ASM / TSM -> TSM, ASE -> ASE
+    # Map Excel roles to DB core roles with explicit equivalences:
+    # TSM == ASM, LEADER == TEAM LEADER
     def resolve_role_name(excel_role: str) -> str:
         r = str(excel_role or "").strip().lower()
-        if "admin" in r:
+        if "admin" in r or "developer" in r:
             return "ADMIN"
-        elif "leader" in r or "lead" in r:
+        elif "leader" in r or "team leader" in r or "team_leader" in r or "lead" in r:
             return "LEADER"
         elif "tsm" in r or "asm" in r or "manager" in r:
             return "TSM"

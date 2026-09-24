@@ -3,4 +3,5 @@ REQUIRED_HEADERS = {
     "LICENSEE_NAME",
     "TRADE",
     "GROUP NAME",
+    "CASE",
 }
