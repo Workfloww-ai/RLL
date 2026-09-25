@@ -160,13 +160,13 @@ class IncrementalAnalyticsEngine:
         # Ensure that every single date in sorted_dates has rows in sales_daily_summary
         for s_date in sorted_dates:
             try:
-                check_res = client.table("sales_daily_summary").select("sale_date", count="exact").eq("sale_date", s_date).limit(1).execute()
-                if (check_res.count or 0) == 0:
+                check_res = client.table("sales_daily_summary").select("sale_date").eq("sale_date", s_date).limit(1).execute()
+                if not check_res.data:
                     logger.error(f"[ANALYTICS] CRITICAL: Date {s_date} has 0 rows in sales_daily_summary! Attempting recovery...")
                     client.rpc("refresh_sales_daily_summary_for_date", {"p_sale_date": s_date}).execute()
-                    check_again = client.table("sales_daily_summary").select("sale_date", count="exact").eq("sale_date", s_date).limit(1).execute()
-                    if (check_again.count or 0) > 0:
-                        logger.info(f"[ANALYTICS] Successfully recovered sales_daily_summary for {s_date} ({check_again.count} rows).")
+                    check_again = client.table("sales_daily_summary").select("sale_date").eq("sale_date", s_date).limit(1).execute()
+                    if check_again.data:
+                        logger.info(f"[ANALYTICS] Successfully recovered sales_daily_summary for {s_date}.")
                     else:
                         logger.error(f"[ANALYTICS] Recovery failed for {s_date}! Summary data is missing.")
                         success = False

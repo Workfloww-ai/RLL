@@ -420,16 +420,43 @@ export default function UploadErrorViewer({ initialBatchId, refreshTrigger = 0, 
             </button>
           </div>
         ) : totalErrors === 0 ? (
-          /* Healthy / Zero Error State */
-          <div className="py-12 px-6 rounded-2xl bg-emerald-50/50 border border-emerald-200/80 flex flex-col items-center justify-center text-center">
-            <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mb-3 shadow-2xs">
-              <CheckCircle className="w-6 h-6" />
-            </div>
-            <h3 className="text-sm font-bold text-emerald-950">Zero Ingestion Errors</h3>
-            <p className="text-xs text-emerald-700 mt-1 max-w-md font-medium">
-              All records for the selected batch have been validated and inserted with 100% data integrity.
-            </p>
-          </div>
+          /* Healthy / Zero Error State or Interrupted Batch State */
+          (() => {
+            const currentBatchObj = availableBatches.find(b => String(b.batch_id) === String(selectedBatch));
+            const isSelectedBatchFailed = currentBatchObj && ['failed', 'interrupted', 'error'].includes((currentBatchObj.status || '').toLowerCase());
+            
+            if (isSelectedBatchFailed) {
+              return (
+                <div className="py-12 px-6 rounded-2xl bg-rose-50/70 border border-rose-200 flex flex-col items-center justify-center text-center">
+                  <div className="w-12 h-12 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center mb-3 shadow-2xs">
+                    <AlertCircle className="w-6 h-6" />
+                  </div>
+                  <h3 className="text-sm font-bold text-rose-950">Ingestion Execution Interrupted / Failed</h3>
+                  <p className="text-xs text-rose-800 mt-1 max-w-md font-medium">
+                    The selected upload batch encountered an error or was interrupted during execution. All partial records were safely rolled back to 0.
+                  </p>
+                  <button 
+                    onClick={fetchErrors}
+                    className="mt-3 px-4 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition-all cursor-pointer"
+                  >
+                    Reload Diagnostic Log
+                  </button>
+                </div>
+              );
+            }
+
+            return (
+              <div className="py-12 px-6 rounded-2xl bg-emerald-50/50 border border-emerald-200/80 flex flex-col items-center justify-center text-center">
+                <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mb-3 shadow-2xs">
+                  <CheckCircle className="w-6 h-6" />
+                </div>
+                <h3 className="text-sm font-bold text-emerald-950">Zero Ingestion Errors</h3>
+                <p className="text-xs text-emerald-700 mt-1 max-w-md font-medium">
+                  All records for the selected batch have been validated and inserted with 100% data integrity.
+                </p>
+              </div>
+            );
+          })()
         ) : viewMode === 'grouped' ? (
           /* Grouped Summary View */
           <div className="space-y-3.5">

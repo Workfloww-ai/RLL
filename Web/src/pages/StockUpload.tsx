@@ -40,9 +40,10 @@ export default function StockUpload() {
             hour12: true
           }) : '08 Aug 2026, 12:04 PM';
 
-          const imported = data.imported_rows || data.total_rows || data.row_count || 550153;
-          const statusLower = (data.status || '').toLowerCase();
-          const isSuccess = ['success', 'loaded', 'completed'].includes(statusLower) || imported > 0;
+          const statusLower = (data.upload_status || data.status || '').toLowerCase();
+          const isFailed = statusLower === 'failed' || statusLower === 'interrupted' || statusLower === 'error';
+          const isSuccess = !isFailed && (['success', 'loaded', 'completed'].includes(statusLower) || (data.imported_rows > 0 && !isFailed));
+          const imported = isSuccess ? (data.imported_rows || data.total_rows || 0) : 0;
 
           const fileName = data.source_file || data.file_name || 'IMFL Ind. May-26.xlsb';
           const uploaderName = data.uploader_name || data.uploaded_by_name || localStorage.getItem('user_name') || 'Admin User';
@@ -51,9 +52,9 @@ export default function StockUpload() {
           setLatestUpload({
             lastUploadFormatted: formattedDate,
             uploaderInfo: uploaderInfo,
-            recordsCountFormatted: imported.toLocaleString(),
+            recordsCountFormatted: isSuccess ? imported.toLocaleString() : '0',
             status: isSuccess ? 'SUCCESS' : (statusLower === 'processing' ? 'PROCESSING' : 'FAILED'),
-            remarksText: isSuccess ? `${imported.toLocaleString()} RECORDS VERIFIED & SAVED` : (data.remarks || 'Ingestion Failed')
+            remarksText: isSuccess ? `${imported.toLocaleString()} RECORDS VERIFIED & SAVED` : (data.remarks || 'Ingestion Failed: Execution stopped & rolled back.')
           });
         }
       }

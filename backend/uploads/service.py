@@ -431,14 +431,26 @@ class ImportPipelineEngine:
         Returns the active batch record dict if active, otherwise None.
         """
         active_statuses = {"queued", "running", "processing", "aggregating", "validating"}
+        now_ts = time.time()
 
         # 1. Check local memory state first
-        for b_id, batch in upload_batches_db.items():
+        for b_id, batch in list(upload_batches_db.items()):
             if exclude_batch_id and str(b_id) == str(exclude_batch_id):
                 continue
             st = str(batch.get("status", "")).lower()
             up_st = str(batch.get("upload_status", "")).lower()
             if st in active_statuses or up_st in active_statuses:
+                c_iso = batch.get("created_at")
+                if c_iso:
+                    try:
+                        c_dt = datetime.fromisoformat(c_iso.replace("Z", "+00:00"))
+                        if (now_ts - c_dt.timestamp()) > 600:  # 10 minutes optimal threshold
+                            batch["status"] = "failed"
+                            batch["upload_status"] = "failed"
+                            batch["remarks"] = "Timed out: Active upload job stalled or abandoned."
+                            continue
+                    except Exception:
+                        pass
                 return batch
 
         # 2. Check Supabase database
@@ -755,7 +767,14 @@ class ImportPipelineEngine:
 
             # Phase 2 Overlapping Date Replacement Prevention: Extract date range and verify no active overlap
             raw_dates = [d for d in s_date.unique() if d and str(d).strip()]
-            parsed_dates = [self._parse_date(d) for d in raw_dates]
+            parsed_dates = []
+            for d in raw_dates:
+                try:
+                    p_dt = self._parse_date(d)
+                    if p_dt:
+                        parsed_dates.append(p_dt)
+                except Exception:
+                    pass
             valid_dates = [d for d in parsed_dates if d]
             if valid_dates:
                 covers_start_date = min(valid_dates)
