@@ -131,11 +131,11 @@ async def get_latest_upload_batch():
             res = client.table("upload_batches").select("batch_id, source_file, file_name, storage_path, load_type, covers_start, covers_end, row_count, total_rows, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, upload_status, remarks, uploaded_by, created_at, updated_at").order("created_at", desc=True).limit(1).execute()
             if res.data:
                 batch = res.data[0]
-                # If imported_rows is 0, verify count from sales_fact
+                # If imported_rows is 0, verify existence from sales_fact
                 if not batch.get("imported_rows") or batch.get("imported_rows") == 0:
-                    fact_res = client.table("sales_fact").select("fact_id", count="exact").eq("batch_id", batch["batch_id"]).limit(1).execute()
-                    if fact_res.count and fact_res.count > 0:
-                        batch["imported_rows"] = fact_res.count
+                    fact_res = client.table("sales_fact").select("fact_id").eq("batch_id", batch["batch_id"]).limit(1).execute()
+                    if fact_res.data and len(fact_res.data) > 0:
+                        batch["imported_rows"] = batch.get("total_rows") or 1
                         batch["status"] = "success"
                         batch["upload_status"] = "success"
         except Exception as e:
@@ -530,6 +530,33 @@ async def get_upload_errors(
                     "error_message": log.get("error_message"),
                     "created_at": log.get("created_at") or datetime.utcnow().isoformat()
                 })
+
+    # Fallback: If raw_errors is still empty for a specific batch (or overall), verify if target batch is in failed status
+    if not raw_errors and client:
+        try:
+            target_id = batch_id if (batch_id and str(batch_id).strip().lower() not in ("all", "none", "")) else None
+            b_query = client.table("upload_batches").select("batch_id, status, upload_status, remarks, created_at")
+            if target_id:
+                b_query = b_query.eq("batch_id", target_id)
+            else:
+                b_query = b_query.order("created_at", desc=True).limit(1)
+            b_res = b_query.execute()
+            if b_res.data:
+                for b_item in b_res.data:
+                    st_val = str(b_item.get("upload_status") or b_item.get("status") or "").lower()
+                    if st_val in ("failed", "interrupted", "error"):
+                        rem_msg = b_item.get("remarks") or "Upload batch failed or was interrupted during execution."
+                        raw_errors.append({
+                            "error_id": str(uuid.uuid4()),
+                            "batch_id": str(b_item.get("batch_id") or "N/A"),
+                            "column_name": "PIPELINE_ERROR",
+                            "error_message": rem_msg,
+                            "created_at": b_item.get("created_at") or datetime.utcnow().isoformat(),
+                            "severity": "CRITICAL",
+                            "error_code": "INGESTION_FAILED",
+                        })
+        except Exception as e_fb:
+            logger.warning(f"Fallback check for failed upload batch remarks failed: {e_fb}")
 
     # Available batches for dropdown
     available_batches = []

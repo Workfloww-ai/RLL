@@ -80,18 +80,47 @@ def release_advisory_lock(lock_id: int = UPLOAD_ADVISORY_LOCK_ID) -> bool:
 def get_active_upload_batch() -> Optional[Dict[str, Any]]:
     """
     Checks Supabase DB for any upload_batch currently in active status (queued/running/processing/aggregating/validating).
-    Returns the first matching batch dict, or None.
+    Automatically resets stale batches older than 5 minutes to prevent locks from hanging.
     """
     client = get_supabase_client()
     if not client:
         return None
     try:
+        from datetime import datetime, timezone
         active_statuses = ["queued", "running", "processing", "aggregating", "validating"]
         res = client.table("upload_batches").select(
             "batch_id, source_file, file_name, covers_start, covers_end, status, upload_status, created_at"
-        ).in_("status", active_statuses).limit(1).execute()
+        ).in_("status", active_statuses).order("created_at", desc=True).limit(5).execute()
+        
         if res.data:
-            return res.data[0]
+            now_utc = datetime.now(timezone.utc)
+            for b in res.data:
+                created_at_str = b.get("created_at")
+                is_stale = False
+                if created_at_str:
+                    try:
+                        clean_dt_str = created_at_str.replace("Z", "+00:00")
+                        c_dt = datetime.fromisoformat(clean_dt_str)
+                        if c_dt.tzinfo is None:
+                            c_dt = c_dt.replace(tzinfo=timezone.utc)
+                        if (now_utc - c_dt).total_seconds() > 600:  # 10 minutes optimal threshold to prevent DB resource exhaustion
+                            is_stale = True
+                    except Exception:
+                        pass
+
+                if is_stale:
+                    b_id = str(b.get("batch_id"))
+                    logger.warning(f"Resetting stale orphaned upload batch #{b_id} created > 10 mins ago.")
+                    try:
+                        client.table("upload_batches").update({
+                            "status": "failed",
+                            "upload_status": "failed",
+                            "remarks": "Timed out: Active upload job stalled or was interrupted.",
+                        }).eq("batch_id", b.get("batch_id")).execute()
+                    except Exception:
+                        pass
+                else:
+                    return b
     except Exception as e:
         logger.warning(f"get_active_upload_batch error: {e}")
     return None
@@ -106,14 +135,27 @@ def reset_orphaned_upload_batches() -> int:
         return 0
     try:
         active_statuses = ["queued", "running", "processing", "aggregating", "validating"]
+        # Select orphaned active batches first to obtain batch IDs
+        orphaned_res = client.table("upload_batches").select("batch_id, source_file, file_name").in_("status", active_statuses).execute()
+        orphaned_batches = orphaned_res.data or []
+
         res = client.table("upload_batches").update({
             "status": "failed",
             "upload_status": "failed",
             "remarks": "Interrupted: Server process restarted during upload execution.",
         }).in_("status", active_statuses).execute()
-        count = len(res.data) if res.data else 0
+        count = len(res.data) if res.data else len(orphaned_batches)
         if count > 0:
             logger.warning(f"Reset {count} orphaned active upload batch(es) to failed status on startup.")
+            err_msg = "Interrupted: Server process restarted during upload execution. Execution halted and rolled back."
+            for b in orphaned_batches:
+                b_id = str(b.get("batch_id")) if b.get("batch_id") else None
+                if b_id:
+                    log_upload_validation_error(
+                        batch_id=b_id,
+                        error_message=err_msg,
+                        column_name="PIPELINE_INTERRUPTED"
+                    )
         return count
     except Exception as e:
         logger.warning(f"reset_orphaned_upload_batches notice: {e}")
@@ -661,8 +703,9 @@ def get_batch_details(batch_id: Any) -> Dict[str, Any]:
         )
         err_res = (
             client.table("upload_validation_errors")
-            .select("error_id", count="exact")
+            .select("error_id")
             .eq("batch_id", batch_id)
+            .limit(100)
             .execute()
         )
         batch_info = batch_res.data[0] if batch_res.data else {}
