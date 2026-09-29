@@ -5,6 +5,8 @@ import {
   TextInput,
   StyleSheet,
   ScrollView,
+  FlatList,
+  Platform,
   Modal,
   TouchableOpacity,
   TouchableWithoutFeedback,
@@ -446,28 +448,36 @@ export function GroupsCascadingView({
       </View>
 
       {/* Main List Container */}
-      <ScrollView
-        style={styles.scrollList}
-        contentContainerStyle={styles.scrollContent}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={handleRefresh}
-            colors={['#0284C7', '#0F172A']}
-            tintColor="#0284C7"
-          />
-        }
-      >
-        {loading ? (
+      {loading ? (
+        <View style={styles.scrollContent}>
           <GroupListSkeletonList count={5} />
-        ) : paginatedList.length === 0 ? (
-          <View style={styles.emptyCard}>
-            <Text style={styles.emptyText}>
-              {searchQuery.trim() ? 'No items match your search' : 'No data found'}
-            </Text>
-          </View>
-        ) : (
-          paginatedList.map((item, index) => {
+        </View>
+      ) : (
+        <FlatList
+          style={styles.scrollList}
+          contentContainerStyle={styles.scrollContent}
+          data={paginatedList}
+          keyExtractor={(item, index) => `grp-item-${item.group_id || item.licensee_id || item.brand_id || item.id || index}`}
+          initialNumToRender={8}
+          maxToRenderPerBatch={10}
+          windowSize={5}
+          removeClippedSubviews={true}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              colors={['#0284C7', '#0F172A']}
+              tintColor="#0284C7"
+            />
+          }
+          ListEmptyComponent={
+            <View style={styles.emptyCard}>
+              <Text style={styles.emptyText}>
+                {searchQuery.trim() ? 'No items match your search' : 'No data found'}
+              </Text>
+            </View>
+          }
+          renderItem={({ item, index }) => {
             // Level 1: Root Group Card (Image 1)
             if (level === 1) {
               const cases = Number(
@@ -570,9 +580,9 @@ export function GroupsCascadingView({
             }
 
             return null;
-          })
-        )}
-      </ScrollView>
+          }}
+        />
+      )}
 
       {/* Pagination Bar */}
       <PaginationBar

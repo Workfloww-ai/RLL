@@ -78,7 +78,12 @@ export async function apiFetch(endpointPath: string, init?: RequestInit): Promis
   const token = await getAuthToken();
   const headers = new Headers(reqInit.headers || {});
   
-  // Attach Authorization and tenant headers
+  const tStartTime = Date.now();
+  const reqId = headers.get('X-Request-ID') || `req_${Math.random().toString(36).substring(2, 9)}`;
+
+  headers.set('X-Request-ID', reqId);
+  headers.set('X-Mobile-Client-Time-Ms', String(tStartTime));
+
   if (token && !headers.has('Authorization')) {
     headers.set('Authorization', `Bearer ${token}`);
   }
@@ -109,9 +114,25 @@ export async function apiFetch(endpointPath: string, init?: RequestInit): Promis
 
   reqInit.headers = headers;
 
-  logger.info(`apiFetch: ${reqInit.method || 'GET'} ${url}`);
+  logger.info(`apiFetch [${reqId}]: ${method} ${url}`);
   try {
     const res = await fetch(url, reqInit);
+    const networkRoundtripMs = Date.now() - tStartTime;
+    const backendMs = res.headers.get('x-backend-duration-ms');
+    const dbCount = res.headers.get('x-db-queries-count');
+    const dbMs = res.headers.get('x-db-duration-ms');
+    const dbEnv = res.headers.get('x-db-env') || 'supabase_db';
+
+    const isSlow = networkRoundtripMs > 500 || (dbCount && parseInt(dbCount, 10) > 5);
+    const speedIcon = isSlow ? '⚠️ SLOW' : '⚡ FAST';
+
+    logger.info(
+      `\n📱 [MOBILE_SPEED_TELEMETRY] ${method} ${cleanPath} | Status: ${res.status} | ${speedIcon}\n` +
+      `   ├─ 📱 Mobile Roundtrip   : ${networkRoundtripMs} ms\n` +
+      `   ├─ ⚙️  Backend Execution  : ${backendMs ? backendMs + ' ms' : 'N/A'}\n` +
+      `   └─ 🗄️  DB HTTP Requests   : ${dbCount || '0'} request(s) resolved in DB (DB Time: ${dbMs || '0'} ms | Env: ${dbEnv})`
+    );
+
     if (res.status === 401 || res.status === 403) {
       logger.warn(`apiFetch: Received status ${res.status} for ${endpointPath}. Session may be revoked or expired. Wiping credentials.`);
       await clearAuthSession();
@@ -414,6 +435,7 @@ export async function fetchMobileSales(
     const headers: Record<string, string> = {
       'Authorization': `Bearer ${token}`,
       'X-Request-ID': requestId,
+      'X-Mobile-Client-Time-Ms': String(tRequestStart),
     };
 
     const res = await fetch(url, signal ? { headers, signal } : { headers });
@@ -432,6 +454,9 @@ export async function fetchMobileSales(
 
     const contentLength = res.headers.get('content-length');
     const backendDurationMs = res.headers.get('x-backend-duration-ms');
+    const dbQueriesCount = res.headers.get('x-db-queries-count') || '0';
+    const dbDurationMs = res.headers.get('x-db-duration-ms') || '0';
+    const dbEnv = res.headers.get('x-db-env') || 'supabase_db';
     const cacheStatus = res.headers.get('x-sales-cache-status') || 'MISS';
 
     const responseText = await res.text();
@@ -459,11 +484,25 @@ export async function fetchMobileSales(
       data._responseMb = responseMb;
       data._jsonParseDurationMs = jsonParseDurationMs;
       data._backendDurationMs = backendDurationMs ? parseFloat(backendDurationMs) : null;
+      data._dbQueriesCount = parseInt(dbQueriesCount, 10);
+      data._dbDurationMs = parseFloat(dbDurationMs);
+      data._dbEnv = dbEnv;
       data._cacheStatus = cacheStatus;
       if (data.latest_sale_date) {
         FastStorage.setString('rll_latest_sale_date', data.latest_sale_date);
       }
     }
+
+    const isSlow = networkDurationMs > 500 || parseInt(dbQueriesCount, 10) > 5;
+    const speedIcon = isSlow ? '⚠️ SLOW' : '⚡ FAST';
+
+    logger.info(
+      `\n📱 [MOBILE_SPEED_TELEMETRY] GET /mobile/sales | Request ID: ${requestId} | ${speedIcon}\n` +
+      `   ├─ 📱 Mobile Roundtrip   : ${networkDurationMs} ms (JSON Parse: ${jsonParseDurationMs} ms)\n` +
+      `   ├─ ⚙️  Backend Execution  : ${backendDurationMs || 'N/A'} ms\n` +
+      `   └─ 🗄️  DB HTTP Requests   : ${dbQueriesCount} request(s) resolved in DB (DB Time: ${dbDurationMs} ms | Env: ${dbEnv})\n` +
+      `   📦 Size: ${responseKb} KB | Cache: ${cacheStatus}`
+    );
 
     let totCases = 0;
     let totBtl = 0;

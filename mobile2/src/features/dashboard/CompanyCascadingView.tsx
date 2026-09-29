@@ -5,6 +5,8 @@ import {
   TextInput,
   StyleSheet,
   ScrollView,
+  FlatList,
+  Platform,
   TouchableOpacity,
   BackHandler,
   RefreshControl,
@@ -476,34 +478,42 @@ export function CompanyCascadingView({
       </View>
 
       {/* Main Content List */}
-      <ScrollView
-        style={styles.scrollContainer}
-        contentContainerStyle={styles.scrollContent}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={handleRefresh}
-            colors={['#0F172A']}
-            tintColor="#0F172A"
-          />
-        }
-      >
-        {(loading || (level === 1 && (parentLoading || (companies.length === 0 && !searchQuery)))) ? (
-          level === 1 ? <CompanyListSkeletonList count={6} /> : <GroupListSkeletonList count={6} />
-        ) : paginatedList.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>
-              {searchQuery
-                ? 'No matching records found'
-                : level === 2
-                ? 'No brands recorded for this company'
-                : level === 3
-                ? 'No licensees found for this brand'
-                : 'No companies available'}
-            </Text>
-          </View>
-        ) : (
-          paginatedList.map((item, index) => {
+      {(loading || (level === 1 && (parentLoading || (companies.length === 0 && !searchQuery)))) ? (
+        <View style={styles.scrollContent}>
+          {level === 1 ? <CompanyListSkeletonList count={6} /> : <GroupListSkeletonList count={6} />}
+        </View>
+      ) : (
+        <FlatList
+          style={styles.scrollContainer}
+          contentContainerStyle={styles.scrollContent}
+          data={paginatedList}
+          keyExtractor={(item, index) => `item-${item.id || item.brand_id || item.licensee_id || item.name || index}`}
+          initialNumToRender={8}
+          maxToRenderPerBatch={10}
+          windowSize={5}
+          removeClippedSubviews={true}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              colors={['#0F172A']}
+              tintColor="#0F172A"
+            />
+          }
+          ListEmptyComponent={
+            <View style={styles.emptyContainer}>
+              <Text style={styles.emptyText}>
+                {searchQuery
+                  ? 'No matching records found'
+                  : level === 2
+                  ? 'No brands recorded for this company'
+                  : level === 3
+                  ? 'No licensees found for this brand'
+                  : 'No companies available'}
+              </Text>
+            </View>
+          }
+          renderItem={({ item, index }) => {
             if (level === 1) {
               return (
                 <CompanyCard
@@ -557,9 +567,9 @@ export function CompanyCascadingView({
                 titleIcon={<UsersIcon size={16} color="#0F172A" />}
               />
             );
-          })
-        )}
-      </ScrollView>
+          }}
+        />
+      )}
 
       {/* Pagination Bar */}
       {!loading && totalItems > 0 && (
