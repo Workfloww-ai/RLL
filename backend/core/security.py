@@ -106,6 +106,8 @@ async def get_current_user(
         try:
             user_info = json.loads(cached_profile)
             if user_info and isinstance(user_info, dict) and user_info.get("is_active"):
+                if 'payload' in locals() and isinstance(payload, dict) and payload.get("allowed_hqs"):
+                    user_info["allowed_hqs"] = payload["allowed_hqs"]
                 return user_info
         except Exception:
             pass
@@ -184,6 +186,8 @@ async def get_current_user(
             )
 
     if user_info:
+        if 'payload' in locals() and isinstance(payload, dict) and payload.get("allowed_hqs"):
+            user_info["allowed_hqs"] = payload["allowed_hqs"]
         from backend.db.redis_client import safe_set
         await safe_set(user_cache_key, json.dumps(user_info), ttl=300)
 

@@ -39,6 +39,7 @@ from backend.analytics.router import router as analytics_router
 from backend.reports.router import router as reports_router
 from backend.mobile.router import router as mobile_router
 from backend.system.router import router as system_router
+from backend.api.chatbot.router import router as chatbot_router
 
 from contextlib import asynccontextmanager
 from backend.db.redis_client import init_redis, close_redis
@@ -254,6 +255,7 @@ app.include_router(dashboard_router, prefix=settings.API_V1_STR)
 app.include_router(analytics_router, prefix=settings.API_V1_STR)
 app.include_router(reports_router, prefix=settings.API_V1_STR)
 app.include_router(system_router, prefix=settings.API_V1_STR)
+app.include_router(chatbot_router, prefix=settings.API_V1_STR)
 
 @app.get("/")
 def read_root():

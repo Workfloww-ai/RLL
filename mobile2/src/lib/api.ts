@@ -470,7 +470,17 @@ export async function fetchMobileSales(
     const responseMb = (responseBytes / (1024 * 1024)).toFixed(2);
 
     const tParseStart = now();
-    const data = JSON.parse(responseText);
+    let data: any = null;
+    try {
+      data = JSON.parse(responseText);
+    } catch (parseError: any) {
+      if (signal?.aborted) {
+        logger.info('fetchMobileSales: In-flight request canceled during response stream reading.');
+        return null;
+      }
+      logger.warn(`fetchMobileSales: Failed to parse JSON response body (${responseText.length} bytes): ${parseError.message}`);
+      return null;
+    }
     const tParseEnd = now();
     const jsonParseDurationMs = Math.round(tParseStart > 0 ? tParseEnd - tParseStart : 0);
 
@@ -523,11 +533,13 @@ export async function fetchMobileSales(
     return data;
   } catch (error: any) {
     const isAbort =
+      signal?.aborted ||
       error?.name === 'AbortError' ||
       (error?.message && (
         error.message.toLowerCase().includes('canceled') ||
         error.message.toLowerCase().includes('cancelled') ||
-        error.message.toLowerCase().includes('aborted')
+        error.message.toLowerCase().includes('aborted') ||
+        error.message.toLowerCase().includes('unexpected end of input')
       ));
 
     if (isAbort) {

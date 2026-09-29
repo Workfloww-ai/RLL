@@ -54,6 +54,7 @@ import { BrandModal } from './src/features/dashboard/BrandModal';
 import { LoginScreen } from './src/features/auth/LoginScreen';
 import { ProfileScreen } from './src/features/profile/ProfileScreen';
 import { SplashScreen } from './src/components/SplashScreen';
+import { ChatbotModal } from './src/features/chatbot/ChatbotModal';
 import { SearchBar } from './src/components/SearchBar';
 import { SortModal, SortOptionItem } from './src/components/SortModal';
 import {
@@ -104,6 +105,7 @@ function MainApp() {
   const [loadingSalesData, setLoadingSalesData] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [showNoDataModal, setShowNoDataModal] = useState<boolean>(false);
+  const [showChatbotModal, setShowChatbotModal] = useState<boolean>(false);
 
   const handleRefresh = useCallback(async () => {
     if (!user) return;
@@ -802,6 +804,28 @@ function MainApp() {
               <FooterNav viewMode={viewMode} setViewMode={handleTabChange} />
             )}
 
+            {/* Floating Chatbot Action Button (FAB) */}
+            {!isKeyboardVisible && (
+              <TouchableOpacity
+                style={styles.chatbotFab}
+                onPress={() => setShowChatbotModal(true)}
+                activeOpacity={0.85}
+              >
+                <View style={styles.chatbotFabBadge}>
+                  <Text style={styles.chatbotFabIconText}>✨</Text>
+                  <View style={styles.chatbotFabLiveDot} />
+                </View>
+              </TouchableOpacity>
+            )}
+
+            {/* Sales AI Chatbot Modal */}
+            <ChatbotModal
+              visible={showChatbotModal}
+              onClose={() => setShowChatbotModal(false)}
+              period={period}
+              selectedHq={selectedHq}
+            />
+
             {/* No Data Found Centered Modal Popup */}
             <NoDataModal
               visible={showNoDataModal}
@@ -1062,6 +1086,44 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 12,
     fontWeight: '800',
+  },
+  chatbotFab: {
+    position: 'absolute',
+    bottom: 75,
+    right: 18,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#0F2042',
+    borderWidth: 1.5,
+    borderColor: '#38BDF8',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    elevation: 8,
+    zIndex: 99,
+  },
+  chatbotFabBadge: {
+    position: 'relative',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  chatbotFabIconText: {
+    fontSize: 22,
+  },
+  chatbotFabLiveDot: {
+    position: 'absolute',
+    top: -2,
+    right: -4,
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
+    backgroundColor: '#10B981',
+    borderWidth: 1.5,
+    borderColor: '#0F2042',
   },
 });
 
