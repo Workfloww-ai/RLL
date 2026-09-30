@@ -59,7 +59,7 @@ async def export_dashboard_data(
     output = io.StringIO()
     writer = csv.writer(output)
 
-    writer.writerow(["Period", "From Date", "To Date", "Brand ID", "Brand Name", "Total Cases", "Total Bottles", "Total Bulk Liters (BL)"])
+    writer.writerow(["Period", "From Date", "To Date", "Brand ID", "Brand Name", "Total Cases"])
 
     for b in data.get("brands", []):
         writer.writerow([

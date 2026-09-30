@@ -143,14 +143,14 @@ COLUMN_ALIASES = {
         "bottles",
         "bottle",
     ],
-    "TOTAL_BL": [
-        "total_bl",
-        "total bl",
-        "bulk liters",
-        "bulk litres",
-        "bulk liter",
-        "bulk litre",
-    ],
+    # "TOTAL_BL": [
+    #     "total_bl",
+    #     "total bl",
+    #     "bulk liters",
+    #     "bulk litres",
+    #     "bulk liter",
+    #     "bulk litre",
+    # ],
 }
 
 
@@ -2065,8 +2065,8 @@ class ImportPipelineEngine:
             "brand code",
             "packing size",
             "cases",
-            "bottles",
-            "bulk liters",
+            # "bottles",
+            # "bulk liters",
             "sale value",
             "depot",
             "brand",

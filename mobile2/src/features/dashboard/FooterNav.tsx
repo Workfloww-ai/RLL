@@ -11,9 +11,10 @@ import {
 interface FooterNavProps {
   viewMode: ViewMode;
   setViewMode: (mode: ViewMode) => void;
+  onLayout?: (event: any) => void;
 }
 
-export function FooterNav({ viewMode, setViewMode }: FooterNavProps) {
+export function FooterNav({ viewMode, setViewMode, onLayout }: FooterNavProps) {
   const tabs: { key: ViewMode; label: string; Icon: React.ComponentType<{ color: string; size: number }> }[] = [
     { key: 'companies', label: 'Companies', Icon: BuildingIcon },
     { key: 'depots', label: 'Groups', Icon: StoreIcon },
@@ -22,7 +23,7 @@ export function FooterNav({ viewMode, setViewMode }: FooterNavProps) {
   ];
 
   return (
-    <View style={styles.container}>
+    <View style={styles.container} onLayout={onLayout}>
       {tabs.map(({ key, label, Icon }) => {
         const isActive = viewMode === key;
         return (

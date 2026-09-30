@@ -99,6 +99,19 @@ async def get_current_user(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+    # 1. Fast Redis Profile Cache HIT (< 1ms)
+    user_cache_key = f"rll:user_profile:{email.lower()}"
+    cached_profile = await safe_get(user_cache_key)
+    if cached_profile:
+        try:
+            user_info = json.loads(cached_profile)
+            if user_info and isinstance(user_info, dict) and user_info.get("is_active"):
+                if 'payload' in locals() and isinstance(payload, dict) and payload.get("allowed_hqs"):
+                    user_info["allowed_hqs"] = payload["allowed_hqs"]
+                return user_info
+        except Exception:
+            pass
+
     client = get_supabase()
     user_info = None
 
@@ -171,6 +184,12 @@ async def get_current_user(
                 detail="User not found",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+
+    if user_info:
+        if 'payload' in locals() and isinstance(payload, dict) and payload.get("allowed_hqs"):
+            user_info["allowed_hqs"] = payload["allowed_hqs"]
+        from backend.db.redis_client import safe_set
+        await safe_set(user_cache_key, json.dumps(user_info), ttl=300)
 
     return user_info
 

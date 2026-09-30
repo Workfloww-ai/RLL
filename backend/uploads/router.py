@@ -20,6 +20,7 @@ router = APIRouter(
 )
 
 
+@router.post("", response_model=UploadBatchResponse, status_code=status.HTTP_202_ACCEPTED)
 @router.post("/", response_model=UploadBatchResponse, status_code=status.HTTP_202_ACCEPTED)
 async def upload_excel(
     background_tasks: BackgroundTasks,

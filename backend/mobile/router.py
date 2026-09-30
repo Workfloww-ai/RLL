@@ -1236,9 +1236,16 @@ async def get_mobile_sales(
         end_date = end_dt.strftime("%Y-%m-%d")
 
     daily_start = end_date
-    mtd_start = end_dt.replace(day=1).strftime("%Y-%m-%d")
-    fy_year = end_dt.year if end_dt.month >= 4 else end_dt.year - 1
-    ytd_start = f"{fy_year}-04-01"
+    if selected_period == "Daily":
+        mtd_start = end_date
+        ytd_start = end_date
+    elif selected_period == "MTD":
+        mtd_start = end_dt.replace(day=1).strftime("%Y-%m-%d")
+        ytd_start = mtd_start
+    else:
+        mtd_start = end_dt.replace(day=1).strftime("%Y-%m-%d")
+        fy_year = end_dt.year if end_dt.month >= 4 else end_dt.year - 1
+        ytd_start = f"{fy_year}-04-01"
 
     target_hq_id = None
     if selected_hq and selected_hq.strip() and selected_hq.strip() != "All Headquarters":

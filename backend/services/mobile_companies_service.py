@@ -172,10 +172,18 @@ def get_companies_summary(
     except Exception as e_mb:
         logger.warning(f"Error fetching master_brands_by_company: {e_mb}")
 
-    response_list = []
+    # Collect ALL company UUIDs across grouped_companies to execute a SINGLE batched RPC call instead of N+1 loop calls
+    all_company_ids = []
+    cid_to_norm_key = {}
     for norm_key, g in grouped_companies.items():
+        for cid in g["company_ids"]:
+            all_company_ids.append(cid)
+            cid_to_norm_key[cid] = norm_key
+
+    all_brands_data = []
+    if all_company_ids:
         brand_params = {
-            "p_company_ids": g["company_ids"],
+            "p_company_ids": all_company_ids,
             "p_target_date": target_date,
             "p_mtd_start": mtd_start,
             "p_ytd_start": ytd_start,
@@ -185,10 +193,23 @@ def get_companies_summary(
 
         try:
             brand_res = client.rpc("get_mobile_company_brands_summary", brand_params).execute()
-            brands_data = brand_res.data or []
+            all_brands_data = brand_res.data or []
         except Exception as e_brands:
-            logger.error(f"Error calling get_mobile_company_brands_summary RPC for {g['name']}: {e_brands}")
-            brands_data = []
+            logger.error(f"Error calling get_mobile_company_brands_summary RPC: {e_brands}")
+            all_brands_data = []
+
+    brands_by_company: Dict[str, List[Dict[str, Any]]] = {}
+    for b in all_brands_data:
+        raw_cid = str(b.get("company_id") or "")
+        norm_key = cid_to_norm_key.get(raw_cid)
+        if norm_key:
+            if norm_key not in brands_by_company:
+                brands_by_company[norm_key] = []
+            brands_by_company[norm_key].append(b)
+
+    response_list = []
+    for norm_key, g in grouped_companies.items():
+        brands_data = brands_by_company.get(norm_key, [])
 
         comp_brands_map = {}
         # Pre-populate with all master registered brands for this company (cases = 0)

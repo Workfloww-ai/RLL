@@ -39,6 +39,7 @@ from backend.analytics.router import router as analytics_router
 from backend.reports.router import router as reports_router
 from backend.mobile.router import router as mobile_router
 from backend.system.router import router as system_router
+from backend.api.chatbot.router import router as chatbot_router
 
 from contextlib import asynccontextmanager
 from backend.db.redis_client import init_redis, close_redis
@@ -93,7 +94,7 @@ allowed_origins = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|lucidx360\.workfloww\.ai|rll-backend-414899512001\.asia-south2\.run\.app)(:\d+)?",
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|lucidx360\.workfloww\.ai|.*\.vercel\.app|rll-backend-414899512001\.asia-south2\.run\.app)(:\d+)?",
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -115,15 +116,58 @@ async def security_headers_middleware(request: Request, call_next):
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
+import time
+import uuid
+from fastapi import Request
+from backend.core.telemetry import (
+    start_request_telemetry,
+    log_telemetry_summary,
+    get_current_telemetry
+)
+
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    start_time = time.time()
-    response = await call_next(request)
-    duration = time.time() - start_time
-    logger.info(
-        f"API Call - Method: {request.method} | Path: {request.url.path} | "
-        f"Status: {response.status_code} | Duration: {duration:.4f}s"
+    req_id = request.headers.get("X-Request-ID") or f"req_{uuid.uuid4().hex[:8]}"
+    mobile_time = request.headers.get("X-Mobile-Client-Time-Ms") or request.headers.get("X-Client-Timestamp")
+
+    user_id = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        try:
+            token = auth_header.split(" ")[1]
+            import jwt
+            payload = jwt.decode(token, settings.JWT_SECRET, algorithms=["HS256"], options={"verify_signature": False})
+            user_id = payload.get("user_id") or payload.get("sub") or payload.get("email")
+        except Exception:
+            pass
+
+    start_request_telemetry(
+        request_id=req_id,
+        path=request.url.path,
+        method=request.method,
+        user_id=user_id,
+        mobile_client_time_ms=float(mobile_time) if mobile_time else None
     )
+
+    response = await call_next(request)
+
+    telemetry = get_current_telemetry()
+    if telemetry:
+        end_perf = time.perf_counter()
+        backend_duration_ms = (end_perf - telemetry["start_perf"]) * 1000.0
+        response.headers["X-Backend-Duration-Ms"] = f"{backend_duration_ms:.2f}"
+        response.headers["X-DB-Queries-Count"] = str(telemetry["db_http_request_count"])
+        response.headers["X-DB-Duration-Ms"] = f"{telemetry['db_total_time_ms']:.2f}"
+        response.headers["X-DB-Env"] = telemetry["db_env"]
+
+    res_size = 0
+    if "content-length" in response.headers:
+        try:
+            res_size = int(response.headers["content-length"])
+        except (ValueError, TypeError):
+            res_size = 0
+
+    log_telemetry_summary(status_code=response.status_code, response_size_bytes=res_size)
     return response
 
 import traceback
@@ -211,6 +255,7 @@ app.include_router(dashboard_router, prefix=settings.API_V1_STR)
 app.include_router(analytics_router, prefix=settings.API_V1_STR)
 app.include_router(reports_router, prefix=settings.API_V1_STR)
 app.include_router(system_router, prefix=settings.API_V1_STR)
+app.include_router(chatbot_router, prefix=settings.API_V1_STR)
 
 @app.get("/")
 def read_root():
