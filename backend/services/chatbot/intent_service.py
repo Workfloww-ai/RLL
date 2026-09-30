@@ -178,10 +178,14 @@ class ChatbotIntentService:
             intent = "get_contribution"
         elif any(w in msg_lower for w in ["trend", "history", "chart", "over time", "graph", "days"]):
             intent = "get_trend"
-        elif any(w in msg_lower for w in ["top", "leading", "best", "highest", "biggest", "rank"]):
+        elif any(w in msg_lower for w in ["top", "leading", "best", "highest", "biggest", "rank", "ranking"]):
+            intent = "get_top_entities"
+        elif not entity_name and ("company" in msg_lower or "companies" in msg_lower or "tsm" in msg_lower or "tsms" in msg_lower or "depot" in msg_lower or "depots" in msg_lower):
             intent = "get_top_entities"
         elif any(w in msg_lower for w in ["breakdown", "list", "all companies", "all brands", "all depots"]):
             intent = "get_breakdown"
+        elif entity_name:
+            intent = "get_sales_summary"
         elif any(w in msg_lower for w in ["summary", "summarise", "summarize", "total", "sales", "overview", "perform"]):
             intent = "get_sales_summary"
 

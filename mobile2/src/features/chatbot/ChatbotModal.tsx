@@ -1,6 +1,6 @@
 /**
  * Mobile Sales Analytics Chatbot Modal Component.
- * Implements the RLL Sales AI interface matching enterprise design specs.
+ * Premium Enterprise SaaS Redesign with RLL Signature Navy (#0D3B8E) Brand Accent.
  */
 
 import React, { useState, useRef, useEffect } from 'react';
@@ -16,6 +16,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { sendChatMessage } from './chatbotApi';
 
 interface Message {
@@ -36,6 +37,40 @@ interface ChatbotModalProps {
   selectedHq?: string;
 }
 
+// Signature RLL AI Star Icon Badge
+const AiBadgeStarIcon = () => (
+  <View style={styles.aiBadgeIcon}>
+    <Text style={styles.aiBadgeStarText}>✨</Text>
+  </View>
+);
+
+// Refresh Icon
+const RefreshOutlineIcon = () => (
+  <Text style={{ fontSize: 16, color: '#0D3B8E', fontWeight: '700' }}>↺</Text>
+);
+
+// Close Icon
+const CloseOutlineIcon = () => (
+  <Text style={{ fontSize: 16, color: '#64748B', fontWeight: '600' }}>✕</Text>
+);
+
+// Microphone Vector Icon (Zero Emoji)
+const MicOutlineIcon = ({ active }: { active?: boolean }) => {
+  const color = active ? '#0D3B8E' : '#64748B';
+  return (
+    <View style={{ width: 16, height: 18, alignItems: 'center', justifyContent: 'center' }}>
+      <View style={{ width: 8, height: 10, borderRadius: 4, borderWidth: 1.6, borderColor: color }} />
+      <View style={{ width: 12, height: 5, borderBottomLeftRadius: 6, borderBottomRightRadius: 6, borderWidth: 1.6, borderColor: color, borderTopWidth: 0, marginTop: -2.5 }} />
+      <View style={{ width: 1.6, height: 3.5, backgroundColor: color }} />
+    </View>
+  );
+};
+
+// Send Icon
+const SendArrowIcon = () => (
+  <Text style={{ fontSize: 14, color: '#FFFFFF', fontWeight: '800' }}>➔</Text>
+);
+
 export const ChatbotModal: React.FC<ChatbotModalProps> = ({
   visible,
   onClose,
@@ -50,19 +85,20 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
       id: 'welcome_1',
       sender: 'ai',
       text:
-        '👋 Welcome to RLL Sales AI!\n\n' +
-        'I can analyze and summarize real-time sales across Rajasthan Liquors Limited.\n\n' +
-        '• "Summarise total sales for Daily"\n' +
-        '• "What are the top 5 selling brands?"\n' +
-        '• "Who is the leading TSM in Rajasthan?"\n' +
-        '• "How is Pernod Ricard performing?"',
+        'RLL Sales AI\n\n' +
+        'Ask questions about your sales data.\n\n' +
+        'I can help you understand:\n' +
+        '• Sales performance\n' +
+        '• Top brands\n' +
+        '• Company performance\n' +
+        '• TSM performance\n' +
+        '• Daily, MTD and YTD trends',
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       suggestedQuestions: [
-        'Full Sales Summary',
-        'Top 5 Brands',
-        'Top Depots',
-        'Company Market Share',
-        'Top Gainers & Losers',
+        'Top 5 brands',
+        'Daily sales summary',
+        'TSM performance',
+        'Company performance',
       ],
     },
   ]);
@@ -117,7 +153,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
       const errorMsg: Message = {
         id: `err_${Date.now()}`,
         sender: 'ai',
-        text: `⚠️ **Unable to retrieve sales data**: ${err.message || 'Please check network connection.'}`,
+        text: `Unable to retrieve sales data: ${err.message || 'Please check network connection.'}`,
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
       setMessages((prev) => [...prev, errorMsg]);
@@ -132,32 +168,37 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
         id: `welcome_${Date.now()}`,
         sender: 'ai',
         text:
-          '👋Welcome back to RLL Sales AI!\n\n' +
-          'How can I help with your sales analysis today?',
+          'RLL Sales AI\n\n' +
+          'Ask questions about your sales data.\n\n' +
+          'I can help you understand:\n' +
+          '• Sales performance\n' +
+          '• Top brands\n' +
+          '• Company performance\n' +
+          '• TSM performance\n' +
+          '• Daily, MTD and YTD trends',
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         suggestedQuestions: [
-          'Full Sales Summary',
-          'Top 5 Brands',
-          'Top Depots',
-          'Company Market Share',
+          'Top 5 brands',
+          'Daily sales summary',
+          'TSM performance',
+          'Company performance',
         ],
       },
     ]);
   };
 
-  const promptPills = [
-    '📊 Full Sales Summary',
-    '🍾 Top 5 Brands',
-    '🏢 Top Depots',
-    '💼 Company Market Share',
-    '🚀 Top Gainers & Losers',
+  const suggestedQuestionsList = [
+    'Top 5 brands',
+    'Daily sales summary',
+    'TSM performance',
+    'Company performance',
   ];
 
   if (!visible) return null;
 
   return (
     <Modal visible={visible} animationType="slide" transparent={true} onRequestClose={onClose}>
-      <View style={styles.overlay}>
+      <SafeAreaView style={styles.overlay}>
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={styles.modalCard}
@@ -165,32 +206,34 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.headerLeft}>
-              <View style={styles.aiBadgeIcon}>
-                <Text style={styles.aiBadgeStar}>✨</Text>
-              </View>
+              <AiBadgeStarIcon />
               <View>
                 <View style={styles.titleRow}>
                   <Text style={styles.headerTitle}>RLL Sales AI</Text>
                   <View style={styles.liveBadge}>
                     <View style={styles.liveDot} />
-                    <Text style={styles.liveBadgeText}>Live Data</Text>
+                    <Text style={styles.liveBadgeText}>Live</Text>
                   </View>
                 </View>
-                <Text style={styles.headerSubtitle}>
-                  Context: <Text style={styles.boldSubtitle}>{period}</Text> •{' '}
-                  <Text style={styles.boldSubtitle}>{selectedHq}</Text>
-                </Text>
+                <Text style={styles.headerSubtitle}>Live sales analytics</Text>
               </View>
             </View>
 
             <View style={styles.headerActions}>
-              <TouchableOpacity onPress={handleReset} style={styles.iconBtn}>
-                <Text style={styles.iconBtnText}>🔄</Text>
+              <TouchableOpacity onPress={handleReset} style={styles.iconBtn} activeOpacity={0.7}>
+                <RefreshOutlineIcon />
               </TouchableOpacity>
-              <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
-                <Text style={styles.closeBtnText}>✕</Text>
+              <TouchableOpacity onPress={onClose} style={styles.closeBtn} activeOpacity={0.7}>
+                <CloseOutlineIcon />
               </TouchableOpacity>
             </View>
+          </View>
+
+          {/* Context Bar */}
+          <View style={styles.contextBar}>
+            <Text style={styles.contextText}>
+              {period}  ·  {selectedHq}
+            </Text>
           </View>
 
           {/* Chat Messages */}
@@ -208,12 +251,6 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
                   msg.sender === 'user' ? styles.userRow : styles.aiRow,
                 ]}
               >
-                {msg.sender === 'ai' && (
-                  <View style={styles.avatar}>
-                    <Text style={styles.avatarIcon}>🤖</Text>
-                  </View>
-                )}
-
                 <View
                   style={[
                     styles.bubble,
@@ -307,40 +344,43 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
                     </View>
                   )}
 
-                  <Text style={styles.timestamp}>{msg.time}</Text>
+                  <Text
+                    style={[
+                      styles.timestamp,
+                      msg.sender === 'user' ? styles.userTimestamp : styles.aiTimestamp,
+                    ]}
+                  >
+                    {msg.time}
+                  </Text>
                 </View>
               </View>
             ))}
 
             {loading && (
               <View style={styles.loadingRow}>
-                <View style={styles.avatar}>
-                  <Text style={styles.avatarIcon}>🤖</Text>
-                </View>
                 <View style={styles.loadingBubble}>
-                  <ActivityIndicator size="small" color="#38BDF8" />
+                  <ActivityIndicator size="small" color="#0D3B8E" />
                   <Text style={styles.loadingText}>Analyzing sales data...</Text>
                 </View>
               </View>
             )}
           </ScrollView>
 
-          {/* Quick Prompt Pills */}
-          <View style={styles.promptsSection}>
-            <Text style={styles.promptsLabel}>PROMPTS:</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.pillsScroll}>
-              {promptPills.map((pill, pIdx) => {
-                const cleanText = pill.replace(/^[^\s]+\s+/, '');
-                return (
-                  <TouchableOpacity
-                    key={pIdx}
-                    style={styles.pillBtn}
-                    onPress={() => handleSend(cleanText)}
-                  >
-                    <Text style={styles.pillText}>{pill}</Text>
-                  </TouchableOpacity>
-                );
-              })}
+          {/* Suggested Questions Section */}
+          <View style={styles.suggestedSection}>
+            <Text style={styles.suggestedLabel}>Suggested questions</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.suggestedScroll}>
+              {suggestedQuestionsList.map((qText, qIdx) => (
+                <TouchableOpacity
+                  key={qIdx}
+                  style={styles.suggestedCard}
+                  onPress={() => handleSend(qText)}
+                  activeOpacity={0.75}
+                >
+                  <View style={styles.suggestedDot} />
+                  <Text style={styles.suggestedText}>{qText}</Text>
+                </TouchableOpacity>
+              ))}
             </ScrollView>
           </View>
 
@@ -349,13 +389,14 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
             <TouchableOpacity
               style={[styles.voiceBtn, isDictating && styles.voiceBtnActive]}
               onPress={() => setIsDictating(!isDictating)}
+              activeOpacity={0.7}
             >
-              <Text style={styles.voiceIcon}>🎤</Text>
+              <MicOutlineIcon active={isDictating} />
             </TouchableOpacity>
 
             <TextInput
               style={styles.input}
-              placeholder='Ask a sales question or type "summarise"...'
+              placeholder="Ask about sales..."
               placeholderTextColor="#94A3B8"
               value={inputQuery}
               onChangeText={setInputQuery}
@@ -367,18 +408,18 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
               style={[styles.sendBtn, !inputQuery.trim() && styles.sendBtnDisabled]}
               onPress={() => handleSend()}
               disabled={!inputQuery.trim() || loading}
+              activeOpacity={0.8}
             >
-              <Text style={styles.sendIcon}>➔</Text>
+              <SendArrowIcon />
             </TouchableOpacity>
           </View>
 
           {/* Footer note */}
           <View style={styles.footerRow}>
-            <Text style={styles.footerNote}>Supports voice dictation & text questions</Text>
-            <Text style={styles.footerModel}>Model: Gemini 3.8 Flash</Text>
+            <Text style={styles.footerNote}>Powered by Gemini</Text>
           </View>
         </KeyboardAvoidingView>
-      </View>
+      </SafeAreaView>
     </Modal>
   );
 };
@@ -386,17 +427,17 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.65)',
+    backgroundColor: 'rgba(15, 39, 71, 0.45)',
     justifyContent: 'flex-end',
   },
   modalCard: {
     height: '92%',
-    backgroundColor: '#0B132B',
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
     paddingTop: 16,
     paddingHorizontal: 16,
-    paddingBottom: 10,
+    paddingBottom: 12,
   },
   header: {
     flexDirection: 'row',
@@ -404,25 +445,26 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingBottom: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#1E293B',
+    borderBottomColor: '#F1F5F9',
   },
   headerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
   },
   aiBadgeIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: '#1E293B',
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#090D16',
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#38BDF8',
+    borderWidth: 1.5,
+    borderColor: '#2563EB',
   },
-  aiBadgeStar: {
-    fontSize: 20,
+  aiBadgeStarText: {
+    fontSize: 18,
+    color: '#FFD700',
   },
   titleRow: {
     flexDirection: 'row',
@@ -430,37 +472,36 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   headerTitle: {
-    color: '#FFFFFF',
-    fontSize: 17,
-    fontWeight: '800',
+    color: '#0D3B8E',
+    fontSize: 16,
+    fontWeight: '700',
   },
   liveBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    paddingHorizontal: 8,
+    backgroundColor: '#F0FDF4',
+    paddingHorizontal: 6,
     paddingVertical: 2,
-    borderRadius: 12,
+    borderRadius: 10,
     gap: 4,
+    borderWidth: 1,
+    borderColor: '#DCFCE7',
   },
   liveDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: '#10B981',
+    backgroundColor: '#16A34A',
   },
   liveBadgeText: {
-    color: '#10B981',
+    color: '#15803D',
     fontSize: 11,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   headerSubtitle: {
-    color: '#94A3B8',
+    color: '#64748B',
     fontSize: 12,
-  },
-  boldSubtitle: {
-    color: '#F59E0B',
-    fontWeight: '700',
+    marginTop: 1,
   },
   headerActions: {
     flexDirection: 'row',
@@ -468,64 +509,70 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   iconBtn: {
-    padding: 8,
-    backgroundColor: '#1E293B',
-    borderRadius: 10,
-  },
-  iconBtnText: {
-    fontSize: 14,
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#F0F4FA',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#D0E1FD',
   },
   closeBtn: {
-    padding: 8,
-    backgroundColor: '#1E293B',
-    borderRadius: 10,
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#F8FAFC',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
   },
-  closeBtnText: {
-    color: '#94A3B8',
-    fontSize: 16,
-    fontWeight: 'bold',
+  contextBar: {
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+    marginBottom: 4,
+  },
+  contextText: {
+    fontSize: 12,
+    color: '#0D3B8E',
+    fontWeight: '600',
   },
   chatArea: {
     flex: 1,
-    marginVertical: 10,
   },
   chatContent: {
-    paddingBottom: 16,
+    paddingVertical: 12,
+    gap: 12,
   },
   messageRow: {
     flexDirection: 'row',
-    marginVertical: 8,
-    alignItems: 'flex-end',
+    marginVertical: 4,
   },
   userRow: {
     justifyContent: 'flex-end',
   },
   aiRow: {
     justifyContent: 'flex-start',
-    gap: 8,
-  },
-  avatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#1E293B',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarIcon: {
-    fontSize: 16,
   },
   bubble: {
-    maxWidth: '85%',
-    borderRadius: 18,
+    maxWidth: '88%',
+    borderRadius: 12,
     padding: 14,
   },
   userBubble: {
-    backgroundColor: '#2563EB',
+    backgroundColor: '#F0F4FA',
+    borderWidth: 1,
+    borderColor: '#C6D9FA',
+    borderLeftWidth: 3,
+    borderLeftColor: '#0D3B8E',
     borderBottomRightRadius: 4,
   },
   aiBubble: {
-    backgroundColor: '#1E293B',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
     borderBottomLeftRadius: 4,
   },
   bubbleText: {
@@ -533,116 +580,108 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   userBubbleText: {
-    color: '#FFFFFF',
+    color: '#0D3B8E',
+    fontWeight: '500',
   },
   aiBubbleText: {
-    color: '#F8FAFC',
+    color: '#0F2747',
+    fontWeight: '400',
   },
   timestamp: {
     fontSize: 10,
-    color: '#64748B',
     marginTop: 6,
     alignSelf: 'flex-end',
   },
-  loadingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginVertical: 8,
-    gap: 8,
+  userTimestamp: {
+    color: '#64748B',
   },
-  loadingBubble: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#1E293B',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 16,
-    gap: 8,
-  },
-  loadingText: {
+  aiTimestamp: {
     color: '#94A3B8',
-    fontSize: 13,
   },
   kpiContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
     marginTop: 10,
+    gap: 8,
   },
   kpiCard: {
-    flex: 1,
-    minWidth: 100,
-    backgroundColor: '#0F172A',
-    borderRadius: 12,
-    padding: 10,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+    padding: 12,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: '#E2E8F0',
+    borderLeftWidth: 3.5,
+    borderLeftColor: '#0D3B8E',
   },
   kpiTitle: {
-    color: '#94A3B8',
-    fontSize: 10,
-    fontWeight: '700',
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#64748B',
     textTransform: 'uppercase',
   },
   kpiValue: {
-    color: '#38BDF8',
-    fontSize: 16,
-    fontWeight: '900',
-    marginTop: 2,
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#0D3B8E',
+    marginVertical: 2,
   },
   kpiSubtext: {
+    fontSize: 11,
     color: '#64748B',
-    fontSize: 10,
   },
   tableContainer: {
     marginTop: 10,
-    backgroundColor: '#d7dbe2ff',
-    borderRadius: 12,
-    padding: 10,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: '#E2E8F0',
+    overflow: 'hidden',
   },
   tableTitle: {
-    color: '#F59E0B',
     fontSize: 12,
-    fontWeight: '800',
-    marginBottom: 8,
+    fontWeight: '700',
+    color: '#0D3B8E',
+    padding: 10,
+    backgroundColor: '#F0F4FA',
+    borderBottomWidth: 1,
+    borderBottomColor: '#D0E1FD',
   },
   tableHeaderRow: {
     flexDirection: 'row',
+    backgroundColor: '#F1F5F9',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#334155',
-    paddingBottom: 6,
+    borderBottomColor: '#E2E8F0',
   },
   tableHeaderCell: {
     flex: 1,
-    color: '#94A3B8',
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '700',
+    color: '#0D3B8E',
   },
   tableBodyRow: {
     flexDirection: 'row',
-    paddingVertical: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#1E293B',
+    borderBottomColor: '#F1F5F9',
   },
   tableBodyCell: {
     flex: 1,
-    color: '#F1F5F9',
     fontSize: 11,
+    color: '#0F2747',
   },
   chartContainer: {
     marginTop: 10,
-    backgroundColor: '#0F172A',
-    borderRadius: 12,
-    padding: 10,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+    padding: 12,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: '#E2E8F0',
   },
   chartTitle: {
-    color: '#38BDF8',
     fontSize: 12,
-    fontWeight: '800',
+    fontWeight: '700',
+    color: '#0D3B8E',
     marginBottom: 8,
   },
   barRow: {
@@ -653,114 +692,135 @@ const styles = StyleSheet.create({
   },
   barLabel: {
     width: 90,
-    color: '#CBD5E1',
-    fontSize: 10,
+    fontSize: 11,
+    color: '#475569',
   },
   barTrack: {
     flex: 1,
-    height: 8,
-    backgroundColor: '#1E293B',
-    borderRadius: 4,
+    height: 6,
+    backgroundColor: '#E2E8F0',
+    borderRadius: 3,
     overflow: 'hidden',
   },
   barFill: {
     height: '100%',
-    backgroundColor: '#38BDF8',
-    borderRadius: 4,
+    backgroundColor: '#0D3B8E',
+    borderRadius: 3,
   },
   barValue: {
     width: 50,
-    color: '#38BDF8',
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '700',
+    color: '#0D3B8E',
     textAlign: 'right',
   },
-  promptsSection: {
+  loadingRow: {
+    flexDirection: 'row',
+    marginVertical: 6,
+  },
+  loadingBubble: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 8,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
     gap: 8,
   },
-  promptsLabel: {
-    color: '#64748B',
-    fontSize: 11,
-    fontWeight: '800',
+  loadingText: {
+    fontSize: 13,
+    color: '#0D3B8E',
+    fontWeight: '600',
   },
-  pillsScroll: {
-    flex: 1,
+  suggestedSection: {
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
   },
-  pillBtn: {
-    backgroundColor: '#1E293B',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-    marginRight: 8,
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  pillText: {
-    color: '#F1F5F9',
+  suggestedLabel: {
     fontSize: 12,
+    fontWeight: '700',
+    color: '#0D3B8E',
+    marginBottom: 8,
+  },
+  suggestedScroll: {
+    flexDirection: 'row',
+  },
+  suggestedCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#D0E1FD',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginRight: 8,
+    gap: 6,
+  },
+  suggestedDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: '#0D3B8E',
+  },
+  suggestedText: {
+    fontSize: 12,
+    color: '#0D3B8E',
     fontWeight: '600',
   },
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#1E293B',
-    borderRadius: 20,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#D0E1FD',
+    borderRadius: 14,
     paddingHorizontal: 10,
-    height: 48,
+    paddingVertical: 6,
+    marginVertical: 6,
     gap: 8,
+    shadowColor: '#0D3B8E',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 6,
+    elevation: 2,
   },
   voiceBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: '#0F172A',
+    width: 32,
+    height: 32,
+    borderRadius: 8,
     justifyContent: 'center',
     alignItems: 'center',
   },
   voiceBtnActive: {
-    backgroundColor: '#EF4444',
-  },
-  voiceIcon: {
-    fontSize: 16,
+    backgroundColor: '#F0F4FA',
   },
   input: {
     flex: 1,
-    color: '#FFFFFF',
-    fontSize: 13,
-    paddingVertical: 0,
+    fontSize: 14,
+    color: '#0F2747',
+    paddingVertical: 4,
   },
   sendBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#2563EB',
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#0D3B8E',
     justifyContent: 'center',
     alignItems: 'center',
   },
   sendBtnDisabled: {
-    backgroundColor: '#334155',
-  },
-  sendIcon: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: 'bold',
+    backgroundColor: '#94A3B8',
   },
   footerRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingTop: 6,
-    paddingHorizontal: 4,
+    alignItems: 'center',
+    paddingTop: 2,
   },
   footerNote: {
-    color: '#64748B',
-    fontSize: 10,
-  },
-  footerModel: {
-    color: '#64748B',
-    fontSize: 10,
-    fontWeight: '600',
+    fontSize: 11,
+    color: '#94A3B8',
   },
 });
