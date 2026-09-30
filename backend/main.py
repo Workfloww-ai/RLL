@@ -94,11 +94,10 @@ allowed_origins = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_origin_regex=r"https?://.*",
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|lucidx360\.workfloww\.ai|.*\.vercel\.app|rll-backend-414899512001\.asia-south2\.run\.app)(:\d+)?",
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
-    expose_headers=["*"],
 )
 
 import time
