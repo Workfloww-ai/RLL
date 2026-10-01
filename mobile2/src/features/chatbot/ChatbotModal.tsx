@@ -292,8 +292,8 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
                               col.align === 'right'
                                 ? { textAlign: 'right' }
                                 : col.align === 'center'
-                                ? { textAlign: 'center' }
-                                : { textAlign: 'left' },
+                                  ? { textAlign: 'center' }
+                                  : { textAlign: 'left' },
                             ]}
                           >
                             {col.label}
@@ -310,8 +310,8 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
                                 col.align === 'right'
                                   ? { textAlign: 'right' }
                                   : col.align === 'center'
-                                  ? { textAlign: 'center' }
-                                  : { textAlign: 'left' },
+                                    ? { textAlign: 'center' }
+                                    : { textAlign: 'left' },
                               ]}
                             >
                               {row[col.key]}
@@ -416,7 +416,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
 
           {/* Footer note */}
           <View style={styles.footerRow}>
-            <Text style={styles.footerNote}>Powered by Gemini</Text>
+            <Text style={styles.footerNote}>Powered by Workfloww.ai</Text>
           </View>
         </KeyboardAvoidingView>
       </SafeAreaView>

@@ -345,7 +345,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
               <Send className="w-3.5 h-3.5" />
             </button>
           </div>
-          <p className="text-[10px] text-center text-slate-400 mt-2">Powered by Gemini</p>
+          <p className="text-[10px] text-center text-slate-400 mt-2">Powered by Workfloww.ai</p>
         </div>
       </div>
     </div>
