@@ -12,10 +12,10 @@ from backend.db.supabase_client import get_supabase_client
 logger = logging.getLogger(__name__)
 
 _TENANT_CACHE: Dict[str, Any] = {}
+_TENANT_CACHE_TTL = 300.0  # 5 minutes
+
 _INCLUDE_OTHERS_LOCAL_CACHE: Optional[bool] = None
-_INCLUDE_OTHERS_CACHE_TIME: float = 0.0
-
-
+_INCLUDE_OTHERS_CACHE_TIME: float = 0.0 
 def get_include_others_setting_sync() -> bool:
     """
     Synchronous helper returning whether company Others is included in sales calculations (default: True).
