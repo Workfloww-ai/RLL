@@ -3,6 +3,7 @@ Sales Analytics Chatbot API Router.
 Dedicated HTTP endpoint handlers for Sales AI Chatbot requests.
 """
 
+import time
 from typing import Dict, Any, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from backend.core.security import get_current_user
@@ -27,10 +28,26 @@ async def query_sales_chatbot(
             detail="User message query cannot be empty."
         )
 
+    t_start = time.perf_counter()
     try:
         response = await ChatbotAnalyticsService.process_chat_query(
             payload=payload,
             current_user=current_user
+        )
+        latency_sec = time.perf_counter() - t_start
+        latency_ms = round(latency_sec * 1000.0, 2)
+        response.execution_time_ms = latency_ms
+
+        cache_status_str = "HIT (Served from Redis RAM)" if response.cache_hit else "MISS (Fetched from PostgreSQL DB)"
+        print(
+            f"\n{'='*70}\n"
+            f"⏱️  [CHATBOT RESPONSE LATENCY]\n"
+            f"   User Question : \"{payload.message}\"\n"
+            f"   Latency       : {latency_sec:.4f} seconds ({latency_ms:.2f} ms)\n"
+            f"   Cache Status  : {cache_status_str}\n"
+            f"   Intent        : {response.intent} | Period: {response.period}\n"
+            f"{'='*70}\n",
+            flush=True
         )
         return response
     except Exception as e:

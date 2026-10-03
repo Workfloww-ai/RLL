@@ -100,43 +100,49 @@ async def is_redis_available() -> bool:
         return False
 
 
+_in_memory_store: Dict[str, str] = {}
+
+
 async def safe_get(key: str) -> Optional[str]:
-    """Safely fetch key value from Redis. Returns None if key missing or Redis unavailable."""
+    """Safely fetch key value from Redis with in-memory fallback. Returns None if key missing."""
     client = get_redis()
-    if client is None:
-        return None
-    try:
-        return await client.get(key)
-    except Exception as e:
-        logger.warning(f"Redis GET failed for key '{key}': {e}")
-        return None
+    if client is not None:
+        try:
+            val = await client.get(key)
+            if val is not None:
+                return val
+        except Exception as e:
+            logger.warning(f"Redis GET failed for key '{key}': {e}")
+    return _in_memory_store.get(key)
 
 
 async def safe_set(key: str, value: str, ttl: Optional[int] = None) -> bool:
-    """Safely store key-value pair in Redis with optional TTL (seconds). Returns True on success."""
+    """Safely store key-value pair in Redis with optional TTL (seconds) and in-memory fallback."""
+    _in_memory_store[key] = value
     client = get_redis()
     if client is None:
-        return False
+        return True
     try:
         ttl = ttl or settings.CACHE_DEFAULT_TTL
         await client.set(key, value, ex=ttl)
         return True
     except Exception as e:
         logger.warning(f"Redis SET failed for key '{key}': {e}")
-        return False
+        return True
 
 
 async def safe_delete(key: str) -> bool:
-    """Safely delete key from Redis. Returns True on success."""
+    """Safely delete key from Redis and in-memory fallback."""
+    _in_memory_store.pop(key, None)
     client = get_redis()
     if client is None:
-        return False
+        return True
     try:
         await client.delete(key)
         return True
     except Exception as e:
         logger.warning(f"Redis DELETE failed for key '{key}': {e}")
-        return False
+        return True
 
 
 async def safe_delete_pattern(pattern: str) -> int:

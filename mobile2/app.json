@@ -17,6 +17,7 @@
     "android": {
       "package": "com.workfloww.lucid360",
       "versionCode": 8,
+      "softwareKeyboardLayoutMode": "pan",
       "adaptiveIcon": {
         "foregroundImage": "./src/assets/lucid_logo_nobg.png",
         "backgroundColor": "#FFFFFF"

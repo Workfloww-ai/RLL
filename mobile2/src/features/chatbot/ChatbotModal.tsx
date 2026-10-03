@@ -197,12 +197,19 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
   if (!visible) return null;
 
   return (
-    <Modal visible={visible} animationType="slide" transparent={true} onRequestClose={onClose}>
-      <SafeAreaView style={styles.overlay}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.modalCard}
-        >
+    <Modal
+      visible={visible}
+      animationType="slide"
+      transparent={true}
+      onRequestClose={onClose}
+      statusBarTranslucent
+    >
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.overlay}
+        keyboardVerticalOffset={0}
+      >
+        <SafeAreaView style={styles.modalCard} edges={['bottom', 'left', 'right']}>
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.headerLeft}>
@@ -418,8 +425,8 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
           <View style={styles.footerRow}>
             <Text style={styles.footerNote}>Powered by Workfloww.ai</Text>
           </View>
-        </KeyboardAvoidingView>
-      </SafeAreaView>
+        </SafeAreaView>
+      </KeyboardAvoidingView>
     </Modal>
   );
 };
@@ -431,13 +438,14 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   modalCard: {
-    height: '92%',
+    maxHeight: '92%',
+    flex: 1,
     backgroundColor: '#FFFFFF',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     paddingTop: 16,
     paddingHorizontal: 16,
-    paddingBottom: 12,
+    paddingBottom: Platform.OS === 'ios' ? 12 : 8,
   },
   header: {
     flexDirection: 'row',

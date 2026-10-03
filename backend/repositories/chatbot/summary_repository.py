@@ -223,24 +223,84 @@ class ChatbotSummaryRepository:
             uid = master["tsms_rev"].get(clean_name)
             if uid:
                 return uid
-            clean_parts = [p for p in clean_name.replace("tsm", "").split() if len(p) >= 3]
+            clean_tsm = clean_name.replace("tsm", "").strip().lower()
+            if master["tsms_rev"].get(clean_tsm):
+                return master["tsms_rev"].get(clean_tsm)
+            clean_parts = [p for p in clean_tsm.split() if len(p) >= 3]
             for k, v in master["tsms_rev"].items():
-                if clean_name in k or (clean_parts and any(p in k for p in clean_parts)):
+                if clean_tsm in k or (clean_parts and len(clean_parts) > 1 and all(p in k for p in clean_parts)):
                     return v
+            import difflib
+            close = difflib.get_close_matches(clean_tsm, list(master["tsms_rev"].keys()), n=1, cutoff=0.60)
+            if close:
+                return master["tsms_rev"].get(close[0])
         elif entity_type in ("group", "licensee_group"):
-            gid = master["groups_rev"].get(clean_name)
+            clean_grp = clean_name.replace("group", "").strip().lower()
+
+            # 1. Exact lookup
+            gid = master["groups_rev"].get(clean_name) or master["groups_rev"].get(clean_grp) or master["groups_rev"].get(f"{clean_grp} group")
             if gid:
                 return gid
-            alt_name = clean_name.replace("group", "").strip()
-            if alt_name and master["groups_rev"].get(alt_name):
-                return master["groups_rev"].get(alt_name)
-            with_grp = f"{clean_name} group"
-            if master["groups_rev"].get(with_grp):
-                return master["groups_rev"].get(with_grp)
+
+            # 2. Strict token matching (requires all non-stop query words to match)
+            query_tokens = set(w for w in clean_grp.split() if len(w) >= 2 and w not in ("group", "groups", "the", "of", "in"))
+            if not query_tokens:
+                return None
+
+            best_gid = None
+            best_score = 0.0
+
             for k, v in master["groups_rev"].items():
-                if clean_name in k or (alt_name and alt_name in k):
-                    return v
-        return None
+                g_key_clean = k.replace(" group", "").strip().lower()
+                g_tokens = set(g_key_clean.split())
+                matched_tokens = query_tokens.intersection(g_tokens)
+                if not matched_tokens:
+                    continue
+                # If query has multiple words (e.g. "akhe singh", "jitendra kumar"), all tokens MUST match!
+                if len(query_tokens) > 1 and len(matched_tokens) < len(query_tokens):
+                    continue
+                score = len(matched_tokens) / max(len(g_tokens), 1.0)
+                if score > best_score:
+                    best_score = score
+                    best_gid = v
+
+            if best_gid:
+                return best_gid
+
+            return None
+
+    @classmethod
+    def resolve_entity_type_and_id(cls, entity_name: str) -> Tuple[Optional[str], Optional[str]]:
+        """Resolves entity name to both its type and ID across all entity categories."""
+        if not entity_name:
+            return None, None
+        
+        # Check group first
+        gid = cls.resolve_entity_id("group", entity_name)
+        if gid:
+            return "group", gid
+            
+        # Check brand
+        bid = cls.resolve_entity_id("brand", entity_name)
+        if bid:
+            return "brand", bid
+            
+        # Check company
+        cid = cls.resolve_entity_id("company", entity_name)
+        if cid:
+            return "company", cid
+            
+        # Check tsm
+        tid = cls.resolve_entity_id("tsm", entity_name)
+        if tid:
+            return "tsm", tid
+            
+        # Check depot
+        did = cls.resolve_entity_id("depot", entity_name)
+        if did:
+            return "depot", did
+            
+        return None, None
 
     # -------------------------------------------------------------------------
     # 1. GET SALES SUMMARY
@@ -311,23 +371,13 @@ class ChatbotSummaryRepository:
             tot_bl = 0.0
             row_count = 0
 
-            offset = 0
-            page_size = 1000
-            while True:
-                res = query.range(offset, offset + page_size - 1).execute()
-                rows = res.data or []
-                if not rows:
-                    break
-
-                for r in rows:
-                    tot_cases += float(r.get("total_cases") or 0.0)
-                    tot_bottles += float(r.get("total_bottles") or 0.0)
-                    tot_bl += float(r.get("total_bl") or 0.0)
-                    row_count += 1
-
-                if len(rows) < page_size:
-                    break
-                offset += page_size
+            res = query.limit(5000).execute()
+            rows = res.data or []
+            for r in rows:
+                tot_cases += float(r.get("total_cases") or 0.0)
+                tot_bottles += float(r.get("total_bottles") or 0.0)
+                tot_bl += float(r.get("total_bl") or 0.0)
+                row_count += 1
 
             return {
                 "period": period,
@@ -407,31 +457,22 @@ class ChatbotSummaryRepository:
 
             # Aggregate in memory by target entity ID
             entity_metrics: Dict[str, Dict[str, float]] = {}
-            offset = 0
-            page_size = 1000
+            res = query.limit(5000).execute()
+            rows = res.data or []
+            for r in rows:
+                eid = str(r.get(id_col) or "").strip()
+                if not eid or eid.lower() in ("none", "null", "unknown", ""):
+                    continue
+                if others_id and str(r.get("company_id")) == str(others_id):
+                    continue
 
-            while True:
-                res = query.range(offset, offset + page_size - 1).execute()
-                rows = res.data or []
-                if not rows:
-                    break
+                cases = float(r.get("total_cases") or 0.0)
+                bottles = float(r.get("total_bottles") or 0.0)
 
-                for r in rows:
-                    eid = str(r.get(id_col) or "")
-                    if not eid:
-                        continue
-
-                    cases = float(r.get("total_cases") or 0.0)
-                    bottles = float(r.get("total_bottles") or 0.0)
-
-                    if eid not in entity_metrics:
-                        entity_metrics[eid] = {"cases": 0.0, "bottles": 0.0}
-                    entity_metrics[eid]["cases"] += cases
-                    entity_metrics[eid]["bottles"] += bottles
-
-                if len(rows) < page_size:
-                    break
-                offset += page_size
+                if eid not in entity_metrics:
+                    entity_metrics[eid] = {"cases": 0.0, "bottles": 0.0}
+                entity_metrics[eid]["cases"] += cases
+                entity_metrics[eid]["bottles"] += bottles
 
             # Resolve names & sort descending
             results = []
@@ -457,6 +498,22 @@ class ChatbotSummaryRepository:
                 })
 
             results.sort(key=lambda x: x["cases"], reverse=True)
+
+            # Fallback: if 0 results returned for unspecified target_date (e.g. today with 0 sales), fallback to latest date with data
+            if not results and not target_date:
+                latest_with_data = cls.resolve_latest_date()
+                if latest_with_data and latest_with_data != t_date:
+                    return cls.get_top_entities(
+                        entity_type=entity_type,
+                        period=period,
+                        target_date=latest_with_data,
+                        selected_hq=selected_hq,
+                        limit=limit,
+                        company_id=company_id,
+                        group_id=group_id,
+                        tsm_user_id=tsm_user_id,
+                    )
+
             return results[:limit]
         except Exception as e:
             logger.error(f"SummaryRepository: get_top_entities error: {e}")
@@ -673,23 +730,13 @@ class ChatbotSummaryRepository:
             if hq_id:
                 query = query.eq("headquarters_id", hq_id)
 
-            offset = 0
-            page_size = 1000
-            while True:
-                res = query.range(offset, offset + page_size - 1).execute()
-                rows = res.data or []
-                if not rows:
-                    break
-
-                for r in rows:
-                    sdate = str(r.get("sale_date") or "")
-                    if sdate in date_map:
-                        date_map[sdate]["cases"] += float(r.get("total_cases") or 0.0)
-                        date_map[sdate]["bottles"] += float(r.get("total_bottles") or 0.0)
-
-                if len(rows) < page_size:
-                    break
-                offset += page_size
+            res = query.limit(5000).execute()
+            rows = res.data or []
+            for r in rows:
+                sdate = str(r.get("sale_date") or "")
+                if sdate in date_map:
+                    date_map[sdate]["cases"] += float(r.get("total_cases") or 0.0)
+                    date_map[sdate]["bottles"] += float(r.get("total_bottles") or 0.0)
         except Exception as e:
             logger.error(f"SummaryRepository: get_trend error: {e}")
 
