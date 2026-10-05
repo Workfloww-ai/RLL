@@ -25,6 +25,7 @@ async def init_redis() -> Optional[aioredis.Redis]:
             _redis_client = aioredis.from_url(
                 settings.REDIS_URL,
                 decode_responses=True,
+                max_connections=20,
                 socket_connect_timeout=5,
                 socket_timeout=5,
                 retry_on_timeout=True
@@ -37,6 +38,7 @@ async def init_redis() -> Optional[aioredis.Redis]:
                 password=settings.REDIS_PASSWORD or None,
                 db=settings.REDIS_DB,
                 decode_responses=True,
+                max_connections=20,
                 socket_connect_timeout=5,
                 socket_timeout=5,
                 retry_on_timeout=True

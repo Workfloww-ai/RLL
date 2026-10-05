@@ -1,4 +1,6 @@
 import logging
+import time
+import asyncio
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from backend.db.supabase_client import get_supabase_client
@@ -7,51 +9,135 @@ from backend.db.company_aliases import normalize_company_name, is_pinned_company
 
 logger = logging.getLogger(__name__)
 
+# Master metadata in-memory cache with 5-minute (300s) TTL to reduce DB roundtrips
+_TTL = 300
 
-def get_companies_summary(
+_HQ_CACHE: Tuple[float, Dict[str, str]] = (0.0, {})
+_MAX_DATE_CACHE: Tuple[float, str] = (0.0, "")
+_MASTER_COMPANIES_CACHE: Tuple[float, List[Dict[str, Any]]] = (0.0, [])
+_MASTER_BRANDS_CACHE: Tuple[float, Dict[str, List[Dict[str, Any]]]] = (0.0, {})
+
+
+def _get_hq_lookup() -> Dict[str, str]:
+    global _HQ_CACHE
+    now = time.time()
+    if _HQ_CACHE[1] and (now - _HQ_CACHE[0]) < _TTL:
+        return _HQ_CACHE[1]
+
+    client = get_supabase_client()
+    hq_map = {}
+    if client:
+        try:
+            res = client.table("headquarters").select("headquarters_id, name").execute()
+            for h in (res.data or []):
+                if h.get("headquarters_id") and h.get("name"):
+                    hq_map[str(h["name"]).strip().lower()] = str(h["headquarters_id"])
+            _HQ_CACHE = (now, hq_map)
+        except Exception as e:
+            logger.warning(f"_get_hq_lookup error: {e}")
+    return hq_map or _HQ_CACHE[1]
+
+
+def _get_latest_sale_date() -> str:
+    global _MAX_DATE_CACHE
+    now = time.time()
+    if _MAX_DATE_CACHE[1] and (now - _MAX_DATE_CACHE[0]) < _TTL:
+        return _MAX_DATE_CACHE[1]
+
+    client = get_supabase_client()
+    target_date = ""
+    if client:
+        try:
+            res = client.table("sales_daily_summary").select("sale_date").order("sale_date", desc=True).limit(1).execute()
+            if res.data and res.data[0].get("sale_date"):
+                target_date = str(res.data[0]["sale_date"])
+                _MAX_DATE_CACHE = (now, target_date)
+        except Exception as e:
+            logger.warning(f"_get_latest_sale_date error: {e}")
+
+    if not target_date:
+        target_date = datetime.utcnow().strftime("%Y-%m-%d")
+    return target_date
+
+
+def _get_master_companies() -> List[Dict[str, Any]]:
+    global _MASTER_COMPANIES_CACHE
+    now = time.time()
+    if _MASTER_COMPANIES_CACHE[1] and (now - _MASTER_COMPANIES_CACHE[0]) < _TTL:
+        return _MASTER_COMPANIES_CACHE[1]
+
+    client = get_supabase_client()
+    comp_list = []
+    if client:
+        try:
+            res = client.table("companies").select("company_id, company_name").execute()
+            comp_list = res.data or []
+            _MASTER_COMPANIES_CACHE = (now, comp_list)
+        except Exception as e:
+            logger.warning(f"_get_master_companies error: {e}")
+    return comp_list or _MASTER_COMPANIES_CACHE[1]
+
+
+def _get_master_brands_by_company() -> Dict[str, List[Dict[str, Any]]]:
+    global _MASTER_BRANDS_CACHE
+    now = time.time()
+    if _MASTER_BRANDS_CACHE[1] and (now - _MASTER_BRANDS_CACHE[0]) < _TTL:
+        return _MASTER_BRANDS_CACHE[1]
+
+    client = get_supabase_client()
+    brands_map: Dict[str, List[Dict[str, Any]]] = {}
+    if client:
+        try:
+            res = client.table("brands").select("brand_id, brand_name, company_id").execute()
+            for mb in (res.data or []):
+                cid = str(mb.get("company_id") or "")
+                bid = str(mb.get("brand_id") or "")
+                bname = str(mb.get("brand_name") or "Generic Brand").strip()
+                if cid and bid:
+                    if cid not in brands_map:
+                        brands_map[cid] = []
+                    brands_map[cid].append({"brand_id": bid, "brand_name": bname})
+            _MASTER_BRANDS_CACHE = (now, brands_map)
+        except Exception as e:
+            logger.warning(f"_get_master_brands_by_company error: {e}")
+    return brands_map or _MASTER_BRANDS_CACHE[1]
+
+
+async def get_companies_summary_async(
     period: str = "Daily",
     date_to: Optional[str] = None,
     selected_hq: Optional[str] = None,
     company_name: Optional[str] = None
 ) -> Tuple[List[Dict[str, Any]], str]:
     """
-    Period-specific Companies sales analytics service.
+    Asynchronous, period-optimized Companies sales analytics service.
     Excludes company 'Others' strictly. Supports single company scoping.
-    Returns list of company objects structured for mobile UI.
-    Uses sales_daily_summary as the single source of truth.
+    Executes RPC calls concurrently and caches master data in-memory.
     """
+    t_start = time.perf_counter()
     client = get_supabase_client()
     if not client:
-        logger.error("get_companies_summary: Supabase client unavailable.")
-        return [], target_date or datetime.utcnow().strftime("%Y-%m-%d")
+        logger.error("get_companies_summary_async: Supabase client unavailable.")
+        return [], date_to or datetime.utcnow().strftime("%Y-%m-%d")
 
     clean_period = period.strip() if period else "Daily"
     if clean_period not in ("Daily", "MTD", "YTD"):
         clean_period = "Daily"
 
-    # Resolve HQ filter if provided
+    # 1. Resolve HQ filter if provided
     hq_id_filter = None
     if selected_hq and selected_hq.strip() and selected_hq.strip() != "All Headquarters":
-        try:
-            clean_hq_target = selected_hq.strip().lower()
-            hq_res = client.table("headquarters").select("headquarters_id, name").execute()
-            for h in (hq_res.data or []):
-                h_name = (h.get("name") or "").strip().lower()
-                if h_name == clean_hq_target or clean_hq_target in h_name or h_name in clean_hq_target:
-                    hq_id_filter = str(h["headquarters_id"])
-                    break
-        except Exception as e_hq:
-            logger.warning(f"get_companies_summary: HQ resolution error for '{selected_hq}': {e_hq}")
+        hq_map = _get_hq_lookup()
+        clean_hq_target = selected_hq.strip().lower()
+        for h_name, h_id in hq_map.items():
+            if h_name == clean_hq_target or clean_hq_target in h_name or h_name in clean_hq_target:
+                hq_id_filter = h_id
+                break
 
-    # Determine target dates
+    # 2. Determine target dates
     target_date = date_to
     if not target_date:
-        # Get latest sale date from daily summary
-        max_res = client.table("sales_daily_summary").select("sale_date").order("sale_date", desc=True).limit(1).execute()
-        if max_res.data and max_res.data[0].get("sale_date"):
-            target_date = max_res.data[0]["sale_date"]
-        else:
-            target_date = datetime.utcnow().strftime("%Y-%m-%d")
+        target_date = _get_latest_sale_date()
 
     try:
         dt = datetime.strptime(target_date, "%Y-%m-%d").date()
@@ -63,59 +149,108 @@ def get_companies_summary(
     fy_year = dt.year if dt.month >= 4 else dt.year - 1
     ytd_start = f"{fy_year}-04-01"
 
-    # 1. Call Canonical Company Summary RPC
-    rpc_params = {
+    # Period Slicing Optimization: Tailor date parameters based on active period to prevent scan overflow
+    if clean_period == "Daily":
+        effective_mtd_start = target_date
+        effective_ytd_start = target_date
+    elif clean_period == "MTD":
+        effective_mtd_start = mtd_start
+        effective_ytd_start = mtd_start
+    else:  # YTD
+        effective_mtd_start = mtd_start
+        effective_ytd_start = ytd_start
+
+    # Build RPC parameters
+    comp_rpc_params = {
         "p_target_date": target_date,
-        "p_mtd_start": mtd_start,
-        "p_ytd_start": ytd_start,
+        "p_mtd_start": effective_mtd_start,
+        "p_ytd_start": effective_ytd_start,
     }
     if hq_id_filter:
-        rpc_params["p_hq_id"] = hq_id_filter
+        comp_rpc_params["p_hq_id"] = hq_id_filter
     if company_name:
-        rpc_params["p_company_name"] = company_name.strip()
+        comp_rpc_params["p_company_name"] = company_name.strip()
 
-    try:
-        comp_summary_res = client.rpc("get_mobile_companies_summary", rpc_params).execute()
-        comp_summary_data = comp_summary_res.data or []
-    except Exception as e:
-        logger.error(f"Error calling get_mobile_companies_summary RPC: {e}")
-        return [], target_date
-
-    # 2. Fetch all registered master companies to ensure all companies are shown irrespective of HQ sales
+    # Pre-fetch master companies to ensure all active companies appear in grid
+    mc_data = _get_master_companies()
     grouped_companies = {}
-    try:
-        mc_res = client.table("companies").select("company_id, company_name").execute()
-        for mc in (mc_res.data or []):
-            cid = str(mc.get("company_id") or "")
-            cname = str(mc.get("company_name") or "").strip()
-            if not cname or is_others_company(cname):
-                continue
-            if company_name and cname.lower() != company_name.strip().lower():
-                continue
-            norm_name = normalize_company_name(cname)
-            norm_key = norm_name.lower().replace(" ", "-").replace("/", "-")
-            if norm_key not in grouped_companies:
-                grouped_companies[norm_key] = {
-                    "id": norm_key,
-                    "name": norm_name,
-                    "isPinned": is_pinned_company(norm_name, norm_key),
-                    "hqLocation": selected_hq or "All Headquarters",
-                    "company_ids": [],
-                    "daily_cases": 0.0,
-                    "daily_bottles": 0.0,
-                    "daily_bl": 0.0,
-                    "mtd_cases": 0.0,
-                    "mtd_bottles": 0.0,
-                    "mtd_bl": 0.0,
-                    "ytd_cases": 0.0,
-                    "ytd_bottles": 0.0,
-                    "ytd_bl": 0.0,
-                }
-            if cid and cid not in grouped_companies[norm_key]["company_ids"]:
-                grouped_companies[norm_key]["company_ids"].append(cid)
-    except Exception as e_mc:
-        logger.warning(f"Error fetching master companies: {e_mc}")
+    for mc in mc_data:
+        cid = str(mc.get("company_id") or "")
+        cname = str(mc.get("company_name") or "").strip()
+        if not cname or is_others_company(cname):
+            continue
+        if company_name and cname.lower() != company_name.strip().lower():
+            continue
+        norm_name = normalize_company_name(cname)
+        norm_key = norm_name.lower().replace(" ", "-").replace("/", "-")
+        if norm_key not in grouped_companies:
+            grouped_companies[norm_key] = {
+                "id": norm_key,
+                "name": norm_name,
+                "isPinned": is_pinned_company(norm_name, norm_key),
+                "hqLocation": selected_hq or "All Headquarters",
+                "company_ids": [],
+                "daily_cases": 0.0,
+                "daily_bottles": 0.0,
+                "daily_bl": 0.0,
+                "mtd_cases": 0.0,
+                "mtd_bottles": 0.0,
+                "mtd_bl": 0.0,
+                "ytd_cases": 0.0,
+                "ytd_bottles": 0.0,
+                "ytd_bl": 0.0,
+            }
+        if cid and cid not in grouped_companies[norm_key]["company_ids"]:
+            grouped_companies[norm_key]["company_ids"].append(cid)
 
+    # Collect ALL company UUIDs across grouped_companies for brand RPC parameter
+    all_company_ids = []
+    cid_to_norm_key = {}
+    for norm_key, g in grouped_companies.items():
+        for cid in g["company_ids"]:
+            all_company_ids.append(cid)
+            cid_to_norm_key[cid] = norm_key
+
+    brand_rpc_params = {
+        "p_company_ids": all_company_ids,
+        "p_target_date": target_date,
+        "p_mtd_start": effective_mtd_start,
+        "p_ytd_start": effective_ytd_start,
+    }
+    if hq_id_filter:
+        brand_rpc_params["p_hq_id"] = hq_id_filter
+
+    # 3. Execute Company RPC and Brand RPC concurrently via asyncio.gather
+    def _fetch_company_summary():
+        t0 = time.perf_counter()
+        try:
+            res = client.rpc("get_mobile_companies_summary", comp_rpc_params).execute()
+            data = res.data or []
+            logger.info(f"get_mobile_companies_summary RPC took {(time.perf_counter()-t0)*1000:.2f} ms ({len(data)} rows)")
+            return data
+        except Exception as e:
+            logger.error(f"Error executing get_mobile_companies_summary RPC: {e}")
+            return []
+
+    def _fetch_brand_summary():
+        if not all_company_ids:
+            return []
+        t0 = time.perf_counter()
+        try:
+            res = client.rpc("get_mobile_company_brands_summary", brand_rpc_params).execute()
+            data = res.data or []
+            logger.info(f"get_mobile_company_brands_summary RPC took {(time.perf_counter()-t0)*1000:.2f} ms ({len(data)} rows)")
+            return data
+        except Exception as e:
+            logger.error(f"Error executing get_mobile_company_brands_summary RPC: {e}")
+            return []
+
+    comp_summary_data, all_brands_data = await asyncio.gather(
+        asyncio.to_thread(_fetch_company_summary),
+        asyncio.to_thread(_fetch_brand_summary)
+    )
+
+    # Process Company Summary Aggregation
     for row in comp_summary_data:
         cid = str(row.get("company_id") or "")
         cname = str(row.get("company_name") or "").strip()
@@ -157,46 +292,8 @@ def get_companies_summary(
         g["ytd_bottles"] += float(row.get("ytd_bottles") or 0.0)
         g["ytd_bl"] += float(row.get("ytd_bl") or 0.0)
 
-    # 3. Fetch master brands per company to ensure 0-sale brands are included in brand count and drilldown
-    master_brands_by_company = {}
-    try:
-        mb_res = client.table("brands").select("brand_id, brand_name, company_id").execute()
-        for mb in (mb_res.data or []):
-            cid = str(mb.get("company_id") or "")
-            bid = str(mb.get("brand_id") or "")
-            bname = str(mb.get("brand_name") or "Generic Brand").strip()
-            if cid and bid:
-                if cid not in master_brands_by_company:
-                    master_brands_by_company[cid] = []
-                master_brands_by_company[cid].append({"brand_id": bid, "brand_name": bname})
-    except Exception as e_mb:
-        logger.warning(f"Error fetching master_brands_by_company: {e_mb}")
-
-    # Collect ALL company UUIDs across grouped_companies to execute a SINGLE batched RPC call instead of N+1 loop calls
-    all_company_ids = []
-    cid_to_norm_key = {}
-    for norm_key, g in grouped_companies.items():
-        for cid in g["company_ids"]:
-            all_company_ids.append(cid)
-            cid_to_norm_key[cid] = norm_key
-
-    all_brands_data = []
-    if all_company_ids:
-        brand_params = {
-            "p_company_ids": all_company_ids,
-            "p_target_date": target_date,
-            "p_mtd_start": mtd_start,
-            "p_ytd_start": ytd_start,
-        }
-        if hq_id_filter:
-            brand_params["p_hq_id"] = hq_id_filter
-
-        try:
-            brand_res = client.rpc("get_mobile_company_brands_summary", brand_params).execute()
-            all_brands_data = brand_res.data or []
-        except Exception as e_brands:
-            logger.error(f"Error calling get_mobile_company_brands_summary RPC: {e_brands}")
-            all_brands_data = []
+    # Process Brand Summaries by Company
+    master_brands_by_company = _get_master_brands_by_company()
 
     brands_by_company: Dict[str, List[Dict[str, Any]]] = {}
     for b in all_brands_data:
@@ -232,15 +329,15 @@ def get_companies_summary(
         for b in brands_data:
             bid = str(b.get("brand_id") or "")
             bname = str(b.get("brand_name") or "Generic Brand").strip()
-            
+
             b_daily_cases = float(b.get("daily_cases") or 0.0)
             b_daily_bottles = float(b.get("daily_bottles") or 0.0)
             b_daily_bl = float(b.get("daily_bl") or 0.0)
-            
+
             b_mtd_cases = float(b.get("mtd_cases") or 0.0)
             b_mtd_bottles = float(b.get("mtd_bottles") or 0.0)
             b_mtd_bl = float(b.get("mtd_bl") or 0.0)
-            
+
             b_ytd_cases = float(b.get("ytd_cases") or 0.0)
             b_ytd_bottles = float(b.get("ytd_bottles") or 0.0)
             b_ytd_bl = float(b.get("ytd_bl") or 0.0)
@@ -311,4 +408,15 @@ def get_companies_summary(
         })
 
     response_list.sort(key=lambda x: (not x["isPinned"], -x["cases"]))
+    logger.info(f"get_companies_summary_async total execution time: {(time.perf_counter()-t_start)*1000:.2f} ms")
     return response_list, target_date
+
+
+def get_companies_summary(
+    period: str = "Daily",
+    date_to: Optional[str] = None,
+    selected_hq: Optional[str] = None,
+    company_name: Optional[str] = None
+) -> Tuple[List[Dict[str, Any]], str]:
+    """Synchronous fallback wrapper for get_companies_summary_async."""
+    return asyncio.run(get_companies_summary_async(period, date_to, selected_hq, company_name))
