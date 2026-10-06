@@ -38,6 +38,7 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
   const [successMessage, setSuccessMessage] = useState('');
   const [phoneFocused, setPhoneFocused] = useState(false);
   const [focusedOtpIndex, setFocusedOtpIndex] = useState<number | null>(null);
+  const [resendTimer, setResendTimer] = useState<number>(30);
 
   const inputRefs = [
     useRef<any>(null),
@@ -56,6 +57,19 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
       }, 100);
     }
   }, [step]);
+
+  // Resend OTP 30-second countdown timer
+  useEffect(() => {
+    let timer: any;
+    if (step === 'otp' && resendTimer > 0) {
+      timer = setInterval(() => {
+        setResendTimer((prev) => prev - 1);
+      }, 1000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [step, resendTimer]);
 
   const handleSendOTP = async () => {
     if (!phone.trim()) {
@@ -85,6 +99,7 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         }
         logger.info(`LoginScreen: OTP requested successfully. Advancing to verification step.`);
         setStep('otp');
+        setResendTimer(30);
         setSuccessMessage(`6-digit code sent to +91 ${phone.trim()}`);
       } else {
         logger.warn(`LoginScreen: Server response success false on OTP request: ${res.message}`);
@@ -240,6 +255,7 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                       setOtpDigits(['', '', '', '', '', '']);
                       setError('');
                       setSuccessMessage('');
+                      setResendTimer(30);
                     }}
                     style={styles.inlineEditBtn}
                     activeOpacity={0.7}
@@ -301,15 +317,25 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                   )}
                 </TouchableOpacity>
 
-                {/* Streamlined Resend Button */}
+                {/* Streamlined Resend Button with 30s Countdown Timer */}
                 <TouchableOpacity
                   onPress={handleSendOTP}
-                  disabled={loading}
-                  style={styles.resendLinkBtn}
+                  disabled={loading || resendTimer > 0}
+                  style={[
+                    styles.resendLinkBtn,
+                    (loading || resendTimer > 0) ? styles.resendLinkBtnDisabled : null,
+                  ]}
                   activeOpacity={0.7}
                 >
-                  <RefreshIcon color="#0D3B8E" size={12} />
-                  <Text style={styles.resendLinkText}>Resend Code</Text>
+                  <RefreshIcon color={resendTimer > 0 ? '#94A3B8' : '#0D3B8E'} size={12} />
+                  <Text
+                    style={[
+                      styles.resendLinkText,
+                      resendTimer > 0 ? styles.resendLinkTextDisabled : null,
+                    ]}
+                  >
+                    {resendTimer > 0 ? `Resend Code in ${resendTimer}s` : 'Resend Code'}
+                  </Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -529,10 +555,16 @@ const styles = StyleSheet.create({
     marginTop: 16,
     paddingVertical: 4,
   },
+  resendLinkBtnDisabled: {
+    opacity: 0.7,
+  },
   resendLinkText: {
     fontSize: 12,
     fontWeight: '700',
     color: '#0D3B8E',
+  },
+  resendLinkTextDisabled: {
+    color: '#94A3B8',
   },
   footer: {
     alignItems: 'center',
