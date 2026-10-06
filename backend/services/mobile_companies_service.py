@@ -208,8 +208,11 @@ async def get_companies_summary_async(
     cid_to_norm_key = {}
     for norm_key, g in grouped_companies.items():
         for cid in g["company_ids"]:
-            all_company_ids.append(cid)
-            cid_to_norm_key[cid] = norm_key
+            cid_clean = str(cid).strip().lower()
+            if cid_clean and cid_clean not in all_company_ids:
+                all_company_ids.append(cid_clean)
+            if cid_clean:
+                cid_to_norm_key[cid_clean] = norm_key
 
     brand_rpc_params = {
         "p_company_ids": all_company_ids,
@@ -297,7 +300,7 @@ async def get_companies_summary_async(
 
     brands_by_company: Dict[str, List[Dict[str, Any]]] = {}
     for b in all_brands_data:
-        raw_cid = str(b.get("company_id") or "")
+        raw_cid = str(b.get("company_id") or "").strip().lower()
         norm_key = cid_to_norm_key.get(raw_cid)
         if norm_key:
             if norm_key not in brands_by_company:
@@ -311,8 +314,8 @@ async def get_companies_summary_async(
         comp_brands_map = {}
         # Pre-populate with all master registered brands for this company (cases = 0)
         for cid in g["company_ids"]:
-            for mb in master_brands_by_company.get(cid, []):
-                bid = mb["brand_id"]
+            for mb in master_brands_by_company.get(str(cid).strip().lower(), []):
+                bid = str(mb["brand_id"]).strip().lower()
                 if bid not in comp_brands_map:
                     comp_brands_map[bid] = {
                         "id": bid,
@@ -327,7 +330,7 @@ async def get_companies_summary_async(
                     }
 
         for b in brands_data:
-            bid = str(b.get("brand_id") or "")
+            bid = str(b.get("brand_id") or "").strip().lower()
             bname = str(b.get("brand_name") or "Generic Brand").strip()
 
             b_daily_cases = float(b.get("daily_cases") or 0.0)

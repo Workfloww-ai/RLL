@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Company, Period } from '../../types';
-import { formatNumber } from '../../lib/utils';
+import { formatNumber, toTitleCase, normalizeCompanyName } from '../../lib/utils';
 import { StarIcon, ChevronRightIcon } from '../../components/Icons';
 
 interface CompanyCardProps {
@@ -47,7 +47,7 @@ export const CompanyCard = React.memo(function CompanyCard({
               </View>
             ) : null}
             <Text style={styles.companyName} numberOfLines={1}>
-              {company.name}
+              {normalizeCompanyName(toTitleCase(company.name))}
             </Text>
           </View>
 

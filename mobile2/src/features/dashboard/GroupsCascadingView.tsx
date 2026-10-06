@@ -15,7 +15,7 @@ import {
   RefreshControl,
 } from 'react-native';
 import { Period } from '../../types';
-import { formatNumber } from '../../lib/utils';
+import { formatNumber, toTitleCase } from '../../lib/utils';
 import { GroupListSkeletonList } from '../../components/SkeletonLoaders';
 import {
   fetchCascadingGroups,
@@ -359,6 +359,41 @@ export function GroupsCascadingView({
     return `Search brands in ${firstName}...`;
   }, [level, activeGroupTab, selectedLicensee]);
 
+  const getItemCases = useCallback((item: any): number => {
+    if (!item) return 0;
+    const raw = Number(item.total_cases ?? item.cases ?? item.mtd_cases ?? item.daily_cases ?? 0);
+    return Number((raw * scaleFactor).toFixed(2));
+  }, [scaleFactor]);
+
+  // Header breadcrumb summary metrics (for Level 2 & Level 3 drilldown)
+  const headerMetrics = useMemo(() => {
+    if (level === 2 && selectedGroup) {
+      const cases = getItemCases(selectedGroup);
+      const licCount = Math.round(Number(selectedGroup.total_licensees || selectedGroup.licensee_count || 0));
+      const brandCount = Math.round(Number(selectedGroup.total_brands || selectedGroup.brand_count || 0));
+      const licText = `${licCount} ${licCount === 1 ? 'Outlet' : 'Outlets'}`;
+      const brandText = `${brandCount} ${brandCount === 1 ? 'Brand' : 'Brands'}`;
+      const subtitle = `${licText}  •  ${brandText}`;
+      return {
+        cases,
+        title: toTitleCase(selectedGroup.group_name || selectedGroup.name || 'Group'),
+        subtitle,
+      };
+    }
+    if (level === 3 && selectedLicensee) {
+      const cases = getItemCases(selectedLicensee);
+      const trade = selectedLicensee.trade || selectedLicensee.Trade || 'Off';
+      const depot = selectedLicensee.depot_name ? `Depot: ${selectedLicensee.depot_name}` : null;
+      const subtitle = depot ? `Trade: ${trade}  •  ${depot}` : `Trade: ${trade}`;
+      return {
+        cases,
+        title: toTitleCase(selectedLicensee.licensee_name || selectedLicensee.name || 'Licensee'),
+        subtitle,
+      };
+    }
+    return null;
+  }, [level, selectedGroup, selectedLicensee, getItemCases]);
+
   const getSortOptionLabel = (option: SortOptionValue): string => {
     switch (option) {
       case 'az': return 'A to Z';
@@ -401,6 +436,27 @@ export function GroupsCascadingView({
             }}
             scaleFactor={scaleFactor}
           />
+        </View>
+      )}
+
+      {/* Breadcrumb Header Panel: Inline single-line compact layout below back panel */}
+      {level > 1 && headerMetrics && (
+        <View style={styles.headerCard}>
+          <View style={styles.headerLeftTitleBlock}>
+            <Text style={styles.headerTitleInline} numberOfLines={1}>
+              <Text style={styles.headerTitleText}>{headerMetrics.title}</Text>
+              {!!headerMetrics.subtitle && (
+                <Text style={styles.headerSubtitleInline}> ({headerMetrics.subtitle})</Text>
+              )}
+            </Text>
+          </View>
+
+          <View style={styles.headerRightMetricsBlock}>
+            <View style={styles.metricBadgePrimary}>
+              <Text style={styles.metricLabelPrimary}>cases </Text>
+              <Text style={styles.metricValuePrimary}>{formatNumber(headerMetrics.cases)}</Text>
+            </View>
+          </View>
         </View>
       )}
 
@@ -491,7 +547,7 @@ export function GroupsCascadingView({
                 <MetricsCard
                   key={`grp-${item.group_id || item.id || 'grp'}-${index}`}
                   title={item.group_name}
-                  subtitle={`${item.total_licensees || 0} Licensee(s)  •  ${item.total_brands || 0} Brand(s)`}
+                  subtitle={`${item.total_licensees || 0} Outlet(s)  •  ${item.total_brands || 0} Brand(s)`}
                   metrics={[
                     { label: 'Cases', value: cases },
                   ]}
@@ -849,5 +905,58 @@ const styles = StyleSheet.create({
   perPageOptionTextSelected: {
     color: '#0284C7',
     fontWeight: '700',
+  },
+  headerCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+  },
+  headerLeftTitleBlock: {
+    flex: 1,
+    marginRight: 8,
+  },
+  headerTitleInline: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+  },
+  headerTitleText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  headerSubtitleInline: {
+    fontSize: 11.5,
+    fontWeight: '500',
+    color: '#64748B',
+  },
+  headerRightMetricsBlock: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  metricBadgePrimary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#DBEAFE',
+  },
+  metricLabelPrimary: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#3B82F6',
+    textTransform: 'lowercase',
+  },
+  metricValuePrimary: {
+    fontSize: 12.5,
+    fontWeight: '800',
+    color: '#1D4ED8',
   },
 });

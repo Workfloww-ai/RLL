@@ -1421,19 +1421,23 @@ async def get_mobile_sales(
     raw_to_comp_id = {}
     for comp_id, g in grouped_comp_rows.items():
         for cid in g["company_ids"]:
-            all_company_ids.append(cid)
-            raw_to_comp_id[cid] = comp_id
+            cid_clean = str(cid).strip().lower()
+            if cid_clean and cid_clean not in all_company_ids:
+                all_company_ids.append(cid_clean)
+            if cid_clean:
+                raw_to_comp_id[cid_clean] = comp_id
 
     # Pre-populate brands_map with ALL master registered brands for each company (so 0-sale brands are counted and listed)
     for bid, binfo in brands_lookup.items():
-        b_comp_id = binfo.get("company_id")
+        b_comp_id = str(binfo.get("company_id") or "").strip().lower()
         if b_comp_id and b_comp_id in raw_to_comp_id:
             comp_id = raw_to_comp_id[b_comp_id]
             if comp_id in grouped_comp_rows:
                 g = grouped_comp_rows[comp_id]
-                if bid not in g["brands_map"]:
-                    g["brands_map"][bid] = {
-                        "id": bid,
+                bid_str = str(bid).strip().lower()
+                if bid_str not in g["brands_map"]:
+                    g["brands_map"][bid_str] = {
+                        "id": bid_str,
                         "name": binfo.get("name") or "Generic Brand",
                         "data": {
                             "Daily": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
@@ -1460,7 +1464,7 @@ async def get_mobile_sales(
             brands_data = []
 
         for b in brands_data:
-            raw_cid = str(b.get("company_id") or "")
+            raw_cid = str(b.get("company_id") or "").strip().lower()
             comp_id = raw_to_comp_id.get(raw_cid)
             if not comp_id or comp_id not in grouped_comp_rows:
                 continue
@@ -1767,11 +1771,12 @@ async def get_mobile_sales(
     formatted_companies = []
     for c_id, c_data in master_companies.items():
         all_b = list(c_data.pop("brands_map", {}).values())
-        c_data["brands"] = [
+        active_b = [
             b for b in all_b
             if (b.get("data", {}).get(selected_period, {}).get("cases", 0) > 0 or
                 b.get("data", {}).get(selected_period, {}).get("bottles", 0) > 0)
         ]
+        c_data["brands"] = active_b if active_b else all_b
         if selected_hq != "All Headquarters" and c_data.get("hqLocation") and c_data["hqLocation"] != "All Headquarters":
             if c_data["hqLocation"].lower() != selected_hq.lower():
                 continue
