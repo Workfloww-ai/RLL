@@ -15,7 +15,11 @@ _TENANT_CACHE: Dict[str, Any] = {}
 _TENANT_CACHE_TTL = 300.0  # 5 minutes
 
 _INCLUDE_OTHERS_LOCAL_CACHE: Optional[bool] = None
-_INCLUDE_OTHERS_CACHE_TIME: float = 0.0 
+_INCLUDE_OTHERS_CACHE_TIME: float = 0.0
+
+_CHATBOT_ENABLED_LOCAL_CACHE: Optional[bool] = None
+_CHATBOT_ENABLED_CACHE_TIME: float = 0.0
+
 def get_include_others_setting_sync() -> bool:
     """
     Synchronous helper returning whether company Others is included in sales calculations (default: True).
@@ -57,12 +61,55 @@ async def get_include_others_setting_async() -> bool:
     return val
 
 
+def get_chatbot_enabled_setting_sync() -> bool:
+    """
+    Synchronous helper returning whether AI Chatbot is enabled (default: True).
+    Reads system_settings table from Supabase PostgreSQL with 60-second in-memory caching.
+    """
+    global _CHATBOT_ENABLED_LOCAL_CACHE, _CHATBOT_ENABLED_CACHE_TIME
+    now = time.time()
+    if _CHATBOT_ENABLED_LOCAL_CACHE is not None and (now - _CHATBOT_ENABLED_CACHE_TIME) < 60.0:
+        return _CHATBOT_ENABLED_LOCAL_CACHE
+
+    val = True
+    client = get_supabase_client()
+    if client:
+        try:
+            res = client.table("system_settings").select("setting_value").eq("setting_key", "chatbot_enabled").limit(1).execute()
+            if res.data and len(res.data) > 0:
+                val_str = str(res.data[0].get("setting_value", "true")).strip().lower()
+                val = (val_str == "true")
+        except Exception as e:
+            logger.debug(f"Notice reading chatbot_enabled setting (using default True): {e}")
+
+    _CHATBOT_ENABLED_LOCAL_CACHE = val
+    _CHATBOT_ENABLED_CACHE_TIME = now
+    return val
+
+
+async def get_chatbot_enabled_setting_async() -> bool:
+    """
+    Async helper returning whether AI Chatbot is enabled (default: True).
+    Checks Redis cache first then Supabase PostgreSQL.
+    """
+    from backend.db.redis_client import safe_get, safe_set
+    cached = await safe_get("rll:setting:chatbot_enabled")
+    if cached is not None:
+        return str(cached).strip().lower() == "true"
+
+    val = get_chatbot_enabled_setting_sync()
+    await safe_set("rll:setting:chatbot_enabled", "true" if val else "false", ttl=86400 * 30)
+    return val
+
+
 def clear_tenant_cache():
     """Clear local tenant cache entries."""
-    global _TENANT_CACHE, _INCLUDE_OTHERS_LOCAL_CACHE, _INCLUDE_OTHERS_CACHE_TIME
+    global _TENANT_CACHE, _INCLUDE_OTHERS_LOCAL_CACHE, _INCLUDE_OTHERS_CACHE_TIME, _CHATBOT_ENABLED_LOCAL_CACHE, _CHATBOT_ENABLED_CACHE_TIME
     _TENANT_CACHE.clear()
     _INCLUDE_OTHERS_LOCAL_CACHE = None
     _INCLUDE_OTHERS_CACHE_TIME = 0.0
+    _CHATBOT_ENABLED_LOCAL_CACHE = None
+    _CHATBOT_ENABLED_CACHE_TIME = 0.0
 
 
 def get_tenant_config_service(
@@ -84,6 +131,7 @@ def get_tenant_config_service(
 
     client = get_supabase_client()
     include_others = get_include_others_setting_sync()
+    chatbot_enabled = get_chatbot_enabled_setting_sync()
     excluded = [] if include_others else ["Others"]
 
     default_config = {
@@ -96,6 +144,7 @@ def get_tenant_config_service(
         "splash_screen_url": "",
         "pinned_company_name": "Rajasthan Liquor Limited",
         "excluded_companies": excluded,
+        "chatbot_enabled": chatbot_enabled,
     }
 
     if not client:
@@ -119,6 +168,7 @@ def get_tenant_config_service(
                 "splash_screen_url": str(res.data.get("splash_screen_url") or ""),
                 "pinned_company_name": str(res.data.get("pinned_company_name") or "Rajasthan Liquor Limited"),
                 "excluded_companies": excluded,
+                "chatbot_enabled": chatbot_enabled,
             }
             _TENANT_CACHE[cache_key] = {"timestamp": now, "data": config_data}
             return config_data
@@ -127,4 +177,5 @@ def get_tenant_config_service(
 
     _TENANT_CACHE[cache_key] = {"timestamp": now, "data": default_config}
     return default_config
+
 

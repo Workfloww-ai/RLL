@@ -10,6 +10,8 @@ from backend.core.security import get_current_user
 from backend.schemas.chatbot import ChatMessageRequest, ChatMessageResponse
 from backend.services.chatbot.analytics_service import ChatbotAnalyticsService
 
+from backend.services.tenant_service import get_chatbot_enabled_setting_async
+
 router = APIRouter(prefix="/chatbot", tags=["Sales Chatbot"])
 
 @router.post("/query", response_model=ChatMessageResponse)
@@ -22,6 +24,13 @@ async def query_sales_chatbot(
     Validates user JWT token, extracts security scope, executes analytics intent,
     and returns structured response with KPIs, tables, and charts.
     """
+    is_chatbot_enabled = await get_chatbot_enabled_setting_async()
+    if not is_chatbot_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Sales AI Chatbot feature is currently disabled by system administrator."
+        )
+
     if not payload.message or not payload.message.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -51,6 +60,8 @@ async def query_sales_chatbot(
         )
         return response
     except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Chatbot execution error: {str(e)}"
@@ -61,6 +72,12 @@ async def get_suggested_prompts(
     current_user: Dict[str, Any] = Depends(get_current_user)
 ) -> Dict[str, List[str]]:
     """Returns curated starter prompt pills for Chatbot UI."""
+    is_chatbot_enabled = await get_chatbot_enabled_setting_async()
+    if not is_chatbot_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Sales AI Chatbot feature is currently disabled by system administrator."
+        )
     return {
         "prompts": [
             "Summarise total sales for Daily",

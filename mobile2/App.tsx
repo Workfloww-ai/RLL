@@ -813,7 +813,7 @@ function MainApp() {
             )}
 
             {/* Floating Chatbot Action Button (FAB) */}
-            {!isKeyboardVisible && (
+            {!isKeyboardVisible && config.chatbotEnabled !== false && (
               <TouchableOpacity
                 style={[styles.chatbotFab, { bottom: dynamicFabBottom }]}
                 onPress={() => setShowChatbotModal(true)}
@@ -826,12 +826,14 @@ function MainApp() {
             )}
 
             {/* Sales AI Chatbot Modal */}
-            <ChatbotModal
-              visible={showChatbotModal}
-              onClose={() => setShowChatbotModal(false)}
-              period={period}
-              selectedHq={selectedHq}
-            />
+            {config.chatbotEnabled !== false && (
+              <ChatbotModal
+                visible={showChatbotModal}
+                onClose={() => setShowChatbotModal(false)}
+                period={period}
+                selectedHq={selectedHq}
+              />
+            )}
 
             {/* No Data Found Centered Modal Popup */}
             <NoDataModal

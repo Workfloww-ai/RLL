@@ -67,6 +67,32 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
   }
 }
 
+function getUserRoleFromStorage(): string {
+  try {
+    const storedUserStr = localStorage.getItem('user');
+    if (storedUserStr) {
+      const u = JSON.parse(storedUserStr);
+      const r = (u.role_name || u.role || '').toLowerCase();
+      if (r) return r;
+    }
+  } catch (e) {}
+
+  try {
+    const token = localStorage.getItem('token');
+    if (token) {
+      const base64Url = token.split('.')[1];
+      if (base64Url) {
+        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+        const payload = JSON.parse(atob(base64));
+        const r = (payload.role || payload.role_name || '').toLowerCase();
+        if (r) return r;
+      }
+    }
+  } catch (e) {}
+
+  return '';
+}
+
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
     return Boolean(localStorage.getItem('token'));
@@ -76,8 +102,15 @@ export default function App() {
   });
   const [currentView, setCurrentView] = useState<ViewState>(() => {
     const savedView = localStorage.getItem('current_view');
+    const userRole = getUserRoleFromStorage();
+    if (savedView === 'settings' && userRole !== 'developer') {
+      return 'stock';
+    }
     return (savedView as ViewState) || 'stock';
   });
+
+  const userRole = getUserRoleFromStorage();
+  const isDeveloper = userRole === 'developer';
 
   useEffect(() => {
     async function verifySession() {
@@ -118,6 +151,10 @@ export default function App() {
   }, []);
 
   const handleViewChange = (view: ViewState) => {
+    if (view === 'settings' && !isDeveloper) {
+      setCurrentView('stock');
+      return;
+    }
     setCurrentView(view);
     localStorage.setItem('current_view', view);
   };
@@ -154,19 +191,21 @@ export default function App() {
     return <Login onLogin={handleLogin} />;
   }
 
+  const activeView = (currentView === 'settings' && !isDeveloper) ? 'stock' : currentView;
+
   return (
     <ErrorBoundary>
       <DashboardLayout 
-        currentView={currentView} 
+        currentView={activeView} 
         onViewChange={handleViewChange}
         userName={userName}
         onLogout={handleLogout}
       >
-        {currentView === 'stock' && <StockUpload />}
-        {currentView === 'territory' && <TerritoryManagement />}
-        {currentView === 'headcount' && <HeadcountManagement />}
-        {currentView === 'roles' && <RoleManagement />}
-        {currentView === 'settings' && <SystemSettings />}
+        {activeView === 'stock' && <StockUpload />}
+        {activeView === 'territory' && <TerritoryManagement />}
+        {activeView === 'headcount' && <HeadcountManagement />}
+        {activeView === 'roles' && <RoleManagement />}
+        {activeView === 'settings' && isDeveloper && <SystemSettings />}
       </DashboardLayout>
     </ErrorBoundary>
   );

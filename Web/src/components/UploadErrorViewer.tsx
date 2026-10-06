@@ -598,8 +598,8 @@ export default function UploadErrorViewer({ initialBatchId, refreshTrigger = 0, 
                     </tr>
                   ) : (
                     filteredErrors.slice(0, 150).map((err) => {
-                      const rowNum = err.excel_row_number || (err.raw_message && err.raw_message.match(/\[Row\s*#?(\d+)\]/i)?.[1]) || '—';
-                      const actionText = err.suggested_action || err.resolution;
+                      const rowNum = (err as any).excel_row_number || (err.raw_message && err.raw_message.match(/\[Row\s*#?(\d+)\]/i)?.[1]) || '—';
+                      const actionText = err.suggested_action || (err as any).resolution;
                       return (
                         <tr key={err.error_id} className="hover:bg-slate-50/60 transition-colors">
                           <td className="py-3 px-4 whitespace-nowrap">
