@@ -457,7 +457,7 @@ export function GroupsCascadingView({
           style={styles.scrollList}
           contentContainerStyle={styles.scrollContent}
           data={paginatedList}
-          keyExtractor={(item, index) => `grp-item-${item.group_id || item.licensee_id || item.brand_id || item.id || index}`}
+          keyExtractor={(item, index) => `grp-L${level}-${item.group_id || item.licensee_id || item.brand_id || item.id || 'row'}-${index}`}
           initialNumToRender={8}
           maxToRenderPerBatch={10}
           windowSize={5}

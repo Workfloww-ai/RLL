@@ -487,7 +487,7 @@ export function CompanyCascadingView({
           style={styles.scrollContainer}
           contentContainerStyle={styles.scrollContent}
           data={paginatedList}
-          keyExtractor={(item, index) => `item-${item.id || item.brand_id || item.licensee_id || item.name || index}`}
+          keyExtractor={(item, index) => `comp-L${level}-${item.id || item.brand_id || item.licensee_id || item.name || 'row'}-${index}`}
           initialNumToRender={8}
           maxToRenderPerBatch={10}
           windowSize={5}

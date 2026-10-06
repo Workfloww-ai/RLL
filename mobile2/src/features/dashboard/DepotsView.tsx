@@ -136,7 +136,7 @@ export function DepotsView({
       ) : (
         <FlatList
           data={filteredDepots}
-          keyExtractor={(item) => item.id}
+          keyExtractor={(item, index) => `depot-${item.id || item.name || 'dep'}-${index}`}
           renderItem={renderDepotItem}
           contentContainerStyle={styles.listContent}
           initialNumToRender={10}
@@ -188,7 +188,7 @@ export function DepotsView({
               <Text style={styles.breakdownTitle}>Depot Brand Sales ({period})</Text>
               <FlatList
                 data={activeDepot?.brands || []}
-                keyExtractor={(item) => item.brandId}
+                keyExtractor={(item, index) => `depot-brand-${item.brandId || 'b'}-${index}`}
                 contentContainerStyle={styles.modalListContent}
                 renderItem={({ item }) => {
                   const bRaw = item.data[period];

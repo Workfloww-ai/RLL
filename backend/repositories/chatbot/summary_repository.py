@@ -45,6 +45,51 @@ class ChatbotSummaryRepository:
     """High-performance repository for sales analytics chatbot queries."""
 
     @classmethod
+    def _execute_paginated_query(cls, query, batch_size: int = 1000) -> List[Dict[str, Any]]:
+        """Executes a Supabase PostgREST query with range-based pagination to fetch ALL matching rows without truncation."""
+        all_rows = []
+        offset = 0
+        while True:
+            res = query.range(offset, offset + batch_size - 1).execute()
+            rows = res.data or []
+            if not rows:
+                break
+            all_rows.extend(rows)
+            if len(rows) < batch_size:
+                break
+            offset += batch_size
+        return all_rows
+
+    @classmethod
+    def _should_exclude_company(cls, company_id: Optional[str] = None, company_name: Optional[str] = None) -> bool:
+        """
+        Determines whether a record belonging to company_id/company_name should be excluded.
+        Dynamically respects the 'Include Others Company' developer toggle:
+        - If toggle is ON: returns False (do NOT exclude 'Others')
+        - If toggle is OFF: returns True if company is 'Others' (exclude 'Others')
+        """
+        from backend.services.tenant_service import get_include_others_setting_sync
+        from backend.services.company_cascading_service import is_others_company
+
+        if get_include_others_setting_sync():
+            return False
+
+        master = cls._load_master_lookups()
+        others_id = master.get("others_company_id")
+
+        if company_id and others_id and str(company_id) == str(others_id):
+            return True
+
+        if company_name and is_others_company(company_name):
+            return True
+
+        cname = master.get("companies", {}).get(str(company_id or ""))
+        if cname and is_others_company(cname):
+            return True
+
+        return False
+
+    @classmethod
     def _load_master_lookups(cls) -> Dict[str, Any]:
         """Loads and caches master lookup tables with explicit column selection."""
         now = time.time()
@@ -371,9 +416,10 @@ class ChatbotSummaryRepository:
             tot_bl = 0.0
             row_count = 0
 
-            res = query.limit(5000).execute()
-            rows = res.data or []
+            rows = cls._execute_paginated_query(query)
             for r in rows:
+                if cls._should_exclude_company(company_id=r.get("company_id")):
+                    continue
                 tot_cases += float(r.get("total_cases") or 0.0)
                 tot_bottles += float(r.get("total_bottles") or 0.0)
                 tot_bl += float(r.get("total_bl") or 0.0)
@@ -432,6 +478,46 @@ class ChatbotSummaryRepository:
             else "tsm_user_id"
         )
 
+        if entity_type == "company":
+            dt = datetime.strptime(t_date, "%Y-%m-%d").date()
+            m_start = dt.replace(day=1).strftime("%Y-%m-%d")
+            fy_year = dt.year if dt.month >= 4 else dt.year - 1
+            y_start = f"{fy_year}-04-01"
+
+            comp_params = {
+                "p_target_date": t_date,
+                "p_mtd_start": m_start,
+                "p_ytd_start": y_start,
+            }
+            if hq_id:
+                comp_params["p_hq_id"] = hq_id
+
+            try:
+                res = client.rpc("get_mobile_companies_summary", comp_params).execute()
+                data = res.data or []
+                results = []
+                for r in data:
+                    cname = (r.get("company_name") or "").strip()
+                    cid = str(r.get("company_id") or "")
+                    if not cname or cls._should_exclude_company(company_id=cid, company_name=cname):
+                        continue
+
+                    val_key = "daily_cases" if period == "Daily" else "mtd_cases" if period == "MTD" else "ytd_cases"
+                    cases = float(r.get(val_key) or 0.0)
+                    bottles = int(round(float(r.get(val_key.replace("cases", "bottles")) or 0.0)))
+
+                    results.append({
+                        "id": cid,
+                        "name": cname,
+                        "cases": round(cases, 2),
+                        "bottles": bottles,
+                    })
+
+                results.sort(key=lambda x: x["cases"], reverse=True)
+                return results[:limit]
+            except Exception as e_comp:
+                logger.error(f"SummaryRepository get_top_entities company RPC error: {e_comp}")
+
         table_name = "sales_daily_summary" if period == "Daily" else "sales_monthly_summary"
         dt = datetime.strptime(t_date, "%Y-%m-%d").date()
 
@@ -457,13 +543,12 @@ class ChatbotSummaryRepository:
 
             # Aggregate in memory by target entity ID
             entity_metrics: Dict[str, Dict[str, float]] = {}
-            res = query.limit(5000).execute()
-            rows = res.data or []
+            rows = cls._execute_paginated_query(query)
             for r in rows:
                 eid = str(r.get(id_col) or "").strip()
                 if not eid or eid.lower() in ("none", "null", "unknown", ""):
                     continue
-                if others_id and str(r.get("company_id")) == str(others_id):
+                if cls._should_exclude_company(company_id=r.get("company_id")):
                     continue
 
                 cases = float(r.get("total_cases") or 0.0)
@@ -730,9 +815,10 @@ class ChatbotSummaryRepository:
             if hq_id:
                 query = query.eq("headquarters_id", hq_id)
 
-            res = query.limit(5000).execute()
-            rows = res.data or []
+            rows = cls._execute_paginated_query(query)
             for r in rows:
+                if cls._should_exclude_company(company_id=r.get("company_id")):
+                    continue
                 sdate = str(r.get("sale_date") or "")
                 if sdate in date_map:
                     date_map[sdate]["cases"] += float(r.get("total_cases") or 0.0)

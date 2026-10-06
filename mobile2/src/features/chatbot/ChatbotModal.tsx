@@ -85,7 +85,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
       id: 'welcome_1',
       sender: 'ai',
       text:
-        'RLL Sales AI\n\n' +
+        'RLL Sales Agent\n\n' +
         'Ask questions about your sales data.\n\n' +
         'I can help you understand:\n' +
         '• Sales performance\n' +
@@ -168,7 +168,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
         id: `welcome_${Date.now()}`,
         sender: 'ai',
         text:
-          'RLL Sales AI\n\n' +
+          'RLL Sales Agent\n\n' +
           'Ask questions about your sales data.\n\n' +
           'I can help you understand:\n' +
           '• Sales performance\n' +
@@ -200,23 +200,24 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
     <Modal
       visible={visible}
       animationType="slide"
-      transparent={true}
+      transparent={false}
       onRequestClose={onClose}
       statusBarTranslucent
     >
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.overlay}
-        keyboardVerticalOffset={0}
-      >
-        <SafeAreaView style={styles.modalCard} edges={['bottom', 'left', 'right']}>
+      <View style={styles.modalBackground}>
+        <SafeAreaView style={styles.safeAreaContainer} edges={['top', 'bottom']}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.keyboardAvoidingContainer}
+            keyboardVerticalOffset={Platform.OS === 'android' ? 24 : 0}
+          >
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.headerLeft}>
               <AiBadgeStarIcon />
               <View>
                 <View style={styles.titleRow}>
-                  <Text style={styles.headerTitle}>RLL Sales AI</Text>
+                  <Text style={styles.headerTitle}>RLL Sales Agent</Text>
                   <View style={styles.liveBadge}>
                     <View style={styles.liveDot} />
                     <Text style={styles.liveBadgeText}>Live</Text>
@@ -249,6 +250,8 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
             style={styles.chatArea}
             contentContainerStyle={styles.chatContent}
             showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
           >
             {messages.map((msg) => (
               <View
@@ -425,27 +428,28 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
           <View style={styles.footerRow}>
             <Text style={styles.footerNote}>Powered by Workfloww.ai</Text>
           </View>
-        </SafeAreaView>
-      </KeyboardAvoidingView>
-    </Modal>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    </View>
+  </Modal>
   );
 };
 
 const styles = StyleSheet.create({
-  overlay: {
-    flex: 1,
-    backgroundColor: 'rgba(15, 39, 71, 0.45)',
-    justifyContent: 'flex-end',
-  },
-  modalCard: {
-    maxHeight: '92%',
+  modalBackground: {
     flex: 1,
     backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingTop: 16,
+  },
+  safeAreaContainer: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  keyboardAvoidingContainer: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
     paddingHorizontal: 16,
-    paddingBottom: Platform.OS === 'ios' ? 12 : 8,
+    paddingTop: Platform.OS === 'android' ? 4 : 0,
+    paddingBottom: Platform.OS === 'ios' ? 4 : 4,
   },
   header: {
     flexDirection: 'row',
