@@ -272,4 +272,4 @@ if __name__ == "__main__":
     host = os.environ.get("HOST", "0.0.0.0")
     is_dev = os.environ.get("ENVIRONMENT", "development") == "development"
     
-    uvicorn.run("main:app", host=host, port=port, reload=is_dev)
+    uvicorn.run("main:app", host=host, port=port, reload=is_dev) 
