@@ -55,7 +55,7 @@ function formatLaymanShortError(msg: string): string {
     return `${rowNum ? rowNum + ': ' : ''}Invalid Date Format — '${val || 'Unparseable Date'}'`;
   }
 
-  let cleanMsg = msg.replace(/^Upload validation failed for \d+ issue\(s\):\s*/i, '').strip?.() || msg;
+  let cleanMsg = msg.replace(/^Upload validation failed for \d+ issue\(s\):\s*/i, '').trim() || msg;
   cleanMsg = cleanMsg.replace(/\[Row\s*#?\d+\]\s*/i, '');
   return rowNum ? `${rowNum}: ${cleanMsg}` : cleanMsg;
 }

@@ -14,7 +14,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from backend.db.redis_client import safe_get, safe_set
+from backend.db.redis_client import safe_get, safe_set, safe_delete
 from backend.repositories.chatbot.summary_repository import ChatbotSummaryRepository
 from backend.schemas.chatbot import (
     ChatbotChart,
@@ -34,6 +34,47 @@ CACHE_TTL_SECONDS = 300  # 5 minutes
 
 class ChatbotAnalyticsService:
     """Core business service for processing user chatbot queries."""
+
+    @classmethod
+    def format_period_label(cls, period: str, target_date: str) -> str:
+        """Formats period into exact date or date range string (e.g., '31 Aug 2026' or '01 Aug 2026 - 31 Aug 2026')."""
+        from datetime import datetime
+        try:
+            dt = datetime.strptime(target_date, "%Y-%m-%d").date()
+            target_fmt = dt.strftime("%d %b %Y")
+            clean_period = (period or "Daily").strip()
+            if clean_period == "Daily":
+                return target_fmt
+            elif clean_period == "MTD":
+                m_start = dt.replace(day=1).strftime("%d %b %Y")
+                return f"{m_start} - {target_fmt}"
+            elif clean_period == "YTD":
+                fy_year = dt.year if dt.month >= 4 else dt.year - 1
+                fy_start = datetime(fy_year, 4, 1).strftime("%d %b %Y")
+                return f"{fy_start} - {target_fmt}"
+            else:
+                return target_fmt
+        except Exception:
+            return target_date or ""
+
+    @classmethod
+    def get_entity_display_names(cls, entity_type: str) -> tuple[str, str]:
+        """Returns properly capitalized singular and plural entity display names (e.g. 'TSM', 'TSMs')."""
+        et = (entity_type or "").strip().lower()
+        if et == "tsm":
+            return ("TSM", "TSMs")
+        elif et == "hq":
+            return ("HQ", "HQs")
+        elif et in ("company", "companies"):
+            return ("Company", "Companies")
+        elif et in ("group", "licensee_group"):
+            return ("Group", "Groups")
+        elif et == "depot":
+            return ("Depot", "Depots")
+        elif et == "brand":
+            return ("Brand", "Brands")
+        else:
+            return (entity_type.capitalize(), entity_type.capitalize() + "s")
 
     @classmethod
     async def process_chat_query(
@@ -66,11 +107,22 @@ class ChatbotAnalyticsService:
         if allowed_hqs and len(allowed_hqs) == 1 and allowed_hqs[0] != "All Headquarters":
             user_hq_filter = allowed_hqs[0]
 
+        # ── Check Pending Clarification Context ────────────────────────────────
+        clarification_key = f"rll:chatbot:clarification:{tenant_id}:{user_id}"
+        pending_context = None
+        try:
+            pending_raw = await safe_get(clarification_key)
+            if pending_raw:
+                pending_context = json.loads(pending_raw)
+        except Exception as e:
+            logger.debug(f"Pending clarification check notice: {e}")
+
         # ── 2. Intent Parsing ─────────────────────────────────────────────────
         parsed = ChatbotIntentService.parse_intent(
             user_message=payload.message,
             current_period=payload.period or "Daily",
             current_hq=user_hq_filter,
+            pending_context=pending_context,
         )
 
         intent = parsed["intent"]
@@ -83,15 +135,19 @@ class ChatbotAnalyticsService:
             selected_hq = allowed_hqs[0]
 
         # ── 3. Redis Cache Check ──────────────────────────────────────────────
-        cache_key = f"rll:chatbot:{tenant_id}:{user_id}:{intent}:{period}:{selected_hq}:{entity_type}:{limit}:{hash(payload.message)}"
+        import hashlib
+        clean_msg = payload.message.strip().lower()
+        msg_hash = hashlib.md5(clean_msg.encode('utf-8')).hexdigest()[:12]
+        cache_key = f"rll:chatbot:{tenant_id}:{user_id}:{intent}:{period}:{selected_hq}:{entity_type}:{limit}:{msg_hash}"
         try:
             cached_val = await safe_get(cache_key)
             if cached_val:
                 cached_data = json.loads(cached_val)
                 cached_response = ChatMessageResponse(**cached_data)
+                cache_dur_sec = time.perf_counter() - t0
                 cached_response.cache_hit = True
-                cached_response.execution_time_ms = round((time.perf_counter() - t0) * 1000.0, 2)
-                logger.info(f"ChatbotAnalyticsService: Redis cache HIT for key: {cache_key}")
+                cached_response.execution_time_ms = round(cache_dur_sec * 1000.0, 2)
+                logger.info(f"[CHATBOT LATENCY] User Query: '{payload.message}' | Cache HIT | Latency: {cache_dur_sec:.4f}s ({cached_response.execution_time_ms}ms)")
                 return cached_response
         except Exception as e:
             logger.debug(f"Redis cache check notice: {e}")
@@ -110,9 +166,31 @@ class ChatbotAnalyticsService:
             user_message=payload.message,
         )
 
-        exec_time_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        # Manage Pending Clarification Context Redis State
+        if response.intent == "clarification_prompt" and entity_name:
+            try:
+                await safe_set(
+                    key=clarification_key,
+                    value=json.dumps({
+                        "suggested_entity": entity_name,
+                        "suggested_type": entity_type or "group",
+                        "target_date": target_date
+                    }),
+                    ttl=300
+                )
+            except Exception as e:
+                logger.debug(f"Pending clarification store notice: {e}")
+        elif pending_context:
+            try:
+                await safe_delete(clarification_key)
+            except Exception as e:
+                logger.debug(f"Pending clarification delete notice: {e}")
+
+        dur_sec = time.perf_counter() - t0
+        exec_time_ms = round(dur_sec * 1000.0, 2)
         response.execution_time_ms = exec_time_ms
         response.cache_hit = False
+        logger.info(f"[CHATBOT LATENCY] User Query: '{payload.message}' | DB MISS | Latency: {dur_sec:.4f}s ({exec_time_ms}ms)")
 
         # ── 5. Cache Store ────────────────────────────────────────────────────
         try:
@@ -138,7 +216,97 @@ class ChatbotAnalyticsService:
         limit: int,
         user_message: str,
     ) -> ChatMessageResponse:
-        """Constructs rich structured ChatMessageResponse for each analytics intent."""
+        period_lbl = cls.format_period_label(period, target_date)
+        # ---------------------------------------------------------------------
+        # INTENT 0: GREETING & GENERAL HELPER
+        # ---------------------------------------------------------------------
+        if intent == "greeting":
+            return ChatMessageResponse(
+                text="Hello! How may I help you with your sales analytics today?",
+                intent="greeting",
+                period=period,
+                target_date=target_date,
+                selected_hq=selected_hq,
+                suggested_questions=[
+                    "Top 5 brands",
+                    "Daily sales summary",
+                    "TSM performance",
+                    "Company performance",
+                ],
+            )
+
+        # ---------------------------------------------------------------------
+        # INTENT: CLARIFICATION PROMPT (DID YOU MEAN X?)
+        # ---------------------------------------------------------------------
+        if intent == "clarification_prompt":
+            candidate = entity_name or "this item"
+            return ChatMessageResponse(
+                text=f"Did you mean {candidate}?",
+                intent="clarification_prompt",
+                period=period,
+                target_date=target_date,
+                selected_hq=selected_hq,
+                suggested_questions=[
+                    f"Yes, show {candidate} sales",
+                    "No"
+                ],
+                clarification_needed=True
+            )
+
+        # ---------------------------------------------------------------------
+        # INTENT: NO RESPONSE (USER SAID NO TO CLARIFICATION)
+        # ---------------------------------------------------------------------
+        if intent == "no_response":
+            return ChatMessageResponse(
+                text="Got it. How may I help you?",
+                intent="no_response",
+                period=period,
+                target_date=target_date,
+                selected_hq=selected_hq,
+                suggested_questions=[
+                    "Top 5 brands",
+                    "Daily sales summary",
+                    "TSM performance",
+                    "Company performance",
+                ],
+            )
+
+        # ---------------------------------------------------------------------
+        # INTENT: UNMATCHED ENTITY (UNKNOWN NAME)
+        # ---------------------------------------------------------------------
+        if intent == "unmatched_entity":
+            entity_str = entity_name or "that entity"
+            return ChatMessageResponse(
+                text=f"I couldn't find an exact match for '{entity_str}' in our database. How may I help you?",
+                intent="unmatched_entity",
+                period=period,
+                target_date=target_date,
+                selected_hq=selected_hq,
+                suggested_questions=[
+                    "Top 5 brands",
+                    "Daily sales summary",
+                    "TSM performance",
+                    "Company performance",
+                ],
+            )
+
+        # ---------------------------------------------------------------------
+        # INTENT: OUT OF DOMAIN (NON-RLL SALES QUESTION)
+        # ---------------------------------------------------------------------
+        if intent == "out_of_domain":
+            return ChatMessageResponse(
+                text="I am very sorry, I can only assist with Rajasthan Liquor Limited (RLL) sales analytics and domain-related questions. How may I help you with your sales performance today?",
+                intent="out_of_domain",
+                period=period,
+                target_date=target_date,
+                selected_hq=selected_hq,
+                suggested_questions=[
+                    "Top 5 brands",
+                    "Daily sales summary",
+                    "TSM performance",
+                    "Company performance",
+                ],
+            )
 
         # ---------------------------------------------------------------------
         # INTENT 1: GET SALES SUMMARY
@@ -149,11 +317,13 @@ class ChatbotAnalyticsService:
             group_id = None
             tsm_user_id = None
             if entity_name:
+                if not entity_type:
+                    entity_type, _ = ChatbotSummaryRepository.resolve_entity_type_and_id(entity_name)
                 if entity_type == "company":
                     company_id = ChatbotSummaryRepository.resolve_entity_id("company", entity_name)
                 elif entity_type == "brand":
                     brand_id = ChatbotSummaryRepository.resolve_entity_id("brand", entity_name)
-                elif entity_type == "group":
+                elif entity_type in ("group", "licensee_group"):
                     group_id = ChatbotSummaryRepository.resolve_entity_id("group", entity_name)
                 elif entity_type == "tsm":
                     tsm_user_id = ChatbotSummaryRepository.resolve_entity_id("tsm", entity_name)
@@ -171,16 +341,16 @@ class ChatbotAnalyticsService:
 
             kpis = [
                 ChatbotKPI(
-                    title=f"{period} Total Cases",
+                    title=f"Total Cases ({period_lbl})",
                     value=f"{cases:,.2f}",
                     subtext="Cases (9L equivalent)",
                     change_type="neutral",
                 ),
             ]
 
-            header_title = f"for {entity_name}" if entity_name else f"for {period}"
+            header_title = f"for {entity_name}" if entity_name else ""
             text = (
-                f"📊 Sales Summary {header_title} ({target_date})\n\n"
+                f"📊 Sales Summary {header_title} ({period_lbl})\n\n"
                 f"• Total Sales: {cases:,.2f} cases\n"
                 f"• Scope: {selected_hq}"
             )
@@ -205,7 +375,7 @@ class ChatbotAnalyticsService:
                 for idx, b in enumerate(top_b)
             ]
 
-            table_title = f"Top 5 Selling Brands for {entity_name} ({period})" if entity_name else f"Top 5 Selling Brands ({period})"
+            table_title = f"Top 5 Selling Brands for {entity_name} ({period_lbl})" if entity_name else f"Top 5 Selling Brands ({period_lbl})"
             table = ChatbotTable(
                 title=table_title,
                 columns=[
@@ -240,17 +410,17 @@ class ChatbotAnalyticsService:
                 entity_type=entity_type, period=period, target_date=target_date, selected_hq=selected_hq, limit=limit
             )
 
-            entity_title = "Companies" if entity_type == "company" else entity_type.capitalize() + "s"
+            sing_title, plur_title = cls.get_entity_display_names(entity_type)
             table_rows = [
                 {"rank": idx + 1, "name": item["name"], "cases": f"{item['cases']:,.2f}"}
                 for idx, item in enumerate(top_list)
             ]
 
             table = ChatbotTable(
-                title=f"Top {len(top_list)} {entity_title} by Sales Volume ({period})",
+                title=f"Top {len(top_list)} {plur_title} by Sales Volume ({period_lbl})",
                 columns=[
                     ChatbotTableColumn(key="rank", label="#", align="center"),
-                    ChatbotTableColumn(key="name", label=f"{entity_type.capitalize()} Name", align="left"),
+                    ChatbotTableColumn(key="name", label=f"{sing_title} Name", align="left"),
                     ChatbotTableColumn(key="cases", label="Cases", align="right"),
                 ],
                 rows=table_rows,
@@ -261,7 +431,7 @@ class ChatbotAnalyticsService:
                 for item in top_list[:5]
             ]
             chart = ChatbotChart(
-                title=f"Top 5 {entity_title} Volume Comparison",
+                title=f"Top 5 {plur_title} Volume Comparison",
                 chart_type="bar",
                 series_name="Cases",
                 data=chart_data,
@@ -271,8 +441,8 @@ class ChatbotAnalyticsService:
             top_1_cases = f"{top_list[0]['cases']:,.2f}" if top_list else "0"
 
             text = (
-                f"🏆 Top {len(top_list)} {entity_title} ({period})\n\n"
-                f"The leading {entity_type} is {top_1} with {top_1_cases} cases sold in {selected_hq}."
+                f"🏆 Top {len(top_list)} {plur_title} ({period_lbl})\n\n"
+                f"The leading {sing_title} is {top_1} with {top_1_cases} cases sold in {selected_hq}."
             )
 
             return ChatMessageResponse(
@@ -284,9 +454,9 @@ class ChatbotAnalyticsService:
                 table=table,
                 chart=chart,
                 suggested_questions=[
-                    f"Show contribution share of top {entity_type}s",
+                    f"Show contribution share of top {plur_title.lower()}",
                     "Which brands are declining?",
-                    "Show sales trend over last 7 days",
+                    "Show sales trend graph",
                 ],
             )
 
@@ -298,24 +468,25 @@ class ChatbotAnalyticsService:
                 entity_type=entity_type, period=period, target_date=target_date, selected_hq=selected_hq
             )
 
+            sing_title, plur_title = cls.get_entity_display_names(entity_type)
             table_rows = [
                 {"rank": idx + 1, "name": item["name"], "cases": f"{item['cases']:,.2f}"}
                 for idx, item in enumerate(breakdown[:15])
             ]
 
             table = ChatbotTable(
-                title=f"{entity_type.capitalize()} Sales Breakdown ({period})",
+                title=f"{sing_title} Sales Breakdown ({period_lbl})",
                 columns=[
                     ChatbotTableColumn(key="rank", label="#", align="center"),
-                    ChatbotTableColumn(key="name", label=f"{entity_type.capitalize()}", align="left"),
+                    ChatbotTableColumn(key="name", label=f"{sing_title}", align="left"),
                     ChatbotTableColumn(key="cases", label="Cases", align="right"),
                 ],
                 rows=table_rows,
             )
 
             text = (
-                f"📋 {entity_type.capitalize()} Breakdown for {period} ({target_date})\n\n"
-                f"Showing sales breakdown across {len(breakdown)} {entity_type}s in {selected_hq}."
+                f"📋 {sing_title} Breakdown ({period_lbl})\n\n"
+                f"Showing sales breakdown across {len(breakdown)} {plur_title.lower()} in {selected_hq}."
             )
 
             return ChatMessageResponse(
@@ -328,7 +499,7 @@ class ChatbotAnalyticsService:
                 suggested_questions=[
                     "Show top 5 companies by volume",
                     "Who are the top gainers & losers?",
-                    "Summarise total sales for MTD",
+                    "Summarise total sales",
                 ],
             )
 
@@ -346,7 +517,7 @@ class ChatbotAnalyticsService:
 
             icon = "📈" if var["direction"] == "up" else "📉" if var["direction"] == "down" else "➡️"
             text = (
-                f"{icon} Sales Period Comparison ({period})\n\n"
+                f"{icon} Sales Period Comparison ({period_lbl})\n\n"
                 f"• Current Date ({curr['date']}): {curr['cases']:,.2f} cases\n"
                 f"• Comparison Date ({prev['date']}): {prev['cases']:,.2f} cases\n"
                 f"• Variance: {var['cases']:+,.2f} cases ({var['pct_change']:+,.2f}%)"
@@ -382,7 +553,7 @@ class ChatbotAnalyticsService:
                 comparison=comp,
                 suggested_questions=[
                     "Which brands caused this growth/decline?",
-                    "Show daily sales trend over last 7 days",
+                    "Show sales trend graph",
                     "What are the top 5 selling brands?",
                 ],
             )
@@ -395,6 +566,7 @@ class ChatbotAnalyticsService:
                 entity_type=entity_type, period=period, target_date=target_date, selected_hq=selected_hq, limit=limit
             )
 
+            sing_title, plur_title = cls.get_entity_display_names(entity_type)
             gainers = movers["gainers"]
             losers = movers["losers"]
 
@@ -404,9 +576,9 @@ class ChatbotAnalyticsService:
             ]
 
             table = ChatbotTable(
-                title=f"Top Growing {entity_type.capitalize()}s (Gainers)",
+                title=f"Top Growing {plur_title} (Gainers)",
                 columns=[
-                    ChatbotTableColumn(key="name", label=f"{entity_type.capitalize()} Name", align="left"),
+                    ChatbotTableColumn(key="name", label=f"{sing_title} Name", align="left"),
                     ChatbotTableColumn(key="cases", label="Cases", align="right"),
                     ChatbotTableColumn(key="growth", label="Volume Change", align="right"),
                 ],
@@ -417,7 +589,7 @@ class ChatbotAnalyticsService:
             l_text = ", ".join([f"{l['name']} ({l['diff_cases']:,.0f} cs)" for l in losers[:3]]) or "None"
 
             text = (
-                f"🚀 Top Movers & Performance Changes ({period})\n\n"
+                f"🚀 Top Movers & Performance Changes ({period_lbl})\n\n"
                 f"• Top Gainers: {g_text}\n"
                 f"• Top Declines: {l_text}"
             )
@@ -445,16 +617,17 @@ class ChatbotAnalyticsService:
                 entity_type=entity_type, period=period, target_date=target_date, selected_hq=selected_hq, limit=limit
             )
 
+            sing_title, plur_title = cls.get_entity_display_names(entity_type)
             table_rows = [
                 {"rank": idx + 1, "name": c["name"], "cases": f"{c['cases']:,.2f}", "share": f"{c['share_pct']:.2f}%"}
                 for idx, c in enumerate(contrib)
             ]
 
             table = ChatbotTable(
-                title=f"Market Share Contribution by {entity_type.capitalize()} ({period})",
+                title=f"Market Share Contribution by {sing_title} ({period_lbl})",
                 columns=[
                     ChatbotTableColumn(key="rank", label="#", align="center"),
-                    ChatbotTableColumn(key="name", label=f"{entity_type.capitalize()}", align="left"),
+                    ChatbotTableColumn(key="name", label=f"{sing_title}", align="left"),
                     ChatbotTableColumn(key="cases", label="Cases", align="right"),
                     ChatbotTableColumn(key="share", label="% Share", align="right"),
                 ],
@@ -463,7 +636,7 @@ class ChatbotAnalyticsService:
 
             top_share = f"{contrib[0]['name']} ({contrib[0]['share_pct']}%)" if contrib else "N/A"
             text = (
-                f"🍕Market Share Contribution ({period})\n\n"
+                f"🍕 Market Share Contribution ({period_lbl})\n\n"
                 f"The highest volume contributor is {top_share} in {selected_hq}."
             )
 

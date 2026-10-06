@@ -11,6 +11,7 @@ import {
   StatusBar,
 } from 'react-native';
 import { Period } from '../../types';
+import { toTitleCase } from '../../lib/utils';
 import {
   LocationIcon,
   CalendarIcon,
@@ -279,7 +280,7 @@ export function Header({
             adjustsFontSizeToFit={true}
             minimumFontScale={0.75}
           >
-            {selectedHq}
+            {toTitleCase(selectedHq)}
           </Text>
           <ChevronDownIcon size={14} color="#FFFFFF" />
         </TouchableOpacity>
@@ -618,7 +619,7 @@ export function Header({
                     <View style={styles.hqItemLeft}>
                       <View style={[styles.hqItemDot, isActive ? styles.hqItemDotActive : null]} />
                       <Text style={[styles.hqModalItemText, isActive ? styles.hqModalItemTextActive : null]}>
-                        {item}
+                        {toTitleCase(item)}
                       </Text>
                     </View>
                     {isActive ? (

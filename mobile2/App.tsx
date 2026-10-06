@@ -331,23 +331,21 @@ function MainApp() {
           }
 
           const userHasExplicitDate = Boolean(dateFrom || dateTo);
-          const isEmptyData =
+          // NoDataModal is strictly intended for single Daily date queries with 0 sales.
+          // It must NEVER trigger for MTD/YTD date ranges or on the Groups tab (viewMode === 'depots').
+          const isEmptyData = period === 'Daily' && (
             viewMode === 'companies'
               ? (!res.companies || res.companies.length === 0 || res.companies.every((c: any) => {
-                const pData = c.data?.[period] || c.data?.Daily || { cases: 0 };
+                const pData = c.data?.Daily || c.data?.[period] || { cases: 0 };
                 return (pData.cases || 0) === 0;
               }))
               : viewMode === 'tsm'
                 ? (!res.tsms || res.tsms.length === 0 || res.tsms.every((t: any) => {
-                  const pData = t.data?.[period] || t.data?.Daily || { cases: 0 };
+                  const pData = t.data?.Daily || t.data?.[period] || { cases: 0 };
                   return (pData.cases || 0) === 0;
                 }))
-                : viewMode === 'depots'
-                  ? (!res.depots || res.depots.length === 0 || res.depots.every((d: any) => {
-                    const pData = d.data?.[period] || d.data?.Daily || { cases: 0 };
-                    return (pData.cases || 0) === 0;
-                  }))
-                  : false;
+                : false
+          );
 
           if (userHasExplicitDate && isEmptyData) {
             setShowNoDataModal(true);
@@ -815,7 +813,7 @@ function MainApp() {
             )}
 
             {/* Floating Chatbot Action Button (FAB) */}
-            {!isKeyboardVisible && (
+            {!isKeyboardVisible && config.chatbotEnabled !== false && (
               <TouchableOpacity
                 style={[styles.chatbotFab, { bottom: dynamicFabBottom }]}
                 onPress={() => setShowChatbotModal(true)}
@@ -828,12 +826,14 @@ function MainApp() {
             )}
 
             {/* Sales AI Chatbot Modal */}
-            <ChatbotModal
-              visible={showChatbotModal}
-              onClose={() => setShowChatbotModal(false)}
-              period={period}
-              selectedHq={selectedHq}
-            />
+            {config.chatbotEnabled !== false && (
+              <ChatbotModal
+                visible={showChatbotModal}
+                onClose={() => setShowChatbotModal(false)}
+                period={period}
+                selectedHq={selectedHq}
+              />
+            )}
 
             {/* No Data Found Centered Modal Popup */}
             <NoDataModal

@@ -53,6 +53,11 @@ def validate_password_complexity(password: str) -> None:
             detail="Password must contain at least one special character (!@#$%^&* etc.)."
         )
 
+import time
+
+_LOCAL_USER_PROFILES: Dict[str, Any] = {}
+_LOCAL_USER_PROFILE_TTL = 300.0  # 5 minutes
+
 async def get_current_user(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
@@ -89,6 +94,14 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # 0. Instant RAM Profile Cache HIT (< 0.01ms)
+    email_key = email.lower()
+    now_t = time.time()
+    if email_key in _LOCAL_USER_PROFILES:
+        ts, prof = _LOCAL_USER_PROFILES[email_key]
+        if now_t - ts < _LOCAL_USER_PROFILE_TTL:
+            return prof
+
     # Check for instant user revocation flag in Redis
     if user_id:
         is_revoked = await safe_get(f"rll:revoked:{user_id}")
@@ -100,7 +113,7 @@ async def get_current_user(
             )
 
     # 1. Fast Redis Profile Cache HIT (< 1ms)
-    user_cache_key = f"rll:user_profile:{email.lower()}"
+    user_cache_key = f"rll:user_profile:{email_key}"
     cached_profile = await safe_get(user_cache_key)
     if cached_profile:
         try:
@@ -108,6 +121,7 @@ async def get_current_user(
             if user_info and isinstance(user_info, dict) and user_info.get("is_active"):
                 if 'payload' in locals() and isinstance(payload, dict) and payload.get("allowed_hqs"):
                     user_info["allowed_hqs"] = payload["allowed_hqs"]
+                _LOCAL_USER_PROFILES[email_key] = (now_t, user_info)
                 return user_info
         except Exception:
             pass

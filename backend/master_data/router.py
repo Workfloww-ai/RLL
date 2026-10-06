@@ -235,11 +235,12 @@ async def update_include_others_setting(
 
 @router.get("/settings")
 async def get_system_settings():
-    """Fetch global system settings (e.g. TSM/ASE Data Restriction Toggle, include_others_in_sales)."""
+    """Fetch global system settings (e.g. TSM/ASE Data Restriction Toggle, include_others_in_sales, chatbot_enabled)."""
     client = get_supabase()
     result = {
         "tsm_ase_data_restriction_enabled": "true",
-        "include_others_in_sales": "true"
+        "include_others_in_sales": "true",
+        "chatbot_enabled": "true"
     }
 
     if client:
@@ -248,6 +249,8 @@ async def get_system_settings():
             if res.data:
                 for item in res.data:
                     result[item["setting_key"]] = item["setting_value"]
+                if "chatbot_enabled" not in result:
+                    result["chatbot_enabled"] = "true"
                 return result
         except Exception as e:
             logger.debug(f"Notice fetching system settings from DB: {e}")
@@ -267,47 +270,48 @@ async def update_system_setting(
     val = payload.setting_value.strip().lower()
     user_role = (current_user.get("role_name") or current_user.get("role") or "").strip().lower()
 
-    # Developer-Only check for include_others_in_sales
-    if key == "include_others_in_sales":
+    # Developer-Only check for include_others_in_sales and chatbot_enabled
+    if key in {"include_others_in_sales", "chatbot_enabled"}:
         if user_role != "developer":
             raise HTTPException(
                 status_code=403,
                 detail=f"Permission denied: Only Developer role can modify '{key}'. Current role is '{user_role}'."
             )
 
-        old_val_bool = await get_include_others_setting_async()
-        old_val_str = "true" if old_val_bool else "false"
-        user_id = current_user.get("user_id") or current_user.get("sub")
-        user_email = current_user.get("email") or "developer"
+        if key == "include_others_in_sales":
+            old_val_bool = await get_include_others_setting_async()
+            old_val_str = "true" if old_val_bool else "false"
+            user_id = current_user.get("user_id") or current_user.get("sub")
+            user_email = current_user.get("email") or "developer"
 
-        client = get_supabase()
-        if client:
-            try:
-                client.rpc("set_system_setting", {"p_key": key, "p_val": val}).execute()
-            except Exception as e:
-                logger.warning(f"RPC set_system_setting notice: {e}")
+            client = get_supabase()
+            if client:
                 try:
-                    client.table("system_settings").upsert({"setting_key": key, "setting_value": val}).execute()
-                except Exception as e2:
-                    logger.error(f"Error updating system_settings table: {e2}")
+                    client.rpc("set_system_setting", {"p_key": key, "p_val": val}).execute()
+                except Exception as e:
+                    logger.warning(f"RPC set_system_setting notice: {e}")
+                    try:
+                        client.table("system_settings").upsert({"setting_key": key, "setting_value": val}).execute()
+                    except Exception as e2:
+                        logger.error(f"Error updating system_settings table: {e2}")
 
-            try:
-                audit_entry = {
-                    "setting_key": key,
-                    "old_value": old_val_str,
-                    "new_value": val,
-                    "changed_by_user_id": str(user_id) if user_id else None,
-                    "changed_by_email": str(user_email),
-                    "source": "Admin Portal"
-                }
-                client.table("system_settings_audit_log").insert(audit_entry).execute()
-            except Exception as e_audit:
-                logger.warning(f"Failed to record audit log: {e_audit}")
+                try:
+                    audit_entry = {
+                        "setting_key": key,
+                        "old_value": old_val_str,
+                        "new_value": val,
+                        "changed_by_user_id": str(user_id) if user_id else None,
+                        "changed_by_email": str(user_email),
+                        "source": "Admin Portal"
+                    }
+                    client.table("system_settings_audit_log").insert(audit_entry).execute()
+                except Exception as e_audit:
+                    logger.warning(f"Failed to record audit log: {e_audit}")
 
-        await safe_set(f"rll:setting:{key}", val, ttl=86400 * 30)
-        clear_tenant_cache()
-        await invalidate_others_toggle_cache()
-        return {"success": True, "setting_key": key, "setting_value": val}
+            await safe_set(f"rll:setting:{key}", val, ttl=86400 * 30)
+            clear_tenant_cache()
+            await invalidate_others_toggle_cache()
+            return {"success": True, "setting_key": key, "setting_value": val}
 
     # For other system settings (e.g. tsm_ase_data_restriction_enabled), require admin/super_admin or developer
     if user_role not in {"admin", "super_admin", "developer"}:
@@ -329,5 +333,7 @@ async def update_system_setting(
 
     await safe_set(f"rll:setting:{key}", val, ttl=86400 * 30)
     await safe_delete("rll:cache:system_settings_dict")
+    clear_tenant_cache()
     return {"success": True, "setting_key": key, "setting_value": val}
+
 

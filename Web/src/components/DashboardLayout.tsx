@@ -11,16 +11,45 @@ interface DashboardLayoutProps {
   children: React.ReactNode;
 }
 
+function getUserRoleFromStorage(): string {
+  try {
+    const storedUserStr = localStorage.getItem('user');
+    if (storedUserStr) {
+      const u = JSON.parse(storedUserStr);
+      const r = (u.role_name || u.role || '').toLowerCase();
+      if (r) return r;
+    }
+  } catch (e) {}
+
+  try {
+    const token = localStorage.getItem('token');
+    if (token) {
+      const base64Url = token.split('.')[1];
+      if (base64Url) {
+        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+        const payload = JSON.parse(atob(base64));
+        const r = (payload.role || payload.role_name || '').toLowerCase();
+        if (r) return r;
+      }
+    }
+  } catch (e) {}
+
+  return '';
+}
+
 export default function DashboardLayout({ currentView, onViewChange, onLogout, userName, children }: DashboardLayoutProps) {
   const { config } = useTenantConfig();
   const displayUserName = userName || 'Admin User';
   const userInitial = displayUserName.charAt(0).toUpperCase();
+  const userRole = getUserRoleFromStorage();
+  const isDeveloper = userRole === 'developer';
+
   const navItems = [
     { id: 'stock' as ViewState, label: 'Sales Upload', icon: Package },
     { id: 'territory' as ViewState, label: 'Territory Management', icon: Map },
     { id: 'headcount' as ViewState, label: 'User Management', icon: Users },
     { id: 'roles' as ViewState, label: 'Role Management', icon: Shield },
-    { id: 'settings' as ViewState, label: 'Security & Settings', icon: Settings },
+    ...(isDeveloper ? [{ id: 'settings' as ViewState, label: 'Security & Settings', icon: Settings }] : []),
   ];
 
   return (
@@ -91,7 +120,9 @@ export default function DashboardLayout({ currentView, onViewChange, onLogout, u
           <div className="flex items-center gap-2.5">
             <div className="text-right">
               <p className="text-xs font-bold text-slate-900 leading-none">{displayUserName}</p>
-              <p className="text-[9px] text-[#0D3B8E] font-bold uppercase tracking-wider mt-0.5">Admin</p>
+              <p className="text-[9px] text-[#0D3B8E] font-bold uppercase tracking-wider mt-0.5">
+                {userRole ? userRole.toUpperCase() : 'ADMIN'}
+              </p>
             </div>
             <div className="w-7 h-7 bg-[#0D3B8E] text-white rounded-full font-bold text-xs flex items-center justify-center shadow-xs">
               {userInitial}

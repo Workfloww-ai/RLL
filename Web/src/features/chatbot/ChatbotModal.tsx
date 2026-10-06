@@ -38,7 +38,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
       id: 'welcome_1',
       sender: 'ai',
       text:
-        'RLL Sales AI\n\n' +
+        'RLL Sales Agent\n\n' +
         'Ask questions about your sales data.\n\n' +
         'I can help you understand:\n' +
         '• Sales performance\n' +
@@ -124,7 +124,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
         id: `welcome_${Date.now()}`,
         sender: 'ai',
         text:
-          'RLL Sales AI\n\n' +
+          'RLL Sales Agent\n\n' +
           'Ask questions about your sales data.\n\n' +
           'I can help you understand:\n' +
           '• Sales performance\n' +
@@ -163,7 +163,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-base font-bold text-[#0D3B8E]">RLL Sales AI</h2>
+                <h2 className="text-base font-bold text-[#0D3B8E]">RLL Sales Agent</h2>
                 <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-semibold">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-600" />
                   Live
@@ -345,7 +345,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
               <Send className="w-3.5 h-3.5" />
             </button>
           </div>
-          <p className="text-[10px] text-center text-slate-400 mt-2">Powered by Gemini</p>
+          <p className="text-[10px] text-center text-slate-400 mt-2">Powered by Workfloww.ai</p>
         </div>
       </div>
     </div>

@@ -431,8 +431,8 @@ export function CompanyCascadingView({
 
           <View style={styles.headerRightMetricsBlock}>
             <View style={styles.metricBadgePrimary}>
+              <Text style={styles.metricLabelPrimary}>cases </Text>
               <Text style={styles.metricValuePrimary}>{formatNumber(headerMetrics.cases)}</Text>
-              <Text style={styles.metricLabelPrimary}>CASES</Text>
             </View>
           </View>
         </View>
@@ -487,7 +487,7 @@ export function CompanyCascadingView({
           style={styles.scrollContainer}
           contentContainerStyle={styles.scrollContent}
           data={paginatedList}
-          keyExtractor={(item, index) => `item-${item.id || item.brand_id || item.licensee_id || item.name || index}`}
+          keyExtractor={(item, index) => `comp-L${level}-${item.id || item.brand_id || item.licensee_id || item.name || 'row'}-${index}`}
           initialNumToRender={8}
           maxToRenderPerBatch={10}
           windowSize={5}
@@ -529,8 +529,8 @@ export function CompanyCascadingView({
             if (level === 2) {
               const bCases = getScaledCases(item);
               const bBottles = getScaledBottles(item);
-              const licCount = Number(item.selling_licensees_count || 0);
-              const licLabel = `${formatNumber(licCount)} ${licCount === 1 ? 'Licensee' : 'Licensees'}`;
+              const licCount = Math.round(Number(item.selling_licensees_count || 0));
+              const licLabel = `${formatNumber(licCount, 0)} ${licCount === 1 ? 'Outlet' : 'Outlets'}`;
               const subtext = item.pack_size ? `${licLabel}  •  ${item.pack_size}` : licLabel;
 
               return (
@@ -682,22 +682,25 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   metricBadgePrimary: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: '#EFF6FF',
     paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingVertical: 3,
     borderRadius: 6,
-    alignItems: 'center',
-    minWidth: 54,
-  },
-  metricValuePrimary: {
-    fontSize: 11.5,
-    fontWeight: '800',
-    color: '#1D4ED8',
+    borderWidth: 1,
+    borderColor: '#DBEAFE',
   },
   metricLabelPrimary: {
-    fontSize: 8,
+    fontSize: 10,
     fontWeight: '700',
     color: '#3B82F6',
+    textTransform: 'lowercase',
+  },
+  metricValuePrimary: {
+    fontSize: 12.5,
+    fontWeight: '800',
+    color: '#1D4ED8',
   },
   metricBadgeSecondary: {
     backgroundColor: '#F8FAFC',
