@@ -13,7 +13,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://rll-backend-414899512001.asia-south2.run.app/api/v1"
+        "EXPO_PUBLIC_API_URL": "https://rll-backend-dev-414899512001.asia-south2.run.app"
       }
     },
     "production": {
@@ -21,7 +21,7 @@
         "buildType": "app-bundle"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://rll-backend-414899512001.asia-south2.run.app/api/v1"
+        "EXPO_PUBLIC_API_URL": "https://rll-backend-dev-414899512001.asia-south2.run.app"
       }
     }
   },
