@@ -45,19 +45,48 @@ class ChatbotSummaryRepository:
     """High-performance repository for sales analytics chatbot queries."""
 
     @classmethod
-    def _execute_paginated_query(cls, query, batch_size: int = 1000) -> List[Dict[str, Any]]:
-        """Executes a Supabase PostgREST query with range-based pagination to fetch ALL matching rows without truncation."""
-        all_rows = []
-        offset = 0
-        while True:
-            res = query.range(offset, offset + batch_size - 1).execute()
-            rows = res.data or []
-            if not rows:
-                break
-            all_rows.extend(rows)
-            if len(rows) < batch_size:
-                break
+    def _execute_paginated_query(cls, query, batch_size: int = 5000) -> List[Dict[str, Any]]:
+        """
+        Executes a Supabase PostgREST query with bounded parallel range pagination
+        to fetch ALL matching rows without truncation or sequential latency penalties.
+        """
+        # 1. Fetch initial batch (0 .. batch_size - 1)
+        res = query.range(0, batch_size - 1).execute()
+        rows = res.data or []
+        if not rows or len(rows) < batch_size:
+            return rows
+
+        all_rows = list(rows)
+        
+        # 2. Fetch remaining pages in parallel with bounded concurrency (max 4 workers)
+        from concurrent.futures import ThreadPoolExecutor
+
+        def fetch_page(off: int) -> List[Dict[str, Any]]:
+            try:
+                page_res = query.range(off, off + batch_size - 1).execute()
+                return page_res.data or []
+            except Exception as e:
+                logger.error(f"_execute_paginated_query page fetch error at offset {off}: {e}")
+                return []
+
+        # Prepare page offsets (e.g. 5000, 10000, 15000, ...) up to reasonable ceiling (75,000 rows)
+        offset = batch_size
+        offsets_to_fetch = []
+        for _ in range(1, 15):
+            offsets_to_fetch.append(offset)
             offset += batch_size
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(fetch_page, off) for off in offsets_to_fetch]
+            for fut in futures:
+                page_data = fut.result()
+                if page_data:
+                    all_rows.extend(page_data)
+                    if len(page_data) < batch_size:
+                        break
+                else:
+                    break
+
         return all_rows
 
     @classmethod
@@ -91,7 +120,7 @@ class ChatbotSummaryRepository:
 
     @classmethod
     def _load_master_lookups(cls) -> Dict[str, Any]:
-        """Loads and caches master lookup tables with explicit column selection."""
+        """Loads and caches master lookup tables concurrently with explicit column selection."""
         now = time.time()
         if now - _MASTER_CACHE["timestamp"] < _MASTER_TTL and _MASTER_CACHE["companies"]:
             return _MASTER_CACHE
@@ -101,18 +130,44 @@ class ChatbotSummaryRepository:
             return _MASTER_CACHE
 
         try:
-            # 1. Companies
-            comp_res = (
-                client.table("companies")
-                .select("company_id, company_name, is_active")
-                .eq("is_active", True)
-                .execute()
-            )
-            comp_data = comp_res.data or []
+            from concurrent.futures import ThreadPoolExecutor
+
+            def f_companies():
+                return client.table("companies").select("company_id, company_name, is_active").eq("is_active", True).execute().data or []
+
+            def f_brands():
+                return client.table("brands").select("brand_id, brand_name, company_id, is_active").eq("is_active", True).execute().data or []
+
+            def f_hq():
+                return client.table("headquarters").select("headquarters_id, name").execute().data or []
+
+            def f_depots():
+                return client.table("depots").select("depot_id, name, headquarters_id").execute().data or []
+
+            def f_users():
+                return client.table("users").select("user_id, first_name, last_name, email").execute().data or []
+
+            def f_groups():
+                return client.table("groups").select("group_id, group_name").execute().data or []
+
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                t_comp = executor.submit(f_companies)
+                t_brand = executor.submit(f_brands)
+                t_hq = executor.submit(f_hq)
+                t_depot = executor.submit(f_depots)
+                t_user = executor.submit(f_users)
+                t_group = executor.submit(f_groups)
+
+                comp_data = t_comp.result()
+                brand_data = t_brand.result()
+                hq_data = t_hq.result()
+                depot_data = t_depot.result()
+                user_data = t_user.result()
+                group_data = t_group.result()
+
             companies = {}
             companies_rev = {}
             others_id = None
-
             for c in comp_data:
                 cid = str(c.get("company_id"))
                 cname = (c.get("company_name") or "").strip()
@@ -121,14 +176,6 @@ class ChatbotSummaryRepository:
                 companies[cid] = cname
                 companies_rev[cname.lower()] = cid
 
-            # 2. Brands
-            brand_res = (
-                client.table("brands")
-                .select("brand_id, brand_name, company_id, is_active")
-                .eq("is_active", True)
-                .execute()
-            )
-            brand_data = brand_res.data or []
             brands = {}
             brands_rev = {}
             for b in brand_data:
@@ -138,9 +185,6 @@ class ChatbotSummaryRepository:
                 brands[bid] = {"name": bname, "company_id": cid}
                 brands_rev[bname.lower()] = bid
 
-            # 3. Headquarters
-            hq_res = client.table("headquarters").select("headquarters_id, name").execute()
-            hq_data = hq_res.data or []
             hq = {}
             hq_rev = {}
             for h in hq_data:
@@ -149,9 +193,6 @@ class ChatbotSummaryRepository:
                 hq[hid] = hname
                 hq_rev[hname.lower()] = hid
 
-            # 4. Depots
-            depot_res = client.table("depots").select("depot_id, name, headquarters_id").execute()
-            depot_data = depot_res.data or []
             depots = {}
             depots_rev = {}
             for d in depot_data:
@@ -160,13 +201,6 @@ class ChatbotSummaryRepository:
                 depots[did] = dname
                 depots_rev[dname.lower()] = did
 
-            # 5. TSM Users
-            user_res = (
-                client.table("users")
-                .select("user_id, first_name, last_name, email")
-                .execute()
-            )
-            user_data = user_res.data or []
             tsms = {}
             tsms_rev = {}
             for u in user_data:
@@ -177,13 +211,6 @@ class ChatbotSummaryRepository:
                 tsms[uid] = fullname
                 tsms_rev[fullname.lower()] = uid
 
-            # 6. Groups
-            group_res = (
-                client.table("groups")
-                .select("group_id, group_name")
-                .execute()
-            )
-            group_data = group_res.data or []
             groups = {}
             groups_rev = {}
             for g in group_data:
@@ -658,8 +685,12 @@ class ChatbotSummaryRepository:
         else:
             c_date = compare_date
 
-        curr_sales = cls.get_sales_summary(period=period, target_date=t_date, selected_hq=selected_hq, company_id=company_id, group_id=group_id, tsm_user_id=tsm_user_id)
-        prev_sales = cls.get_sales_summary(period=period, target_date=c_date, selected_hq=selected_hq, company_id=company_id, group_id=group_id, tsm_user_id=tsm_user_id)
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            f_curr = executor.submit(cls.get_sales_summary, period, t_date, selected_hq, company_id, None, None, tsm_user_id, group_id)
+            f_prev = executor.submit(cls.get_sales_summary, period, c_date, selected_hq, company_id, None, None, tsm_user_id, group_id)
+            curr_sales = f_curr.result()
+            prev_sales = f_prev.result()
 
         curr_cases = curr_sales["total_cases"]
         prev_cases = prev_sales["total_cases"]
@@ -712,8 +743,12 @@ class ChatbotSummaryRepository:
         else:
             c_date = compare_date
 
-        curr_list = cls.get_top_entities(entity_type=entity_type, period=period, target_date=t_date, selected_hq=selected_hq, limit=200, company_id=company_id, group_id=group_id, tsm_user_id=tsm_user_id)
-        prev_list = cls.get_top_entities(entity_type=entity_type, period=period, target_date=c_date, selected_hq=selected_hq, limit=200, company_id=company_id, group_id=group_id, tsm_user_id=tsm_user_id)
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            f_curr = executor.submit(cls.get_top_entities, entity_type, period, t_date, selected_hq, 200, company_id, group_id, tsm_user_id)
+            f_prev = executor.submit(cls.get_top_entities, entity_type, period, c_date, selected_hq, 200, company_id, group_id, tsm_user_id)
+            curr_list = f_curr.result()
+            prev_list = f_prev.result()
 
         prev_map = {item["id"]: item["cases"] for item in prev_list}
 

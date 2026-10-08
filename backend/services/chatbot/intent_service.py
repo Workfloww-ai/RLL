@@ -459,16 +459,19 @@ class ChatbotIntentService:
         # LLM fallback if message is complex & Gemini API Key is configured
         if getattr(settings, "GEMINI_API_KEY", None) and len(user_message.split()) > 6:
             try:
-                llm_parsed = cls._llm_intent_fallback(user_message)
-                if llm_parsed and llm_parsed.get("intent") in VALID_INTENTS:
-                    return {
-                        "intent": llm_parsed["intent"],
-                        "period": llm_parsed.get("period") or period,
-                        "entity_type": llm_parsed.get("entity_type") or entity_type,
-                        "entity_name": llm_parsed.get("entity_name") or entity_name,
-                        "limit": llm_parsed.get("limit") or limit,
-                        "selected_hq": llm_parsed.get("selected_hq") or selected_hq,
-                    }
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(cls._llm_intent_fallback, user_message)
+                    llm_parsed = future.result(timeout=1.5)
+                    if llm_parsed and llm_parsed.get("intent") in VALID_INTENTS:
+                        return {
+                            "intent": llm_parsed["intent"],
+                            "period": llm_parsed.get("period") or period,
+                            "entity_type": llm_parsed.get("entity_type") or entity_type,
+                            "entity_name": llm_parsed.get("entity_name") or entity_name,
+                            "limit": llm_parsed.get("limit") or limit,
+                            "selected_hq": llm_parsed.get("selected_hq") or selected_hq,
+                        }
             except Exception as e:
                 logger.debug(f"LLM intent fallback notice: {e}")
 

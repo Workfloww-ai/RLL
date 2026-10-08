@@ -1103,14 +1103,14 @@ const styles = StyleSheet.create({
     width: 52,
     height: 52,
     borderRadius: 26,
-    backgroundColor: '#090D16',
+    backgroundColor: '#0B132B',
     borderWidth: 1.5,
     borderColor: '#2563EB',
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
+    shadowOpacity: 0.4,
     shadowRadius: 8,
     elevation: 8,
     zIndex: 999,
@@ -1120,8 +1120,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   chatbotFabIconText: {
-    fontSize: 22,
+    fontSize: 24,
     color: '#FFD700',
+    textAlign: 'center',
+    includeFontPadding: false,
   },
 });
 
