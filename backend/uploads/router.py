@@ -36,7 +36,31 @@ async def upload_excel(
     and bulk Supabase inserts in a non-blocking background thread.
     """
     user_id = current_user.get("user_id")
-    resolved_tenant_id = x_tenant_id or tenant_id or current_user.get("tenant_id") or "a0000000-0000-0000-0000-000000000001"
+    user_tenant_id = current_user.get("tenant_id") or "a0000000-0000-0000-0000-000000000001"
+    requested_tenant_id = x_tenant_id or tenant_id
+
+    import uuid
+    if requested_tenant_id:
+        try:
+            uuid.UUID(str(requested_tenant_id))
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid tenant_id format. Must be a valid 36-character UUID string."
+            )
+
+    if requested_tenant_id and requested_tenant_id != user_tenant_id:
+        is_superadmin = current_user.get("role") in ("superadmin", "system_admin")
+        if not is_superadmin:
+            logger.warning(f"Tenant authorization mismatch for user {user_id}: requested {requested_tenant_id} != user tenant {user_tenant_id}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized for the requested tenant."
+            )
+        resolved_tenant_id = requested_tenant_id
+    else:
+        resolved_tenant_id = user_tenant_id
+
     filename = file.filename or "upload.xlsx"
     logger.info(f"Excel upload request initiated by user: {user_id} for file: {filename} (tenant: {resolved_tenant_id})")
 
@@ -117,8 +141,34 @@ async def upload_excel(
 
 
 @router.get("/batches", response_model=List[UploadBatchResponse])
-async def list_upload_batches():
-    return list(upload_batches_db.values())
+async def list_upload_batches(
+    current_user: dict = Depends(admin_only),
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID"),
+    tenant_id: Optional[str] = Query(None),
+):
+    user_tenant_id = current_user.get("tenant_id") or "a0000000-0000-0000-0000-000000000001"
+    requested_tenant_id = x_tenant_id or tenant_id
+    if requested_tenant_id and requested_tenant_id != user_tenant_id:
+        if current_user.get("role") not in ("superadmin", "system_admin"):
+            raise HTTPException(status_code=403, detail="Not authorized for requested tenant.")
+        target_tenant_id = requested_tenant_id
+    else:
+        target_tenant_id = user_tenant_id
+
+    client = get_supabase()
+    if client:
+        try:
+            res = client.table("upload_batches").select("batch_id, source_file, file_name, storage_path, load_type, covers_start, covers_end, row_count, total_rows, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, upload_status, remarks, uploaded_by, created_at, updated_at, tenant_id").eq("tenant_id", target_tenant_id).order("created_at", desc=True).limit(50).execute()
+            if res.data:
+                return res.data
+        except Exception as e:
+            logger.warning(f"Failed to query upload_batches from DB for tenant {target_tenant_id}: {e}")
+
+    filtered_memory_batches = [
+        b for b in upload_batches_db.values()
+        if b.get("tenant_id") == target_tenant_id or b.get("tenant_id") is None
+    ]
+    return filtered_memory_batches
 
 @router.get("/latest")
 async def get_latest_upload_batch():

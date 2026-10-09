@@ -12,7 +12,8 @@
     "plugins": [
       "@react-native-community/datetimepicker",
       "expo-font",
-      "expo-secure-store"
+      "expo-secure-store",
+      "./plugins/withDisableWebViewDebugging"
     ],
     "android": {
       "package": "com.workfloww.lucid360",

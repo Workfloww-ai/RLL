@@ -9,7 +9,8 @@ import { FastStorage } from './storage';
 function formatBaseUrl(url: string): string {
   let formatted = url.trim();
   if (!formatted.startsWith('http://') && !formatted.startsWith('https://')) {
-    formatted = `http://${formatted}`;
+    const defaultScheme = __DEV__ ? 'http://' : 'https://';
+    formatted = `${defaultScheme}${formatted}`;
   }
   formatted = formatted.replace(/\/+$/, '');
   if (!formatted.endsWith('/api/v1')) {
@@ -19,28 +20,35 @@ function formatBaseUrl(url: string): string {
 }
 
 export function getApiBaseUrl(): string {
-  const port = process.env.EXPO_PUBLIC_API_PORT || process.env.EXPO_PUBLIC_PORT || '8000';
-
-  // 1. Automatically derive computer's active Wi-Fi IP from Metro bundler (works on physical devices & emulators across any Wi-Fi)
-  const hostUri = Constants.expoConfig?.hostUri || Constants.manifest2?.extra?.expoGo?.developer?.tool;
-  if (hostUri) {
-    const hostIp = hostUri.split(':')[0];
-    if (hostIp && hostIp !== 'localhost' && hostIp !== '127.0.0.1') {
-      return `http://${hostIp}:${port}/api/v1`;
-    }
-  }
-
-  // 2. Native Expo public environment variable override
+  // 1. Explicit env URL takes precedence if specified
   const envUrl = process.env.EXPO_PUBLIC_API_URL;
-  if (envUrl && envUrl !== 'undefined' && envUrl.trim() !== '' && !envUrl.includes('localhost') && !envUrl.includes('127.0.0.1')) {
+  if (envUrl && envUrl !== 'undefined' && envUrl.trim() !== '') {
     return formatBaseUrl(envUrl);
   }
 
-  // 3. Fallback to localhost (for ADB reverse tcp or iOS Simulator)
-  return `http://localhost:${port}/api/v1`;
+  const port = process.env.EXPO_PUBLIC_API_PORT || process.env.EXPO_PUBLIC_PORT || '8000';
+
+  // 2. In development, automatically derive Wi-Fi IP from Metro bundler or fallback to localhost
+  if (__DEV__) {
+    const hostUri = Constants.expoConfig?.hostUri || Constants.manifest2?.extra?.expoGo?.developer?.tool;
+    if (hostUri) {
+      const hostIp = hostUri.split(':')[0];
+      if (hostIp && hostIp !== 'localhost' && hostIp !== '127.0.0.1') {
+        return `http://${hostIp}:${port}/api/v1`;
+      }
+    }
+    return `http://localhost:${port}/api/v1`;
+  }
+
+  // 3. Fallback production backend URL
+  return 'https://rll-backend-dev-414899512001.asia-south2.run.app/api/v1';
 }
 
 export const BASE_URL = getApiBaseUrl();
+
+if (!__DEV__ && !BASE_URL.startsWith('https://')) {
+  throw new Error('Production API URL must use HTTPS.');
+}
 
 let _onSessionRevokedCallback: (() => void) | null = null;
 let _activeTenantId: string = FastStorage.getString('rll_tenant_id') || 'a0000000-0000-0000-0000-000000000001';
@@ -159,12 +167,44 @@ export async function apiFetch(endpointPath: string, init?: RequestInit): Promis
   }
 }
 
-// ── Auth Token Cache ────────────────────────────────────────────────────────
-// Avoids repeated secureStorage disk reads on every API call after first load.
+// ── Auth Token Cache & Legacy Migration ─────────────────────────────────────
 let _cachedToken: string | null = null;
+let _hasMigratedLegacy = false;
+
+/**
+ * Migrates any auth tokens from legacy AsyncStorage to SecureStore if present
+ * and purges insecure AsyncStorage token copies.
+ */
+export async function migrateLegacyStorageKeys(): Promise<void> {
+  try {
+    const legacyToken = await AsyncStorage.getItem('rll_mobile_token');
+    const legacyUser = await AsyncStorage.getItem('rll_mobile_user');
+
+    if (legacyToken) {
+      const existingSecureToken = await secureStorage.getItem('rll_mobile_token');
+      if (!existingSecureToken) {
+        await secureStorage.setItem('rll_mobile_token', legacyToken);
+      }
+      await AsyncStorage.removeItem('rll_mobile_token');
+    }
+    if (legacyUser) {
+      const existingSecureUser = await secureStorage.getItem('rll_mobile_user');
+      if (!existingSecureUser) {
+        await secureStorage.setItem('rll_mobile_user', legacyUser);
+      }
+      await AsyncStorage.removeItem('rll_mobile_user');
+    }
+  } catch (e) {
+    logger.warn('migrateLegacyStorageKeys failed:', e);
+  }
+}
 
 export async function getAuthToken(): Promise<string | null> {
   if (_cachedToken !== null) return _cachedToken;
+  if (!_hasMigratedLegacy) {
+    _hasMigratedLegacy = true;
+    await migrateLegacyStorageKeys();
+  }
   _cachedToken = await secureStorage.getItem('rll_mobile_token');
   return _cachedToken;
 }
@@ -182,28 +222,58 @@ const _apiCache = new Map<string, { data: unknown; expiry: number }>();
 const DISK_CACHE_PREFIX = 'rll_disk_cache::';
 
 /**
+ * Generates a safe cache key using full SHA-256 token hash so raw JWT tokens are never exposed in AsyncStorage key names.
+ */
+function getCacheKey(endpointPath: string, authToken?: string): string {
+  if (!authToken) return endpointPath;
+  const tokenHash = CryptoJS.SHA256(authToken).toString();
+  return `${endpointPath}::auth_${tokenHash}`;
+}
+
+/**
  * Hydrates in-memory cache from persistent AsyncStorage on app startup.
- * Enables 0ms instantaneous mounting even across cold app restarts.
+ * Enables 0ms instantaneous mounting while isolating caches per active session.
  */
 export async function hydratePersistentCache(): Promise<void> {
   try {
     const keys = await AsyncStorage.getAllKeys();
     const cacheKeys = keys.filter(k => k.startsWith(DISK_CACHE_PREFIX));
     if (cacheKeys.length === 0) return;
+
+    const currentToken = await getAuthToken();
+    const currentTokenHash = currentToken ? CryptoJS.SHA256(currentToken).toString() : null;
+
     const pairs = await AsyncStorage.multiGet(cacheKeys);
+    const keysToRemove: string[] = [];
+
     for (const [key, val] of pairs) {
+      // Purge legacy unhashed keys containing raw bearer tokens
+      if (key.includes('::eyJ') || key.includes('::Bearer')) {
+        keysToRemove.push(key);
+        continue;
+      }
+
       if (val) {
         try {
           const parsed = JSON.parse(val);
-          if (parsed && parsed.expiry > Date.now()) {
+          const isCurrentSession = !key.includes('::auth_') || (currentTokenHash && key.endsWith(`::auth_${currentTokenHash}`));
+          if (parsed && parsed.expiry > Date.now() && isCurrentSession) {
             const memoryKey = key.replace(DISK_CACHE_PREFIX, '');
             _apiCache.set(memoryKey, parsed);
           } else {
-            AsyncStorage.removeItem(key).catch(() => {});
+            keysToRemove.push(key);
           }
-        } catch (_) {}
+        } catch (_) {
+          keysToRemove.push(key);
+        }
       }
     }
+
+    if (keysToRemove.length > 0) {
+      AsyncStorage.multiRemove(keysToRemove).catch(() => {});
+      logger.info(`hydratePersistentCache: Purged ${keysToRemove.length} stale/legacy persistent cache keys.`);
+    }
+
     logger.info(`hydratePersistentCache: Hydrated ${_apiCache.size} persistent cache entries from AsyncStorage.`);
   } catch (err) {
     logger.warn('Failed to hydrate persistent cache from AsyncStorage', err);
@@ -214,7 +284,7 @@ export async function hydratePersistentCache(): Promise<void> {
  * Synchronously checks if a cached response payload exists in memory or disk.
  */
 export function getCachedSnapshot<T = unknown>(endpointPath: string, authToken?: string): T | null {
-  const cacheKey = `${endpointPath}::${authToken ?? ''}`;
+  const cacheKey = getCacheKey(endpointPath, authToken);
   const cached = _apiCache.get(cacheKey);
   if (cached) return cached.data as T;
   return null;
@@ -229,7 +299,7 @@ export async function apiFetchCached(
   ttlMs: number = 60_000,
   authToken?: string
 ): Promise<unknown> {
-  const cacheKey = `${endpointPath}::${authToken ?? ''}`;
+  const cacheKey = getCacheKey(endpointPath, authToken);
   const cached = _apiCache.get(cacheKey);
 
   // 1. Memory HIT (0ms)
@@ -260,6 +330,8 @@ export async function apiFetchCached(
   if (!res.ok) {
     if (res.status === 401) {
       logger.warn(`apiFetchCached: Auth token expired (HTTP 401) on ${endpointPath}. Clearing stale credentials.`);
+      secureStorage.removeItem('rll_mobile_token').catch(() => {});
+      secureStorage.removeItem('rll_mobile_user').catch(() => {});
       AsyncStorage.removeItem('rll_mobile_token').catch(() => {});
       AsyncStorage.removeItem('rll_mobile_user').catch(() => {});
       clearCachedToken();
@@ -445,8 +517,10 @@ export async function fetchMobileSales(
     if (!res.ok) {
       if (res.status === 401) {
         logger.warn('fetchMobileSales: Authentication token expired or invalid (HTTP 401). Clearing stale credentials.');
-        await AsyncStorage.removeItem('rll_mobile_token');
-        await AsyncStorage.removeItem('rll_mobile_user');
+        await secureStorage.removeItem('rll_mobile_token');
+        await secureStorage.removeItem('rll_mobile_user');
+        await AsyncStorage.removeItem('rll_mobile_token').catch(() => {});
+        await AsyncStorage.removeItem('rll_mobile_user').catch(() => {});
         clearCachedToken();
       }
       throw new Error(`fetchMobileSales API returned HTTP ${res.status}`);
@@ -555,7 +629,7 @@ export async function fetchUserProfile() {
   logger.info('fetchUserProfile: Checking for active mobile session...');
   const token = await getAuthToken();
   if (!token) {
-    logger.info('fetchUserProfile: No token found in AsyncStorage.');
+    logger.info('fetchUserProfile: No token found in secureStorage.');
     return null;
   }
   try {
@@ -566,8 +640,10 @@ export async function fetchUserProfile() {
     });
     if (res.status === 401) {
       logger.warn('fetchUserProfile: Token has expired or is invalid (401). Clearing session.');
-      await AsyncStorage.removeItem('rll_mobile_token');
-      await AsyncStorage.removeItem('rll_mobile_user');
+      await secureStorage.removeItem('rll_mobile_token');
+      await secureStorage.removeItem('rll_mobile_user');
+      await AsyncStorage.removeItem('rll_mobile_token').catch(() => {});
+      await AsyncStorage.removeItem('rll_mobile_user').catch(() => {});
       clearCachedToken();
       return null;
     }
@@ -577,7 +653,7 @@ export async function fetchUserProfile() {
     }
     const data = await res.json();
     if (data && data.email) {
-      await AsyncStorage.setItem('rll_mobile_user', JSON.stringify(data));
+      await secureStorage.setItem('rll_mobile_user', JSON.stringify(data));
     }
     logger.info('fetchUserProfile: Successfully fetched current user profile.');
     return data;
@@ -610,7 +686,7 @@ export async function clearAllPhoneCaches() {
   try {
     FastStorage.clear();
     const keys = await AsyncStorage.getAllKeys();
-    const cacheKeys = keys.filter((k) => k.startsWith('rll_phone_cache_') || k.startsWith('rll_mobile_cascading_') || k.startsWith('DISK_CACHE_') || k.startsWith('rll_fast_v2::'));
+    const cacheKeys = keys.filter((k) => k.startsWith('rll_phone_cache_') || k.startsWith('rll_mobile_cascading_') || k.startsWith('DISK_CACHE_') || k.startsWith(DISK_CACHE_PREFIX) || k.startsWith('rll_fast_v2::'));
     if (cacheKeys.length > 0) {
       await AsyncStorage.multiRemove(cacheKeys);
       logger.info(`clearAllPhoneCaches: Cleared ${cacheKeys.length} stale phone cache keys.`);
@@ -624,6 +700,8 @@ export async function clearAuthSession() {
   logger.info('clearAuthSession: Clearing user auth tokens and profiles from encrypted secureStorage.');
   await secureStorage.removeItem('rll_mobile_token');
   await secureStorage.removeItem('rll_mobile_user');
+  await AsyncStorage.removeItem('rll_mobile_token').catch(() => {});
+  await AsyncStorage.removeItem('rll_mobile_user').catch(() => {});
   await clearAllPhoneCaches();
   clearCachedToken();
   invalidateApiCache();
@@ -877,7 +955,7 @@ const ENCRYPTION_KEY = process.env.EXPO_PUBLIC_PAYLOAD_ENCRYPTION_KEY || '';
 export function encryptPayload(data: string): string {
     if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length !== 64) {
         logger.error("Invalid EXPO_PUBLIC_PAYLOAD_ENCRYPTION_KEY length.");
-        return data;
+        throw new Error("Payload encryption failed: EXPO_PUBLIC_PAYLOAD_ENCRYPTION_KEY is missing or invalid.");
     }
     try {
         const key = CryptoJS.enc.Hex.parse(ENCRYPTION_KEY);
@@ -891,13 +969,13 @@ export function encryptPayload(data: string): string {
         return CryptoJS.enc.Base64.stringify(ivAndCiphertext);
     } catch (e) {
         logger.error("Encryption failed", e);
-        return data;
+        throw new Error("Payload encryption failed: Exception during AES encryption.");
     }
 }
 
 export function decryptPayload(encryptedB64: string): string {
     if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length !== 64) {
-        return encryptedB64;
+        throw new Error("Payload decryption failed: EXPO_PUBLIC_PAYLOAD_ENCRYPTION_KEY is missing or invalid.");
     }
     try {
         const key = CryptoJS.enc.Hex.parse(ENCRYPTION_KEY);
@@ -912,10 +990,14 @@ export function decryptPayload(encryptedB64: string): string {
             mode: CryptoJS.mode.CBC,
             padding: CryptoJS.pad.Pkcs7
         });
-        return decrypted.toString(CryptoJS.enc.Utf8);
+        const result = decrypted.toString(CryptoJS.enc.Utf8);
+        if (!result) {
+            throw new Error("Decryption resulted in empty payload or invalid UTF-8 string.");
+        }
+        return result;
     } catch (e) {
         logger.error("Decryption failed", e);
-        return encryptedB64;
+        throw new Error("Payload decryption failed: Bad ciphertext or key mismatch.");
     }
 }
 
@@ -951,8 +1033,9 @@ export async function secureApiFetch(endpointPath: string, init?: RequestInit): 
                         headers: response.headers
                     });
                 }
-            } catch (e) {
-                logger.warn("Failed to parse or decrypt response", e);
+            } catch (e: any) {
+                logger.error("Failed to parse or decrypt response", e);
+                throw new Error(`secureApiFetch: Failed to decrypt response body: ${e.message}`);
             }
         }
     }

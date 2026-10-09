@@ -1,5 +1,6 @@
 import json
 from fastapi import Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from backend.core.config import settings
 from backend.core.crypto import encrypt_payload, decrypt_payload
@@ -28,6 +29,7 @@ class EncryptedRoute(APIRoute):
                             request._body = decrypted_str.encode('utf-8')
                 except Exception as e:
                     logger.error(f"Failed to decrypt payload: {str(e)}")
+                    return JSONResponse(status_code=400, content={"detail": "Failed to decrypt request payload."})
             
             # Call original route handler
             response = await original_route_handler(request)
@@ -44,6 +46,7 @@ class EncryptedRoute(APIRoute):
                             response.headers["Content-Length"] = str(len(new_body))
                     except Exception as e:
                         logger.error(f"Failed to encrypt payload: {str(e)}")
+                        return JSONResponse(status_code=500, content={"detail": "Failed to encrypt response payload."})
                         
             return response
 
