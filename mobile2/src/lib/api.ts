@@ -20,16 +20,10 @@ function formatBaseUrl(url: string): string {
 }
 
 export function getApiBaseUrl(): string {
-  // 1. Explicit env URL takes precedence if specified
-  const envUrl = process.env.EXPO_PUBLIC_API_URL;
-  if (envUrl && envUrl !== 'undefined' && envUrl.trim() !== '') {
-    return formatBaseUrl(envUrl);
-  }
-
   const port = process.env.EXPO_PUBLIC_API_PORT || process.env.EXPO_PUBLIC_PORT || '8000';
 
-  // 2. In development, automatically derive Wi-Fi IP from Metro bundler or fallback to localhost
-  if (__DEV__) {
+  // 1. In development, automatically derive Wi-Fi IP from Metro bundler to connect to local machine
+  if (__DEV__ && process.env.EXPO_PUBLIC_FORCE_REMOTE_API !== 'true') {
     const hostUri = Constants.expoConfig?.hostUri || Constants.manifest2?.extra?.expoGo?.developer?.tool;
     if (hostUri) {
       const hostIp = hostUri.split(':')[0];
@@ -38,6 +32,12 @@ export function getApiBaseUrl(): string {
       }
     }
     return `http://localhost:${port}/api/v1`;
+  }
+
+  // 2. Explicit env URL takes precedence in production or if remote forced
+  const envUrl = process.env.EXPO_PUBLIC_API_URL;
+  if (envUrl && envUrl !== 'undefined' && envUrl.trim() !== '') {
+    return formatBaseUrl(envUrl);
   }
 
   // 3. Fallback production backend URL
