@@ -406,17 +406,23 @@ class ImportPipelineEngine:
         b_str = str(batch_id).strip()
         for table_name in temp_tables:
             try:
-                # Chunked fallback delete to avoid RETURNING * PostgREST overhead
-                while True:
-                    sub_res = client.table(table_name).select("raw_id" if table_name == "raw_sales_upload" else "id").eq("batch_id", b_str).limit(5000).execute()
-                    rows = sub_res.data or []
-                    if not rows:
-                        break
-                    pks = [r.get("raw_id") or r.get("id") for r in rows if r.get("raw_id") or r.get("id")]
-                    if not pks:
-                        break
-                    client.table(table_name).delete().in_("raw_id" if table_name == "raw_sales_upload" else "id", pks).execute()
-                logger.info(f"Batch {batch_id}: Cleaned up temporary {table_name} table.")
+                pk_col = "raw_id" if table_name == "raw_sales_upload" else ("log_id" if table_name == "upload_pipeline_logs" else "id")
+                # 1. Attempt direct delete by batch_id
+                try:
+                    client.table(table_name).delete().eq("batch_id", b_str).execute()
+                    logger.info(f"Batch {batch_id}: Cleaned up temporary {table_name} table.")
+                except Exception:
+                    # 2. Chunked fallback (1000 at a time to stay well within URL length limits)
+                    while True:
+                        sub_res = client.table(table_name).select(pk_col).eq("batch_id", b_str).limit(1000).execute()
+                        rows = sub_res.data or []
+                        if not rows:
+                            break
+                        pks = [r.get(pk_col) for r in rows if r.get(pk_col)]
+                        if not pks:
+                            break
+                        client.table(table_name).delete().in_(pk_col, pks).execute()
+                    logger.info(f"Batch {batch_id}: Cleaned up temporary {table_name} table via chunked purge.")
             except Exception as exc:
                 logger.warning(f"Phase 1 Cleanup notice for table '{table_name}' batch {batch_id}: {exc}")
 
@@ -444,7 +450,7 @@ class ImportPipelineEngine:
                 if c_iso:
                     try:
                         c_dt = datetime.fromisoformat(c_iso.replace("Z", "+00:00"))
-                        if (now_ts - c_dt.timestamp()) > 600:  # 10 minutes optimal threshold
+                        if (now_ts - c_dt.timestamp()) > 1200:  # 20 minutes optimal threshold for large uploads
                             batch["status"] = "failed"
                             batch["upload_status"] = "failed"
                             batch["remarks"] = "Timed out: Active upload job stalled or abandoned."
@@ -931,6 +937,8 @@ class ImportPipelineEngine:
             user_id_by_name: Dict[str, str] = {}
             user_name_by_id: Dict[str, str] = {}
             user_manager_by_id: Dict[str, str] = {}
+            user_manager_id_by_id: Dict[str, str] = {}
+            tsm_user_ids: Set[str] = set()
 
             if client:
                 try:
@@ -955,13 +963,28 @@ class ImportPipelineEngine:
                             if fn and fn.lower() not in user_id_by_name:
                                 user_id_by_name[fn.lower()] = uid
 
-                    atm_res = client.table("ase_tsm_mapping").select("ase_user_id, tsm_user_id").execute()
+                    # Fetch user roles to identify registered TSM / ASM personnel
+                    roles_res = client.table("roles").select("role_id, role_name").execute()
+                    role_name_by_id = {str(r["role_id"]): str(r.get("role_name") or "").strip().upper() for r in (roles_res.data or []) if r.get("role_id")}
+
+                    ur_res = client.table("user_roles").select("user_id, role_id, is_active").execute()
+                    for ur in (ur_res.data or []):
+                        if ur.get("is_active", True) is not False:
+                            uid = str(ur.get("user_id") or "")
+                            rid = str(ur.get("role_id") or "")
+                            rname = role_name_by_id.get(rid, "")
+                            if any(k in rname for k in ["TSM", "ASM", "TERRITORY SALES MANAGER", "AREA SALES MANAGER"]):
+                                tsm_user_ids.add(uid)
+
+                    atm_res = client.table("ase_tsm_mapping").select("ase_user_id, tsm_user_id, is_active").execute()
                     if atm_res and atm_res.data:
                         for m in atm_res.data:
-                            a_uid = str(m.get("ase_user_id") or "").strip()
-                            t_uid = str(m.get("tsm_user_id") or "").strip()
-                            if a_uid and t_uid:
-                                user_manager_by_id[a_uid] = t_uid
+                            if m.get("is_active", True) is not False:
+                                a_uid = str(m.get("ase_user_id") or "").strip()
+                                t_uid = str(m.get("tsm_user_id") or "").strip()
+                                if a_uid and t_uid:
+                                    user_manager_by_id[a_uid] = t_uid
+                                    user_manager_id_by_id[a_uid] = t_uid
                 except Exception as e_um:
                     logger.warning(f"Batch {batch_id}: Exception fetching User Management hierarchy: {e_um}")
 
@@ -999,11 +1022,19 @@ class ImportPipelineEngine:
 
                 approved_tsm_name_curr = None
                 if raw_ase and raw_ase.lower() not in ("unassigned", "none", "null", "nan"):
-                    ase_u = _resolve_user_id(raw_ase)
-                    if ase_u:
-                        app_tsm_u = user_manager_by_id.get(ase_u)
-                        if app_tsm_u:
-                            approved_tsm_name_curr = user_name_by_id.get(app_tsm_u)
+                    clean_a = re.sub(r'\s+', ' ', raw_ase.strip()).lower()
+                    clean_m = re.sub(r'\s+', ' ', raw_asm.strip()).lower()
+                    if clean_a == clean_m:
+                        approved_tsm_name_curr = raw_ase
+                    else:
+                        ase_u = _resolve_user_id(raw_ase)
+                        if ase_u:
+                            if ase_u in tsm_user_ids:
+                                approved_tsm_name_curr = user_name_by_id.get(ase_u, raw_ase)
+                            else:
+                                app_tsm_u = user_manager_by_id.get(ase_u) or user_manager_id_by_id.get(ase_u)
+                                if app_tsm_u:
+                                    approved_tsm_name_curr = user_name_by_id.get(app_tsm_u)
 
                 # A0. Validate Sale Date Field
                 parsed_dt_val = None
@@ -1219,61 +1250,59 @@ class ImportPipelineEngine:
                             "resolution": "Create or activate ASE user profile in User Management."
                         })
                     else:
-                        approved_tsm_uid = user_manager_by_id.get(ase_uid)
-                        if not approved_tsm_uid:
+                        uploaded_asm_uid = _resolve_user_id(raw_asm) if (raw_asm and raw_asm.lower() not in ("unassigned", "none", "null", "nan")) else None
+
+                        if raw_asm and raw_asm.lower() not in ("unassigned", "none", "null", "nan") and not uploaded_asm_uid:
                             validation_error_records.append({
                                 "upload_batch_id": str(batch_id),
                                 "batch_id": str(batch_id),
                                 "filename": filename,
                                 "excel_row_number": row_num,
-                                "error_code": "MISSING_ASE_TSM_MAPPING",
+                                "error_code": "UNMAPPED_TSM",
                                 "severity": "CRITICAL",
-                                "field_name": "ASE",
-                                "column_name": "ase_raw",
-                                "actual_value": raw_ase,
-                                "expected_value": "Approved ASM/TSM assignment in User Management",
+                                "field_name": "ASM/TSM",
+                                "column_name": "asm_tsm_raw",
+                                "actual_value": raw_asm,
+                                "expected_value": "Active ASM/TSM registered in User Management",
                                 "ase": raw_ase,
                                 "asm_tsm": raw_asm,
-                                "approved_asm_tsm": None,
+                                "approved_asm_tsm": approved_tsm_name_curr,
                                 "hq": raw_hq,
                                 "depot": raw_depot,
                                 "licensee": raw_licensee,
                                 "company": raw_company,
                                 "brand": raw_brand,
                                 "raw_id": r_id,
-                                "error_message": f"[Row #{row_num}] MISSING_ASE_TSM_MAPPING: ASE '{raw_ase}' does not have an approved ASM/TSM mapping in User Management.",
-                                "resolution": "Assign an approved ASM/TSM to this ASE in User Management."
+                                "error_message": f"[Row #{row_num}] UNMAPPED_TSM: ASM/TSM '{raw_asm}' specified in sales record is not registered in User Management.",
+                                "resolution": "Create or activate ASM/TSM user profile in User Management."
                             })
                         else:
-                            approved_tsm_name = user_name_by_id.get(approved_tsm_uid, "Approved ASM/TSM")
-                            if raw_asm and raw_asm.lower() not in ("unassigned", "none", "null", "nan"):
-                                uploaded_asm_uid = _resolve_user_id(raw_asm)
+                            # Dual-Role TSM/ASE check:
+                            # A TSM can act as an ASE for a depot if:
+                            # 1. Both columns specify the exact same person name (raw text match)
+                            # 2. The user has a TSM/ASM role in User Management
+                            # 3. Both columns resolve to the exact same user ID
+                            clean_raw_ase = re.sub(r'\s+', ' ', raw_ase.strip()).lower()
+                            clean_raw_asm = re.sub(r'\s+', ' ', raw_asm.strip()).lower()
+                            is_same_person = (clean_raw_ase == clean_raw_asm and clean_raw_ase not in ("unassigned", "none", "null", "nan", ""))
+                            is_dual_role_tsm = is_same_person or (ase_uid in tsm_user_ids) or (uploaded_asm_uid is not None and uploaded_asm_uid == ase_uid)
 
-                                if not uploaded_asm_uid:
-                                    validation_error_records.append({
-                                        "upload_batch_id": str(batch_id),
-                                        "batch_id": str(batch_id),
-                                        "filename": filename,
-                                        "excel_row_number": row_num,
-                                        "error_code": "UNMAPPED_TSM",
-                                        "severity": "CRITICAL",
-                                        "field_name": "ASM/TSM",
-                                        "column_name": "asm_tsm_raw",
-                                        "actual_value": raw_asm,
-                                        "expected_value": "Active ASM/TSM registered in User Management",
-                                        "ase": raw_ase,
-                                        "asm_tsm": raw_asm,
-                                        "approved_asm_tsm": approved_tsm_name,
-                                        "hq": raw_hq,
-                                        "depot": raw_depot,
-                                        "licensee": raw_licensee,
-                                        "company": raw_company,
-                                        "brand": raw_brand,
-                                        "raw_id": r_id,
-                                        "error_message": f"[Row #{row_num}] UNMAPPED_TSM: ASM/TSM '{raw_asm}' specified in sales record is not registered in User Management.",
-                                        "resolution": "Create or activate ASM/TSM user profile in User Management."
-                                    })
-                                elif uploaded_asm_uid != approved_tsm_uid:
+                            if is_dual_role_tsm:
+                                # DUAL-ROLE TSM/ASE:
+                                # The TSM directly covers this depot as the ASE.
+                                # Valid uploaded_asm values:
+                                # 1. Direct name match or identical user (is_same_person or uploaded_asm_uid == ase_uid)
+                                # 2. Empty / Unassigned (TSM is self-managing this depot)
+                                # 3. Their reporting manager / Leader / RSM (uploaded_asm_uid == user_manager_id_by_id.get(ase_uid))
+                                ase_mgr_uid = user_manager_id_by_id.get(ase_uid) or user_manager_by_id.get(ase_uid)
+                                is_valid_asm = (
+                                    is_same_person or
+                                    uploaded_asm_uid is None or
+                                    uploaded_asm_uid == ase_uid or
+                                    (ase_mgr_uid and uploaded_asm_uid == ase_mgr_uid)
+                                )
+                                if not is_valid_asm:
+                                    approved_name = user_name_by_id.get(ase_uid, raw_ase)
                                     validation_error_records.append({
                                         "upload_batch_id": str(batch_id),
                                         "batch_id": str(batch_id),
@@ -1284,19 +1313,73 @@ class ImportPipelineEngine:
                                         "field_name": "ASM/TSM",
                                         "column_name": "asm_tsm_raw",
                                         "actual_value": raw_asm,
-                                        "expected_value": approved_tsm_name,
+                                        "expected_value": approved_name,
                                         "ase": raw_ase,
                                         "asm_tsm": raw_asm,
-                                        "approved_asm_tsm": approved_tsm_name,
+                                        "approved_asm_tsm": approved_name,
                                         "hq": raw_hq,
                                         "depot": raw_depot,
                                         "licensee": raw_licensee,
                                         "company": raw_company,
                                         "brand": raw_brand,
                                         "raw_id": r_id,
-                                        "error_message": f"[Row #{row_num}] ASE_TSM_MAPPING_MISMATCH: ASE '{raw_ase}' is currently mapped to '{approved_tsm_name}' in User Management, but the uploaded sales record specifies '{raw_asm}'.",
+                                        "error_message": f"[Row #{row_num}] ASE_TSM_MAPPING_MISMATCH: TSM '{raw_ase}' acting as ASE is expected to specify '{approved_name}' as ASM/TSM, but uploaded record specifies '{raw_asm}'.",
                                         "resolution": "Update sales record to specify approved ASM/TSM or reassign mapping in User Management."
                                     })
+                            else:
+                                # REGULAR SUBORDINATE ASE:
+                                # Must have an approved ASM/TSM mapping in User Management
+                                approved_tsm_uid = user_manager_by_id.get(ase_uid)
+                                if not approved_tsm_uid:
+                                    validation_error_records.append({
+                                        "upload_batch_id": str(batch_id),
+                                        "batch_id": str(batch_id),
+                                        "filename": filename,
+                                        "excel_row_number": row_num,
+                                        "error_code": "MISSING_ASE_TSM_MAPPING",
+                                        "severity": "CRITICAL",
+                                        "field_name": "ASE",
+                                        "column_name": "ase_raw",
+                                        "actual_value": raw_ase,
+                                        "expected_value": "Approved ASM/TSM assignment in User Management",
+                                        "ase": raw_ase,
+                                        "asm_tsm": raw_asm,
+                                        "approved_asm_tsm": None,
+                                        "hq": raw_hq,
+                                        "depot": raw_depot,
+                                        "licensee": raw_licensee,
+                                        "company": raw_company,
+                                        "brand": raw_brand,
+                                        "raw_id": r_id,
+                                        "error_message": f"[Row #{row_num}] MISSING_ASE_TSM_MAPPING: ASE '{raw_ase}' does not have an approved ASM/TSM mapping in User Management.",
+                                        "resolution": "Assign an approved ASM/TSM to this ASE in User Management."
+                                    })
+                                else:
+                                    approved_tsm_name = user_name_by_id.get(approved_tsm_uid, "Approved ASM/TSM")
+                                    if uploaded_asm_uid and uploaded_asm_uid != approved_tsm_uid:
+                                        validation_error_records.append({
+                                            "upload_batch_id": str(batch_id),
+                                            "batch_id": str(batch_id),
+                                            "filename": filename,
+                                            "excel_row_number": row_num,
+                                            "error_code": "ASE_TSM_MAPPING_MISMATCH",
+                                            "severity": "CRITICAL",
+                                            "field_name": "ASM/TSM",
+                                            "column_name": "asm_tsm_raw",
+                                            "actual_value": raw_asm,
+                                            "expected_value": approved_tsm_name,
+                                            "ase": raw_ase,
+                                            "asm_tsm": raw_asm,
+                                            "approved_asm_tsm": approved_tsm_name,
+                                            "hq": raw_hq,
+                                            "depot": raw_depot,
+                                            "licensee": raw_licensee,
+                                            "company": raw_company,
+                                            "brand": raw_brand,
+                                            "raw_id": r_id,
+                                            "error_message": f"[Row #{row_num}] ASE_TSM_MAPPING_MISMATCH: ASE '{raw_ase}' is currently mapped to '{approved_tsm_name}' in User Management, but the uploaded sales record specifies '{raw_asm}'.",
+                                            "resolution": "Update sales record to specify approved ASM/TSM or reassign mapping in User Management."
+                                        })
 
             # Build Sales Fact DataFrame & Records
             fact_df = pd.DataFrame({
@@ -1503,6 +1586,13 @@ class ImportPipelineEngine:
                 user_id=user_id,
                 imported_rows=imported_rows,
             )
+
+            if final_status == "loaded":
+                try:
+                    from backend.core.system_lock import record_upload_completion
+                    record_upload_completion("sales_upload", filename)
+                except Exception as e_cd:
+                    logger.warning(f"Failed to record upload completion cooldown: {e_cd}")
 
             return local_batch
 

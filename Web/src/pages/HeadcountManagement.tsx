@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import FileUpload from '../components/FileUpload';
-import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X, RefreshCw, RotateCcw, ChevronUp, ChevronDown, ArrowUpDown, ChevronLeft, ChevronRight, Mail, Phone, ArrowLeft } from 'lucide-react';
+import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X, RefreshCw, RotateCcw, ChevronUp, ChevronDown, ArrowUpDown, ChevronLeft, ChevronRight, Mail, Phone, ArrowLeft, Clock, Lock } from 'lucide-react';
 import { User } from '../types';
 import { API_BASE_URL } from '../config';
 import { useToast } from '../contexts/ToastContext';
+import { useSystemLock } from '../contexts/SystemLockContext';
 
 const INITIAL_USERS: User[] = [];
 
@@ -52,6 +53,7 @@ const normalizeUser = (u: any): User => {
 };
 
 export default function HeadcountManagement() {
+  const { isLocked, lockReason, isCooldownActive, formattedCooldown, formattedCooldownLong } = useSystemLock();
   const [users, setUsers] = useState<User[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [showUpload, setShowUpload] = useState(false);
@@ -93,6 +95,10 @@ export default function HeadcountManagement() {
   const [availableRoles, setAvailableRoles] = useState<{ role_id: string; role_name: string; description?: string }[]>([]);
 
   const handleToggleUserStatus = async (user: User) => {
+    if (isLocked) {
+      showToast('System is in read-only mode during data upload. Status change locked.', 'warning');
+      return;
+    }
     const newActiveState = !user.isActive;
 
     // Optimistic Update
@@ -190,6 +196,10 @@ export default function HeadcountManagement() {
   };
 
   const handleEditClick = (user: User) => {
+    if (isLocked) {
+      showToast('System is in read-only mode during data upload. Editing is locked.', 'warning');
+      return;
+    }
     setEditingId(user.id);
     setEditName(user.name || "");
     setEditPhone(user.phoneNumber || "");
@@ -230,6 +240,10 @@ export default function HeadcountManagement() {
   };
 
   const handleSave = async (userId: string) => {
+    if (isLocked) {
+      showToast('System is in read-only mode during data upload. Edits are locked.', 'warning');
+      return;
+    }
     if (!editName || !editName.trim()) {
       showToast('First Name / Name is mandatory.', 'error');
       return;
@@ -299,6 +313,10 @@ export default function HeadcountManagement() {
   };
 
   const handleDelete = async (id: string) => {
+    if (isLocked) {
+      showToast('System is in read-only mode during data upload. Deletion is locked.', 'warning');
+      return;
+    }
     if (!confirm("Are you sure you want to delete this user record?")) return;
     try {
       const token = localStorage.getItem('token');
@@ -317,6 +335,10 @@ export default function HeadcountManagement() {
   };
 
   const handleAdd = async () => {
+    if (isLocked) {
+      showToast('System is in read-only mode during data upload. Adding users is locked.', 'warning');
+      return;
+    }
     if (!validateUserForm(newUser.firstName, newUser.email, newUser.phoneNumber, newUser.role)) {
       return;
     }
@@ -476,6 +498,25 @@ export default function HeadcountManagement() {
 
   return (
     <div className="w-full h-full min-h-0 flex flex-col space-y-2.5">
+      {/* Read-Only Mode Warning Banner */}
+      {isLocked && (
+        <div className="bg-amber-50 border border-amber-300 text-amber-900 rounded-xl px-4 py-2.5 flex items-center justify-between gap-3 text-xs shrink-0 shadow-2xs">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-2.5 w-2.5 relative shrink-0">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500"></span>
+            </span>
+            <span>
+              <strong className="font-bold text-amber-950">Read-Only Mode Active:</strong>{' '}
+              {lockReason || 'Data upload in progress.'} User adjustments, role edits, reporting manager assignments, and bulk uploads are disabled.
+            </span>
+          </div>
+          <span className="px-2 py-0.5 bg-amber-200/90 text-amber-950 font-extrabold text-[10px] uppercase rounded tracking-wider shrink-0">
+            Read-Only
+          </span>
+        </div>
+      )}
+
       {/* Integrated Control Toolbar */}
       <div className="bg-white py-2 px-3 rounded-xl border border-slate-200/80 shadow-2xs flex flex-wrap items-center gap-3 text-xs shrink-0">
         <div className="relative flex-1 min-w-[180px]">
@@ -543,17 +584,32 @@ export default function HeadcountManagement() {
         {/* Action Buttons */}
         <div className="flex items-center gap-2">
           <button 
-            onClick={() => setShowUpload(!showUpload)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-              showUpload 
-                ? 'bg-slate-200 hover:bg-slate-300 text-slate-800 border border-slate-300' 
-                : 'bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700'
+            disabled={isLocked || isCooldownActive}
+            onClick={() => !isLocked && !isCooldownActive && setShowUpload(!showUpload)}
+            title={
+              isLocked 
+                ? "Bulk upload is locked during active data ingestion" 
+                : isCooldownActive 
+                  ? `Bulk upload is paused for 30 minutes after an upload. Enabled in ${formattedCooldown}` 
+                  : "Bulk Upload"
+            }
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+              (isLocked || isCooldownActive)
+                ? 'opacity-60 cursor-not-allowed bg-amber-50/60 text-amber-800 border border-amber-300' 
+                : showUpload 
+                  ? 'bg-slate-200 hover:bg-slate-300 text-slate-800 border border-slate-300 cursor-pointer' 
+                  : 'bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 cursor-pointer'
             }`}
           >
             {showUpload ? (
               <>
                 <ArrowLeft className="w-3.5 h-3.5 text-slate-700" />
                 Back to User List
+              </>
+            ) : isCooldownActive ? (
+              <>
+                <Clock className="w-3.5 h-3.5 text-amber-600 animate-spin" style={{ animationDuration: '6s' }} />
+                <span>Bulk Upload ({formattedCooldown})</span>
               </>
             ) : (
               <>
@@ -563,8 +619,14 @@ export default function HeadcountManagement() {
             )}
           </button>
           <button 
-            onClick={() => setIsAdding(!isAdding)}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#0D3B8E] hover:bg-[#0A2F73] text-white rounded-lg text-xs font-bold transition-all shadow-md shadow-[#0D3B8E]/15 cursor-pointer"
+            disabled={isLocked}
+            onClick={() => !isLocked && setIsAdding(!isAdding)}
+            title={isLocked ? "Adding users is locked during active data ingestion" : "Add User"}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-md shadow-[#0D3B8E]/15 ${
+              isLocked 
+                ? 'opacity-40 cursor-not-allowed bg-slate-400 text-white' 
+                : 'bg-[#0D3B8E] hover:bg-[#0A2F73] text-white cursor-pointer'
+            }`}
           >
             <UserPlus className="w-3.5 h-3.5" />
             Add User
@@ -577,7 +639,14 @@ export default function HeadcountManagement() {
         <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm transition-all">
           <div className="flex items-center justify-between mb-3">
             <div>
-              <h3 className="text-sm font-bold text-slate-900">Bulk User Roster Upload</h3>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-bold text-slate-900">Bulk User Roster Upload</h3>
+                {isCooldownActive && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                    <Clock size={10} /> Cooldown: {formattedCooldown} remaining
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-slate-500 mt-0.5">Upload an Excel (.xlsx, .xls, .xlsb) or CSV file containing user personnel data to automatically populate the database.</p>
             </div>
             <button 
@@ -951,9 +1020,10 @@ export default function HeadcountManagement() {
                         ) : (
                           <button
                             type="button"
-                            onClick={() => handleToggleUserStatus(user)}
-                            className="flex items-center gap-2 cursor-pointer group select-none"
-                            title={`Click to ${user.isActive ? 'deactivate user' : 'reactivate user'}`}
+                            disabled={isLocked}
+                            onClick={() => !isLocked && handleToggleUserStatus(user)}
+                            className={`flex items-center gap-2 select-none ${isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer group'}`}
+                            title={isLocked ? 'Status changes are locked during active data ingestion' : `Click to ${user.isActive ? 'deactivate user' : 'reactivate user'}`}
                           >
                             <div
                               className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
@@ -978,8 +1048,9 @@ export default function HeadcountManagement() {
                         {editingId === user.id ? (
                           <div className="flex items-center justify-end gap-1.5">
                             <button
+                              disabled={isLocked}
                               onClick={() => handleSave(user.id)}
-                              className="p-1 bg-emerald-50 text-emerald-600 rounded hover:bg-emerald-100 transition-colors"
+                              className="p-1 bg-emerald-50 text-emerald-600 rounded hover:bg-emerald-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                               title="Save Changes"
                             >
                               <Check className="w-4 h-4" />
@@ -995,15 +1066,26 @@ export default function HeadcountManagement() {
                         ) : (
                           <div className="flex items-center justify-end gap-1.5">
                             <button
-                              onClick={() => handleEditClick(user)}
-                              className="px-2.5 py-1 border border-slate-200 rounded text-[10px] font-bold text-slate-600 hover:border-[#0D3B8E] hover:text-[#0D3B8E] transition-colors uppercase tracking-wider inline-flex items-center gap-1 cursor-pointer"
+                              disabled={isLocked}
+                              onClick={() => !isLocked && handleEditClick(user)}
+                              title={isLocked ? 'Editing is locked during active data ingestion' : 'Edit'}
+                              className={`px-2.5 py-1 border rounded text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1 transition-colors ${
+                                isLocked 
+                                  ? 'border-slate-200 text-slate-300 cursor-not-allowed opacity-50' 
+                                  : 'border-slate-200 text-slate-600 hover:border-[#0D3B8E] hover:text-[#0D3B8E] cursor-pointer'
+                              }`}
                             >
                               <Edit2 className="w-3 h-3" /> Edit
                             </button>
                             <button 
-                              onClick={() => handleDelete(user.id)}
-                              className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors inline-flex cursor-pointer"
-                              title="Delete Record"
+                              disabled={isLocked}
+                              onClick={() => !isLocked && handleDelete(user.id)}
+                              className={`p-1 rounded transition-colors inline-flex ${
+                                isLocked 
+                                  ? 'text-slate-200 cursor-not-allowed opacity-40' 
+                                  : 'text-slate-400 hover:text-red-500 hover:bg-red-50 cursor-pointer'
+                              }`}
+                              title={isLocked ? 'Deletion is locked during active data ingestion' : 'Delete Record'}
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>

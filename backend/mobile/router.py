@@ -259,6 +259,11 @@ def _fetch_fresh_master_lookups():
             except Exception as e:
                 logger.warning(f"Error fetching ASE names: {e}")
 
+        # Ensure master TSMs are registered in ase_names_lookup for dual-role (TSM acting as ASE) display
+        for tid, t_obj in master_tsms.items():
+            if tid not in ase_names_lookup:
+                ase_names_lookup[tid] = t_obj.get('name', 'TSM')
+
         for tid, t_obj in master_tsms.items():
             for alias_id in t_obj.get("alias_ids", {tid}):
                 t_obj["depot_ids"].update(user_depots_map.get(alias_id, set()))
@@ -1622,6 +1627,9 @@ async def get_mobile_sales(
             member_to_tsms[inactive_id].update(member_to_tsms[active_id])
 
     all_known_ase_ids = {aid for aids in tsm_ase_lookup.values() for aid in aids}
+    # Also track direct sales made by TSMs acting as ASEs
+    for tid in master_tsms.keys():
+        all_known_ase_ids.add(tid)
     ase_sales = {
         aid: {
             "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
@@ -1838,6 +1846,21 @@ async def get_mobile_sales(
             t_data["hqLocation"] = selected_hq
 
         raw_ase_ids = t_data.pop("ase_ids", [])
+        # If the TSM directly made sales as an ASE (dual-role), ensure they are shown in their ASE breakdown
+        t_alias_ids = raw_t_data.get("alias_ids") or {t_id}
+        has_direct_sales = False
+        direct_aid = t_id
+        for cand_id in [t_id] + [aid for aid in t_alias_ids if aid != t_id]:
+            cand_sales = ase_sales.get(cand_id)
+            if cand_sales and any(
+                cand_sales.get(p, {}).get("cases", 0) > 0 or cand_sales.get(p, {}).get("bottles", 0) > 0
+                for p in ["Daily", "MTD", "YTD"]
+            ):
+                has_direct_sales = True
+                direct_aid = cand_id
+                break
+        if has_direct_sales and not any(aid in raw_ase_ids for aid in t_alias_ids):
+            raw_ase_ids = [direct_aid] + list(raw_ase_ids)
         t_data["ases"] = [
             {
                 "id": aid,

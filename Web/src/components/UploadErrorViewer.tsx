@@ -225,19 +225,25 @@ export default function UploadErrorViewer({ initialBatchId, refreshTrigger = 0, 
   };
 
   return (
-    <div id="unified-error-section" className="w-full bg-white rounded-2xl border border-slate-200/80 shadow-2xs p-6 transition-all duration-200">
+    <div id="unified-error-section" className={`w-full rounded-2xl border shadow-2xs p-6 transition-all duration-200 ${
+      totalErrors > 0 ? 'bg-rose-50/15 border-rose-200/90' : 'bg-white border-slate-200/80'
+    }`}>
       {/* Header Bar */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-6 border-b border-slate-100">
         <div>
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-200 text-amber-700 flex items-center justify-center shadow-2xs">
+            <div className={`w-9 h-9 rounded-xl border flex items-center justify-center shadow-2xs ${
+              totalErrors > 0 
+                ? 'bg-rose-500/10 border-rose-200 text-rose-700' 
+                : 'bg-emerald-500/10 border border-emerald-200 text-emerald-700'
+            }`}>
               <ShieldAlert className="w-5 h-5" />
             </div>
             <div>
               <h2 className="text-base font-bold text-slate-900 tracking-tight flex items-center gap-2">
                 Ingestion Diagnostics & Error Center
                 {totalErrors > 0 && (
-                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-amber-100 text-amber-800 border border-amber-300">
+                  <span className="px-4 py-1.5 rounded-full text-[15px] font-extrabold bg-rose-100 text-rose-800 border border-rose-300">
                     {totalErrors.toLocaleString()} Issues Detected
                   </span>
                 )}
@@ -457,202 +463,219 @@ export default function UploadErrorViewer({ initialBatchId, refreshTrigger = 0, 
               </div>
             );
           })()
-        ) : viewMode === 'grouped' ? (
-          /* Grouped Summary View */
-          <div className="space-y-3.5">
-            {filteredIssues.length === 0 ? (
-              <div className="py-10 px-6 rounded-2xl bg-slate-50 border border-slate-200/80 text-center">
-                <p className="text-xs font-bold text-slate-700">No issues match the active category/search filter</p>
-                {selectedCategory !== 'all' && (
-                  <button
-                    onClick={() => setSelectedCategory('all')}
-                    className="mt-2 text-xs font-bold text-[#0D3B8E] hover:underline cursor-pointer"
-                  >
-                    View All {totalErrors} Issues Across Batch →
-                  </button>
+        ) : (
+          <div>
+            {/* Red Error Summary Hero Card - Mirrors the Green Zero Ingestion Errors card */}
+            <div className="py-10 px-6 rounded-2xl bg-rose-50/70 border border-rose-200/90 flex flex-col items-center justify-center text-center mb-5 shadow-2xs">
+              <div className="w-12 h-12 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center mb-3 shadow-2xs">
+                <AlertCircle className="w-6 h-6" />
+              </div>
+              <h3 className="text-sm font-bold text-rose-950">
+                {totalErrors.toLocaleString()} Ingestion {totalErrors === 1 ? 'Error' : 'Errors'} Found
+              </h3>
+              <p className="text-xs text-rose-800 mt-1 max-w-md font-medium">
+                The uploaded Excel sheet contains unmapped or invalid records. Ingestion was halted to protect data integrity. Review and resolve the flagged issues below.
+              </p>
+            </div>
+
+            {viewMode === 'grouped' ? (
+              /* Grouped Summary View */
+              <div className="space-y-3.5">
+                {filteredIssues.length === 0 ? (
+                  <div className="py-10 px-6 rounded-2xl bg-slate-50 border border-slate-200/80 text-center">
+                    <p className="text-xs font-bold text-slate-700">No issues match the active category/search filter</p>
+                    {selectedCategory !== 'all' && (
+                      <button
+                        onClick={() => setSelectedCategory('all')}
+                        className="mt-2 text-xs font-bold text-[#0D3B8E] hover:underline cursor-pointer"
+                      >
+                        View All {totalErrors} Issues Across Batch →
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  filteredIssues.map((issue) => {
+                    const isExpanded = expandedIssue === issue.group_key;
+                    return (
+                      <div
+                        key={issue.group_key}
+                        className="border border-rose-200/80 rounded-xl bg-white hover:border-rose-300 transition-all overflow-hidden shadow-2xs"
+                      >
+                        {/* Header Item */}
+                        <div 
+                          onClick={() => setExpandedIssue(isExpanded ? null : issue.group_key)}
+                          className="p-4 flex items-start justify-between gap-4 cursor-pointer select-none bg-rose-50/20 hover:bg-rose-50/50 transition-colors"
+                        >
+                          <div className="flex items-start gap-3">
+                            <div className="mt-0.5 p-1.5 rounded-lg bg-white border border-rose-200/80 shadow-2xs">
+                              {getCategoryIcon(issue.category)}
+                            </div>
+                            <div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <h4 className="text-xs font-bold text-slate-900">{issue.friendly_title}</h4>
+                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${getCategoryBadgeClass(issue.category)}`}>
+                                  {issue.category}
+                                </span>
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-100 text-rose-800 border border-rose-200">
+                                  {issue.affected_count.toLocaleString()} {issue.affected_count === 1 ? 'row' : 'rows'} affected
+                                </span>
+                              </div>
+                              <p className="text-xs text-slate-600 mt-1 font-medium leading-relaxed">
+                                {issue.friendly_explanation}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0 pt-1">
+                            <span className="text-[11px] font-bold text-[#0D3B8E] hover:underline flex items-center gap-1">
+                              {isExpanded ? 'Hide Details' : 'View Action'}
+                              {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Actionable Solution & Raw Details (Expanded) */}
+                        <AnimatePresence>
+                          {isExpanded && (
+                            <motion.div
+                              initial={{ height: 0, opacity: 0 }}
+                              animate={{ height: 'auto', opacity: 1 }}
+                              exit={{ height: 0, opacity: 0 }}
+                              transition={{ duration: 0.2 }}
+                              className="border-t border-rose-100 p-4 bg-rose-50/15 space-y-3 text-xs"
+                            >
+                              {/* Recommended Action Box */}
+                              <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl flex items-start gap-2.5">
+                                <Lightbulb className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                                <div>
+                                  <p className="text-[10px] font-extrabold text-amber-900 uppercase tracking-wider">
+                                    How to Resolve
+                                  </p>
+                                  <p className="text-xs text-amber-800 font-semibold mt-0.5 leading-relaxed">
+                                    {issue.suggested_action}
+                                  </p>
+                                </div>
+                              </div>
+
+                              {/* Technical Breakdown */}
+                              <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 pt-1">
+                                <div className="p-2.5 bg-white border border-slate-200/80 rounded-xl">
+                                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Impacted Entity</span>
+                                  <span className="font-semibold text-slate-800 mt-0.5 block">{issue.entity}</span>
+                                </div>
+                                <div className="p-2.5 bg-white border border-slate-200/80 rounded-xl">
+                                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Affected Rows</span>
+                                  <span className="font-semibold text-slate-800 mt-0.5 block">{issue.affected_count.toLocaleString()} occurrences</span>
+                                </div>
+                                <div className="p-2.5 bg-white border border-slate-200/80 rounded-xl">
+                                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Latest Occurrence</span>
+                                  <span className="font-semibold text-slate-800 mt-0.5 block flex items-center gap-1">
+                                    <Clock className="w-3 h-3 text-slate-400" />
+                                    {issue.latest_seen ? new Date(issue.latest_seen).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'Recent'}
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Sample Raw Technical Error Toggle */}
+                              {issue.sample_raw && (
+                                <div className="pt-1">
+                                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
+                                    Raw Technical Detail:
+                                  </span>
+                                  <div className="p-2.5 bg-slate-900 text-slate-200 font-mono text-[11px] rounded-lg overflow-x-auto select-all">
+                                    {issue.sample_raw}
+                                  </div>
+                                </div>
+                              )}
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
+                    );
+                  })
                 )}
               </div>
             ) : (
-              filteredIssues.map((issue) => {
-                const isExpanded = expandedIssue === issue.group_key;
-                return (
-                  <div
-                    key={issue.group_key}
-                    className="border border-slate-200/80 rounded-xl bg-white hover:border-slate-300 transition-all overflow-hidden shadow-2xs"
-                  >
-                    {/* Header Item */}
-                    <div 
-                      onClick={() => setExpandedIssue(isExpanded ? null : issue.group_key)}
-                      className="p-4 flex items-start justify-between gap-4 cursor-pointer select-none bg-slate-50/30 hover:bg-slate-50/70 transition-colors"
-                    >
-                      <div className="flex items-start gap-3">
-                        <div className="mt-0.5 p-1.5 rounded-lg bg-white border border-slate-200/80 shadow-2xs">
-                          {getCategoryIcon(issue.category)}
-                        </div>
-                        <div>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <h4 className="text-xs font-bold text-slate-900">{issue.friendly_title}</h4>
-                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${getCategoryBadgeClass(issue.category)}`}>
-                              {issue.category}
-                            </span>
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-slate-100 text-slate-700">
-                              {issue.affected_count.toLocaleString()} {issue.affected_count === 1 ? 'row' : 'rows'} affected
-                            </span>
-                          </div>
-                          <p className="text-xs text-slate-600 mt-1 font-medium leading-relaxed">
-                            {issue.friendly_explanation}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2 shrink-0 pt-1">
-                        <span className="text-[11px] font-bold text-[#0D3B8E] hover:underline flex items-center gap-1">
-                          {isExpanded ? 'Hide Details' : 'View Action'}
-                          {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Actionable Solution & Raw Details (Expanded) */}
-                    <AnimatePresence>
-                      {isExpanded && (
-                        <motion.div
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.2 }}
-                          className="border-t border-slate-100 p-4 bg-slate-50/40 space-y-3 text-xs"
-                        >
-                          {/* Recommended Action Box */}
-                          <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl flex items-start gap-2.5">
-                            <Lightbulb className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
-                            <div>
-                              <p className="text-[10px] font-extrabold text-amber-900 uppercase tracking-wider">
-                                How to Resolve
-                              </p>
-                              <p className="text-xs text-amber-800 font-semibold mt-0.5 leading-relaxed">
-                                {issue.suggested_action}
-                              </p>
-                            </div>
-                          </div>
-
-                          {/* Technical Breakdown */}
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 pt-1">
-                            <div className="p-2.5 bg-white border border-slate-200/80 rounded-xl">
-                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Impacted Entity</span>
-                              <span className="font-semibold text-slate-800 mt-0.5 block">{issue.entity}</span>
-                            </div>
-                            <div className="p-2.5 bg-white border border-slate-200/80 rounded-xl">
-                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Affected Rows</span>
-                              <span className="font-semibold text-slate-800 mt-0.5 block">{issue.affected_count.toLocaleString()} occurrences</span>
-                            </div>
-                            <div className="p-2.5 bg-white border border-slate-200/80 rounded-xl">
-                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Latest Occurrence</span>
-                              <span className="font-semibold text-slate-800 mt-0.5 block flex items-center gap-1">
-                                <Clock className="w-3 h-3 text-slate-400" />
-                                {issue.latest_seen ? new Date(issue.latest_seen).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'Recent'}
-                              </span>
-                            </div>
-                          </div>
-
-                          {/* Sample Raw Technical Error Toggle */}
-                          {issue.sample_raw && (
-                            <div className="pt-1">
-                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
-                                Raw Technical Detail:
-                              </span>
-                              <div className="p-2.5 bg-slate-900 text-slate-200 font-mono text-[11px] rounded-lg overflow-x-auto select-all">
-                                {issue.sample_raw}
-                              </div>
-                            </div>
-                          )}
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        ) : (
-          /* Detailed Row-by-Row Log View */
-          <div className="border border-slate-200/80 rounded-xl overflow-hidden bg-white shadow-2xs">
-            <div className="overflow-x-auto max-h-96">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold text-[10px] uppercase tracking-wider">
-                    <th className="py-3 px-4">Row #</th>
-                    <th className="py-3 px-4">Category</th>
-                    <th className="py-3 px-4">Entity / Column</th>
-                    <th className="py-3 px-4">Issue Description & Action Required</th>
-                    <th className="py-3 px-4">Batch ID</th>
-                    <th className="py-3 px-4 text-right">Timestamp</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {filteredErrors.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="py-8 text-center text-slate-400 font-medium">
-                        No errors match the current filter.
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredErrors.slice(0, 150).map((err) => {
-                      const rowNum = (err as any).excel_row_number || (err.raw_message && err.raw_message.match(/\[Row\s*#?(\d+)\]/i)?.[1]) || '—';
-                      const actionText = err.suggested_action || (err as any).resolution;
-                      return (
-                        <tr key={err.error_id} className="hover:bg-slate-50/60 transition-colors">
-                          <td className="py-3 px-4 whitespace-nowrap">
-                            <span className="px-2 py-0.5 rounded text-[11px] font-mono font-extrabold bg-amber-100 text-amber-900 border border-amber-300">
-                              Row #{rowNum}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4 whitespace-nowrap">
-                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${getCategoryBadgeClass(err.category)}`}>
-                              {getCategoryIcon(err.category)}
-                              <span>{err.category}</span>
-                            </span>
-                          </td>
-                          <td className="py-3 px-4 whitespace-nowrap">
-                            <p className="font-bold text-slate-900">{err.entity || err.column_name}</p>
-                            <p className="text-[10px] text-slate-400 font-mono">col: {err.column_name || 'raw'}</p>
-                          </td>
-                          <td className="py-3 px-4 max-w-lg">
-                            <p className="font-bold text-slate-900 text-xs">{err.friendly_title}</p>
-                            <p className="text-[11px] text-slate-600 mt-0.5">{err.friendly_explanation}</p>
-                            
-                            {actionText && (
-                              <div className="mt-1.5 p-2 bg-amber-50/90 border border-amber-200 rounded-lg text-[11px] text-amber-900 font-medium flex items-start gap-1.5">
-                                <Lightbulb className="w-3.5 h-3.5 text-amber-700 shrink-0 mt-0.5" />
-                                <span><strong>Action Needed:</strong> {actionText}</span>
-                              </div>
-                            )}
-
-                            {err.raw_message && (
-                              <details className="mt-1 text-[10px] text-slate-400">
-                                <summary className="cursor-pointer hover:text-slate-600 font-medium">Show raw message</summary>
-                                <pre className="mt-1 p-1.5 bg-slate-100 text-slate-700 rounded text-[10px] whitespace-pre-wrap font-mono">
-                                  {err.raw_message}
-                                </pre>
-                              </details>
-                            )}
-                          </td>
-                          <td className="py-3 px-4 text-slate-500 font-mono text-[11px] whitespace-nowrap">
-                            {err.batch_id ? `#${err.batch_id.slice(0, 8)}` : '—'}
-                          </td>
-                          <td className="py-3 px-4 text-right text-slate-400 whitespace-nowrap font-medium text-[11px]">
-                            {err.created_at ? new Date(err.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : '—'}
+              /* Detailed Row-by-Row Log View */
+              <div className="border border-rose-200/80 rounded-xl overflow-hidden bg-white shadow-2xs">
+                <div className="overflow-x-auto max-h-96">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-rose-50/40 border-b border-rose-200/80 text-slate-700 font-bold text-[10px] uppercase tracking-wider">
+                        <th className="py-3 px-4">Row #</th>
+                        <th className="py-3 px-4">Category</th>
+                        <th className="py-3 px-4">Entity / Column</th>
+                        <th className="py-3 px-4">Issue Description & Action Required</th>
+                        <th className="py-3 px-4">Batch ID</th>
+                        <th className="py-3 px-4 text-right">Timestamp</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-rose-100/60">
+                      {filteredErrors.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="py-8 text-center text-slate-400 font-medium">
+                            No errors match the current filter.
                           </td>
                         </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-            {filteredErrors.length > 150 && (
-              <div className="p-2.5 bg-slate-50 border-t border-slate-200 text-center text-[11px] font-semibold text-slate-500">
-                Showing first 150 errors of {filteredErrors.length.toLocaleString()}. Use CSV export for full dataset.
+                      ) : (
+                        filteredErrors.slice(0, 150).map((err) => {
+                          const rowNum = (err as any).excel_row_number || (err.raw_message && err.raw_message.match(/\[Row\s*#?(\d+)\]/i)?.[1]) || '—';
+                          const actionText = err.suggested_action || (err as any).resolution;
+                          return (
+                            <tr key={err.error_id} className="hover:bg-rose-50/30 transition-colors">
+                              <td className="py-3 px-4 whitespace-nowrap">
+                                <span className="px-2 py-0.5 rounded text-[11px] font-mono font-extrabold bg-rose-100 text-rose-900 border border-rose-200">
+                                  Row #{rowNum}
+                                </span>
+                              </td>
+                              <td className="py-3 px-4 whitespace-nowrap">
+                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${getCategoryBadgeClass(err.category)}`}>
+                                  {getCategoryIcon(err.category)}
+                                  <span>{err.category}</span>
+                                </span>
+                              </td>
+                              <td className="py-3 px-4 whitespace-nowrap">
+                                <p className="font-bold text-slate-900">{err.entity || err.column_name}</p>
+                                <p className="text-[10px] text-slate-400 font-mono">col: {err.column_name || 'raw'}</p>
+                              </td>
+                              <td className="py-3 px-4 max-w-lg">
+                                <p className="font-bold text-slate-900 text-xs">{err.friendly_title}</p>
+                                <p className="text-[11px] text-slate-600 mt-0.5">{err.friendly_explanation}</p>
+                                
+                                {actionText && (
+                                  <div className="mt-1.5 p-2 bg-amber-50/90 border border-amber-200 rounded-lg text-[11px] text-amber-900 font-medium flex items-start gap-1.5">
+                                    <Lightbulb className="w-3.5 h-3.5 text-amber-700 shrink-0 mt-0.5" />
+                                    <span><strong>Action Needed:</strong> {actionText}</span>
+                                  </div>
+                                )}
+
+                                {err.raw_message && (
+                                  <details className="mt-1 text-[10px] text-slate-400">
+                                    <summary className="cursor-pointer hover:text-slate-600 font-medium">Show raw message</summary>
+                                    <pre className="mt-1 p-1.5 bg-slate-100 text-slate-700 rounded text-[10px] whitespace-pre-wrap font-mono">
+                                      {err.raw_message}
+                                    </pre>
+                                  </details>
+                                )}
+                              </td>
+                              <td className="py-3 px-4 text-slate-500 font-mono text-[11px] whitespace-nowrap">
+                                {err.batch_id ? `#${err.batch_id.slice(0, 8)}` : '—'}
+                              </td>
+                              <td className="py-3 px-4 text-right text-slate-400 whitespace-nowrap font-medium text-[11px]">
+                                {err.created_at ? new Date(err.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : '—'}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                {filteredErrors.length > 150 && (
+                  <div className="p-2.5 bg-slate-50 border-t border-slate-200 text-center text-[11px] font-semibold text-slate-500">
+                    Showing first 150 errors of {filteredErrors.length.toLocaleString()}. Use CSV export for full dataset.
+                  </div>
+                )}
               </div>
             )}
           </div>

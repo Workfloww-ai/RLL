@@ -6,6 +6,7 @@ from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks, status, Header, Query
 from backend.uploads.service import import_pipeline, upload_batches_db, upload_logs_db
 from backend.core.security import RoleChecker
+from backend.core.system_lock import check_system_lock_or_raise, check_upload_cooldown_or_raise
 from backend.db.client import get_supabase
 from backend.uploads.schemas import UploadBatchResponse, UploadLogResponse
 
@@ -73,17 +74,18 @@ async def upload_excel(
             detail=f"Database is currently unreachable or unhealthy ({db_health.get('message')}). Upload deferred."
         )
 
-    # 0b. Phase 2 Single-Upload Queue & Concurrency Guard (HTTP 409 Conflict)
+    # 0b. Phase 2 Single-Upload Queue & Concurrency Guard (HTTP 423 Locked)
+    check_system_lock_or_raise()
+    check_upload_cooldown_or_raise()
     active_batch = import_pipeline.is_upload_active()
     if active_batch:
         active_id = active_batch.get("batch_id") or active_batch.get("upload_batch_id")
         active_file = active_batch.get("source_file") or active_batch.get("file_name") or "unknown"
-        if active_file.strip().lower() != filename.strip().lower():
-            logger.warning(f"Upload rejected (HTTP 409): Active pipeline Batch #{active_id} ({active_file}) in progress.")
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"An upload pipeline is currently active (Batch #{active_id}: '{active_file}'). Single-upload queue prevents concurrent execution."
-            )
+        logger.warning(f"Upload rejected (HTTP 423): Active pipeline Batch #{active_id} ({active_file}) in progress.")
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail=f"An upload pipeline is currently active (Batch #{active_id}: '{active_file}'). Single-upload queue prevents concurrent execution."
+        )
 
     # 1. File Extension Validation (.xlsx, .xls, .xlsb, .xlsm, .csv)
     allowed_extensions = {".xlsx", ".xls", ".xlsb", ".xlsm", ".csv"}
@@ -169,6 +171,16 @@ async def list_upload_batches(
         if b.get("tenant_id") == target_tenant_id or b.get("tenant_id") is None
     ]
     return filtered_memory_batches
+
+@router.get("/active-batch")
+async def get_active_upload_batch_endpoint():
+    """
+    Returns the currently active upload batch if ingestion is running, otherwise active=False.
+    """
+    active = import_pipeline.is_upload_active()
+    if active:
+        return {"active": True, "batch": active}
+    return {"active": False, "batch": None}
 
 @router.get("/latest")
 async def get_latest_upload_batch():

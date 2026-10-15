@@ -89,7 +89,7 @@ def get_active_upload_batch() -> Optional[Dict[str, Any]]:
         from datetime import datetime, timezone
         active_statuses = ["queued", "running", "processing", "aggregating", "validating"]
         res = client.table("upload_batches").select(
-            "batch_id, source_file, file_name, covers_start, covers_end, status, upload_status, created_at"
+            "batch_id, source_file, file_name, covers_start, covers_end, status, upload_status, created_at, row_count, total_rows, imported_rows, remarks"
         ).in_("status", active_statuses).order("created_at", desc=True).limit(5).execute()
         
         if res.data:
@@ -103,14 +103,14 @@ def get_active_upload_batch() -> Optional[Dict[str, Any]]:
                         c_dt = datetime.fromisoformat(clean_dt_str)
                         if c_dt.tzinfo is None:
                             c_dt = c_dt.replace(tzinfo=timezone.utc)
-                        if (now_utc - c_dt).total_seconds() > 600:  # 10 minutes optimal threshold to prevent DB resource exhaustion
+                        if (now_utc - c_dt).total_seconds() > 1200:  # 20 minutes optimal threshold for large uploads
                             is_stale = True
                     except Exception:
                         pass
 
                 if is_stale:
                     b_id = str(b.get("batch_id"))
-                    logger.warning(f"Resetting stale orphaned upload batch #{b_id} created > 10 mins ago.")
+                    logger.warning(f"Resetting stale orphaned upload batch #{b_id} created > 20 mins ago.")
                     try:
                         client.table("upload_batches").update({
                             "status": "failed",
