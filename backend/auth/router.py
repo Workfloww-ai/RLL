@@ -23,24 +23,28 @@ from backend.core.security import create_access_token, get_current_user, validat
 
 @router.post("/login", response_model=TokenResponse)
 async def login(credentials: LoginRequest, request: Request, response: Response):
+    email = credentials.email.lower().strip()
+    password = credentials.password
     client_ip = request.client.host if request.client else "unknown"
-    redis_key = f"rll:ratelimit:login:{client_ip}"
+    is_dev_or_local = (
+        settings.ENVIRONMENT.lower() in ["development", "dev", "test"]
+        or client_ip in ["127.0.0.1", "localhost", "::1", "unknown"]
+        or client_ip.startswith("10.")
+        or client_ip.startswith("192.168.")
+        or client_ip.startswith("172.")
+    )
+    redis_key = f"rll:ratelimit:login:{client_ip}:{email}"
     
-    attempts = await safe_get(redis_key)
-    if attempts:
-        attempts_count = int(attempts)
-        if attempts_count >= 5:
-            logger.warning(f"Rate limit exceeded for IP {client_ip}")
+    # Check rate limit (strictly production only)
+    if not is_dev_or_local:
+        attempts = await safe_get(redis_key)
+        if attempts and int(attempts) >= 100:
+            logger.warning(f"Rate limit exceeded for user {email} from IP {client_ip}")
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="Too many login attempts. Please try again later."
             )
-        await safe_set(redis_key, str(attempts_count + 1), ttl=3600)
-    else:
-        await safe_set(redis_key, "1", ttl=3600)
 
-    email = credentials.email.lower().strip()
-    password = credentials.password
     logger.info(f"Web login attempt initiated for user: {email}")
 
     client = get_supabase()
@@ -67,6 +71,10 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
             logger.error(f"Error executing verify_user_credentials RPC for {email}: {rpc_err}")
 
     if not authenticated:
+        if not is_dev_or_local:
+            attempts = await safe_get(redis_key)
+            new_count = (int(attempts) + 1) if attempts else 1
+            await safe_set(redis_key, str(new_count), ttl=300)
         logger.warning(f"Web login failed for user {email} (invalid credentials)")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -92,7 +100,8 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
 
     user_id_str = str(db_user["user_id"])
 
-    # Clear any previous revocation flag upon fresh successful login
+    # Clear rate limit and any previous revocation flag upon fresh successful login
+    await safe_delete(redis_key)
     await safe_delete(f"rll:revoked:{user_id_str}")
 
     # 3. Fetch user roles dynamically from public.user_roles
