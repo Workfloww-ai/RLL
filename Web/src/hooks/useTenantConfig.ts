@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { setTenantId } from '../lib/apiClient';
+import { API_BASE_URL } from '../config';
 
 export interface TenantConfig {
   tenantId: string;
@@ -31,8 +32,7 @@ export function useTenantConfig() {
     let isMounted = true;
     async function loadTenantConfig() {
       try {
-        const backendUrl = import.meta.env.VITE_API_URL || '';
-        const res = await fetch(`${backendUrl}/api/v1/system/tenant/config?tenant_slug=rll`);
+        const res = await fetch(`${API_BASE_URL}/system/tenant/config?tenant_slug=rll`);
         if (res.ok) {
           const data = await res.json();
           if (isMounted && data) {
