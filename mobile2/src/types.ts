@@ -58,6 +58,8 @@ export interface TsmBrandSales {
 export interface ASE {
   id: string;
   name: string;
+  hqLocation?: string;
+  assignedHqs?: string[];
   data: Record<Period, Metrics>;
 }
 
@@ -65,6 +67,7 @@ export interface TSM {
   id: string;
   name: string;
   hqLocation?: string;
+  assignedHqs?: string[];
   data: Record<Period, Metrics>;
   brands: TsmBrandSales[];
   ases?: ASE[];

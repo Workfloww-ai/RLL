@@ -1343,8 +1343,9 @@ def fetch_company_brand_sales_db(
 ) -> List[Dict[str, Any]]:
     """
     Calls get_company_brand_sales_summary RPC in Supabase PostgreSQL.
-    Returns brand sales summary for a selected company, excluding 'Others'.
+    Returns brand sales summary for a selected company.
     Automatically resolves slug/name company identifiers to UUIDs.
+    Respects system_settings include_others_in_sales and explicit company drilldowns.
     """
     client = get_supabase_client()
     if not client:
@@ -1352,12 +1353,21 @@ def fetch_company_brand_sales_db(
 
     resolved_company_uuid = resolve_company_id_uuid(client, company_id)
 
+    from backend.services.tenant_service import get_include_others_setting_sync
+    include_others = get_include_others_setting_sync()
+
+    is_target_others = (
+        str(company_id).strip().lower() in ("others", "other")
+        or str(resolved_company_uuid) == "30739e78-c438-4a60-a5cb-6d9e9e79d1c6"
+    )
+    eff_exclude = "" if (include_others or is_target_others) else exclude_company
+
     try:
         rpc_params = {
             "p_company_id": resolved_company_uuid,
             "p_date_from": date_from,
             "p_date_to": date_to,
-            "p_exclude_company": exclude_company,
+            "p_exclude_company": eff_exclude,
         }
         if hq_name and hq_name.strip() and hq_name.strip() != "All Headquarters":
             rpc_params["p_hq_name"] = hq_name.strip()
@@ -1377,18 +1387,23 @@ def fetch_brand_licensees_sales_db(
 ) -> List[Dict[str, Any]]:
     """
     Calls get_brand_licensees_summary RPC in Supabase PostgreSQL.
-    Returns licensee sales summary for a selected brand, excluding 'Others'.
+    Returns licensee sales summary for a selected brand.
+    Respects system_settings include_others_in_sales toggle.
     """
     client = get_supabase_client()
     if not client:
         return []
+
+    from backend.services.tenant_service import get_include_others_setting_sync
+    include_others = get_include_others_setting_sync()
+    eff_exclude = "" if include_others else exclude_company
 
     try:
         rpc_params = {
             "p_brand_id": brand_id,
             "p_date_from": date_from,
             "p_date_to": date_to,
-            "p_exclude_company": exclude_company,
+            "p_exclude_company": eff_exclude,
         }
         if hq_name and hq_name.strip() and hq_name.strip() != "All Headquarters":
             rpc_params["p_hq_name"] = hq_name.strip()

@@ -50,7 +50,24 @@ class UserService:
             hq_res = client.table("headquarters").select("headquarters_id, name").execute()
             hq_map = {str(h["headquarters_id"]): h.get("name", "Unassigned") for h in (hq_res.data or []) if h.get("headquarters_id")}
 
-            # 5. Fetch user_depot mapping
+            # 5. Fetch user_headquarters_mapping
+            user_hqs_map: Dict[str, List[Dict[str, str]]] = {}
+            try:
+                uhq_res = client.table("user_headquarters_mapping").select("user_id, headquarters_id, is_active").eq("is_active", True).execute()
+                for uhq in (uhq_res.data or []):
+                    uid = str(uhq.get("user_id") or "")
+                    hid = str(uhq.get("headquarters_id") or "")
+                    if uid and hid in hq_map:
+                        if uid not in user_hqs_map:
+                            user_hqs_map[uid] = []
+                        user_hqs_map[uid].append({
+                            "headquarters_id": hid,
+                            "name": hq_map[hid]
+                        })
+            except Exception as e_uhq:
+                logger.warning(f"Error fetching user_headquarters_mapping in list_users: {e_uhq}")
+
+            # 5b. Fetch user_depot mapping
             user_depot_info: Dict[str, Dict[str, str]] = {}
             try:
                 ud_res = client.table("user_depot").select("user_id, depot_id").execute()
@@ -101,8 +118,12 @@ class UserService:
 
                 ud_data = user_depot_info.get(uid, {})
                 depot_name = ud_data.get("depot_name", "Unassigned")
-                headquarters = ud_data.get("headquarters", "Unassigned")
                 circle_name = ud_data.get("circle_name", "Unassigned")
+
+                assigned_hqs = user_hqs_map.get(uid, [])
+                hq_names = [h["name"] for h in assigned_hqs]
+                hq_ids = [h["headquarters_id"] for h in assigned_hqs]
+                headquarters_str = ", ".join(hq_names) if hq_names else ud_data.get("headquarters", "Unassigned")
 
                 result.append({
                     "id": uid,
@@ -119,7 +140,9 @@ class UserService:
                     "manager_id": str(manager_id) if manager_id else None,
                     "depotName": depot_name,
                     "depot_name": depot_name,
-                    "headquarters": headquarters,
+                    "headquarters": headquarters_str,
+                    "headquarters_ids": hq_ids,
+                    "headquarters_list": assigned_hqs,
                     "circleName": circle_name,
                     "isActive": u.get("is_active", True),
                     "is_active": u.get("is_active", True)
@@ -474,6 +497,13 @@ class UserService:
                 except Exception as d_err:
                     logger.warning(f"Could not update user_depot mapping during create_user: {d_err}")
 
+            # 5. If headquarters_ids provided, map user to headquarters
+            if "headquarters_ids" in payload and payload["headquarters_ids"] is not None:
+                try:
+                    self.set_user_headquarters(user_id, payload["headquarters_ids"])
+                except Exception as hq_err:
+                    logger.warning(f"Could not set user headquarters during create_user: {hq_err}")
+
         except Exception as e:
             logger.error(f"Error creating user in Supabase: {e}")
 
@@ -617,6 +647,13 @@ class UserService:
                     except Exception as d_err:
                         logger.warning(f"Could not update user_depot during update_user: {d_err}")
 
+            # Update headquarters assignments if headquarters_ids provided in payload
+            if "headquarters_ids" in payload and payload["headquarters_ids"] is not None:
+                try:
+                    self.set_user_headquarters(user_id, payload["headquarters_ids"])
+                except Exception as hq_err:
+                    logger.warning(f"Could not update user headquarters during update_user: {hq_err}")
+
         except Exception as e:
             logger.error(f"Error updating user {user_id} in Supabase: {e}")
 
@@ -626,6 +663,100 @@ class UserService:
             if u.get("id") == user_id or u.get("user_id") == user_id:
                 return u
         return payload
+
+    def get_user_headquarters(self, user_id: str) -> Dict[str, Any]:
+        """Fetch all active headquarters assigned to a user."""
+        client = get_supabase()
+        if not client:
+            return {"user_id": user_id, "headquarters_ids": [], "headquarters": [], "headquarters_names": []}
+
+        # Verify user exists
+        user_res = client.table("users").select("user_id, first_name, last_name, tenant_id").eq("user_id", user_id).limit(1).execute()
+        if not user_res.data:
+            raise ValueError(f"User '{user_id}' does not exist.")
+
+        # Fetch HQ lookup
+        hq_res = client.table("headquarters").select("headquarters_id, name").execute()
+        hq_map = {str(h["headquarters_id"]): h.get("name", "Unassigned") for h in (hq_res.data or [])}
+
+        uhq_res = client.table("user_headquarters_mapping").select("mapping_id, headquarters_id, is_active").eq("user_id", user_id).eq("is_active", True).execute()
+        active_mappings = uhq_res.data or []
+
+        hq_ids = [str(m["headquarters_id"]) for m in active_mappings if m.get("headquarters_id")]
+        hqs = [{"headquarters_id": hid, "name": hq_map.get(hid, "Unknown")} for hid in hq_ids]
+        hq_names = [h["name"] for h in hqs]
+
+        return {
+            "user_id": user_id,
+            "headquarters_ids": hq_ids,
+            "headquarters": hqs,
+            "headquarters_names": hq_names,
+            "headquarters_display": ", ".join(hq_names) if hq_names else "Unassigned"
+        }
+
+    def set_user_headquarters(self, user_id: str, headquarters_ids: List[str], updated_by: Optional[str] = None) -> Dict[str, Any]:
+        """Atomically set/replace active headquarters for a user (supports single, multiple, or empty list)."""
+        client = get_supabase()
+        if not client:
+            return {"user_id": user_id, "headquarters_ids": headquarters_ids, "headquarters": []}
+
+        # 1. Verify user exists and retrieve tenant
+        user_res = client.table("users").select("user_id, first_name, last_name, tenant_id, is_active").eq("user_id", user_id).limit(1).execute()
+        if not user_res.data:
+            raise ValueError(f"User '{user_id}' does not exist.")
+        user = user_res.data[0]
+        user_tenant_id = user.get("tenant_id") or "a0000000-0000-0000-0000-000000000001"
+
+        # 2. De-duplicate requested HQ IDs while preserving order
+        clean_hq_ids = []
+        for hid in (headquarters_ids or []):
+            s_hid = str(hid).strip()
+            if s_hid and s_hid not in clean_hq_ids:
+                clean_hq_ids.append(s_hid)
+
+        # 3. If list not empty, validate each HQ exists, is active, and matches user tenant
+        hq_lookup = {}
+        if clean_hq_ids:
+            hq_res = client.table("headquarters").select("headquarters_id, name, is_active, tenant_id").in_("headquarters_id", clean_hq_ids).execute()
+            found_hqs = hq_res.data or []
+            found_ids = {str(h["headquarters_id"]): h for h in found_hqs}
+
+            for hid in clean_hq_ids:
+                if hid not in found_ids:
+                    raise ValueError(f"Headquarters ID '{hid}' does not exist.")
+                hq_obj = found_ids[hid]
+                if not hq_obj.get("is_active", True):
+                    raise ValueError(f"Headquarters '{hq_obj.get('name', hid)}' is inactive.")
+                hq_tenant = hq_obj.get("tenant_id")
+                if hq_tenant and str(hq_tenant) != str(user_tenant_id):
+                    raise ValueError(f"Cross-tenant assignment rejected: Headquarters '{hq_obj.get('name')}' belongs to a different tenant.")
+                hq_lookup[hid] = hq_obj.get("name", "Unknown")
+
+        # 4. Atomic update: delete existing active mappings for user, then insert new ones
+        client.table("user_headquarters_mapping").delete().eq("user_id", user_id).execute()
+
+        if clean_hq_ids:
+            new_rows = [
+                {
+                    "tenant_id": user_tenant_id,
+                    "user_id": user_id,
+                    "headquarters_id": hid,
+                    "is_active": True,
+                    "created_by": updated_by,
+                    "updated_by": updated_by
+                }
+                for hid in clean_hq_ids
+            ]
+            client.table("user_headquarters_mapping").insert(new_rows).execute()
+
+        hq_names = [hq_lookup.get(hid, "Unknown") for hid in clean_hq_ids]
+        return {
+            "user_id": user_id,
+            "headquarters_ids": clean_hq_ids,
+            "headquarters": [{"headquarters_id": hid, "name": hq_lookup.get(hid, "Unknown")} for hid in clean_hq_ids],
+            "headquarters_names": hq_names,
+            "headquarters_display": ", ".join(hq_names) if hq_names else "Unassigned"
+        }
 
     def delete_user(self, user_id: str) -> bool:
         client = get_supabase()
@@ -637,6 +768,11 @@ class UserService:
             return True
 
         try:
+            try:
+                client.table("user_headquarters_mapping").delete().eq("user_id", user_id).execute()
+            except Exception as e:
+                logger.warning(f"Could not delete user_headquarters_mapping for {user_id}: {e}")
+
             try:
                 client.table("ase_tsm_mapping").delete().or_(f"ase_user_id.eq.{user_id},tsm_user_id.eq.{user_id}").execute()
             except Exception as e:

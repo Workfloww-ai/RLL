@@ -34,6 +34,8 @@ const normalizeUser = (u: any): User => {
   const depotName = u.depotName || u.depot_name || u.depot || 'Unassigned';
   const circleName = u.circleName || u.circle_name || u.circle || 'Unassigned';
   const headquarters = u.headquarters || u.headquarters_name || u.hq || 'Unassigned';
+  const headquarters_ids = Array.isArray(u.headquarters_ids) ? u.headquarters_ids : [];
+  const headquartersList = Array.isArray(u.headquarters_list) ? u.headquarters_list : [];
   const reportingManager = u.reportingManager || u.reporting_manager || u.manager || 'Unassigned';
   const phoneNumber = u.phoneNumber || u.phone_number || u.phone || '';
   const isActive = u.isActive ?? u.is_active ?? true;
@@ -46,6 +48,8 @@ const normalizeUser = (u: any): User => {
     depotName,
     circleName,
     headquarters,
+    headquarters_ids,
+    headquartersList,
     reportingManager,
     phoneNumber,
     isActive,
@@ -69,6 +73,7 @@ export default function HeadcountManagement() {
     role: 'ASE', 
     id: '', 
     headquarters: 'Unassigned', 
+    headquarters_ids: [] as string[],
     depotName: 'Unassigned', 
     reportingManager: 'Unassigned', 
     isActive: true 
@@ -81,6 +86,8 @@ export default function HeadcountManagement() {
   const [editRole, setEditRole] = useState<User['role']>('ASE');
   const [editReportingManager, setEditReportingManager] = useState("");
   const [editIsActive, setEditIsActive] = useState(true);
+  const [editHeadquartersIds, setEditHeadquartersIds] = useState<string[]>([]);
+  const [headquartersOptions, setHeadquartersOptions] = useState<{ headquarters_id: string; name: string }[]>([]);
 
   type SortField = 'name' | 'phoneNumber' | 'email' | 'role' | 'reportingManager' | 'isActive';
   type SortDirection = 'asc' | 'desc';
@@ -172,9 +179,26 @@ export default function HeadcountManagement() {
     }
   };
 
+  const fetchHeadquarters = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+      const res = await fetch(`${API_BASE_URL}/master-data/headquarters`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setHeadquartersOptions(data);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch headquarters from backend API:', err);
+    }
+  };
+
   useEffect(() => {
     fetchUsers();
     fetchRoles();
+    fetchHeadquarters();
   }, []);
 
   const handleSort = (field: SortField) => {
@@ -207,6 +231,10 @@ export default function HeadcountManagement() {
     setEditRole(user.role || 'Territory Executive');
     setEditReportingManager(user.reportingManager || "");
     setEditIsActive(user.isActive ?? true);
+    const initialHqIds = (user.headquarters_ids && user.headquarters_ids.length > 0)
+      ? user.headquarters_ids
+      : (user.headquartersList ? user.headquartersList.map((h: any) => h.headquarters_id) : []);
+    setEditHeadquartersIds(initialHqIds);
   };
 
   const validateUserForm = (firstName: string, email: string, phoneNumber: string, role: string) => {
@@ -281,6 +309,7 @@ export default function HeadcountManagement() {
       reporting_manager: editReportingManager ? editReportingManager.trim() : 'Unassigned',
       isActive: editIsActive,
       is_active: editIsActive,
+      headquarters_ids: editHeadquartersIds,
     };
 
     try {
@@ -357,7 +386,8 @@ export default function HeadcountManagement() {
       circleName: 'Unassigned',
       reportingManager: newUser.reportingManager ? newUser.reportingManager.trim() : 'Unassigned',
       reporting_manager: newUser.reportingManager ? newUser.reportingManager.trim() : 'Unassigned',
-      is_active: newUser.isActive
+      is_active: newUser.isActive,
+      headquarters_ids: newUser.headquarters_ids || [],
     };
 
     try {
@@ -375,7 +405,7 @@ export default function HeadcountManagement() {
         setUsers([normalizeUser(created), ...users]);
         showToast('User created successfully.', 'success');
         setIsAdding(false);
-        setNewUser({ firstName: '', lastName: '', phoneNumber: '', email: '', role: 'ASE', id: '', headquarters: 'Unassigned', depotName: 'Unassigned', reportingManager: 'Unassigned', isActive: true });
+        setNewUser({ firstName: '', lastName: '', phoneNumber: '', email: '', role: 'ASE', id: '', headquarters: 'Unassigned', headquarters_ids: [], depotName: 'Unassigned', reportingManager: 'Unassigned', isActive: true });
       } else {
         const errData = await res.json().catch(() => ({}));
         showToast(errData.detail || 'Failed to create user.', 'error');
@@ -753,6 +783,41 @@ export default function HeadcountManagement() {
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:border-[#0D3B8E]"
               />
             </div>
+            <div className="md:col-span-3">
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                Assigned Headquarters <span className="text-slate-400 font-normal lowercase">(multi-select)</span>
+              </label>
+              <div className="flex flex-wrap gap-1.5 p-2.5 bg-slate-50 border border-slate-200 rounded-xl min-h-[42px] max-h-36 overflow-y-auto">
+                {headquartersOptions.length === 0 ? (
+                  <span className="text-xs text-slate-400 italic">No headquarters available</span>
+                ) : (
+                  headquartersOptions.map((hq) => {
+                    const isSelected = (newUser.headquarters_ids || []).includes(hq.headquarters_id);
+                    return (
+                      <button
+                        key={hq.headquarters_id}
+                        type="button"
+                        onClick={() => {
+                          const current = newUser.headquarters_ids || [];
+                          const next = isSelected
+                            ? current.filter((id) => id !== hq.headquarters_id)
+                            : [...current, hq.headquarters_id];
+                          setNewUser({ ...newUser, headquarters_ids: next });
+                        }}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1 ${
+                          isSelected
+                            ? 'bg-[#0D3B8E] text-white shadow-xs'
+                            : 'bg-white text-slate-600 border border-slate-200 hover:border-slate-300'
+                        }`}
+                      >
+                        {hq.name}
+                        {isSelected && <Check className="w-3 h-3 ml-0.5" />}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>
           </div>
           <div className="flex gap-2 mt-4 justify-end">
             <button 
@@ -775,18 +840,18 @@ export default function HeadcountManagement() {
       {!showUpload && (
         <div className="bg-white rounded-2xl shadow-2xs border border-slate-200/80 flex-1 min-h-0 overflow-hidden flex flex-col">
         <div className="overflow-x-auto flex-1">
-          <table className="w-full text-left border-collapse table-fixed min-w-[800px]">
+          <table className="w-full text-left border-collapse table-fixed min-w-[1020px]">
             <thead>
               <tr className="bg-slate-50/80 border-b border-slate-200/80 select-none">
                 {/* S.No Column */}
-                <th className="w-[6%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">
+                <th className="w-[4%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">
                   #
                 </th>
 
                 {/* Name */}
                 <th 
                   onClick={() => handleSort('name')}
-                  className="w-[20%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[16%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Name</span>
@@ -801,7 +866,7 @@ export default function HeadcountManagement() {
                 {/* Phone Number */}
                 <th 
                   onClick={() => handleSort('phoneNumber')}
-                  className="w-[15%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[11%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Phone Number</span>
@@ -816,7 +881,7 @@ export default function HeadcountManagement() {
                 {/* Email */}
                 <th 
                   onClick={() => handleSort('email')}
-                  className="w-[22%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[16%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Email</span>
@@ -831,7 +896,7 @@ export default function HeadcountManagement() {
                 {/* Role */}
                 <th 
                   onClick={() => handleSort('role')}
-                  className="w-[13%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[9%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Role</span>
@@ -843,10 +908,15 @@ export default function HeadcountManagement() {
                   </div>
                 </th>
 
+                {/* Headquarters */}
+                <th className="w-[18%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                  Headquarters
+                </th>
+
                 {/* Reporting Manager */}
                 <th 
                   onClick={() => handleSort('reportingManager')}
-                  className="w-[16%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[12%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Reporting Manager</span>
@@ -861,7 +931,7 @@ export default function HeadcountManagement() {
                 {/* Status */}
                 <th 
                   onClick={() => handleSort('isActive')}
-                  className="w-[10%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[7%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Status</span>
@@ -874,7 +944,7 @@ export default function HeadcountManagement() {
                 </th>
 
                 {/* Actions */}
-                <th className="w-[10%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">
+                <th className="w-[7%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">
                   Actions
                 </th>
               </tr>
@@ -882,7 +952,7 @@ export default function HeadcountManagement() {
             <tbody className="divide-y divide-slate-100">
               {paginatedUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-6 py-12 text-center text-sm font-medium text-slate-500">
+                  <td colSpan={9} className="px-6 py-12 text-center text-sm font-medium text-slate-500">
                     {loading ? (
                       <span className="inline-flex items-center gap-2 text-slate-600 font-semibold">
                         <RefreshCw className="w-4 h-4 animate-spin text-[#0D3B8E]" /> Loading personnel from database...
@@ -974,6 +1044,67 @@ export default function HeadcountManagement() {
                           <span className={`px-2.5 py-1 rounded border text-[10px] font-bold uppercase tracking-wider ${getRoleColor(user.role)}`}>
                             {user.role}
                           </span>
+                        )}
+                      </td>
+
+                      {/* Headquarters */}
+                      <td className="px-4 py-2.5">
+                        {editingId === user.id ? (
+                          <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto p-1 bg-white border border-slate-300 rounded">
+                            {headquartersOptions.length === 0 ? (
+                              <span className="text-[11px] text-slate-400 italic">No HQs</span>
+                            ) : (
+                              headquartersOptions.map((hq) => {
+                                const isSelected = editHeadquartersIds.includes(hq.headquarters_id);
+                                return (
+                                  <button
+                                    key={hq.headquarters_id}
+                                    type="button"
+                                    onClick={() => {
+                                      setEditHeadquartersIds((prev) =>
+                                        isSelected
+                                          ? prev.filter((id) => id !== hq.headquarters_id)
+                                          : [...prev, hq.headquarters_id]
+                                      );
+                                    }}
+                                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition-all cursor-pointer ${
+                                      isSelected
+                                        ? 'bg-[#0D3B8E] text-white'
+                                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                    }`}
+                                  >
+                                    {hq.name}
+                                  </button>
+                                );
+                              })
+                            )}
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap gap-1 items-center max-w-[220px]">
+                            {user.headquartersList && user.headquartersList.length > 0 ? (
+                              user.headquartersList.map((hq) => (
+                                <span
+                                  key={hq.headquarters_id}
+                                  className="px-2 py-0.5 rounded-md bg-blue-50 text-[#0D3B8E] border border-blue-200/60 text-[10px] font-bold truncate"
+                                  title={hq.name}
+                                >
+                                  {hq.name}
+                                </span>
+                              ))
+                            ) : user.headquarters && user.headquarters !== "Unassigned" ? (
+                              user.headquarters.split(',').map((h, i) => (
+                                <span
+                                  key={i}
+                                  className="px-2 py-0.5 rounded-md bg-blue-50 text-[#0D3B8E] border border-blue-200/60 text-[10px] font-bold truncate"
+                                  title={h.trim()}
+                                >
+                                  {h.trim()}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="text-slate-400 italic text-[11px]">Unassigned</span>
+                            )}
+                          </div>
                         )}
                       </td>
 

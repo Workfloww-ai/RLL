@@ -158,7 +158,8 @@ export function TsmView({
     return tsms.filter((t) => {
       const matchHq =
         selectedHq === 'All Headquarters' ||
-        (t.hqLocation && t.hqLocation.toLowerCase() === selectedHq.toLowerCase());
+        (t.assignedHqs && Array.isArray(t.assignedHqs) && t.assignedHqs.some((h: string) => h.toLowerCase() === selectedHq.toLowerCase())) ||
+        (t.hqLocation && t.hqLocation.toLowerCase().includes(selectedHq.toLowerCase()));
       const matchSearch =
         !searchQuery.trim() ||
         t.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -411,7 +412,7 @@ export function TsmView({
               const bottles = Math.round((rawData.bottles || 0) * scaleFactor);
               const aseCount = item.ases?.length || 0;
               const companyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.brands?.filter((b: any) => (b.data?.[period]?.cases || 0) > 0 || (b.data?.[period]?.bottles || 0) > 0).length || 0);
-              const hqName = item.hqLocation || 'All Headquarters';
+              const hqName = item.hqLocation || 'Unassigned';
 
               return (
                 <MetricsCard
@@ -454,6 +455,7 @@ export function TsmView({
               const cases = Number(((rawData.cases || 0) * scaleFactor).toFixed(2));
               const bottles = Math.round((rawData.bottles || 0) * scaleFactor);
               const companyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.brands?.filter((b: any) => (b.data?.[period]?.cases || 0) > 0 || (b.data?.[period]?.bottles || 0) > 0).length || 0);
+              const hqName = item.hqLocation || 'Unassigned';
 
               return (
                 <MetricsCard
@@ -463,6 +465,7 @@ export function TsmView({
                   metrics={[
                     { label: 'Cases', value: cases },
                   ]}
+                  locationPill={hqName}
                   pillTheme="blue"
                   onPress={() => handleSelectAse(item)}
                   scaleFactor={scaleFactor}

@@ -235,6 +235,25 @@ def _fetch_fresh_master_lookups():
                 user_depots_map[uid] = set()
             user_depots_map[uid].add(did)
 
+        user_hqs_map = {}
+        user_hq_ids_map = {}
+        try:
+            uhq_res = client.table("user_headquarters_mapping").select("user_id, headquarters_id, is_active").eq("is_active", True).execute()
+            for r in (uhq_res.data or []):
+                uid = str(r.get("user_id"))
+                hid = str(r.get("headquarters_id"))
+                h_name = hq_lookup.get(hid)
+                if uid and hid:
+                    if uid not in user_hq_ids_map:
+                        user_hq_ids_map[uid] = []
+                        user_hqs_map[uid] = []
+                    if hid not in user_hq_ids_map[uid]:
+                        user_hq_ids_map[uid].append(hid)
+                    if h_name and h_name not in user_hqs_map[uid]:
+                        user_hqs_map[uid].append(h_name)
+        except Exception as e_uhq:
+            logger.warning(f"Error fetching user_headquarters_mapping in master lookups: {e_uhq}")
+
         atm_res = client.table("ase_tsm_mapping").select("tsm_user_id, ase_user_id").execute()
         for atm in (atm_res.data or []):
             raw_tid = str(atm.get("tsm_user_id"))
@@ -333,6 +352,8 @@ def _fetch_fresh_master_lookups():
         "tsm_ase_lookup": tsm_ase_lookup,
         "ase_names_lookup": ase_names_lookup,
         "user_alias_map": user_alias_map,
+        "user_hqs_map": user_hqs_map,
+        "user_hq_ids_map": user_hq_ids_map,
     }
 
 def get_cached_master_lookups():
@@ -1258,6 +1279,7 @@ async def get_mobile_sales(
         user_depots_map = master_cache["user_depots_map"]
         tsm_ase_lookup = master_cache["tsm_ase_lookup"]
         ase_names_lookup = master_cache["ase_names_lookup"]
+        user_hqs_map = master_cache.get("user_hqs_map", {})
 
         allowed_depots = set()
         if user_role == "tsm":
@@ -1826,24 +1848,23 @@ async def get_mobile_sales(
         t_data.pop("brands_map", None)
 
         assigned_hq_names = []
-        for did in depot_ids_list:
-            d_obj = master_depots.get(did)
-            if d_obj and d_obj.get("hqName"):
-                assigned_hq_names.append(d_obj["hqName"])
+        for alias_id in raw_t_data.get("alias_ids", {t_id}):
+            for h in user_hqs_map.get(alias_id, []):
+                if h not in assigned_hq_names:
+                    assigned_hq_names.append(h)
 
         if assigned_hq_names:
-            from collections import Counter
-            hq_counts = Counter(assigned_hq_names)
-            t_data["hqLocation"] = hq_counts.most_common(1)[0][0]
+            t_data["hqLocation"] = ", ".join(assigned_hq_names)
+            t_data["assignedHqs"] = assigned_hq_names
         else:
-            t_data["hqLocation"] = "All Headquarters"
+            t_data["hqLocation"] = "Unassigned"
+            t_data["assignedHqs"] = []
 
         if selected_hq and selected_hq != "All Headquarters":
             clean_sel_hq = selected_hq.strip().lower()
-            matches_hq = any(hq.strip().lower() == clean_sel_hq for hq in assigned_hq_names)
-            if not matches_hq and len(assigned_hq_names) > 0:
+            matches_hq = any(h.strip().lower() == clean_sel_hq for h in assigned_hq_names)
+            if not matches_hq:
                 continue
-            t_data["hqLocation"] = selected_hq
 
         raw_ase_ids = t_data.pop("ase_ids", [])
         # If the TSM directly made sales as an ASE (dual-role), ensure they are shown in their ASE breakdown
@@ -1865,6 +1886,8 @@ async def get_mobile_sales(
             {
                 "id": aid,
                 "name": ase_names_lookup.get(aid, "ASE"),
+                "hqLocation": ", ".join(user_hqs_map.get(aid, [])) if user_hqs_map.get(aid) else "Unassigned",
+                "assignedHqs": user_hqs_map.get(aid, []),
                 "data": ase_sales.get(aid, {
                     "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
                     "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
@@ -1880,12 +1903,6 @@ async def get_mobile_sales(
             }
             for aid in raw_ase_ids
         ]
-
-        if selected_hq and selected_hq != "All Headquarters":
-            clean_sel_hq = selected_hq.strip().lower()
-            matches_hq = any(hq.strip().lower() == clean_sel_hq for hq in assigned_hq_names) or (t_data.get("hqLocation") and clean_sel_hq in t_data["hqLocation"].strip().lower())
-            if not matches_hq and len(assigned_hq_names) > 0:
-                continue
 
         # Filter out TSM cards with 0 cases and 0 bottles for the active period
         tsm_period_cases = t_data.get("data", {}).get(selected_period, {}).get("cases", 0)
@@ -2176,19 +2193,28 @@ async def get_licensee_brand_sales_endpoint(
 
 @router.get("/cascading/company-brands")
 def get_company_brands_endpoint(
-    company_id: str = Query(..., description="Target Company UUID"),
-    date_from: str = Query(..., description="Start date (YYYY-MM-DD)"),
-    date_to: str = Query(..., description="End date (YYYY-MM-DD)"),
+    company_id: str = Query(..., description="Target Company UUID or slug"),
+    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     hq_name: Optional[str] = Query(None, description="Optional Headquarter filter"),
 ):
     """
     Mobile endpoint: Fetch brand sales breakdown for a selected company.
     """
     from backend.services.company_cascading_service import get_company_brands_sales_service
+    from backend.services.mobile_companies_service import _get_latest_sale_date
+
+    clean_to = date_to.strip() if date_to and date_to.strip() else ""
+    clean_from = date_from.strip() if date_from and date_from.strip() else ""
+    if not clean_to:
+        clean_to = _get_latest_sale_date()
+    if not clean_from:
+        clean_from = clean_to
+
     return get_company_brands_sales_service(
         company_id=company_id,
-        date_from=date_from,
-        date_to=date_to,
+        date_from=clean_from,
+        date_to=clean_to,
         hq_name=hq_name,
     )
 
@@ -2196,18 +2222,27 @@ def get_company_brands_endpoint(
 @router.get("/cascading/brand-licensees")
 def get_brand_licensees_endpoint(
     brand_id: str = Query(..., description="Target Brand UUID"),
-    date_from: str = Query(..., description="Start date (YYYY-MM-DD)"),
-    date_to: str = Query(..., description="End date (YYYY-MM-DD)"),
+    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     hq_name: Optional[str] = Query(None, description="Optional Headquarter filter"),
 ):
     """
     Mobile endpoint: Fetch licensee sales breakdown for a selected brand.
     """
     from backend.services.company_cascading_service import get_brand_licensees_sales_service
+    from backend.services.mobile_companies_service import _get_latest_sale_date
+
+    clean_to = date_to.strip() if date_to and date_to.strip() else ""
+    clean_from = date_from.strip() if date_from and date_from.strip() else ""
+    if not clean_to:
+        clean_to = _get_latest_sale_date()
+    if not clean_from:
+        clean_from = clean_to
+
     return get_brand_licensees_sales_service(
         brand_id=brand_id,
-        date_from=date_from,
-        date_to=date_to,
+        date_from=clean_from,
+        date_to=clean_to,
         hq_name=hq_name,
     )
 
