@@ -89,7 +89,7 @@ def get_active_upload_batch() -> Optional[Dict[str, Any]]:
         from datetime import datetime, timezone
         active_statuses = ["queued", "running", "processing", "aggregating", "validating"]
         res = client.table("upload_batches").select(
-            "batch_id, source_file, file_name, covers_start, covers_end, status, upload_status, created_at"
+            "batch_id, source_file, file_name, covers_start, covers_end, status, upload_status, created_at, row_count, total_rows, imported_rows, remarks"
         ).in_("status", active_statuses).order("created_at", desc=True).limit(5).execute()
         
         if res.data:
@@ -103,14 +103,14 @@ def get_active_upload_batch() -> Optional[Dict[str, Any]]:
                         c_dt = datetime.fromisoformat(clean_dt_str)
                         if c_dt.tzinfo is None:
                             c_dt = c_dt.replace(tzinfo=timezone.utc)
-                        if (now_utc - c_dt).total_seconds() > 600:  # 10 minutes optimal threshold to prevent DB resource exhaustion
+                        if (now_utc - c_dt).total_seconds() > 1200:  # 20 minutes optimal threshold for large uploads
                             is_stale = True
                     except Exception:
                         pass
 
                 if is_stale:
                     b_id = str(b.get("batch_id"))
-                    logger.warning(f"Resetting stale orphaned upload batch #{b_id} created > 10 mins ago.")
+                    logger.warning(f"Resetting stale orphaned upload batch #{b_id} created > 20 mins ago.")
                     try:
                         client.table("upload_batches").update({
                             "status": "failed",
@@ -1343,8 +1343,9 @@ def fetch_company_brand_sales_db(
 ) -> List[Dict[str, Any]]:
     """
     Calls get_company_brand_sales_summary RPC in Supabase PostgreSQL.
-    Returns brand sales summary for a selected company, excluding 'Others'.
+    Returns brand sales summary for a selected company.
     Automatically resolves slug/name company identifiers to UUIDs.
+    Respects system_settings include_others_in_sales and explicit company drilldowns.
     """
     client = get_supabase_client()
     if not client:
@@ -1352,12 +1353,21 @@ def fetch_company_brand_sales_db(
 
     resolved_company_uuid = resolve_company_id_uuid(client, company_id)
 
+    from backend.services.tenant_service import get_include_others_setting_sync
+    include_others = get_include_others_setting_sync()
+
+    is_target_others = (
+        str(company_id).strip().lower() in ("others", "other")
+        or str(resolved_company_uuid) == "30739e78-c438-4a60-a5cb-6d9e9e79d1c6"
+    )
+    eff_exclude = "" if (include_others or is_target_others) else exclude_company
+
     try:
         rpc_params = {
             "p_company_id": resolved_company_uuid,
             "p_date_from": date_from,
             "p_date_to": date_to,
-            "p_exclude_company": exclude_company,
+            "p_exclude_company": eff_exclude,
         }
         if hq_name and hq_name.strip() and hq_name.strip() != "All Headquarters":
             rpc_params["p_hq_name"] = hq_name.strip()
@@ -1377,18 +1387,23 @@ def fetch_brand_licensees_sales_db(
 ) -> List[Dict[str, Any]]:
     """
     Calls get_brand_licensees_summary RPC in Supabase PostgreSQL.
-    Returns licensee sales summary for a selected brand, excluding 'Others'.
+    Returns licensee sales summary for a selected brand.
+    Respects system_settings include_others_in_sales toggle.
     """
     client = get_supabase_client()
     if not client:
         return []
+
+    from backend.services.tenant_service import get_include_others_setting_sync
+    include_others = get_include_others_setting_sync()
+    eff_exclude = "" if include_others else exclude_company
 
     try:
         rpc_params = {
             "p_brand_id": brand_id,
             "p_date_from": date_from,
             "p_date_to": date_to,
-            "p_exclude_company": exclude_company,
+            "p_exclude_company": eff_exclude,
         }
         if hq_name and hq_name.strip() and hq_name.strip() != "All Headquarters":
             rpc_params["p_hq_name"] = hq_name.strip()

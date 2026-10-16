@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import FileUpload from '../components/FileUpload';
-import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X, RefreshCw, RotateCcw, ChevronUp, ChevronDown, ArrowUpDown, ChevronLeft, ChevronRight, Mail, Phone, ArrowLeft } from 'lucide-react';
+import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X, RefreshCw, RotateCcw, ChevronUp, ChevronDown, ArrowUpDown, ChevronLeft, ChevronRight, Mail, Phone, ArrowLeft, Clock, Lock } from 'lucide-react';
 import { User } from '../types';
 import { API_BASE_URL } from '../config';
 import { useToast } from '../contexts/ToastContext';
+import { useSystemLock } from '../contexts/SystemLockContext';
 
 const INITIAL_USERS: User[] = [];
 
@@ -33,6 +34,8 @@ const normalizeUser = (u: any): User => {
   const depotName = u.depotName || u.depot_name || u.depot || 'Unassigned';
   const circleName = u.circleName || u.circle_name || u.circle || 'Unassigned';
   const headquarters = u.headquarters || u.headquarters_name || u.hq || 'Unassigned';
+  const headquarters_ids = Array.isArray(u.headquarters_ids) ? u.headquarters_ids : [];
+  const headquartersList = Array.isArray(u.headquarters_list) ? u.headquarters_list : [];
   const reportingManager = u.reportingManager || u.reporting_manager || u.manager || 'Unassigned';
   const phoneNumber = u.phoneNumber || u.phone_number || u.phone || '';
   const isActive = u.isActive ?? u.is_active ?? true;
@@ -45,6 +48,8 @@ const normalizeUser = (u: any): User => {
     depotName,
     circleName,
     headquarters,
+    headquarters_ids,
+    headquartersList,
     reportingManager,
     phoneNumber,
     isActive,
@@ -52,6 +57,7 @@ const normalizeUser = (u: any): User => {
 };
 
 export default function HeadcountManagement() {
+  const { isLocked, lockReason, isCooldownActive, formattedCooldown, formattedCooldownLong } = useSystemLock();
   const [users, setUsers] = useState<User[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [showUpload, setShowUpload] = useState(false);
@@ -67,6 +73,7 @@ export default function HeadcountManagement() {
     role: 'ASE', 
     id: '', 
     headquarters: 'Unassigned', 
+    headquarters_ids: [] as string[],
     depotName: 'Unassigned', 
     reportingManager: 'Unassigned', 
     isActive: true 
@@ -79,6 +86,8 @@ export default function HeadcountManagement() {
   const [editRole, setEditRole] = useState<User['role']>('ASE');
   const [editReportingManager, setEditReportingManager] = useState("");
   const [editIsActive, setEditIsActive] = useState(true);
+  const [editHeadquartersIds, setEditHeadquartersIds] = useState<string[]>([]);
+  const [headquartersOptions, setHeadquartersOptions] = useState<{ headquarters_id: string; name: string }[]>([]);
 
   type SortField = 'name' | 'phoneNumber' | 'email' | 'role' | 'reportingManager' | 'isActive';
   type SortDirection = 'asc' | 'desc';
@@ -93,6 +102,10 @@ export default function HeadcountManagement() {
   const [availableRoles, setAvailableRoles] = useState<{ role_id: string; role_name: string; description?: string }[]>([]);
 
   const handleToggleUserStatus = async (user: User) => {
+    if (isLocked) {
+      showToast('System is in read-only mode during data upload. Status change locked.', 'warning');
+      return;
+    }
     const newActiveState = !user.isActive;
 
     // Optimistic Update
@@ -166,9 +179,26 @@ export default function HeadcountManagement() {
     }
   };
 
+  const fetchHeadquarters = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+      const res = await fetch(`${API_BASE_URL}/master-data/headquarters`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setHeadquartersOptions(data);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch headquarters from backend API:', err);
+    }
+  };
+
   useEffect(() => {
     fetchUsers();
     fetchRoles();
+    fetchHeadquarters();
   }, []);
 
   const handleSort = (field: SortField) => {
@@ -190,6 +220,10 @@ export default function HeadcountManagement() {
   };
 
   const handleEditClick = (user: User) => {
+    if (isLocked) {
+      showToast('System is in read-only mode during data upload. Editing is locked.', 'warning');
+      return;
+    }
     setEditingId(user.id);
     setEditName(user.name || "");
     setEditPhone(user.phoneNumber || "");
@@ -197,6 +231,10 @@ export default function HeadcountManagement() {
     setEditRole(user.role || 'Territory Executive');
     setEditReportingManager(user.reportingManager || "");
     setEditIsActive(user.isActive ?? true);
+    const initialHqIds = (user.headquarters_ids && user.headquarters_ids.length > 0)
+      ? user.headquarters_ids
+      : (user.headquartersList ? user.headquartersList.map((h: any) => h.headquarters_id) : []);
+    setEditHeadquartersIds(initialHqIds);
   };
 
   const validateUserForm = (firstName: string, email: string, phoneNumber: string, role: string) => {
@@ -230,6 +268,10 @@ export default function HeadcountManagement() {
   };
 
   const handleSave = async (userId: string) => {
+    if (isLocked) {
+      showToast('System is in read-only mode during data upload. Edits are locked.', 'warning');
+      return;
+    }
     if (!editName || !editName.trim()) {
       showToast('First Name / Name is mandatory.', 'error');
       return;
@@ -267,6 +309,7 @@ export default function HeadcountManagement() {
       reporting_manager: editReportingManager ? editReportingManager.trim() : 'Unassigned',
       isActive: editIsActive,
       is_active: editIsActive,
+      headquarters_ids: editHeadquartersIds,
     };
 
     try {
@@ -299,6 +342,10 @@ export default function HeadcountManagement() {
   };
 
   const handleDelete = async (id: string) => {
+    if (isLocked) {
+      showToast('System is in read-only mode during data upload. Deletion is locked.', 'warning');
+      return;
+    }
     if (!confirm("Are you sure you want to delete this user record?")) return;
     try {
       const token = localStorage.getItem('token');
@@ -317,6 +364,10 @@ export default function HeadcountManagement() {
   };
 
   const handleAdd = async () => {
+    if (isLocked) {
+      showToast('System is in read-only mode during data upload. Adding users is locked.', 'warning');
+      return;
+    }
     if (!validateUserForm(newUser.firstName, newUser.email, newUser.phoneNumber, newUser.role)) {
       return;
     }
@@ -335,7 +386,8 @@ export default function HeadcountManagement() {
       circleName: 'Unassigned',
       reportingManager: newUser.reportingManager ? newUser.reportingManager.trim() : 'Unassigned',
       reporting_manager: newUser.reportingManager ? newUser.reportingManager.trim() : 'Unassigned',
-      is_active: newUser.isActive
+      is_active: newUser.isActive,
+      headquarters_ids: newUser.headquarters_ids || [],
     };
 
     try {
@@ -353,7 +405,7 @@ export default function HeadcountManagement() {
         setUsers([normalizeUser(created), ...users]);
         showToast('User created successfully.', 'success');
         setIsAdding(false);
-        setNewUser({ firstName: '', lastName: '', phoneNumber: '', email: '', role: 'ASE', id: '', headquarters: 'Unassigned', depotName: 'Unassigned', reportingManager: 'Unassigned', isActive: true });
+        setNewUser({ firstName: '', lastName: '', phoneNumber: '', email: '', role: 'ASE', id: '', headquarters: 'Unassigned', headquarters_ids: [], depotName: 'Unassigned', reportingManager: 'Unassigned', isActive: true });
       } else {
         const errData = await res.json().catch(() => ({}));
         showToast(errData.detail || 'Failed to create user.', 'error');
@@ -476,6 +528,25 @@ export default function HeadcountManagement() {
 
   return (
     <div className="w-full h-full min-h-0 flex flex-col space-y-2.5">
+      {/* Read-Only Mode Warning Banner */}
+      {isLocked && (
+        <div className="bg-amber-50 border border-amber-300 text-amber-900 rounded-xl px-4 py-2.5 flex items-center justify-between gap-3 text-xs shrink-0 shadow-2xs">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-2.5 w-2.5 relative shrink-0">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500"></span>
+            </span>
+            <span>
+              <strong className="font-bold text-amber-950">Read-Only Mode Active:</strong>{' '}
+              {lockReason || 'Data upload in progress.'} User adjustments, role edits, reporting manager assignments, and bulk uploads are disabled.
+            </span>
+          </div>
+          <span className="px-2 py-0.5 bg-amber-200/90 text-amber-950 font-extrabold text-[10px] uppercase rounded tracking-wider shrink-0">
+            Read-Only
+          </span>
+        </div>
+      )}
+
       {/* Integrated Control Toolbar */}
       <div className="bg-white py-2 px-3 rounded-xl border border-slate-200/80 shadow-2xs flex flex-wrap items-center gap-3 text-xs shrink-0">
         <div className="relative flex-1 min-w-[180px]">
@@ -543,17 +614,32 @@ export default function HeadcountManagement() {
         {/* Action Buttons */}
         <div className="flex items-center gap-2">
           <button 
-            onClick={() => setShowUpload(!showUpload)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-              showUpload 
-                ? 'bg-slate-200 hover:bg-slate-300 text-slate-800 border border-slate-300' 
-                : 'bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700'
+            disabled={isLocked || isCooldownActive}
+            onClick={() => !isLocked && !isCooldownActive && setShowUpload(!showUpload)}
+            title={
+              isLocked 
+                ? "Bulk upload is locked during active data ingestion" 
+                : isCooldownActive 
+                  ? `Bulk upload is paused for 30 minutes after an upload. Enabled in ${formattedCooldown}` 
+                  : "Bulk Upload"
+            }
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+              (isLocked || isCooldownActive)
+                ? 'opacity-60 cursor-not-allowed bg-amber-50/60 text-amber-800 border border-amber-300' 
+                : showUpload 
+                  ? 'bg-slate-200 hover:bg-slate-300 text-slate-800 border border-slate-300 cursor-pointer' 
+                  : 'bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 cursor-pointer'
             }`}
           >
             {showUpload ? (
               <>
                 <ArrowLeft className="w-3.5 h-3.5 text-slate-700" />
                 Back to User List
+              </>
+            ) : isCooldownActive ? (
+              <>
+                <Clock className="w-3.5 h-3.5 text-amber-600 animate-spin" style={{ animationDuration: '6s' }} />
+                <span>Bulk Upload ({formattedCooldown})</span>
               </>
             ) : (
               <>
@@ -563,8 +649,14 @@ export default function HeadcountManagement() {
             )}
           </button>
           <button 
-            onClick={() => setIsAdding(!isAdding)}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#0D3B8E] hover:bg-[#0A2F73] text-white rounded-lg text-xs font-bold transition-all shadow-md shadow-[#0D3B8E]/15 cursor-pointer"
+            disabled={isLocked}
+            onClick={() => !isLocked && setIsAdding(!isAdding)}
+            title={isLocked ? "Adding users is locked during active data ingestion" : "Add User"}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-md shadow-[#0D3B8E]/15 ${
+              isLocked 
+                ? 'opacity-40 cursor-not-allowed bg-slate-400 text-white' 
+                : 'bg-[#0D3B8E] hover:bg-[#0A2F73] text-white cursor-pointer'
+            }`}
           >
             <UserPlus className="w-3.5 h-3.5" />
             Add User
@@ -577,7 +669,14 @@ export default function HeadcountManagement() {
         <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm transition-all">
           <div className="flex items-center justify-between mb-3">
             <div>
-              <h3 className="text-sm font-bold text-slate-900">Bulk User Roster Upload</h3>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-bold text-slate-900">Bulk User Roster Upload</h3>
+                {isCooldownActive && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                    <Clock size={10} /> Cooldown: {formattedCooldown} remaining
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-slate-500 mt-0.5">Upload an Excel (.xlsx, .xls, .xlsb) or CSV file containing user personnel data to automatically populate the database.</p>
             </div>
             <button 
@@ -684,6 +783,41 @@ export default function HeadcountManagement() {
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:border-[#0D3B8E]"
               />
             </div>
+            <div className="md:col-span-3">
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                Assigned Headquarters <span className="text-slate-400 font-normal lowercase">(multi-select)</span>
+              </label>
+              <div className="flex flex-wrap gap-1.5 p-2.5 bg-slate-50 border border-slate-200 rounded-xl min-h-[42px] max-h-36 overflow-y-auto">
+                {headquartersOptions.length === 0 ? (
+                  <span className="text-xs text-slate-400 italic">No headquarters available</span>
+                ) : (
+                  headquartersOptions.map((hq) => {
+                    const isSelected = (newUser.headquarters_ids || []).includes(hq.headquarters_id);
+                    return (
+                      <button
+                        key={hq.headquarters_id}
+                        type="button"
+                        onClick={() => {
+                          const current = newUser.headquarters_ids || [];
+                          const next = isSelected
+                            ? current.filter((id) => id !== hq.headquarters_id)
+                            : [...current, hq.headquarters_id];
+                          setNewUser({ ...newUser, headquarters_ids: next });
+                        }}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1 ${
+                          isSelected
+                            ? 'bg-[#0D3B8E] text-white shadow-xs'
+                            : 'bg-white text-slate-600 border border-slate-200 hover:border-slate-300'
+                        }`}
+                      >
+                        {hq.name}
+                        {isSelected && <Check className="w-3 h-3 ml-0.5" />}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>
           </div>
           <div className="flex gap-2 mt-4 justify-end">
             <button 
@@ -706,18 +840,18 @@ export default function HeadcountManagement() {
       {!showUpload && (
         <div className="bg-white rounded-2xl shadow-2xs border border-slate-200/80 flex-1 min-h-0 overflow-hidden flex flex-col">
         <div className="overflow-x-auto flex-1">
-          <table className="w-full text-left border-collapse table-fixed min-w-[800px]">
+          <table className="w-full text-left border-collapse table-fixed min-w-[1020px]">
             <thead>
               <tr className="bg-slate-50/80 border-b border-slate-200/80 select-none">
                 {/* S.No Column */}
-                <th className="w-[6%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">
+                <th className="w-[4%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">
                   #
                 </th>
 
                 {/* Name */}
                 <th 
                   onClick={() => handleSort('name')}
-                  className="w-[20%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[16%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Name</span>
@@ -732,7 +866,7 @@ export default function HeadcountManagement() {
                 {/* Phone Number */}
                 <th 
                   onClick={() => handleSort('phoneNumber')}
-                  className="w-[15%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[11%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Phone Number</span>
@@ -747,7 +881,7 @@ export default function HeadcountManagement() {
                 {/* Email */}
                 <th 
                   onClick={() => handleSort('email')}
-                  className="w-[22%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[16%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Email</span>
@@ -762,7 +896,7 @@ export default function HeadcountManagement() {
                 {/* Role */}
                 <th 
                   onClick={() => handleSort('role')}
-                  className="w-[13%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[9%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Role</span>
@@ -774,10 +908,15 @@ export default function HeadcountManagement() {
                   </div>
                 </th>
 
+                {/* Headquarters */}
+                <th className="w-[18%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                  Headquarters
+                </th>
+
                 {/* Reporting Manager */}
                 <th 
                   onClick={() => handleSort('reportingManager')}
-                  className="w-[16%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[12%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Reporting Manager</span>
@@ -792,7 +931,7 @@ export default function HeadcountManagement() {
                 {/* Status */}
                 <th 
                   onClick={() => handleSort('isActive')}
-                  className="w-[10%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[7%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Status</span>
@@ -805,7 +944,7 @@ export default function HeadcountManagement() {
                 </th>
 
                 {/* Actions */}
-                <th className="w-[10%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">
+                <th className="w-[7%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">
                   Actions
                 </th>
               </tr>
@@ -813,7 +952,7 @@ export default function HeadcountManagement() {
             <tbody className="divide-y divide-slate-100">
               {paginatedUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-6 py-12 text-center text-sm font-medium text-slate-500">
+                  <td colSpan={9} className="px-6 py-12 text-center text-sm font-medium text-slate-500">
                     {loading ? (
                       <span className="inline-flex items-center gap-2 text-slate-600 font-semibold">
                         <RefreshCw className="w-4 h-4 animate-spin text-[#0D3B8E]" /> Loading personnel from database...
@@ -908,6 +1047,67 @@ export default function HeadcountManagement() {
                         )}
                       </td>
 
+                      {/* Headquarters */}
+                      <td className="px-4 py-2.5">
+                        {editingId === user.id ? (
+                          <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto p-1 bg-white border border-slate-300 rounded">
+                            {headquartersOptions.length === 0 ? (
+                              <span className="text-[11px] text-slate-400 italic">No HQs</span>
+                            ) : (
+                              headquartersOptions.map((hq) => {
+                                const isSelected = editHeadquartersIds.includes(hq.headquarters_id);
+                                return (
+                                  <button
+                                    key={hq.headquarters_id}
+                                    type="button"
+                                    onClick={() => {
+                                      setEditHeadquartersIds((prev) =>
+                                        isSelected
+                                          ? prev.filter((id) => id !== hq.headquarters_id)
+                                          : [...prev, hq.headquarters_id]
+                                      );
+                                    }}
+                                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition-all cursor-pointer ${
+                                      isSelected
+                                        ? 'bg-[#0D3B8E] text-white'
+                                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                    }`}
+                                  >
+                                    {hq.name}
+                                  </button>
+                                );
+                              })
+                            )}
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap gap-1 items-center max-w-[220px]">
+                            {user.headquartersList && user.headquartersList.length > 0 ? (
+                              user.headquartersList.map((hq) => (
+                                <span
+                                  key={hq.headquarters_id}
+                                  className="px-2 py-0.5 rounded-md bg-blue-50 text-[#0D3B8E] border border-blue-200/60 text-[10px] font-bold truncate"
+                                  title={hq.name}
+                                >
+                                  {hq.name}
+                                </span>
+                              ))
+                            ) : user.headquarters && user.headquarters !== "Unassigned" ? (
+                              user.headquarters.split(',').map((h, i) => (
+                                <span
+                                  key={i}
+                                  className="px-2 py-0.5 rounded-md bg-blue-50 text-[#0D3B8E] border border-blue-200/60 text-[10px] font-bold truncate"
+                                  title={h.trim()}
+                                >
+                                  {h.trim()}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="text-slate-400 italic text-[11px]">Unassigned</span>
+                            )}
+                          </div>
+                        )}
+                      </td>
+
                       {/* Reporting Manager */}
                       <td className="px-4 py-2.5">
                         {editingId === user.id ? (
@@ -951,9 +1151,10 @@ export default function HeadcountManagement() {
                         ) : (
                           <button
                             type="button"
-                            onClick={() => handleToggleUserStatus(user)}
-                            className="flex items-center gap-2 cursor-pointer group select-none"
-                            title={`Click to ${user.isActive ? 'deactivate user' : 'reactivate user'}`}
+                            disabled={isLocked}
+                            onClick={() => !isLocked && handleToggleUserStatus(user)}
+                            className={`flex items-center gap-2 select-none ${isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer group'}`}
+                            title={isLocked ? 'Status changes are locked during active data ingestion' : `Click to ${user.isActive ? 'deactivate user' : 'reactivate user'}`}
                           >
                             <div
                               className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
@@ -978,8 +1179,9 @@ export default function HeadcountManagement() {
                         {editingId === user.id ? (
                           <div className="flex items-center justify-end gap-1.5">
                             <button
+                              disabled={isLocked}
                               onClick={() => handleSave(user.id)}
-                              className="p-1 bg-emerald-50 text-emerald-600 rounded hover:bg-emerald-100 transition-colors"
+                              className="p-1 bg-emerald-50 text-emerald-600 rounded hover:bg-emerald-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                               title="Save Changes"
                             >
                               <Check className="w-4 h-4" />
@@ -995,15 +1197,26 @@ export default function HeadcountManagement() {
                         ) : (
                           <div className="flex items-center justify-end gap-1.5">
                             <button
-                              onClick={() => handleEditClick(user)}
-                              className="px-2.5 py-1 border border-slate-200 rounded text-[10px] font-bold text-slate-600 hover:border-[#0D3B8E] hover:text-[#0D3B8E] transition-colors uppercase tracking-wider inline-flex items-center gap-1 cursor-pointer"
+                              disabled={isLocked}
+                              onClick={() => !isLocked && handleEditClick(user)}
+                              title={isLocked ? 'Editing is locked during active data ingestion' : 'Edit'}
+                              className={`px-2.5 py-1 border rounded text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1 transition-colors ${
+                                isLocked 
+                                  ? 'border-slate-200 text-slate-300 cursor-not-allowed opacity-50' 
+                                  : 'border-slate-200 text-slate-600 hover:border-[#0D3B8E] hover:text-[#0D3B8E] cursor-pointer'
+                              }`}
                             >
                               <Edit2 className="w-3 h-3" /> Edit
                             </button>
                             <button 
-                              onClick={() => handleDelete(user.id)}
-                              className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors inline-flex cursor-pointer"
-                              title="Delete Record"
+                              disabled={isLocked}
+                              onClick={() => !isLocked && handleDelete(user.id)}
+                              className={`p-1 rounded transition-colors inline-flex ${
+                                isLocked 
+                                  ? 'text-slate-200 cursor-not-allowed opacity-40' 
+                                  : 'text-slate-400 hover:text-red-500 hover:bg-red-50 cursor-pointer'
+                              }`}
+                              title={isLocked ? 'Deletion is locked during active data ingestion' : 'Delete Record'}
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>

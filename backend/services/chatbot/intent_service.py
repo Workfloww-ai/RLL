@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 VALID_INTENTS = {
     "greeting",
     "clarification_prompt",
+    "disambiguation_prompt",
     "no_response",
     "unmatched_entity",
     "out_of_domain",
@@ -54,13 +55,15 @@ class ChatbotIntentService:
 
         clean_q = raw_name.lower().strip()
         clean_q = re.sub(r"^(sale of|sales of|total sales|summary of|performance of)\s+", "", clean_q)
-        clean_q = re.sub(r"\s+(group|brand|company|depot|tsm|hq)$", "", clean_q).strip()
+        clean_q = re.sub(r"\s+(group|brand|company|depot|tsm|hq|licensee|ase)$", "", clean_q).strip()
 
         dict_rev = (
             master.get("companies_rev", {}) if entity_type == "company"
             else master.get("brands_rev", {}) if entity_type == "brand"
             else master.get("depots_rev", {}) if entity_type == "depot"
             else master.get("hq_rev", {}) if entity_type == "hq"
+            else master.get("licensees_rev", {}) if entity_type == "licensee"
+            else master.get("ases_rev", {}) if entity_type in ("ase", "tsm_ase")
             else master.get("tsms_rev", {}) if entity_type == "tsm"
             else master.get("groups_rev", {})
         )
@@ -69,6 +72,8 @@ class ChatbotIntentService:
             else master.get("brands", {}) if entity_type == "brand"
             else master.get("depots", {}) if entity_type == "depot"
             else master.get("hq", {}) if entity_type == "hq"
+            else master.get("licensees", {}) if entity_type == "licensee"
+            else master.get("ases", {}) if entity_type in ("ase", "tsm_ase")
             else master.get("tsms", {}) if entity_type == "tsm"
             else master.get("groups", {})
         )
@@ -97,8 +102,8 @@ class ChatbotIntentService:
             k_tokens = set(k_clean.split())
             matched = set(q_tokens).intersection(k_tokens)
 
-            # Exact token match for multi-word or single word
-            if len(q_tokens) > 1 and len(matched) == len(q_tokens):
+            # Exact token match for multi-word or single word (e.g. "abhishek" in "abhishek ji")
+            if len(matched) == len(q_tokens) and (len(q_tokens) > 1 or any(len(t) >= 4 for t in q_tokens)):
                 return "HIGH", eid, get_name(eid, key)
 
             if matched:
@@ -137,11 +142,50 @@ class ChatbotIntentService:
         current_period: str = "Daily",
         current_hq: str = "All Headquarters",
         pending_context: Optional[Dict[str, Any]] = None,
+        explicit_entity_type: Optional[str] = None,
+        explicit_entity_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Parses user prompt into target intent name and parameters.
+        Supports explicit clicked entity resolution and NLP search with fuzzy disambiguation.
         """
         msg_lower = user_message.lower().strip()
+
+        # Handle explicit clicked quick-reply entity (e.g. from Zomato-style chip click)
+        if explicit_entity_type and explicit_entity_id:
+            from backend.repositories.chatbot.summary_repository import ChatbotSummaryRepository
+            master = ChatbotSummaryRepository._load_master_lookups()
+            resolved_name = None
+            if explicit_entity_type == "licensee":
+                lic = master.get("licensees", {}).get(str(explicit_entity_id))
+                resolved_name = lic["name"] if lic else "Licensee"
+            elif explicit_entity_type in ("ase", "tsm_ase"):
+                ase = master.get("ases", {}).get(str(explicit_entity_id))
+                resolved_name = ase["name"] if ase else "ASE"
+            elif explicit_entity_type == "company":
+                resolved_name = master.get("companies", {}).get(str(explicit_entity_id), "Company")
+            elif explicit_entity_type == "brand":
+                b = master.get("brands", {}).get(str(explicit_entity_id))
+                resolved_name = b["name"] if b else "Brand"
+            elif explicit_entity_type in ("group", "licensee_group"):
+                resolved_name = master.get("groups", {}).get(str(explicit_entity_id), "Group")
+            elif explicit_entity_type == "tsm":
+                tsm_obj = next((t for t in master.get("tsms_list", []) if str(t.get("id")) == str(explicit_entity_id)), None)
+                resolved_name = tsm_obj["name"] if tsm_obj else "TSM"
+            elif explicit_entity_type == "multi_licensee":
+                resolved_name = user_message.title() if user_message else "All Matching Shops"
+
+            extracted_target_date = cls.extract_date_from_text(user_message)
+            return {
+                "intent": "get_sales_summary",
+                "period": current_period,
+                "target_date": extracted_target_date,
+                "entity_type": explicit_entity_type,
+                "entity_id": explicit_entity_id,
+                "entity_name": resolved_name or user_message,
+                "limit": 10,
+                "selected_hq": current_hq,
+            }
 
         # 0a. Check for Negative / Rejection Response ("no", "nope", "no thanks")
         if msg_lower in ("no", "nope", "no thanks", "no, thank you", "no thank you", "cancel"):
@@ -306,8 +350,8 @@ class ChatbotIntentService:
                 raw_candidate = c_key
                 break
 
-        # 4b. Group Detection
-        if not entity_name:
+        # 4b. Explicit Group Detection (if user mentioned 'group' or 'syndicate')
+        if not entity_name and any(k in msg_lower for k in ["group", "groups", "syndicate"]):
             from backend.repositories.chatbot.summary_repository import ChatbotSummaryRepository
             master = ChatbotSummaryRepository._load_master_lookups()
             master_groups = master.get("groups_rev", {})
@@ -347,8 +391,9 @@ class ChatbotIntentService:
                     entity_type = "group"
                     raw_candidate = captured_name
 
-        # 4c. TSM Detection
-        if not entity_name and not raw_candidate and entity_type not in ("group", "company"):
+        # 4c. TSM Detection (only if 'tsm' is explicitly mentioned)
+        has_tsm_keyword = any(k in msg_lower for k in ("tsm", "tsms", "territory sales manager"))
+        if has_tsm_keyword and not entity_name and not raw_candidate and entity_type not in ("group", "company"):
             from backend.repositories.chatbot.summary_repository import ChatbotSummaryRepository
             import difflib
             master = ChatbotSummaryRepository._load_master_lookups()
@@ -397,12 +442,198 @@ class ChatbotIntentService:
                     "selected_hq": selected_hq,
                 }
 
-        # 4d. Fallback Entity Type Keyword Detection
+        # 4d-pre. Category Dimension Overview Detection
+        # Prevents generic queries like "TSM performance", "Company performance", "Depot performance", "Top 5 brands"
+        # from mistakenly executing fuzzy substring matching on licensee/outlet names!
+        if not entity_name and not raw_candidate:
+            if re.search(r"\b(tsm\s+performance|tsms\s+performance|tsm\s+sales|tsms\s+sales|top\s+tsms?|all\s+tsms?|tsm|tsms)\b", msg_lower):
+                return {
+                    "intent": "get_top_entities",
+                    "period": period,
+                    "target_date": extracted_target_date,
+                    "entity_type": "tsm",
+                    "entity_name": None,
+                    "limit": limit,
+                    "selected_hq": selected_hq,
+                }
+            elif re.search(r"\b(company\s+performance|companies\s+performance|company\s+sales|companies\s+sales|top\s+companies|all\s+companies|companies|company)\b", msg_lower):
+                return {
+                    "intent": "get_top_entities",
+                    "period": period,
+                    "target_date": extracted_target_date,
+                    "entity_type": "company",
+                    "entity_name": None,
+                    "limit": limit,
+                    "selected_hq": selected_hq,
+                }
+            elif re.search(r"\b(depot\s+performance|depots\s+performance|depot\s+sales|depots\s+sales|top\s+depots|all\s+depots|depots|depot)\b", msg_lower):
+                return {
+                    "intent": "get_top_entities",
+                    "period": period,
+                    "target_date": extracted_target_date,
+                    "entity_type": "depot",
+                    "entity_name": None,
+                    "limit": limit,
+                    "selected_hq": selected_hq,
+                }
+            elif re.search(r"\b(ase\s+performance|ases\s+performance|ase\s+sales|ases\s+sales|top\s+ases|all\s+ases|ases|ase)\b", msg_lower):
+                return {
+                    "intent": "get_top_entities",
+                    "period": period,
+                    "target_date": extracted_target_date,
+                    "entity_type": "ase",
+                    "entity_name": None,
+                    "limit": limit,
+                    "selected_hq": selected_hq,
+                }
+            elif re.search(r"\b(top\s*\d*\s*brands?|best\s+brands?|leading\s+brands?|brand\s+performance|brands?\s+sales)\b", msg_lower):
+                return {
+                    "intent": "get_top_entities",
+                    "period": period,
+                    "target_date": extracted_target_date,
+                    "entity_type": "brand",
+                    "entity_name": None,
+                    "limit": limit,
+                    "selected_hq": selected_hq,
+                }
+            elif re.search(r"\b(daily\s+sales\s+summary|sales\s+summary|total\s+sales|overall\s+sales|daily\s+summary|today\s+sales|sales\s+overview)\b", msg_lower):
+                return {
+                    "intent": "get_sales_summary",
+                    "period": period,
+                    "target_date": extracted_target_date,
+                    "entity_type": "brand",
+                    "entity_name": None,
+                    "limit": limit,
+                    "selected_hq": selected_hq,
+                }
+
+        # 4d. Licensee & ASE Detection (with typo and multi-match disambiguation)
+        if not entity_name and not raw_candidate:
+            from backend.repositories.chatbot.summary_repository import ChatbotSummaryRepository
+            clean_search = re.sub(
+                r"\b(sales|sale|sel|sail|total|performance|summary|of|for|on|in|at|the|daily|mtd|ytd|today|show|me|tell|view|data|give|please|pls|ka|ki|ke|ko|se|me|mein|par|pe|aur|kya|tha|thi|hai|batao|dikhao|dekho|karo|kitna|kitni|chahiye|bhejo|bataiye|dikhaye|shop|shops|theka|theke|dukan|dukaan|licensee|licensees|licencee|licencees|license|licence|outlet|outlets|group|groups|syndicate|tsm|tsms|company|companies|depot|depots|brand|brands|ase|ases|executive|executives|overall|with|to|from|by|all)\b",
+                " ",
+                msg_lower
+            )
+            if extracted_target_date:
+                clean_search = re.sub(r"\b(\d{1,2}(?:st|nd|rd|th)?|\d{4}|january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b", " ", clean_search)
+            for h_k in ["jaipur", "sikar", "alwar", "sri ganganagar", "ganganagar", "kota", "udaipur", "ajmer", "jodhpur", "hq"]:
+                clean_search = re.sub(rf"\b{h_k}\b", " ", clean_search)
+
+            search_phrase = " ".join(clean_search.split()).strip()
+            if search_phrase.lower() in ("tsm", "tsms", "company", "companies", "depot", "depots", "brand", "brands", "ase", "ases", "outlet", "outlets", "shop", "shops", "licensee", "licensees", "group", "groups"):
+                search_phrase = ""
+            target_types = ["licensee", "group", "ase", "tsm"]
+            if any(k in msg_lower for k in ["licensee", "licencee", "theka", "theke", "shop", "dukan", "dukaan"]):
+                target_types = ["licensee"]
+            elif any(k in msg_lower for k in ["group", "groups", "syndicate"]):
+                target_types = ["group"]
+            elif "ase" in msg_lower or "executive" in msg_lower:
+                target_types = ["ase"]
+            elif "tsm" in msg_lower or "territory" in msg_lower:
+                target_types = ["tsm"]
+
+            if search_phrase and len(search_phrase) >= 2 and not search_phrase.isdigit():
+                candidate_matches = ChatbotSummaryRepository.find_matching_entities(search_phrase, target_types=target_types, limit=30)
+                if candidate_matches:
+                    top_m = candidate_matches[0]
+                    second_score = candidate_matches[1]["score"] if len(candidate_matches) > 1 else 0.0
+
+                    entity_types_in_candidates = {c.get("entity_type") for c in candidate_matches if c.get("entity_type")}
+                    has_competing_types = len(entity_types_in_candidates) > 1
+
+                    # 1. Single dominant high-confidence match (e.g. Bija Ram with >=0.92 vs runner up <0.85) - only if no competing entity types
+                    if top_m["score"] >= 0.92 and second_score < 0.85 and not has_competing_types:
+                        entity_name = top_m["name"]
+                        entity_type = top_m["entity_type"]
+                        return {
+                            "intent": "get_sales_summary",
+                            "period": period,
+                            "target_date": extracted_target_date,
+                            "entity_type": entity_type,
+                            "entity_id": top_m["id"],
+                            "entity_name": entity_name,
+                            "limit": limit,
+                            "selected_hq": selected_hq,
+                        }
+                    # 2. Multiple competing matches or mixed entity types
+                    elif len(candidate_matches) > 1 or has_competing_types:
+                        target_dt = extracted_target_date or ChatbotSummaryRepository.resolve_latest_date()
+                        active_matches = ChatbotSummaryRepository.enrich_candidates_with_period_sales(
+                            candidate_matches,
+                            period=period,
+                            target_date=target_dt,
+                            selected_hq=selected_hq,
+                        )
+                        # Valid matches: keep group, ASE, and TSM candidates, and keep licensees strictly with sales > 0.00
+                        valid_matches = [
+                            m for m in active_matches
+                            if m.get("entity_type") in ("group", "ase", "tsm_ase", "tsm") or float(m.get("cases") or 0.0) > 0.0
+                        ]
+
+                        types_in_valid = {m.get("entity_type") for m in valid_matches if m.get("entity_type")}
+                        has_multiple_types = len(types_in_valid) > 1
+
+                        # If exactly 1 entity had sales (and no competing entity types), directly resolve without asking!
+                        if len(valid_matches) == 1 and not has_multiple_types:
+                            single_m = valid_matches[0]
+                            return {
+                                "intent": "get_sales_summary",
+                                "period": period,
+                                "target_date": extracted_target_date,
+                                "entity_type": single_m.get("entity_type", "licensee"),
+                                "entity_id": single_m["id"],
+                                "entity_name": single_m["name"],
+                                "limit": limit,
+                                "selected_hq": selected_hq,
+                            }
+                        # If multiple entities or competing types exist, prompt disambiguation!
+                        elif len(valid_matches) > 1 or has_multiple_types:
+                            return {
+                                "intent": "disambiguation_prompt",
+                                "period": period,
+                                "target_date": extracted_target_date,
+                                "entity_type": "mixed" if has_multiple_types else valid_matches[0]["entity_type"],
+                                "entity_name": search_phrase,
+                                "candidate_matches": valid_matches,
+                                "limit": limit,
+                                "selected_hq": selected_hq,
+                            }
+                        else:
+                            # None had sales in this specific period
+                            return {
+                                "intent": "no_sales_for_candidates",
+                                "period": period,
+                                "target_date": extracted_target_date,
+                                "entity_type": candidate_matches[0]["entity_type"],
+                                "entity_name": search_phrase,
+                                "candidate_matches": candidate_matches[:5],
+                                "limit": limit,
+                                "selected_hq": selected_hq,
+                            }
+                    # 3. Single moderate match (e.g. typo with score >= 0.70)
+                    elif top_m["score"] >= 0.70:
+                        return {
+                            "intent": "disambiguation_prompt",
+                            "period": period,
+                            "target_date": extracted_target_date,
+                            "entity_type": top_m["entity_type"],
+                            "entity_name": search_phrase,
+                            "candidate_matches": [top_m],
+                            "limit": limit,
+                            "selected_hq": selected_hq,
+                        }
+
+        # 4e. Fallback Entity Type Keyword Detection
         if not entity_name:
             if "company" in msg_lower or "companies" in msg_lower or "manufacturer" in msg_lower:
                 entity_type = "company"
             elif "group" in msg_lower or "groups" in msg_lower:
                 entity_type = "group"
+            elif "licensee" in msg_lower or "licensees" in msg_lower:
+                entity_type = "licensee"
+            elif "ase" in msg_lower or "ases" in msg_lower:
+                entity_type = "ase"
             elif "depot" in msg_lower or "depots" in msg_lower or "warehouse" in msg_lower:
                 entity_type = "depot"
             elif "tsm" in msg_lower or "tsms" in msg_lower or "executive" in msg_lower or "salesperson" in msg_lower:
@@ -415,6 +646,7 @@ class ChatbotIntentService:
             "sale", "sales", "case", "cases", "volume", "bottle", "bottles", "bl",
             "brand", "brands", "company", "companies", "depot", "depots", "warehouse",
             "tsm", "tsms", "executive", "salesperson", "group", "groups", "licensee",
+            "licensees", "ase", "ases",
             "hq", "hqs", "headquarters", "jaipur", "sikar", "alwar", "ganganagar", "kota",
             "udaipur", "ajmer", "jodhpur", "rll", "diageo", "pernod", "radico", "bacardi",
             "khoday", "amrut", "sgs", "campari", "ardent", "beyond water",
@@ -459,16 +691,19 @@ class ChatbotIntentService:
         # LLM fallback if message is complex & Gemini API Key is configured
         if getattr(settings, "GEMINI_API_KEY", None) and len(user_message.split()) > 6:
             try:
-                llm_parsed = cls._llm_intent_fallback(user_message)
-                if llm_parsed and llm_parsed.get("intent") in VALID_INTENTS:
-                    return {
-                        "intent": llm_parsed["intent"],
-                        "period": llm_parsed.get("period") or period,
-                        "entity_type": llm_parsed.get("entity_type") or entity_type,
-                        "entity_name": llm_parsed.get("entity_name") or entity_name,
-                        "limit": llm_parsed.get("limit") or limit,
-                        "selected_hq": llm_parsed.get("selected_hq") or selected_hq,
-                    }
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(cls._llm_intent_fallback, user_message)
+                    llm_parsed = future.result(timeout=1.5)
+                    if llm_parsed and llm_parsed.get("intent") in VALID_INTENTS:
+                        return {
+                            "intent": llm_parsed["intent"],
+                            "period": llm_parsed.get("period") or period,
+                            "entity_type": llm_parsed.get("entity_type") or entity_type,
+                            "entity_name": llm_parsed.get("entity_name") or entity_name,
+                            "limit": llm_parsed.get("limit") or limit,
+                            "selected_hq": llm_parsed.get("selected_hq") or selected_hq,
+                        }
             except Exception as e:
                 logger.debug(f"LLM intent fallback notice: {e}")
 

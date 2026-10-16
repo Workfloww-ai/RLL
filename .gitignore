@@ -59,3 +59,10 @@ WAL_UPLOAD_OPTIMIZATION_PLAN.md
 END_TO_END_FAILURE_POINTS_AUDIT.md
 OTHERS_TOGGLE_ARCHITECTURE.md
 tests/load/*
+RLL_updated.xlsx
+docs/audits/tsm_headquarters_schema_audit.md
+docs/audits/database_redundancy_audit.md
+
+
+docs/*
+docs/audits

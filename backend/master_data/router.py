@@ -10,6 +10,7 @@ from backend.master_data.schemas import (
 from backend.db.redis_client import safe_get, safe_set, safe_delete
 from backend.core.security import get_current_user, RoleChecker, developer_only
 from backend.core.route import EncryptedRoute
+from backend.core.system_lock import check_system_lock_or_raise
 from backend.services.cache_service import invalidate_others_toggle_cache
 from backend.services.tenant_service import get_include_others_setting_async, clear_tenant_cache
 
@@ -97,6 +98,7 @@ async def get_depots():
 
 @router.put("/depots/{depot_id}")
 async def update_depot(depot_id: str, payload: DepotUpdate, _admin=Depends(admin_only)):
+    check_system_lock_or_raise()
     result = master_service.update_depot(depot_id, payload.model_dump(exclude_unset=True))
     if not result:
         raise HTTPException(status_code=404, detail="Depot not found")
@@ -106,6 +108,7 @@ async def update_depot(depot_id: str, payload: DepotUpdate, _admin=Depends(admin
 
 @router.delete("/depots/{depot_id}")
 async def delete_depot(depot_id: str, _admin=Depends(admin_only)):
+    check_system_lock_or_raise()
     success = master_service.delete_depot(depot_id)
     if not success:
         raise HTTPException(status_code=400, detail="Failed to delete depot")
@@ -182,6 +185,7 @@ async def update_include_others_setting(
     current_user: dict = Depends(developer_only)
 ):
     """Update include_others_in_sales setting value (DEVELOPER ONLY)."""
+    check_system_lock_or_raise()
     new_val_bool = payload.include_others_in_sales
     new_val_str = "true" if new_val_bool else "false"
     old_val_bool = await get_include_others_setting_async()
@@ -266,6 +270,7 @@ async def update_system_setting(
     current_user: dict = Depends(get_current_user)
 ):
     """Update a global system setting."""
+    check_system_lock_or_raise()
     key = payload.setting_key.strip()
     val = payload.setting_value.strip().lower()
     user_role = (current_user.get("role_name") or current_user.get("role") or "").strip().lower()

@@ -32,6 +32,8 @@ export interface User {
   depotName: string;
   circleName: string;
   headquarters: string;
+  headquarters_ids?: string[];
+  headquartersList?: { headquarters_id: string; name: string }[];
   reportingManager: string;
   isActive?: boolean;
   phoneNumber?: string;

@@ -3,6 +3,7 @@ import { Shield, Plus, Edit2, Trash2, CheckCircle2, Save, X, XCircle } from 'luc
 import { API_BASE_URL } from '../config';
 import { useToast } from '../contexts/ToastContext';
 import { secureFetch } from '../lib/apiClient';
+import { useSystemLock } from '../contexts/SystemLockContext';
 
 interface Role {
   role_id: string;
@@ -12,6 +13,7 @@ interface Role {
 }
 
 export default function RoleManagement() {
+  const { isLocked } = useSystemLock();
   const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -42,6 +44,10 @@ export default function RoleManagement() {
   };
 
   const handleToggleActive = async (role: Role) => {
+    if (isLocked) {
+      showToast('System is in read-only mode during data upload. Role status change locked.', 'warning');
+      return;
+    }
     // Optimistic Update
     const previousStatus = role.is_active;
     setRoles(roles.map(r => r.role_id === role.role_id ? { ...r, is_active: !r.is_active } : r));
@@ -70,6 +76,10 @@ export default function RoleManagement() {
   };
 
   const handleDelete = async (roleId: string) => {
+    if (isLocked) {
+      showToast('System is in read-only mode during data upload. Role deletion locked.', 'warning');
+      return;
+    }
     if (!confirm('Are you sure you want to delete this role?')) return;
     
     try {
@@ -92,6 +102,10 @@ export default function RoleManagement() {
 
   const handleCreateRole = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isLocked) {
+      showToast('System is in read-only mode during data upload. Role creation locked.', 'warning');
+      return;
+    }
     try {
       const token = localStorage.getItem('token');
       const res = await secureFetch(`${API_BASE_URL}/users/roles`, {
@@ -139,8 +153,14 @@ export default function RoleManagement() {
           </div>
         </div>
         <button
-          onClick={() => setShowAddModal(true)}
-          className="bg-[#0D3B8E] hover:bg-blue-800 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors text-sm shadow-sm"
+          disabled={isLocked}
+          onClick={() => !isLocked && setShowAddModal(true)}
+          title={isLocked ? "Role creation locked during active data ingestion" : "Add Role"}
+          className={`px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors text-sm shadow-sm ${
+            isLocked 
+              ? 'opacity-40 cursor-not-allowed bg-slate-400 text-white' 
+              : 'bg-[#0D3B8E] hover:bg-blue-800 text-white cursor-pointer'
+          }`}
         >
           <Plus className="h-4 w-4" />
           Add Role
@@ -173,8 +193,10 @@ export default function RoleManagement() {
                     <td className="px-6 py-4 text-center">
                       <button
                         type="button"
-                        onClick={() => handleToggleActive(role)}
-                        className="flex items-center justify-center w-full focus:outline-none"
+                        disabled={isLocked}
+                        onClick={() => !isLocked && handleToggleActive(role)}
+                        className={`flex items-center justify-center w-full focus:outline-none ${isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                        title={isLocked ? "Status changes locked during active data ingestion" : "Toggle status"}
                       >
                         <div
                           className={`relative inline-flex h-6 w-12 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
@@ -191,9 +213,14 @@ export default function RoleManagement() {
                     </td>
                     <td className="px-6 py-4 text-center">
                       <button
-                        onClick={() => handleDelete(role.role_id)}
-                        className="p-2 text-slate-400 hover:text-red-500 transition-colors rounded-lg hover:bg-red-50 inline-flex items-center justify-center"
-                        title="Delete Role"
+                        disabled={isLocked}
+                        onClick={() => !isLocked && handleDelete(role.role_id)}
+                        className={`p-2 transition-colors rounded-lg inline-flex items-center justify-center ${
+                          isLocked 
+                            ? 'text-slate-200 opacity-40 cursor-not-allowed' 
+                            : 'text-slate-400 hover:text-red-500 hover:bg-red-50 cursor-pointer'
+                        }`}
+                        title={isLocked ? "Role deletion locked during active data ingestion" : "Delete Role"}
                       >
                         <Trash2 className="h-4 w-4" />
                       </button>

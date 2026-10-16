@@ -3,9 +3,10 @@ import logging
 from typing import List, Dict, Any
 from fastapi import APIRouter, File, UploadFile, HTTPException, Depends
 from backend.users.service import user_service
-from backend.db.redis_client import safe_get, safe_set, safe_delete
+from backend.db.redis_client import safe_get, safe_set, safe_delete, safe_delete_pattern
 from backend.core.security import RoleChecker, get_current_user
 from backend.core.route import EncryptedRoute
+from backend.core.system_lock import check_system_lock_or_raise, roster_upload_lock, check_upload_cooldown_or_raise, record_upload_completion
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,8 @@ async def invalidate_user_and_territory_caches():
     await safe_delete("rll:cache:depots_list")
     await safe_delete("rll:cache:headquarters_list")
     await safe_delete("rll:cache:roles_list")
+    await safe_delete("rll:cache:master_lookups")
+    await safe_delete_pattern("rll:mobile:sales:*")
 
 
 @router.get("/")
@@ -43,6 +46,7 @@ async def list_users():
 
 @router.post("/")
 async def create_user(payload: Dict[str, Any]):
+    check_system_lock_or_raise()
     try:
         res = user_service.create_user(payload)
         await invalidate_user_and_territory_caches()
@@ -71,6 +75,7 @@ async def list_roles():
 
 @router.post("/roles")
 async def create_role(payload: Dict[str, Any]):
+    check_system_lock_or_raise()
     try:
         res = user_service.create_role(payload)
         await invalidate_user_and_territory_caches()
@@ -81,6 +86,7 @@ async def create_role(payload: Dict[str, Any]):
 
 @router.put("/roles/{role_id}")
 async def update_role(role_id: str, payload: Dict[str, Any]):
+    check_system_lock_or_raise()
     try:
         res = user_service.update_role(role_id, payload)
         await invalidate_user_and_territory_caches()
@@ -91,6 +97,7 @@ async def update_role(role_id: str, payload: Dict[str, Any]):
 
 @router.delete("/roles/{role_id}")
 async def delete_role(role_id: str):
+    check_system_lock_or_raise()
     success = user_service.delete_role(role_id)
     if not success:
         raise HTTPException(status_code=400, detail="Failed to delete role.")
@@ -105,20 +112,25 @@ async def get_hierarchy():
 
 @router.post("/upload-roster")
 async def upload_roster(file: UploadFile = File(...)):
+    check_system_lock_or_raise()
+    check_upload_cooldown_or_raise()
     if not file.filename.endswith(('.xlsx', '.xls', '.csv', '.xlsb')):
         raise HTTPException(status_code=400, detail="Only .xlsx, .xls, .xlsb, or .csv files are supported.")
     
-    contents = await file.read()
-    try:
-        res = user_service.process_excel_roster(contents, file.filename)
-        await invalidate_user_and_territory_caches()
-        return res
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    with roster_upload_lock(file.filename):
+        contents = await file.read()
+        try:
+            res = user_service.process_excel_roster(contents, file.filename)
+            await invalidate_user_and_territory_caches()
+            record_upload_completion("roster_upload", file.filename)
+            return res
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.put("/{user_id}")
 async def update_user(user_id: str, payload: Dict[str, Any], current_user: dict = Depends(get_current_user)):
+    check_system_lock_or_raise()
     is_active_val = payload.get("is_active", payload.get("isActive"))
     
     # Prevent self-deactivation
@@ -150,6 +162,7 @@ async def update_user(user_id: str, payload: Dict[str, Any], current_user: dict 
 
 @router.delete("/{user_id}")
 async def delete_user(user_id: str, current_user: dict = Depends(get_current_user)):
+    check_system_lock_or_raise()
     if str(current_user.get("user_id")) == str(user_id):
         raise HTTPException(status_code=400, detail="You cannot delete your own account.")
 
@@ -164,4 +177,33 @@ async def delete_user(user_id: str, current_user: dict = Depends(get_current_use
     return {"message": "User deleted successfully", "user_id": user_id}
 
 
+@router.get("/{user_id}/headquarters")
+async def get_user_headquarters(user_id: str):
+    try:
+        return user_service.get_user_headquarters(user_id)
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Error fetching user headquarters: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.put("/{user_id}/headquarters")
+async def set_user_headquarters(user_id: str, payload: Dict[str, Any], current_user: dict = Depends(get_current_user)):
+    check_system_lock_or_raise()
+    hq_ids = payload.get("headquarters_ids")
+    if hq_ids is None and "headquarters" in payload:
+        hq_ids = payload.get("headquarters")
+    if not isinstance(hq_ids, list):
+        raise HTTPException(status_code=400, detail="'headquarters_ids' must be a list of headquarters UUIDs.")
+
+    admin_user_id = str(current_user.get("user_id") or "")
+    try:
+        res = user_service.set_user_headquarters(user_id, hq_ids, updated_by=admin_user_id)
+        await invalidate_user_and_territory_caches()
+        return res
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Error updating user headquarters: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

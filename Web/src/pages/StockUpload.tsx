@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import FileUpload from '../components/FileUpload';
 import UploadErrorViewer from '../components/UploadErrorViewer';
 import { API_BASE_URL } from '../config';
+import { useSystemLock } from '../contexts/SystemLockContext';
+import { Clock } from 'lucide-react';
 
 interface LatestUpload {
   lastUploadFormatted: string;
@@ -12,6 +14,7 @@ interface LatestUpload {
 }
 
 export default function StockUpload() {
+  const { isCooldownActive, formattedCooldown, formattedCooldownLong } = useSystemLock();
   const [activeErrorBatchId, setActiveErrorBatchId] = useState<string>('all');
   const [errorRefreshTrigger, setErrorRefreshTrigger] = useState<number>(0);
   const [latestUpload, setLatestUpload] = useState<LatestUpload>({
@@ -74,6 +77,32 @@ export default function StockUpload() {
         <p className="text-slate-500 mt-1 text-xs font-medium">Upload the latest sales data for real-time outlet visibility.</p>
       </div>
 
+      {isCooldownActive && (
+        <div className="bg-amber-500/10 border border-amber-300 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-xs">
+              <Clock className="w-5 h-5 animate-pulse" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h4 className="text-xs font-bold text-slate-900">30-Minute Upload Interval Active</h4>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-200/80 text-amber-900 border border-amber-300">
+                  COOLDOWN
+                </span>
+              </div>
+              <p className="text-xs text-slate-600 mt-0.5 font-medium">
+                Upload will be enabled after 30 mins of the last upload. Sales and User Management bulk uploads are paused until then.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 self-start sm:self-auto bg-white border border-amber-300/80 rounded-xl px-4 py-2 shadow-2xs">
+            <Clock size={15} className="text-amber-600 animate-spin" style={{ animationDuration: '6s' }} />
+            <span className="text-xs font-bold text-slate-600">Enabled in:</span>
+            <span className="text-sm font-black text-amber-600 font-mono tracking-wider">{formattedCooldown}</span>
+          </div>
+        </div>
+      )}
+
       <FileUpload 
         title=""
         instructions={[
@@ -101,15 +130,27 @@ export default function StockUpload() {
           </p>
         </div>
 
-        <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-2xs hover:shadow-xs transition-shadow">
-          <h3 className="text-[10px] font-bold text-[#0D3B8E] uppercase tracking-wider mb-2">Records Processed</h3>
-          <p className="text-xl font-bold text-slate-900">
+        <div className={`rounded-2xl border p-6 shadow-2xs hover:shadow-xs transition-all ${
+          latestUpload.status === 'FAILED' 
+            ? 'bg-rose-50/40 border-rose-200' 
+            : 'bg-white border-slate-200/80'
+        }`}>
+          <h3 className={`text-[10px] font-bold uppercase tracking-wider mb-2 ${
+            latestUpload.status === 'FAILED' ? 'text-rose-700' : 'text-[#0D3B8E]'
+          }`}>
+            Records Processed
+          </h3>
+          <p className={`text-xl font-bold ${
+            latestUpload.status === 'FAILED' ? 'text-rose-950' : 'text-slate-900'
+          }`}>
             {latestUpload.status === 'SUCCESS' && `${latestUpload.recordsCountFormatted} Records`}
             {latestUpload.status === 'PROCESSING' && 'Processing Data...'}
-            {latestUpload.status === 'FAILED' && 'Processing Failed'}
+            {latestUpload.status === 'FAILED' && 'Processing Failed (Errors Found)'}
             {latestUpload.status === 'NONE' && 'No Upload Data'}
           </p>
-          <p className="text-xs text-slate-400 font-medium mt-1 truncate">
+          <p className={`text-xs font-medium mt-1 truncate ${
+            latestUpload.status === 'FAILED' ? 'text-rose-800' : 'text-slate-400'
+          }`}>
             {latestUpload.status === 'SUCCESS' ? '100% Data Accuracy • All Records Verified & Saved' : latestUpload.remarksText}
           </p>
         </div>

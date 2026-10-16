@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { API_BASE_URL } from "../lib/api";
 import { useToast } from "../contexts/ToastContext";
+import { useSystemLock } from "../contexts/SystemLockContext";
 import { 
   Search, Filter, Edit2, Check, X, MapPin, Trash2, RefreshCw, 
   ChevronLeft, ChevronRight, ArrowUpDown, ChevronUp, ChevronDown, RotateCcw,
@@ -39,6 +40,7 @@ type SortField = "name" | "headquarters_name" | "depot_user" | "depot_user_role"
 type SortDirection = "asc" | "desc";
 
 export default function TerritoryManagement() {
+  const { isLocked, lockReason } = useSystemLock();
   const [depots, setDepots] = useState<DepotRecord[]>([]);
   const [headquartersList, setHeadquartersList] = useState<HeadquartersRecord[]>([]);
   const [usersList, setUsersList] = useState<UserOption[]>([]);
@@ -296,6 +298,10 @@ export default function TerritoryManagement() {
 
   // Inline Edit Handlers
   const handleEditClick = (depot: DepotRecord) => {
+    if (isLocked) {
+      showToast("System is in read-only mode during data upload. Editing locked.", "warning");
+      return;
+    }
     setEditingId(depot.depot_id);
     setEditName(depot.name || "");
     setEditDepotId(depot.real_depot_id ? String(depot.real_depot_id) : String(depot.depot_id));
@@ -305,6 +311,10 @@ export default function TerritoryManagement() {
   };
 
   const handleSave = async (depot: DepotRecord) => {
+    if (isLocked) {
+      showToast("System is in read-only mode during data upload. Changes locked.", "warning");
+      return;
+    }
     try {
       showToast("Updating territory alignment...", "info");
       const targetDepotId = editDepotId || depot.real_depot_id || depot.depot_id;
@@ -835,15 +845,26 @@ export default function TerritoryManagement() {
                         ) : (
                           <div className="flex items-center justify-end gap-2">
                             <button
-                              onClick={() => handleEditClick(depot)}
-                              className="px-3 py-1.5 border border-slate-200 rounded text-[10px] font-bold text-slate-600 hover:border-[#004B87] hover:text-[#004B87] transition-colors uppercase tracking-widest inline-flex items-center gap-1"
+                              disabled={isLocked}
+                              onClick={() => !isLocked && handleEditClick(depot)}
+                              title={isLocked ? "Editing locked during active data ingestion" : "Edit Territory"}
+                              className={`px-3 py-1.5 border rounded text-[10px] font-bold uppercase tracking-widest inline-flex items-center gap-1 transition-colors ${
+                                isLocked 
+                                  ? 'border-slate-200 text-slate-300 opacity-40 cursor-not-allowed' 
+                                  : 'border-slate-200 text-slate-600 hover:border-[#004B87] hover:text-[#004B87] cursor-pointer'
+                              }`}
                             >
                               <Edit2 className="w-3 h-3" /> Edit
                             </button>
                             <button 
-                              onClick={() => handleDelete(depot.depot_id)}
-                              className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors inline-flex"
-                              title="Delete Record"
+                              disabled={isLocked}
+                              onClick={() => !isLocked && handleDelete(depot.depot_id)}
+                              className={`p-1.5 rounded transition-colors inline-flex ${
+                                isLocked 
+                                  ? 'text-slate-200 opacity-40 cursor-not-allowed' 
+                                  : 'text-slate-400 hover:text-red-500 hover:bg-red-50 cursor-pointer'
+                              }`}
+                              title={isLocked ? "Deletion locked during active data ingestion" : "Delete Record"}
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>

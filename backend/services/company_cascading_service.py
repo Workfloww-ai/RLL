@@ -34,10 +34,19 @@ def get_company_brands_sales_service(
 ) -> List[Dict[str, Any]]:
     """
     Fetches brand sales metrics for a selected company.
-    Strictly excludes 'Others' company brands and 0-sale items.
+    Supports system_settings include_others_in_sales toggle and explicit company drilldowns.
     """
     if not company_id:
         return []
+
+    from backend.services.tenant_service import get_include_others_setting_sync
+    include_others = get_include_others_setting_sync()
+
+    clean_target = str(company_id).strip().lower()
+    is_target_others = clean_target in ("others", "other") or clean_target == "30739e78-c438-4a60-a5cb-6d9e9e79d1c6"
+
+    # If include_others is True OR the user explicitly drilled into Others, do NOT exclude Others
+    eff_exclude = "" if (include_others or is_target_others) else exclude_company
 
     try:
         raw_data = fetch_company_brand_sales_db(
@@ -45,13 +54,13 @@ def get_company_brands_sales_service(
             date_from=date_from,
             date_to=date_to,
             hq_name=hq_name,
-            exclude_company=exclude_company,
+            exclude_company=eff_exclude,
         )
         
         result = []
         for item in raw_data:
             comp_name = item.get("company_name", "")
-            if is_others_company(comp_name):
+            if not is_target_others and is_others_company(comp_name):
                 continue
             
             cases = round(float(item.get("total_cases") or 0.0), 2)
@@ -82,10 +91,14 @@ def get_brand_licensees_sales_service(
 ) -> List[Dict[str, Any]]:
     """
     Fetches licensee sales metrics for a selected brand.
-    Strictly excludes 0-sale licensees.
+    Strictly excludes 0-sale licensees. Respects include_others_in_sales toggle.
     """
     if not brand_id:
         return []
+
+    from backend.services.tenant_service import get_include_others_setting_sync
+    include_others = get_include_others_setting_sync()
+    eff_exclude = "" if include_others else exclude_company
 
     try:
         raw_data = fetch_brand_licensees_sales_db(
@@ -93,7 +106,7 @@ def get_brand_licensees_sales_service(
             date_from=date_from,
             date_to=date_to,
             hq_name=hq_name,
-            exclude_company=exclude_company,
+            exclude_company=eff_exclude,
         )
 
         result = []

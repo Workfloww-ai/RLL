@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { UploadCloud, FileText, CheckCircle, AlertCircle, Database, RefreshCw, Server, X, Check, Clock } from 'lucide-react';
+import { UploadCloud, FileText, CheckCircle, AlertCircle, Database, RefreshCw, Server, X, Check, Clock, Lock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { FileUploadState } from '../types';
 import { API_BASE_URL } from '../config';
+import { useSystemLock } from '../contexts/SystemLockContext';
 
 interface FileUploadProps {
   title: string;
@@ -61,44 +62,61 @@ function formatLaymanShortError(msg: string): string {
 }
 
 export default function FileUpload({ title, instructions, accept = ".xlsx, .xls, .xlsb, .csv, .numbers", uploadEndpoint, onUploadComplete, onErrorOccurred }: FileUploadProps) {
-  const [uploadState, setUploadState] = useState<FileUploadState>({ status: 'idle', progress: 0 });
+  const { 
+    isLocked, 
+    lockType, 
+    lockReason, 
+    activeBatch,
+    isCooldownActive,
+    cooldownRemainingSeconds,
+    formattedCooldown,
+    formattedCooldownLong,
+    startCooldownManually
+  } = useSystemLock();
+  const [uploadState, setUploadState] = useState<FileUploadState>(() => {
+    if (!uploadEndpoint) {
+      try {
+        const raw = localStorage.getItem('rll_active_sales_upload');
+        if (raw) {
+          const stored = JSON.parse(raw);
+          const st = (stored?.status || '').toLowerCase();
+          if (stored && stored.batchId && (st === 'processing' || st === 'queued' || st === 'running' || !st)) {
+            const startMs = stored.startTimestampMs || Date.now();
+            const elapsed = Math.max(1, Math.floor((Date.now() - startMs) / 1000));
+            return {
+              status: 'processing',
+              progress: stored.progress || 45,
+              fileName: stored.fileName || 'Sales Data Sheet',
+              batchId: stored.batchId,
+              uploadStartTime: stored.uploadStartTime || 'Recently',
+              elapsedSeconds: elapsed,
+              statusMessage: stored.remarks || 'Saving data rows into database...'
+            };
+          }
+        }
+
+        const lockRaw = localStorage.getItem('rll_system_lock_base');
+        if (lockRaw) {
+          const lockObj = JSON.parse(lockRaw);
+          if (lockObj && lockObj.isLocked && lockObj.lockType === 'sales_upload' && lockObj.activeBatch) {
+            const b = lockObj.activeBatch;
+            return {
+              status: 'processing',
+              progress: 45,
+              fileName: b.file_name || 'Sales Data Sheet',
+              batchId: b.batch_id,
+              uploadStartTime: 'Recently',
+              elapsedSeconds: 5,
+              statusMessage: b.remarks || 'Saving data rows into database...'
+            };
+          }
+        }
+      } catch (e) {}
+    }
+    return { status: 'idle', progress: 0 };
+  });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (pollTimerRef.current) {
-        clearInterval(pollTimerRef.current);
-      }
-    };
-  }, []);
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0 && uploadState.status !== 'uploading' && uploadState.status !== 'processing') {
-      processFile(e.dataTransfer.files[0]);
-    }
-  };
-
-  const formatDuration = (sec?: number) => {
-    if (sec === undefined || sec === null || sec < 1) return '< 1s';
-    if (sec < 60) return `${sec}s`;
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    return `${m}m ${s.toString().padStart(2, '0')}s`;
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      const selectedFile = e.target.files[0];
-      e.target.value = '';
-      processFile(selectedFile);
-    }
-  };
 
   const startPollingBatchStatus = (
     batchId: number | string, 
@@ -108,6 +126,16 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
   ) => {
     if (pollTimerRef.current) {
       clearInterval(pollTimerRef.current);
+    }
+
+    if (!uploadEndpoint) {
+      localStorage.setItem('rll_active_sales_upload', JSON.stringify({
+        batchId: String(batchId),
+        fileName,
+        uploadStartTime: startTimeFormatted,
+        startTimestampMs,
+        status: 'processing'
+      }));
     }
 
     let pollAttempts = 0;
@@ -126,6 +154,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
         if (!res.ok) {
           if (pollAttempts >= maxPollAttempts) {
             if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+            if (!uploadEndpoint) localStorage.removeItem('rll_active_sales_upload');
             setUploadState({
               status: 'error',
               progress: 0,
@@ -160,6 +189,8 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
         if (isSuccess) {
           // Backend has confirmed all data is completely saved in database!
           if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+          if (!uploadEndpoint) localStorage.removeItem('rll_active_sales_upload');
+          startCooldownManually(1800);
           const finalTimeSec = batchInfo.processing_time_seconds && batchInfo.processing_time_seconds > 0 
             ? batchInfo.processing_time_seconds 
             : elapsed;
@@ -181,6 +212,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
         } else if (isFailed) {
           // Background ingestion encountered errors
           if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+          if (!uploadEndpoint) localStorage.removeItem('rll_active_sales_upload');
 
           // Fetch error logs for detail if available
           let logs: string[] = [];
@@ -209,6 +241,17 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
           if (onErrorOccurred) onErrorOccurred(batchId);
         } else {
           // Still processing/pending in database
+          if (!uploadEndpoint) {
+            localStorage.setItem('rll_active_sales_upload', JSON.stringify({
+              batchId: String(batchId),
+              fileName,
+              uploadStartTime: startTimeFormatted,
+              startTimestampMs,
+              status: 'processing',
+              elapsedSeconds: elapsed
+            }));
+          }
+
           setUploadState({
             status: 'processing',
             progress: currentProgress,
@@ -221,6 +264,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
 
           if (pollAttempts >= maxPollAttempts) {
             if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+            if (!uploadEndpoint) localStorage.removeItem('rll_active_sales_upload');
             setUploadState({
               status: 'error',
               progress: 0,
@@ -236,6 +280,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
         console.error('Polling error:', err);
         if (pollAttempts >= maxPollAttempts) {
           if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+          if (!uploadEndpoint) localStorage.removeItem('rll_active_sales_upload');
           setUploadState({
             status: 'error',
             progress: 0,
@@ -248,6 +293,222 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
         }
       }
     }, 1000);
+  };
+
+  // 1. Immediately resume polling if component mounted into 'processing' state
+  useEffect(() => {
+    if (uploadEndpoint) return;
+    if (uploadState.status === 'processing' && uploadState.batchId && !pollTimerRef.current) {
+      let stored: any = null;
+      try {
+        const raw = localStorage.getItem('rll_active_sales_upload');
+        if (raw) stored = JSON.parse(raw);
+      } catch (e) {}
+      const startMs = stored?.startTimestampMs || (Date.now() - (uploadState.elapsedSeconds || 0) * 1000);
+      startPollingBatchStatus(
+        uploadState.batchId,
+        uploadState.fileName || 'Sales Data Sheet',
+        uploadState.uploadStartTime || 'Recently',
+        startMs
+      );
+    }
+  }, []);
+
+  // 2. Reactively switch to processing if activeBatch arrives from SystemLockContext
+  useEffect(() => {
+    if (uploadEndpoint) return;
+    if (activeBatch && lockType === 'sales_upload') {
+      if (uploadState.status !== 'processing') {
+        const bId = activeBatch.batch_id;
+        const fName = activeBatch.file_name || 'Sales Data Sheet';
+        let stored: any = null;
+        try {
+          const raw = localStorage.getItem('rll_active_sales_upload');
+          if (raw) stored = JSON.parse(raw);
+        } catch (e) {}
+
+        const startMs = stored?.startTimestampMs || (activeBatch.created_at ? new Date(activeBatch.created_at).getTime() : Date.now());
+        const timeFormatted = stored?.uploadStartTime || (activeBatch.created_at ? new Date(activeBatch.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }) : 'Recently');
+        const elapsed = Math.max(1, Math.floor((Date.now() - startMs) / 1000));
+
+        setUploadState({
+          status: 'processing',
+          progress: 45,
+          fileName: fName,
+          batchId: bId,
+          uploadStartTime: timeFormatted,
+          elapsedSeconds: elapsed,
+          statusMessage: activeBatch.remarks || 'Saving data rows into database...'
+        });
+
+        startPollingBatchStatus(bId, fName, timeFormatted, startMs);
+      }
+    }
+  }, [activeBatch, lockType, uploadEndpoint]);
+
+  // 3. Full mount verification with backend endpoints
+  useEffect(() => {
+    let isMounted = true;
+
+    async function checkActiveUploadOnMount() {
+      if (uploadEndpoint) return; // Dedicated to sales upload recovery
+
+      try {
+        let stored: any = null;
+        try {
+          const raw = localStorage.getItem('rll_active_sales_upload');
+          if (raw) stored = JSON.parse(raw);
+        } catch (e) {}
+
+        let activeBatchData = activeBatch;
+        if (!activeBatchData) {
+          const token = localStorage.getItem('token');
+          const headers: Record<string, string> = {};
+          if (token) headers['Authorization'] = `Bearer ${token}`;
+          const res = await fetch(`${API_BASE_URL}/uploads/active-batch`, { headers });
+          if (res.ok) {
+            const data = await res.json();
+            if (data && data.active && data.batch) {
+              activeBatchData = data.batch;
+            }
+          }
+        }
+
+        if (activeBatchData && isMounted) {
+          const bId = activeBatchData.batch_id;
+          const fName = activeBatchData.source_file || activeBatchData.file_name || stored?.fileName || 'Sales Data Sheet';
+          const startMs = stored?.startTimestampMs || (activeBatchData.created_at ? new Date(activeBatchData.created_at).getTime() : Date.now());
+          const timeFormatted = stored?.uploadStartTime || (activeBatchData.created_at ? new Date(activeBatchData.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }) : 'Recently');
+          const elapsed = Math.max(1, Math.floor((Date.now() - startMs) / 1000));
+
+          setUploadState({
+            status: 'processing',
+            progress: 45,
+            fileName: fName,
+            batchId: bId,
+            uploadStartTime: timeFormatted,
+            elapsedSeconds: elapsed,
+            statusMessage: activeBatchData.remarks || 'Saving data rows into database...'
+          });
+
+          startPollingBatchStatus(bId, fName, timeFormatted, startMs);
+          return;
+        }
+
+        if (stored && stored.batchId && isMounted) {
+          const token = localStorage.getItem('token');
+          const headers: Record<string, string> = {};
+          if (token) headers['Authorization'] = `Bearer ${token}`;
+
+          const res = await fetch(`${API_BASE_URL}/uploads/batches/${stored.batchId}`, { headers });
+          if (res.ok) {
+            const batchInfo = await res.json();
+            const statusMain = (batchInfo.status || '').toLowerCase();
+            const statusUpload = (batchInfo.upload_status || '').toLowerCase();
+            const isSuccess = ['loaded', 'completed', 'success'].includes(statusMain) || ['loaded', 'completed', 'success'].includes(statusUpload);
+            const isFailed = statusMain === 'failed' || statusUpload === 'failed';
+            const elapsed = Math.max(1, Math.floor((Date.now() - (stored.startTimestampMs || Date.now())) / 1000));
+
+            if (isSuccess) {
+              const imported = batchInfo.imported_rows ?? batchInfo.row_count ?? 0;
+              setUploadState({
+                status: 'success',
+                progress: 100,
+                fileName: stored.fileName || batchInfo.file_name || batchInfo.source_file,
+                batchId: stored.batchId,
+                importedRows: imported,
+                failedRows: batchInfo.failed_rows ?? 0,
+                duplicateRows: batchInfo.duplicate_rows ?? 0,
+                processingTimeSeconds: batchInfo.processing_time_seconds || elapsed,
+                uploadStartTime: stored.uploadStartTime,
+                elapsedSeconds: elapsed,
+                statusMessage: batchInfo.remarks || 'All Records Successfully Verified & Saved!'
+              });
+              localStorage.removeItem('rll_active_sales_upload');
+              startCooldownManually(1800);
+              if (onUploadComplete) onUploadComplete(stored.fileName);
+              return;
+            } else if (isFailed) {
+              setUploadState({
+                status: 'error',
+                progress: 0,
+                fileName: stored.fileName,
+                batchId: stored.batchId,
+                uploadStartTime: stored.uploadStartTime,
+                elapsedSeconds: elapsed,
+                errorMessage: batchInfo.remarks || 'Database insertion failed due to data validation errors.'
+              });
+              localStorage.removeItem('rll_active_sales_upload');
+              if (onErrorOccurred) onErrorOccurred(stored.batchId);
+              return;
+            } else {
+              // Batch is actively processing in background - maintain state and resume polling
+              const imported = batchInfo.imported_rows ?? batchInfo.row_count ?? 0;
+              const total = batchInfo.row_count ?? 0;
+              let currProg = 45;
+              if (total > 0 && imported > 0) {
+                currProg = Math.min(95, 40 + Math.floor((imported / total) * 55));
+              }
+              const timeFormatted = stored.uploadStartTime || (batchInfo.created_at ? new Date(batchInfo.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }) : 'Recently');
+              const fName = stored.fileName || batchInfo.file_name || batchInfo.source_file || 'Sales Data Sheet';
+              const startMs = stored.startTimestampMs || (batchInfo.created_at ? new Date(batchInfo.created_at).getTime() : (Date.now() - elapsed * 1000));
+
+              setUploadState({
+                status: 'processing',
+                progress: currProg,
+                fileName: fName,
+                batchId: stored.batchId,
+                uploadStartTime: timeFormatted,
+                elapsedSeconds: elapsed,
+                statusMessage: batchInfo.remarks || 'Saving data rows into database...'
+              });
+              startPollingBatchStatus(stored.batchId, fName, timeFormatted, startMs);
+              return;
+            }
+          } else if (res.status === 404) {
+            localStorage.removeItem('rll_active_sales_upload');
+          }
+        }
+      } catch (err) {
+        console.warn('Active batch mount restoration notice:', err);
+      }
+    }
+
+    checkActiveUploadOnMount();
+
+    return () => {
+      isMounted = false;
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
+      }
+    };
+  }, [uploadEndpoint]);
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0 && uploadState.status !== 'uploading' && uploadState.status !== 'processing' && !isLocked && !isCooldownActive) {
+      processFile(e.dataTransfer.files[0]);
+    }
+  };
+
+  const formatDuration = (sec?: number) => {
+    if (sec === undefined || sec === null || sec < 1) return '< 1s';
+    if (sec < 60) return `${sec}s`;
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}m ${s.toString().padStart(2, '0')}s`;
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0 && !isLocked && !isCooldownActive) {
+      const selectedFile = e.target.files[0];
+      e.target.value = '';
+      processFile(selectedFile);
+    }
   };
 
   const checkBatchStatusDirectly = async () => {
@@ -266,6 +527,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
       const isSuccess = ['loaded', 'completed', 'success'].includes(statusMain) || ['loaded', 'completed', 'success'].includes(statusUpload);
 
       if (isSuccess) {
+        startCooldownManually(1800);
         const imported = batchInfo.imported_rows ?? batchInfo.row_count ?? 0;
         setUploadState({
           status: 'success',
@@ -343,6 +605,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
       const data = await response.json();
 
       if (uploadEndpoint) {
+        startCooldownManually(1800);
         setUploadState({
           status: 'success',
           progress: 100,
@@ -386,6 +649,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
 
     } catch (error: any) {
       console.error('Upload error:', error);
+      if (!uploadEndpoint) localStorage.removeItem('rll_active_sales_upload');
       setUploadState({
         status: 'error',
         progress: 0,
@@ -400,6 +664,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
 
   const resetUpload = () => {
     if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+    if (!uploadEndpoint) localStorage.removeItem('rll_active_sales_upload');
     setUploadState({ status: 'idle', progress: 0 });
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
@@ -407,7 +672,9 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
       {/* Upload Dropzone Container */}
-      <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/80 shadow-2xs p-7 flex flex-col min-h-[360px]">
+      <div className={`lg:col-span-2 rounded-2xl border shadow-2xs p-7 flex flex-col min-h-[360px] transition-all duration-200 ${
+        uploadState.status === 'error' ? 'bg-rose-50/20 border-rose-200/90' : 'bg-white border-slate-200/80'
+      }`}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-bold text-slate-900 tracking-tight">{title}</h2>
           {uploadState.status === 'success' && (
@@ -415,18 +682,27 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
               <Check size={12} /> Saved in DB
             </span>
           )}
+          {uploadState.status === 'error' && (
+            <span className="flex items-center gap-1.5 px-3 py-1 bg-rose-50 text-rose-700 text-[10px] font-bold rounded-full border border-rose-200">
+              <AlertCircle size={12} /> Errors Found in Excel
+            </span>
+          )}
         </div>
 
         <div 
           className={`border-2 border-dashed rounded-xl flex-1 flex flex-col items-center justify-center p-8 transition-all duration-200 ${
-            uploadState.status === 'idle' ? 'border-slate-200 bg-slate-50/50 hover:bg-blue-50/20 hover:border-[#0D3B8E] cursor-pointer group' : 
+            uploadState.status === 'idle' ? (
+              isLocked ? 'border-amber-200 bg-amber-50/20 cursor-not-allowed opacity-90' :
+              isCooldownActive ? 'border-amber-300 bg-amber-50/25 cursor-not-allowed' :
+              'border-slate-200 bg-slate-50/50 hover:bg-blue-50/20 hover:border-[#0D3B8E] cursor-pointer group'
+            ) : 
             uploadState.status === 'processing' ? 'border-amber-300 bg-amber-50/30' :
             uploadState.status === 'success' ? 'border-emerald-300 bg-emerald-50/30' :
             'border-rose-300 bg-rose-50/30'
           }`}
           onDragOver={handleDragOver}
           onDrop={handleDrop}
-          onClick={() => uploadState.status === 'idle' && fileInputRef.current?.click()}
+          onClick={() => uploadState.status === 'idle' && !isLocked && !isCooldownActive && fileInputRef.current?.click()}
         >
           <input 
             type="file" 
@@ -434,6 +710,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
             className="hidden" 
             accept={accept}
             onChange={handleFileChange}
+            disabled={isLocked || isCooldownActive}
           />
 
           <AnimatePresence mode="wait">
@@ -443,13 +720,81 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.96 }}
-                className="flex flex-col items-center text-center"
+                className="flex flex-col items-center text-center w-full"
               >
-                <div className="w-14 h-14 bg-[#0D3B8E]/8 text-[#0D3B8E] rounded-full flex items-center justify-center mb-3 group-hover:scale-110 group-hover:bg-[#0D3B8E] group-hover:text-white transition-all duration-200">
-                  <UploadCloud className="w-7 h-7" />
-                </div>
-                <p className="text-sm text-slate-800 font-bold">Click to upload or drag Excel file</p>
-                <p className="text-xs text-slate-400 mt-1 font-medium">Accepted formats: {accept}</p>
+                {isLocked ? (
+                  <>
+                    <div className="w-14 h-14 bg-amber-500/10 text-amber-600 rounded-full flex items-center justify-center mb-3">
+                      <Database className="w-7 h-7" />
+                    </div>
+                    <p className="text-sm text-slate-800 font-bold">Upload Temporarily Locked</p>
+                    <p className="text-xs text-amber-700 mt-1 max-w-sm font-medium">
+                      {lockReason || 'Another ingestion process is active.'} Only one upload or modification can run at a time to prevent conflicts.
+                    </p>
+                  </>
+                ) : isCooldownActive ? (
+                  <div className="flex flex-col items-center text-center max-w-md mx-auto py-2">
+                    <div className="relative mb-3">
+                      <div className="w-16 h-16 bg-amber-500/10 border-2 border-amber-300 text-amber-600 rounded-full flex items-center justify-center shadow-inner">
+                        <Clock className="w-8 h-8 animate-pulse text-amber-600" />
+                      </div>
+                      <div className="absolute -bottom-1 -right-1 bg-amber-600 text-white rounded-full p-1 shadow-xs">
+                        <Lock size={12} />
+                      </div>
+                    </div>
+
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-100 text-amber-900 text-xs font-bold rounded-full border border-amber-300 mb-2">
+                      <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping" />
+                      30-Minute Cooldown Active
+                    </span>
+
+                    <h3 className="text-base font-extrabold text-slate-900 tracking-tight">
+                      Upload will be enabled after 30 mins
+                    </h3>
+
+                    {/* Digital Onscreen Countdown Clock */}
+                    <div className="my-3 px-6 py-2.5 bg-slate-900 text-amber-400 rounded-2xl shadow-md border border-slate-800 flex items-center gap-3">
+                      <Clock size={20} className="text-amber-400/80 animate-spin" style={{ animationDuration: '6s' }} />
+                      <span className="text-3xl font-black font-mono tracking-widest text-amber-400 drop-shadow-xs">
+                        {formattedCooldown}
+                      </span>
+                      <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider border-l border-slate-700 pl-3 text-left">
+                        Time<br />Remaining
+                      </span>
+                    </div>
+
+                    {/* Progress bar towards completion */}
+                    <div className="w-full max-w-xs bg-slate-200 rounded-full h-2 overflow-hidden my-1 border border-slate-300/60">
+                      <div 
+                        className="bg-gradient-to-r from-amber-500 to-amber-600 h-2 rounded-full transition-all duration-1000 ease-linear"
+                        style={{ 
+                          width: `${Math.min(100, Math.max(0, Math.round(((1800 - cooldownRemainingSeconds) / 1800) * 100)))}%` 
+                        }}
+                      />
+                    </div>
+
+                    <p className="text-xs text-slate-500 mt-2 max-w-sm font-medium leading-relaxed">
+                      Sales uploads and bulk roster uploads are paused for 30 minutes following an upload to ensure complete background database indexing and accuracy.
+                    </p>
+
+                    {/* Disabled "Click here to upload" button */}
+                    <button 
+                      disabled={true}
+                      className="mt-4 px-5 py-2.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-xl text-xs font-bold cursor-not-allowed flex items-center gap-2 shadow-2xs"
+                    >
+                      <Lock size={13} className="text-amber-500" />
+                      Click here to upload (Disabled - Cooldown Active)
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="w-14 h-14 bg-[#0D3B8E]/8 text-[#0D3B8E] rounded-full flex items-center justify-center mb-3 group-hover:scale-110 group-hover:bg-[#0D3B8E] group-hover:text-white transition-all duration-200">
+                      <UploadCloud className="w-7 h-7" />
+                    </div>
+                    <p className="text-sm text-slate-800 font-bold">Click here to upload or drag Excel file</p>
+                    <p className="text-xs text-slate-400 mt-1 font-medium">Accepted formats: {accept}</p>
+                  </>
+                )}
               </motion.div>
             )}
 
@@ -574,12 +919,28 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                   </div>
                 </div>
 
-                <button 
-                  onClick={(e) => { e.stopPropagation(); resetUpload(); }}
-                  className="mt-5 px-5 py-2.5 bg-[#0D3B8E] hover:bg-[#0A2F73] text-white rounded-xl transition-colors text-xs font-bold shadow-xs cursor-pointer"
-                >
-                  Upload Another File
-                </button>
+                {isCooldownActive ? (
+                  <div className="flex flex-col items-center mt-5 gap-2">
+                    <button 
+                      disabled={true}
+                      className="px-5 py-2.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-xl transition-colors text-xs font-bold shadow-2xs cursor-not-allowed flex items-center gap-2"
+                    >
+                      <Lock size={13} className="text-amber-500" />
+                      Upload Another File (Enabled in {formattedCooldown})
+                    </button>
+                    <span className="text-[11px] text-amber-700 font-semibold flex items-center gap-1">
+                      <Clock size={12} className="text-amber-600" /> 
+                      30-Minute cooldown active • Next upload enabled in {formattedCooldownLong}
+                    </span>
+                  </div>
+                ) : (
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); resetUpload(); }}
+                    className="mt-5 px-5 py-2.5 bg-[#0D3B8E] hover:bg-[#0A2F73] text-white rounded-xl transition-colors text-xs font-bold shadow-xs cursor-pointer"
+                  >
+                    Upload Another File
+                  </button>
+                )}
               </motion.div>
             )}
 

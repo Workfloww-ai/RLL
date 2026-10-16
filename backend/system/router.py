@@ -72,3 +72,23 @@ def get_tenant_config_endpoint(
     effective_slug = tenant_slug or x_tenant_slug or "rll"
     return get_tenant_config_service(tenant_slug=effective_slug, tenant_id=effective_id)
 
+
+@router.get("/lock-status")
+def get_lock_status():
+    """
+    Returns live system read-only lock status during active uploads.
+    """
+    from backend.core.system_lock import get_system_lock_status
+    return get_system_lock_status()
+
+
+@router.post("/cooldown/reset")
+def reset_cooldown():
+    """
+    Administrative reset for the 30-minute upload cooldown buffer.
+    """
+    from backend.core.system_lock import reset_upload_cooldown, get_upload_cooldown_status
+    reset_upload_cooldown()
+    return {"message": "Upload cooldown reset successfully.", "cooldown": get_upload_cooldown_status()}
+
+
