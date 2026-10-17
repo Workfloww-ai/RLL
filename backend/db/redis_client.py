@@ -1,5 +1,6 @@
 import logging
-from typing import Optional
+import asyncio
+from typing import Optional, Dict, Any, Callable
 import redis.asyncio as aioredis
 from redis.exceptions import RedisError, ConnectionError, TimeoutError
 
@@ -8,13 +9,19 @@ from backend.core.config import settings
 logger = logging.getLogger("redis_client")
 
 _redis_client: Optional[aioredis.Redis] = None
+_main_loop: Optional[asyncio.AbstractEventLoop] = None
 
 async def init_redis() -> Optional[aioredis.Redis]:
     """
     Initialize async Redis connection pool.
     Supports Redis Cloud connection strings (REDIS_URL) or individual host/port/password params.
     """
-    global _redis_client
+    global _redis_client, _main_loop
+    try:
+        _main_loop = asyncio.get_running_loop()
+    except Exception:
+        pass
+
     if not settings.REDIS_ENABLED:
         logger.info("Redis caching is disabled in configuration settings.")
         return None
@@ -74,7 +81,7 @@ async def init_redis() -> Optional[aioredis.Redis]:
 
 async def close_redis() -> None:
     """Close Redis client connection pool during application shutdown."""
-    global _redis_client
+    global _redis_client, _main_loop
     if _redis_client is not None:
         try:
             await _redis_client.aclose()
@@ -83,11 +90,41 @@ async def close_redis() -> None:
             logger.warning(f"Error closing Redis client: {e}")
         finally:
             _redis_client = None
+            _main_loop = None
 
 
 def get_redis() -> Optional[aioredis.Redis]:
     """Get global Redis client instance."""
     return _redis_client
+
+
+async def _execute_redis(coro_fn: Callable[[aioredis.Redis], Any]) -> Any:
+    """
+    Executes a coroutine against _redis_client.
+    If called from a worker thread or different asyncio event loop from the one
+    that created _redis_client, safely dispatches via run_coroutine_threadsafe to _main_loop.
+    """
+    global _redis_client, _main_loop
+    if _redis_client is None:
+        return None
+
+    try:
+        curr_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        curr_loop = None
+
+    # Auto-register main loop if not yet stored
+    if _main_loop is None and curr_loop is not None:
+        _main_loop = curr_loop
+
+    if _main_loop and _main_loop.is_running() and curr_loop != _main_loop:
+        fut = asyncio.run_coroutine_threadsafe(coro_fn(_redis_client), _main_loop)
+        if curr_loop is not None:
+            return await asyncio.wrap_future(fut)
+        else:
+            return fut.result(timeout=5)
+    else:
+        return await coro_fn(_redis_client)
 
 
 async def is_redis_available() -> bool:
@@ -96,8 +133,8 @@ async def is_redis_available() -> bool:
     if _redis_client is None:
         return False
     try:
-        await _redis_client.ping()
-        return True
+        res = await _execute_redis(lambda r: r.ping())
+        return bool(res)
     except Exception:
         return False
 
@@ -110,7 +147,7 @@ async def safe_get(key: str) -> Optional[str]:
     client = get_redis()
     if client is not None:
         try:
-            val = await client.get(key)
+            val = await _execute_redis(lambda r: r.get(key))
             if val is not None:
                 return val
         except Exception as e:
@@ -125,8 +162,8 @@ async def safe_set(key: str, value: str, ttl: Optional[int] = None) -> bool:
     if client is None:
         return True
     try:
-        ttl = ttl or settings.CACHE_DEFAULT_TTL
-        await client.set(key, value, ex=ttl)
+        effective_ttl = ttl or settings.CACHE_DEFAULT_TTL
+        await _execute_redis(lambda r: r.set(key, value, ex=effective_ttl))
         return True
     except Exception as e:
         logger.warning(f"Redis SET failed for key '{key}': {e}")
@@ -140,7 +177,7 @@ async def safe_delete(key: str) -> bool:
     if client is None:
         return True
     try:
-        await client.delete(key)
+        await _execute_redis(lambda r: r.delete(key))
         return True
     except Exception as e:
         logger.warning(f"Redis DELETE failed for key '{key}': {e}")
@@ -155,18 +192,23 @@ async def safe_delete_pattern(pattern: str) -> int:
     client = get_redis()
     if client is None:
         return 0
-    try:
+
+    async def _do_delete_pattern(r: aioredis.Redis) -> int:
         count = 0
         keys = []
-        async for key in client.scan_iter(match=pattern, count=100):
+        async for key in r.scan_iter(match=pattern, count=100):
             keys.append(key)
             if len(keys) >= 100:
-                count += await client.delete(*keys)
+                count += await r.delete(*keys)
                 keys = []
         if keys:
-            count += await client.delete(*keys)
+            count += await r.delete(*keys)
         logger.info(f"Deleted {count} Redis keys matching pattern '{pattern}'")
         return count
+
+    try:
+        res = await _execute_redis(_do_delete_pattern)
+        return int(res or 0)
     except Exception as e:
         logger.warning(f"Redis delete_pattern failed for '{pattern}': {e}")
         return 0

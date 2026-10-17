@@ -357,6 +357,9 @@ def get_system_lock_status() -> Dict[str, Any]:
     if cooldown_info.get("is_active"):
         rem = cooldown_info.get("remaining_seconds", 0)
         rem_m = rem // 60
+        rem_s = rem % 60
+        lf = cooldown_info.get("last_upload_file")
+        file_desc = f" ({lf})" if lf else ""
         cd_target_m = (cooldown_info.get("cooldown_seconds") or 1800) // 60
         is_clean = (cd_target_m <= 10 or cooldown_info.get("last_upload_type") == "validation_error")
         desc_label = f"{cd_target_m}-minute rollback & purge cleanup buffer" if is_clean else f"{cd_target_m}-minute post-upload cooldown buffer"
