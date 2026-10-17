@@ -689,7 +689,14 @@ class ImportPipelineEngine:
 
         client = get_supabase()
         batch_id = None
-        tenant_id = tenant_id or "a0000000-0000-0000-0000-000000000001"
+        # Dynamically resolve tenant_id from the uploading user if not supplied
+        if not tenant_id and user_id and client:
+            try:
+                u_res = client.table("users").select("tenant_id").eq("user_id", str(user_id)).limit(1).execute()
+                if u_res.data and u_res.data[0].get("tenant_id"):
+                    tenant_id = str(u_res.data[0]["tenant_id"])
+            except Exception as e_t:
+                logger.warning(f"Could not resolve tenant_id for user {user_id}: {e_t}")
 
         today_str = datetime.now().strftime("%Y-%m-%d")
 
@@ -702,13 +709,15 @@ class ImportPipelineEngine:
                 "row_count": 0,
                 "imported_rows": 0,
                 "status": "queued",
-                "tenant_id": tenant_id,
                 "remarks": "File accepted and queued for processing.",
             }
-            if user_id and len(str(user_id)) == 36 and user_id != "00000000-0000-0000-0000-000000000001":
-                payload["uploaded_by"] = user_id
-                payload["created_by"] = user_id
-                payload["updated_by"] = user_id
+            if tenant_id:
+                payload["tenant_id"] = tenant_id
+
+            if user_id and len(str(user_id)) == 36:
+                payload["uploaded_by"] = str(user_id)
+                payload["created_by"] = str(user_id)
+                payload["updated_by"] = str(user_id)
 
             try:
                 response = client.table("upload_batches").insert(payload).execute()
@@ -729,7 +738,7 @@ class ImportPipelineEngine:
             batch_id = len(upload_batches_db) + 1
 
         now_iso = datetime.now().isoformat()
-        clean_user_fk = user_id if (user_id and len(str(user_id)) == 36 and user_id != "00000000-0000-0000-0000-000000000001") else None
+        clean_user_fk = str(user_id) if (user_id and len(str(user_id)) == 36) else None
         batch_record = {
             "batch_id": batch_id,
             "upload_batch_id": batch_id,
@@ -791,7 +800,17 @@ class ImportPipelineEngine:
         batch_id: int,
         tenant_id: Optional[str] = None,
     ):
-        tenant_id = tenant_id or (upload_batches_db.get(batch_id) or {}).get("tenant_id") or "a0000000-0000-0000-0000-000000000001"
+        if not tenant_id:
+            tenant_id = (upload_batches_db.get(batch_id) or {}).get("tenant_id")
+        if not tenant_id and user_id:
+            client = get_supabase()
+            if client:
+                try:
+                    u_res = client.table("users").select("tenant_id").eq("user_id", str(user_id)).limit(1).execute()
+                    if u_res.data and u_res.data[0].get("tenant_id"):
+                        tenant_id = str(u_res.data[0]["tenant_id"])
+                except Exception:
+                    pass
         start_time = time.time()
         started_at_iso = datetime.now().isoformat()
 
@@ -922,8 +941,8 @@ class ImportPipelineEngine:
             group_cache = master_service.bulk_resolve_groups(unique_groups)
             office_cache = master_service.bulk_resolve_offices(unique_offices)
             circle_cache = master_service.bulk_resolve_circles(unique_circles)
-            hq_cache = master_service.bulk_resolve_headquarters(unique_hqs)
-            company_cache = master_service.bulk_resolve_companies(unique_companies)
+            hq_cache = master_service.bulk_resolve_headquarters(unique_hqs, tenant_id=tenant_id)
+            company_cache = master_service.bulk_resolve_companies(unique_companies, tenant_id=tenant_id)
 
             depot_items = [
                 {
@@ -935,7 +954,7 @@ class ImportPipelineEngine:
                 for d, deo, cir, hq in zip(s_depot, s_deo, s_circle, s_hq)
                 if d
             ]
-            depot_cache = master_service.bulk_resolve_depots(depot_items)
+            depot_cache = master_service.bulk_resolve_depots(depot_items, tenant_id=tenant_id)
 
             lic_items = [
                 {
@@ -951,7 +970,7 @@ class ImportPipelineEngine:
                 for l, t, g, d, hq, deo, cir in zip(s_licensee, s_trade, s_group, s_depot, s_hq, s_deo, s_circle)
                 if l
             ]
-            licensee_cache = master_service.bulk_resolve_licensees(lic_items)
+            licensee_cache = master_service.bulk_resolve_licensees(lic_items, tenant_id=tenant_id)
 
             brand_items = [
                 {
@@ -961,7 +980,9 @@ class ImportPipelineEngine:
                 for b, c in zip(s_brand, s_company)
                 if b
             ]
-            brand_cache = master_service.bulk_resolve_brands(brand_items)
+            if not tenant_id:
+                raise ValueError(f"Batch #{batch_id}: Cannot resolve brands without tenant_id. Dynamic tenant_id is mandatory.")
+            brand_cache = master_service.bulk_resolve_brands(brand_items, tenant_id=tenant_id)
             packaging_cache = master_service.bulk_resolve_packagings(unique_packagings)
             # Sync user depot mapping (non-destructive)
             self._sync_user_hierarchy(s_ase, s_asm, s_depot, depot_cache)
@@ -3249,6 +3270,10 @@ class ImportPipelineEngine:
                 message,
         }
 
+        batch_rec = upload_batches_db.get(batch_id) or {}
+        tid = batch_rec.get("tenant_id") or "unspecified"
+        logger.info(f"[Batch #{batch_id} | Tenant: {tid}] Step '{step}' {status}: {message or ''}")
+
         try:
             client.table("upload_pipeline_logs").insert(record).execute()
         except Exception as exc:
@@ -3312,11 +3337,18 @@ class ImportPipelineEngine:
         if not client:
             return
 
-        tenant_id = tenant_id or "a0000000-0000-0000-0000-000000000001"
+        if not tenant_id and batch_id:
+            tenant_id = (upload_batches_db.get(batch_id) or {}).get("tenant_id")
 
         try:
-            u_res = client.table("users").select("user_id, first_name, last_name, email, is_active, updated_at").execute()
-            all_u = u_res.data or []
+            q = client.table("users").select("user_id, first_name, last_name, email, is_active, updated_at, tenant_id")
+            if tenant_id:
+                u_res = q.eq("tenant_id", tenant_id).execute()
+                all_u = u_res.data or []
+                if not all_u:
+                    all_u = client.table("users").select("user_id, first_name, last_name, email, is_active, updated_at, tenant_id").execute().data or []
+            else:
+                all_u = q.execute().data or []
             # Sort active users first so active user_ids take precedence in user_lookup
             all_u.sort(key=lambda x: 0 if x.get("is_active") else 1)
 
@@ -3380,8 +3412,7 @@ class ImportPipelineEngine:
                 if not company_id or not brand_id:
                     continue
 
-                fact_records.append({
-                    "tenant_id": tenant_id,
+                fact_row = {
                     "user_id": user_id,
                     "company_id": company_id,
                     "brand_id": brand_id,
@@ -3390,7 +3421,10 @@ class ImportPipelineEngine:
                     "bottles": float(btl or 0.0),
                     "bl": float(bl or 0.0),
                     "batch_id": str(batch_id)
-                })
+                }
+                if tenant_id:
+                    fact_row["tenant_id"] = tenant_id
+                fact_records.append(fact_row)
 
             if fact_records and client:
                 # Phase 3 Batch-Scoped Replacement: Purge existing user sales facts for this specific batch_id once before insert

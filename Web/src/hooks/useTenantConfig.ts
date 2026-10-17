@@ -32,12 +32,29 @@ export function useTenantConfig() {
     let isMounted = true;
     async function loadTenantConfig() {
       try {
-        const res = await fetch(`${API_BASE_URL}/system/tenant/config?tenant_slug=rll`);
+        let storedTenantId = localStorage.getItem('rll_tenant_id');
+        if (!storedTenantId) {
+          try {
+            const rawUser = localStorage.getItem('user');
+            if (rawUser) {
+              const u = JSON.parse(rawUser);
+              if (u && u.tenant_id) storedTenantId = u.tenant_id;
+            }
+          } catch {}
+        }
+
+        const endpoint = storedTenantId && storedTenantId.length === 36
+          ? `${API_BASE_URL}/system/tenant/config?tenant_id=${encodeURIComponent(storedTenantId)}`
+          : `${API_BASE_URL}/system/tenant/config?tenant_slug=rll`;
+
+        const res = await fetch(endpoint);
         if (res.ok) {
           const data = await res.json();
           if (isMounted && data) {
-            const resolvedId = data.tenant_id || 'a0000000-0000-0000-0000-000000000001';
-            setTenantId(resolvedId);
+            const resolvedId = data.tenant_id || storedTenantId || '';
+            if (resolvedId) {
+              setTenantId(resolvedId);
+            }
 
             setConfig({
               tenantId: resolvedId,

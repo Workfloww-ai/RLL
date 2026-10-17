@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks, status, Header, Query
 from backend.uploads.service import import_pipeline, upload_batches_db, upload_logs_db
-from backend.core.security import RoleChecker
+from backend.core.security import RoleChecker, get_current_user
 from backend.core.system_lock import check_system_lock_or_raise, check_upload_cooldown_or_raise
 from backend.db.client import get_supabase
 from backend.uploads.schemas import UploadBatchResponse, UploadLogResponse
@@ -37,7 +37,17 @@ async def upload_excel(
     and bulk Supabase inserts in a non-blocking background thread.
     """
     user_id = current_user.get("user_id")
-    user_tenant_id = current_user.get("tenant_id") or "a0000000-0000-0000-0000-000000000001"
+    user_tenant_id = current_user.get("tenant_id")
+    if not user_tenant_id and user_id:
+        try:
+            client = get_supabase()
+            if client:
+                res = client.table("users").select("tenant_id").eq("user_id", user_id).limit(1).execute()
+                if res.data and res.data[0].get("tenant_id"):
+                    user_tenant_id = str(res.data[0]["tenant_id"])
+        except Exception:
+            pass
+
     requested_tenant_id = x_tenant_id or tenant_id
 
     import uuid
@@ -50,7 +60,7 @@ async def upload_excel(
                 detail="Invalid tenant_id format. Must be a valid 36-character UUID string."
             )
 
-    if requested_tenant_id and requested_tenant_id != user_tenant_id:
+    if requested_tenant_id and user_tenant_id and requested_tenant_id != user_tenant_id:
         is_superadmin = current_user.get("role") in ("superadmin", "system_admin")
         if not is_superadmin:
             logger.warning(f"Tenant authorization mismatch for user {user_id}: requested {requested_tenant_id} != user tenant {user_tenant_id}")
@@ -60,7 +70,7 @@ async def upload_excel(
             )
         resolved_tenant_id = requested_tenant_id
     else:
-        resolved_tenant_id = user_tenant_id
+        resolved_tenant_id = requested_tenant_id or user_tenant_id
 
     filename = file.filename or "upload.xlsx"
     logger.info(f"Excel upload request initiated by user: {user_id} for file: {filename} (tenant: {resolved_tenant_id})")
@@ -148,27 +158,40 @@ async def list_upload_batches(
     x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID"),
     tenant_id: Optional[str] = Query(None),
 ):
-    user_tenant_id = current_user.get("tenant_id") or "a0000000-0000-0000-0000-000000000001"
+    user_tenant_id = current_user.get("tenant_id")
+    if not user_tenant_id and current_user.get("user_id"):
+        try:
+            client = get_supabase()
+            if client:
+                res = client.table("users").select("tenant_id").eq("user_id", current_user["user_id"]).limit(1).execute()
+                if res.data and res.data[0].get("tenant_id"):
+                    user_tenant_id = str(res.data[0]["tenant_id"])
+        except Exception:
+            pass
+
     requested_tenant_id = x_tenant_id or tenant_id
-    if requested_tenant_id and requested_tenant_id != user_tenant_id:
+    if requested_tenant_id and user_tenant_id and requested_tenant_id != user_tenant_id:
         if current_user.get("role") not in ("superadmin", "system_admin"):
             raise HTTPException(status_code=403, detail="Not authorized for requested tenant.")
         target_tenant_id = requested_tenant_id
     else:
-        target_tenant_id = user_tenant_id
+        target_tenant_id = requested_tenant_id or user_tenant_id
 
     client = get_supabase()
     if client:
         try:
-            res = client.table("upload_batches").select("batch_id, source_file, storage_path, load_type, covers_start, covers_end, row_count, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, remarks, uploaded_by, created_by, updated_by, created_at, updated_at, tenant_id").eq("tenant_id", target_tenant_id).order("created_at", desc=True).limit(50).execute()
-            if res.data:
+            query = client.table("upload_batches").select("batch_id, source_file, storage_path, load_type, covers_start, covers_end, row_count, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, remarks, uploaded_by, created_by, updated_by, created_at, updated_at, tenant_id")
+            if target_tenant_id:
+                query = query.eq("tenant_id", target_tenant_id)
+            res = query.order("created_at", desc=True).limit(50).execute()
+            if res.data is not None:
                 return res.data
         except Exception as e:
             logger.warning(f"Failed to query upload_batches from DB for tenant {target_tenant_id}: {e}")
 
     filtered_memory_batches = [
         b for b in upload_batches_db.values()
-        if b.get("tenant_id") == target_tenant_id or b.get("tenant_id") is None
+        if not target_tenant_id or b.get("tenant_id") == target_tenant_id
     ]
     return filtered_memory_batches
 
@@ -183,16 +206,24 @@ async def get_active_upload_batch_endpoint():
     return {"active": False, "batch": None}
 
 @router.get("/latest")
-async def get_latest_upload_batch():
+async def get_latest_upload_batch(
+    current_user: dict = Depends(get_current_user),
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID"),
+    tenant_id: Optional[str] = Query(None),
+):
     """
-    Returns details of the latest upload batch from Supabase DB or memory.
+    Returns details of the latest upload batch for the authenticated tenant from Supabase DB or memory.
     """
+    target_tenant_id = x_tenant_id or tenant_id or (current_user.get("tenant_id") if current_user else None)
     client = get_supabase()
     batch = None
     if client:
         try:
-            res = client.table("upload_batches").select("batch_id, source_file, storage_path, load_type, covers_start, covers_end, row_count, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, remarks, uploaded_by, created_by, updated_by, created_at, updated_at").order("created_at", desc=True).limit(1).execute()
-            if res.data:
+            q = client.table("upload_batches").select("batch_id, source_file, storage_path, load_type, covers_start, covers_end, row_count, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, remarks, uploaded_by, created_by, updated_by, created_at, updated_at, tenant_id")
+            if target_tenant_id:
+                q = q.eq("tenant_id", target_tenant_id)
+            res = q.order("created_at", desc=True).limit(1).execute()
+            if res.data and len(res.data) > 0:
                 batch = res.data[0]
                 # If imported_rows is 0, verify existence from sales_fact
                 if not batch.get("imported_rows") or batch.get("imported_rows") == 0:
@@ -205,7 +236,10 @@ async def get_latest_upload_batch():
             logger.warning(f"Failed to fetch latest batch from Supabase: {e}")
 
     if not batch:
-        batches = list(upload_batches_db.values())
+        batches = [
+            b for b in upload_batches_db.values()
+            if not target_tenant_id or b.get("tenant_id") == target_tenant_id
+        ]
         if batches:
             batch = sorted(batches, key=lambda x: x.get("created_at", ""), reverse=True)[0]
 
@@ -626,15 +660,74 @@ def _matches_batch_id(b_id_val: Any, requested_id: Optional[str]) -> bool:
 async def get_upload_errors(
     batch_id: Optional[str] = None,
     category: Optional[str] = None,
-    limit: int = 250
+    limit: int = 250,
+    current_user: dict = Depends(get_current_user),
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID"),
+    tenant_id: Optional[str] = Query(None),
 ):
     """
     Unified error endpoint returning human-friendly diagnostics, smart grouping,
-    and category breakdowns for the frontend.
+    and category breakdowns strictly scoped to the tenant's upload batches.
     """
+    target_tenant_id = x_tenant_id or tenant_id or (current_user.get("tenant_id") if current_user else None)
     client = get_supabase()
     raw_errors: List[Dict[str, Any]] = []
 
+    # 1. Fetch available batches belonging exclusively to this tenant
+    tenant_batch_ids = set()
+    available_batches = []
+    if client:
+        try:
+            b_query = client.table("upload_batches").select("batch_id, source_file, status, created_at, tenant_id")
+            if target_tenant_id:
+                b_query = b_query.eq("tenant_id", target_tenant_id)
+            b_res = b_query.order("created_at", desc=True).limit(20).execute()
+            if b_res.data:
+                for b in b_res.data:
+                    bid_str = str(b["batch_id"])
+                    tenant_batch_ids.add(bid_str)
+                    available_batches.append({
+                        "batch_id": bid_str,
+                        "label": f"{b.get('source_file') or 'Batch'} (#{bid_str[:8]})",
+                        "status": b.get("status"),
+                        "created_at": b.get("created_at")
+                    })
+        except Exception as eb:
+            logger.warning(f"Could not load available batches for tenant {target_tenant_id}: {eb}")
+
+    # Check in-memory batches for tenant
+    if upload_batches_db:
+        for b in upload_batches_db.values():
+            if not target_tenant_id or b.get("tenant_id") == target_tenant_id:
+                bid_str = str(b.get("batch_id") or b.get("upload_batch_id"))
+                tenant_batch_ids.add(bid_str)
+
+    # If this tenant has no batches uploaded at all, return empty diagnostics immediately
+    if target_tenant_id and not tenant_batch_ids:
+        return {
+            "status": "success",
+            "total_errors": 0,
+            "category_counts": {
+                "Master Data Mapping": 0,
+                "Employee Hierarchy": 0,
+                "System & Network": 0,
+                "Database Insertion": 0,
+                "File Validation": 0,
+                "Data Validation": 0
+            },
+            "top_issues": [],
+            "errors": [],
+            "available_batches": []
+        }
+
+    def _is_error_in_tenant(b_id_val: Any) -> bool:
+        if not target_tenant_id:
+            return True
+        if not b_id_val:
+            return False
+        return any(_matches_batch_id(b_id_val, t_id) for t_id in tenant_batch_ids)
+
+    # 2. Fetch error logs scoped to this tenant's batches
     if client:
         try:
             query = client.table("error_logs").select("id, error_message, context, created_at").eq("source", "VALIDATION_ERROR").order("created_at", desc=True)
@@ -643,6 +736,8 @@ async def get_upload_errors(
                 for item in res.data:
                     ctx = item.get("context") or {}
                     b_id = ctx.get("upload_batch_id") or ctx.get("batch_id")
+                    if not _is_error_in_tenant(b_id):
+                        continue
                     if not _matches_batch_id(b_id, batch_id):
                         continue
                     raw_errors.append({
@@ -672,6 +767,8 @@ async def get_upload_errors(
                 if res_val.data:
                     for item in res_val.data:
                         b_id = item.get("batch_id")
+                        if not _is_error_in_tenant(b_id):
+                            continue
                         if not _matches_batch_id(b_id, batch_id):
                             continue
                         raw_errors.append({
@@ -688,6 +785,8 @@ async def get_upload_errors(
     if not raw_errors and upload_logs_db:
         for log in upload_logs_db:
             b_id = log.get("upload_batch_id") or log.get("batch_id")
+            if not _is_error_in_tenant(b_id):
+                continue
             if _matches_batch_id(b_id, batch_id):
                 raw_errors.append({
                     "error_id": log.get("upload_log_id") or str(uuid.uuid4()),
@@ -697,11 +796,13 @@ async def get_upload_errors(
                     "created_at": log.get("created_at") or datetime.utcnow().isoformat()
                 })
 
-    # Fallback: If raw_errors is still empty for a specific batch (or overall), verify if target batch is in failed status
+    # Fallback: If raw_errors is still empty for a specific batch, check if batch failed
     if not raw_errors and client:
         try:
             target_id = batch_id if (batch_id and str(batch_id).strip().lower() not in ("all", "none", "")) else None
-            b_query = client.table("upload_batches").select("batch_id, status, remarks, created_at")
+            b_query = client.table("upload_batches").select("batch_id, status, remarks, created_at, tenant_id")
+            if target_tenant_id:
+                b_query = b_query.eq("tenant_id", target_tenant_id)
             if target_id:
                 b_query = b_query.eq("batch_id", target_id)
             else:
@@ -723,22 +824,6 @@ async def get_upload_errors(
                         })
         except Exception as e_fb:
             logger.warning(f"Fallback check for failed upload batch remarks failed: {e_fb}")
-
-    # Available batches for dropdown
-    available_batches = []
-    if client:
-        try:
-            b_res = client.table("upload_batches").select("batch_id, source_file, status, created_at").order("created_at", desc=True).limit(10).execute()
-            if b_res.data:
-                for b in b_res.data:
-                    available_batches.append({
-                        "batch_id": str(b["batch_id"]),
-                        "label": f"{b.get('source_file') or 'Batch'} (#{str(b['batch_id'])[:8]})",
-                        "status": b.get("status"),
-                        "created_at": b.get("created_at")
-                    })
-        except Exception as eb:
-            logger.warning(f"Could not load available batches: {eb}")
 
     # Process and humanize errors
     processed_errors = []

@@ -1,7 +1,7 @@
 import json
 import logging
-from typing import List, Dict, Any
-from fastapi import APIRouter, File, UploadFile, HTTPException, Depends
+from typing import List, Dict, Any, Optional
+from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, Header, Query
 from backend.users.service import user_service
 from backend.db.redis_client import safe_get, safe_set, safe_delete, safe_delete_pattern
 from backend.core.security import RoleChecker, get_current_user
@@ -30,17 +30,23 @@ async def invalidate_user_and_territory_caches():
 
 
 @router.get("/")
-async def list_users():
-    cached = await safe_get("rll:cache:users_list")
+async def list_users(
+    current_user: dict = Depends(get_current_user),
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID"),
+    tenant_id: Optional[str] = Query(None),
+):
+    target_tenant_id = x_tenant_id or tenant_id or (current_user.get("tenant_id") if current_user else None)
+    cache_key = f"rll:cache:users_list:{target_tenant_id or 'all'}"
+    cached = await safe_get(cache_key)
     if cached:
         try:
             return json.loads(cached)
         except Exception as e:
             logger.warning(f"Error parsing cached users_list: {e}")
 
-    data = user_service.list_users()
+    data = user_service.list_users(tenant_id=target_tenant_id)
     if data:
-        await safe_set("rll:cache:users_list", json.dumps(data), ttl=86400)
+        await safe_set(cache_key, json.dumps(data), ttl=86400)
     return data
 
 
@@ -124,7 +130,18 @@ async def upload_roster(file: UploadFile = File(...), current_user: dict = Depen
         contents = await file.read()
         try:
             acting_user_id = current_user.get("user_id") if current_user else None
-            res = user_service.process_excel_roster(contents, file.filename, uploaded_by=acting_user_id)
+            acting_tenant_id = current_user.get("tenant_id") if current_user else None
+            if not acting_tenant_id and acting_user_id:
+                try:
+                    from backend.db.supabase_client import get_supabase_client
+                    client = get_supabase_client()
+                    if client:
+                        u_res = client.table("users").select("tenant_id").eq("user_id", str(acting_user_id)).limit(1).execute()
+                        if u_res.data and u_res.data[0].get("tenant_id"):
+                            acting_tenant_id = str(u_res.data[0]["tenant_id"])
+                except Exception:
+                    pass
+            res = user_service.process_excel_roster(contents, file.filename, uploaded_by=acting_user_id, tenant_id=acting_tenant_id)
             await invalidate_user_and_territory_caches()
             record_upload_completion("roster_upload", file.filename)
             return res

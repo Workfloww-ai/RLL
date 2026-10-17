@@ -661,6 +661,19 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
 
     # If test user, return full valid authenticated session immediately
     if is_test_user:
+        dyn_tenant_id = None
+        if client:
+            try:
+                tu_res = client.table("users").select("tenant_id").ilike("email", "manish.chum@workfloww.ai").limit(1).execute()
+                if tu_res.data and tu_res.data[0].get("tenant_id"):
+                    dyn_tenant_id = str(tu_res.data[0]["tenant_id"])
+                if not dyn_tenant_id:
+                    t_res = client.table("tenant_config").select("tenant_id").limit(1).execute()
+                    if t_res.data and t_res.data[0].get("tenant_id"):
+                        dyn_tenant_id = str(t_res.data[0]["tenant_id"])
+            except Exception:
+                pass
+
         user_data = {
             "user_id": "00000000-0000-0000-0000-000000000099",
             "email": "manish.chum@workfloww.ai",
@@ -671,7 +684,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
             "role": "TSM",
             "depot_name": "Jaipur Depot",
             "hq_location": "All Headquarters",
-            "tenant_id": "a0000000-0000-0000-0000-000000000001",
+            "tenant_id": dyn_tenant_id,
             "company_id": None,
             "company_name": "Rajasthan Liquor Limited",
             "company_logo_url": "/images/rll logo.svg",
@@ -750,7 +763,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
                 # Resolve user's company and company logo
                 company_name = db_user.get("company_name")
                 company_id = db_user.get("company_id")
-                tenant_id = str(db_user.get("tenant_id") or "a0000000-0000-0000-0000-000000000001")
+                tenant_id = str(db_user.get("tenant_id") or "")
                 company_logo_url = None
 
                 if company_id:
@@ -838,6 +851,19 @@ def get_mobile_user_profile(
         return current_user
 
     if user_id_val == "00000000-0000-0000-0000-000000000099" or "manish.chum@workfloww.ai" in sub_val:
+        dyn_tenant_id = None
+        if client:
+            try:
+                tu_res = client.table("users").select("tenant_id").ilike("email", "manish.chum@workfloww.ai").limit(1).execute()
+                if tu_res.data and tu_res.data[0].get("tenant_id"):
+                    dyn_tenant_id = str(tu_res.data[0]["tenant_id"])
+                if not dyn_tenant_id:
+                    t_res = client.table("tenant_config").select("tenant_id").limit(1).execute()
+                    if t_res.data and t_res.data[0].get("tenant_id"):
+                        dyn_tenant_id = str(t_res.data[0]["tenant_id"])
+            except Exception:
+                pass
+
         return {
             "user_id": "00000000-0000-0000-0000-000000000099",
             "email": "manish.chum@workfloww.ai",
@@ -848,7 +874,7 @@ def get_mobile_user_profile(
             "role": "TSM",
             "depot_name": "Jaipur Depot",
             "hq_location": "All Headquarters",
-            "tenant_id": "a0000000-0000-0000-0000-000000000001",
+            "tenant_id": dyn_tenant_id,
             "company_id": None,
             "company_name": "Rajasthan Liquor Limited",
             "company_logo_url": "/images/rll logo.svg",
@@ -882,7 +908,7 @@ def get_mobile_user_profile(
 
             company_name = db_user.get("company_name") or current_user.get("company_name")
             company_id = db_user.get("company_id")
-            tenant_id = str(db_user.get("tenant_id") or current_user.get("tenant_id") or "a0000000-0000-0000-0000-000000000001")
+            tenant_id = str(db_user.get("tenant_id") or current_user.get("tenant_id") or "")
             company_logo_url = None
 
             if company_id:

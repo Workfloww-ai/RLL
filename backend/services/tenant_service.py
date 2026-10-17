@@ -136,7 +136,7 @@ def get_tenant_config_service(
 
     default_config = {
         "status": "success",
-        "tenant_id": "a0000000-0000-0000-0000-000000000001",
+        "tenant_id": tenant_id or "",
         "tenant_slug": tenant_slug or "rll",
         "app_name": "LucidX360",
         "logo_url": "/images/rll logo.svg",
@@ -152,6 +152,32 @@ def get_tenant_config_service(
         return default_config
 
     try:
+        # 1. Direct table query by tenant_id or tenant_slug in public.tenant_config
+        t_query = client.table("tenant_config").select("tenant_id, tenant_slug, app_name, logo_url, favicon_url, splash_screen_url, pinned_company_name")
+        t_res = None
+        if tenant_id and len(str(tenant_id)) == 36 and "-" in str(tenant_id):
+            t_res = t_query.eq("tenant_id", str(tenant_id)).limit(1).execute()
+        elif tenant_slug:
+            t_res = t_query.eq("tenant_slug", str(tenant_slug)).limit(1).execute()
+
+        if t_res and t_res.data and len(t_res.data) > 0:
+            row = t_res.data[0]
+            config_data = {
+                "status": "success",
+                "tenant_id": str(row.get("tenant_id") or tenant_id or ""),
+                "tenant_slug": str(row.get("tenant_slug") or tenant_slug or "rll"),
+                "app_name": str(row.get("app_name") or "LucidX360"),
+                "logo_url": str(row.get("logo_url") or "/images/rll logo.svg"),
+                "favicon_url": str(row.get("favicon_url") or ""),
+                "splash_screen_url": str(row.get("splash_screen_url") or ""),
+                "pinned_company_name": str(row.get("pinned_company_name") or ""),
+                "excluded_companies": excluded,
+                "chatbot_enabled": chatbot_enabled,
+            }
+            _TENANT_CACHE[cache_key] = {"timestamp": now, "data": config_data}
+            return config_data
+
+        # 2. Fallback to get_tenant_config RPC
         rpc_params: Dict[str, Any] = {
             "p_tenant_slug": tenant_slug or None,
             "p_tenant_id": tenant_id if (tenant_id and len(str(tenant_id)) == 36 and "-" in str(tenant_id)) else None,
@@ -160,7 +186,7 @@ def get_tenant_config_service(
         if res.data and isinstance(res.data, dict):
             config_data = {
                 "status": "success",
-                "tenant_id": str(res.data.get("tenant_id") or "a0000000-0000-0000-0000-000000000001"),
+                "tenant_id": str(res.data.get("tenant_id") or tenant_id or ""),
                 "tenant_slug": str(res.data.get("tenant_slug") or tenant_slug or "rll"),
                 "app_name": str(res.data.get("app_name") or "LucidX360"),
                 "logo_url": str(res.data.get("logo_url") or "/images/rll logo.svg"),
@@ -173,7 +199,7 @@ def get_tenant_config_service(
             _TENANT_CACHE[cache_key] = {"timestamp": now, "data": config_data}
             return config_data
     except Exception as e:
-        logger.warning(f"get_tenant_config_service: RPC notice: {e}. Falling back to default settings.")
+        logger.warning(f"get_tenant_config_service: notice: {e}. Falling back to default settings.")
 
     _TENANT_CACHE[cache_key] = {"timestamp": now, "data": default_config}
     return default_config

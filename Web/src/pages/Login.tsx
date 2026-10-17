@@ -2,16 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { LogIn, Mail, ArrowLeft, CheckCircle2, Lock, Send, KeyRound, Eye, EyeOff, ShieldCheck, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { API_BASE_URL } from '../config';
-import { secureFetch } from '../lib/apiClient';
-
-import { useTenantConfig } from '../hooks/useTenantConfig';
+import { secureFetch, setTenantId } from '../lib/apiClient';
 
 interface LoginProps {
   onLogin: (userName: string) => void;
 }
 
 export default function Login({ onLogin }: LoginProps) {
-  const { config } = useTenantConfig();
   const [view, setView] = useState<'login' | 'forgot-password' | 'reset-password'>('login');
   
   const [email, setEmail] = useState('');
@@ -27,6 +24,7 @@ export default function Login({ onLogin }: LoginProps) {
 
   // Auto-detect password recovery link and load remembered email
   useEffect(() => {
+    document.title = "LucidX360 Admin Portal";
     const savedEmail = localStorage.getItem('rll_remembered_email');
     if (savedEmail) {
       setEmail(savedEmail);
@@ -86,6 +84,14 @@ export default function Login({ onLogin }: LoginProps) {
         localStorage.setItem('token', data.access_token);
         if (data.user) {
           localStorage.setItem('user', JSON.stringify(data.user));
+          if (data.user.tenant_id) {
+            localStorage.setItem('rll_tenant_id', String(data.user.tenant_id));
+            setTenantId(String(data.user.tenant_id));
+          }
+        }
+        if (data.tenant_id) {
+          localStorage.setItem('rll_tenant_id', String(data.tenant_id));
+          setTenantId(String(data.tenant_id));
         }
         const displayName = data.user?.first_name 
           ? `${data.user.first_name} ${data.user.last_name || ''}`.trim() 
@@ -207,14 +213,18 @@ export default function Login({ onLogin }: LoginProps) {
         transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
         className="sm:mx-auto sm:w-full sm:max-w-md text-center z-10"
       >
-        <div className="inline-flex p-4 bg-white/60 backdrop-blur-2xl rounded-3xl shadow-[0_12px_40px_rgba(13,59,142,0.08)] border border-white/80 mb-4 transition-all duration-300 hover:scale-105 hover:bg-white/80 hover:border-white">
-          <img src={config.logoUrl || "/images/rll logo.svg"} alt={`${config.appName || "Admin"} Logo`} className="w-28 h-28 object-contain filter drop-shadow-xs" />
+        <div className="flex justify-center mb-3">
+          <img 
+            src="/images/workfloww_logo.png" 
+            alt="LucidX360 Logo" 
+            className="w-48 sm:w-52 h-auto max-h-36 object-contain filter drop-shadow-sm transition-transform duration-300 hover:scale-105" 
+          />
         </div>
         <h1 className="text-2xl font-bold tracking-tight text-slate-900 drop-shadow-xs">
-          {config.appName || "Admin"} Admin Portal
+          LucidX360 Admin Portal
         </h1>
         <p className="mt-1.5 text-xs text-slate-500 font-medium tracking-wide">
-          {config.pinnedCompanyName || config.appName || "Enterprise"} Administrative Dashboard
+          LucidX360 Administrative Dashboard
         </p>
       </motion.div>
 

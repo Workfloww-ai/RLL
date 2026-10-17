@@ -1,7 +1,7 @@
 import json
 import logging
-from typing import List
-from fastapi import APIRouter, HTTPException, Depends
+from typing import List, Optional
+from fastapi import APIRouter, HTTPException, Depends, Header, Query
 from backend.master_data.service import master_service
 from backend.master_data.schemas import (
     OfficeResponse, CircleResponse, DepotResponse, DepotUpdate, LicenseeResponse,
@@ -82,17 +82,23 @@ async def get_headquarters():
 
 
 @router.get("/depots", response_model=List[DepotResponse])
-async def get_depots():
-    cached = await safe_get("rll:cache:depots_list")
+async def get_depots(
+    current_user: dict = Depends(get_current_user),
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID"),
+    tenant_id: Optional[str] = Query(None),
+):
+    target_tenant_id = x_tenant_id or tenant_id or (current_user.get("tenant_id") if current_user else None)
+    cache_key = f"rll:cache:depots_list:{target_tenant_id or 'all'}"
+    cached = await safe_get(cache_key)
     if cached:
         try:
             return json.loads(cached)
         except Exception as e:
             logger.warning(f"Error parsing cached depots_list: {e}")
 
-    data = master_service.get_depots_with_hq()
+    data = master_service.get_depots_with_hq(tenant_id=target_tenant_id)
     if data:
-        await safe_set("rll:cache:depots_list", json.dumps(data), ttl=86400)
+        await safe_set(cache_key, json.dumps(data), ttl=86400)
     return data
 
 

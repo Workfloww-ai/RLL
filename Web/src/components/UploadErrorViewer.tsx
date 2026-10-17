@@ -97,10 +97,15 @@ export default function UploadErrorViewer({ initialBatchId, refreshTrigger = 0, 
     setFetchFailed(false);
     try {
       const token = localStorage.getItem('token');
+      const tenantId = localStorage.getItem('rll_tenant_id');
       const headers: Record<string, string> = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
+      if (tenantId) headers['X-Tenant-ID'] = tenantId;
 
       let url = `${API_BASE_URL}/uploads/errors?limit=500`;
+      if (tenantId) {
+        url += `&tenant_id=${encodeURIComponent(tenantId)}`;
+      }
       if (selectedBatch && selectedBatch !== 'all') {
         url += `&batch_id=${encodeURIComponent(selectedBatch)}`;
       }

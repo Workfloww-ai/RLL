@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <linearGradient id="robotGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3B82F6"/>
+      <stop offset="50%" stop-color="#6366F1"/>
+      <stop offset="100%" stop-color="#8B5CF6"/>
+    </linearGradient>
+    <linearGradient id="eyeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00F0FF"/>
+      <stop offset="100%" stop-color="#3B82F6"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+  
+  <!-- Outer Background Circle -->
+  <circle cx="100" cy="100" r="90" fill="url(#robotGrad)" opacity="0.15"/>
+  <circle cx="100" cy="100" r="80" fill="#0F172A" stroke="url(#robotGrad)" stroke-width="4"/>
+  
+  <!-- Robot Antenna -->
+  <line x1="100" y1="42" x2="100" y2="58" stroke="url(#robotGrad)" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="100" cy="38" r="7" fill="#00F0FF" filter="url(#glow)"/>
+  
+  <!-- Robot Head -->
+  <rect x="55" y="58" width="90" height="72" rx="20" fill="#1E293B" stroke="url(#robotGrad)" stroke-width="3"/>
+  
+  <!-- Ears / Sensors -->
+  <rect x="43" y="78" width="12" height="24" rx="4" fill="url(#robotGrad)"/>
+  <rect x="145" y="78" width="12" height="24" rx="4" fill="url(#robotGrad)"/>
+  
+  <!-- Eye Visor Screen -->
+  <rect x="68" y="72" width="64" height="26" rx="10" fill="#090D16" stroke="#334155" stroke-width="2"/>
+  
+  <!-- Glowing Eyes -->
+  <circle cx="84" cy="85" r="7" fill="url(#eyeGrad)" filter="url(#glow)"/>
+  <circle cx="84" cy="85" r="3" fill="#FFFFFF"/>
+  <circle cx="116" cy="85" r="7" fill="url(#eyeGrad)" filter="url(#glow)"/>
+  <circle cx="116" cy="85" r="3" fill="#FFFFFF"/>
+  
+  <!-- Mouth / Voice Grid -->
+  <line x1="82" y1="112" x2="118" y2="112" stroke="#38BDF8" stroke-width="3" stroke-linecap="round"/>
+  <line x1="88" y1="118" x2="112" y2="118" stroke="#38BDF8" stroke-width="3" stroke-linecap="round"/>
+  
+  <!-- Neck / Chest Base -->
+  <path d="M78 132 L122 132 L132 152 L68 152 Z" fill="#1E293B" stroke="url(#robotGrad)" stroke-width="2"/>
+  <circle cx="100" cy="142" r="4" fill="#00F0FF" filter="url(#glow)"/>
+</svg>

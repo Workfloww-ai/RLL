@@ -74,7 +74,7 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
         )
 
     # 2. Fetch user profile from public.users
-    res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active").ilike("email", email).execute()
+    res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, tenant_id").ilike("email", email).execute()
     if not res.data or len(res.data) == 0:
         logger.warning(f"Web login failed for user {email} (user profile not found)")
         raise HTTPException(
@@ -124,6 +124,8 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
             detail="Access Denied: Web Dashboard is restricted to Administrators and Developers only."
         )
 
+    user_tenant_id = str(db_user.get("tenant_id")) if db_user.get("tenant_id") else None
+
     user_data = {
         "user_id": user_id_str,
         "email": db_user.get("email"),
@@ -133,11 +135,20 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
         "role_name": role_name,
         "role": role_name,
         "roles": active_roles if active_roles else [role_name],
+        "tenant_id": user_tenant_id,
         "is_active": True
     }
-    logger.info(f"Web login successful for user: {email} with role: {role_name}")
+    logger.info(f"Web login successful for user: {email} with role: {role_name} (tenant: {user_tenant_id})")
 
-    token = create_access_token(data={"sub": user_data["email"], "role": user_data.get("role_name", "admin"), "user_id": user_data["user_id"]})
+    token_data = {
+        "sub": user_data["email"],
+        "role": user_data.get("role_name", "admin"),
+        "user_id": user_data["user_id"]
+    }
+    if user_tenant_id:
+        token_data["tenant_id"] = user_tenant_id
+
+    token = create_access_token(data=token_data)
 
     # Create Redis Session & Set HttpOnly Cookie (24h Web Admin vs 30d Mobile)
     session_token = str(uuid.uuid4())

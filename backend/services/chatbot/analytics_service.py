@@ -100,7 +100,16 @@ class ChatbotAnalyticsService:
 
         # ── 1. Security & RBAC Scoping ────────────────────────────────────────
         user_id = str(current_user.get("user_id") or current_user.get("sub") or "anonymous")
-        tenant_id = str(current_user.get("tenant_id") or "a0000000-0000-0000-0000-000000000001")
+        tenant_id = str(current_user.get("tenant_id") or "")
+        if not tenant_id and user_id and user_id != "anonymous":
+            client = get_supabase_client()
+            if client:
+                try:
+                    u_res = client.table("users").select("tenant_id").eq("user_id", user_id).limit(1).execute()
+                    if u_res.data and u_res.data[0].get("tenant_id"):
+                        tenant_id = str(u_res.data[0]["tenant_id"])
+                except Exception:
+                    pass
         role = str(current_user.get("role") or "viewer").lower()
 
         # Extract allowed HQs from JWT user profile

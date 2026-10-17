@@ -172,9 +172,9 @@ def create_upload_batch(
     created_by: Optional[str] = None,
     browser_info: Optional[str] = None,
     client_ip: Optional[str] = None,
+    tenant_id: Optional[str] = None,
 ) -> Optional[int]:
-    """Creates a new upload_batches row and returns the generated batch_id."""
-    """Creates a new upload_batches row with user FKs and client browser/IP metadata."""
+    """Creates a new upload_batches row with user FKs, dynamic tenant partitioning, and client browser/IP metadata."""
     client = get_supabase_client()
     if not client:
         logger.info("[Mock] create_upload_batch → batch_id=1")
@@ -187,6 +187,8 @@ def create_upload_batch(
         "status": "pending",
         "is_active": True,
     }
+    if tenant_id:
+        data["tenant_id"] = str(tenant_id)
     if uploaded_by:
         data["uploaded_by"] = uploaded_by
     user_fk = uploaded_by or created_by
@@ -194,12 +196,13 @@ def create_upload_batch(
         data["uploaded_by"] = str(user_fk)
         data["created_by"] = str(user_fk)
         data["updated_by"] = str(user_fk)
-        try:
-            u_res = client.table("users").select("tenant_id").eq("user_id", str(user_fk)).limit(1).execute()
-            if u_res.data and u_res.data[0].get("tenant_id"):
-                data["tenant_id"] = str(u_res.data[0]["tenant_id"])
-        except Exception as e_ten:
-            logger.warning(f"Could not resolve tenant_id for user {user_fk}: {e_ten}")
+        if not data.get("tenant_id"):
+            try:
+                u_res = client.table("users").select("tenant_id").eq("user_id", str(user_fk)).limit(1).execute()
+                if u_res.data and u_res.data[0].get("tenant_id"):
+                    data["tenant_id"] = str(u_res.data[0]["tenant_id"])
+            except Exception as e_ten:
+                logger.warning(f"Could not resolve tenant_id for user {user_fk}: {e_ten}")
     if browser_info:
         data["browser_info"] = browser_info
     if client_ip:

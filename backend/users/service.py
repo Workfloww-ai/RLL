@@ -17,18 +17,21 @@ class UserService:
     def __init__(self):
         self.in_memory_users = list(FALLBACK_USERS)
 
-    def list_users(self) -> List[Dict[str, Any]]:
+    def list_users(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
         client = get_supabase()
         if not client:
-            return self.in_memory_users
+            return [u for u in self.in_memory_users if not tenant_id or u.get("tenant_id") == tenant_id]
 
         try:
-            # 1. Fetch users
-            users_res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, created_at").execute()
+            # 1. Fetch users strictly scoped by tenant_id if provided
+            users_query = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, created_at, tenant_id")
+            if tenant_id:
+                users_query = users_query.eq("tenant_id", tenant_id)
+            users_res = users_query.execute()
             raw_users = users_res.data if users_res.data is not None else []
 
             if not raw_users:
-                return self.in_memory_users
+                return []
 
             # 2. Fetch roles map
             roles_res = client.table("roles").select("role_id, role_name").execute()
@@ -431,6 +434,18 @@ class UserService:
             "updated_by": clean_creator_id
         }
 
+        user_tenant_id = payload.get("tenant_id")
+        if not user_tenant_id and clean_creator_id and client:
+            try:
+                c_res = client.table("users").select("tenant_id").eq("user_id", clean_creator_id).limit(1).execute()
+                if c_res.data and c_res.data[0].get("tenant_id"):
+                    user_tenant_id = str(c_res.data[0]["tenant_id"])
+            except Exception as e_t:
+                logger.warning(f"Could not resolve tenant for creator {clean_creator_id}: {e_t}")
+
+        if user_tenant_id:
+            user_record["tenant_id"] = user_tenant_id
+
         if not client:
             self.in_memory_users.insert(0, user_record)
             return user_record
@@ -443,6 +458,8 @@ class UserService:
             "phone": phone,
             "is_active": is_active
         }
+        if user_tenant_id:
+            user_row["tenant_id"] = user_tenant_id
         if clean_creator_id:
             user_row["created_by"] = clean_creator_id
             user_row["updated_by"] = clean_creator_id
@@ -712,7 +729,14 @@ class UserService:
         if not user_res.data:
             raise ValueError(f"User '{user_id}' does not exist.")
         user = user_res.data[0]
-        user_tenant_id = user.get("tenant_id") or "a0000000-0000-0000-0000-000000000001"
+        user_tenant_id = user.get("tenant_id")
+        if not user_tenant_id and updated_by:
+            try:
+                admin_res = client.table("users").select("tenant_id").eq("user_id", str(updated_by)).limit(1).execute()
+                if admin_res.data and admin_res.data[0].get("tenant_id"):
+                    user_tenant_id = admin_res.data[0]["tenant_id"]
+            except Exception:
+                pass
 
         # 2. De-duplicate requested HQ IDs while preserving order
         clean_hq_ids = []
@@ -735,7 +759,7 @@ class UserService:
                 if not hq_obj.get("is_active", True):
                     raise ValueError(f"Headquarters '{hq_obj.get('name', hid)}' is inactive.")
                 hq_tenant = hq_obj.get("tenant_id")
-                if hq_tenant and str(hq_tenant) != str(user_tenant_id):
+                if hq_tenant and user_tenant_id and str(hq_tenant) != str(user_tenant_id):
                     raise ValueError(f"Cross-tenant assignment rejected: Headquarters '{hq_obj.get('name')}' belongs to a different tenant.")
                 hq_lookup[hid] = hq_obj.get("name", "Unknown")
 
@@ -743,17 +767,18 @@ class UserService:
         client.table("user_headquarters_mapping").delete().eq("user_id", user_id).execute()
 
         if clean_hq_ids:
-            new_rows = [
-                {
-                    "tenant_id": user_tenant_id,
+            new_rows = []
+            for hid in clean_hq_ids:
+                row_map = {
                     "user_id": user_id,
                     "headquarters_id": hid,
                     "is_active": True,
                     "created_by": updated_by,
                     "updated_by": updated_by
                 }
-                for hid in clean_hq_ids
-            ]
+                if user_tenant_id:
+                    row_map["tenant_id"] = user_tenant_id
+                new_rows.append(row_map)
             client.table("user_headquarters_mapping").insert(new_rows).execute()
 
         hq_names = [hq_lookup.get(hid, "Unknown") for hid in clean_hq_ids]
@@ -813,12 +838,26 @@ class UserService:
             logger.error(f"Error deactivating user {user_id}: {e}")
             return True
 
-    def process_excel_roster(self, file_content: bytes, filename: str, uploaded_by: Optional[str] = None) -> Dict[str, Any]:
+    def process_excel_roster(
+        self,
+        file_content: bytes,
+        filename: str,
+        uploaded_by: Optional[str] = None,
+        tenant_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Parses uploaded Excel roster and maps data using a 2-pass pipeline:
-        Pass 1: Insert/Upsert users into public.users and public.user_roles
+        Pass 1: Insert/Upsert users into public.users and public.user_roles (partitioned by admin tenant_id)
         Pass 2: Resolve reporting managers and map hierarchy into public.ase_tsm_mapping
         """
+        client = get_supabase()
+        if not tenant_id and uploaded_by and client:
+            try:
+                u_res = client.table("users").select("tenant_id").eq("user_id", str(uploaded_by)).limit(1).execute()
+                if u_res.data and u_res.data[0].get("tenant_id"):
+                    tenant_id = str(u_res.data[0]["tenant_id"])
+            except Exception as e_tid:
+                logger.warning(f"Could not resolve tenant_id for uploader {uploaded_by}: {e_tid}")
         try:
             filename_lower = filename.lower()
             if filename_lower.endswith('.csv'):
@@ -980,7 +1019,8 @@ class UserService:
                 "is_active": True,
                 "created_by": uploaded_by,
                 "uploaded_by": uploaded_by,
-                "updated_by": uploaded_by
+                "updated_by": uploaded_by,
+                "tenant_id": tenant_id
             }
 
             try:

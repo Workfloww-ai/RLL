@@ -14,6 +14,7 @@ import Login from './pages/Login';
 import { ViewState } from './types';
 import { API_BASE_URL } from './config';
 import { logErrorToBackend } from './lib/logger';
+import { setTenantId } from './lib/apiClient';
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -135,6 +136,10 @@ export default function App() {
             setIsAuthenticated(true);
             localStorage.setItem('user_name', displayName);
             localStorage.setItem('user', JSON.stringify(data.user));
+            if (data.user?.tenant_id) {
+              localStorage.setItem('rll_tenant_id', String(data.user.tenant_id));
+              setTenantId(String(data.user.tenant_id));
+            }
           }
         } else if (res.status === 401) {
           setIsAuthenticated(false);
@@ -142,6 +147,9 @@ export default function App() {
           localStorage.removeItem('token');
           localStorage.removeItem('user_name');
           localStorage.removeItem('user');
+          localStorage.removeItem('rll_tenant_id');
+          setTenantId('');
+          document.title = 'LucidX360 Admin Portal';
         }
       } catch (err) {
         console.debug('Session verification notice:', err);
@@ -184,6 +192,9 @@ export default function App() {
       localStorage.removeItem('user_name');
       localStorage.removeItem('user');
       localStorage.removeItem('current_view');
+      localStorage.removeItem('rll_tenant_id');
+      setTenantId('');
+      document.title = 'LucidX360 Admin Portal';
     }
   };
 

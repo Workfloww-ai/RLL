@@ -18,11 +18,11 @@ export default function StockUpload() {
   const [activeErrorBatchId, setActiveErrorBatchId] = useState<string>('all');
   const [errorRefreshTrigger, setErrorRefreshTrigger] = useState<number>(0);
   const [latestUpload, setLatestUpload] = useState<LatestUpload>({
-    lastUploadFormatted: '08 Aug 2026, 12:04 PM',
-    uploaderInfo: 'IMFL Ind. May-26.xlsb (Admin User)',
-    recordsCountFormatted: '550,153',
-    status: 'SUCCESS',
-    remarksText: '100% DATA ACCURACY • 550,153 RECORDS VERIFIED'
+    lastUploadFormatted: 'No uploads yet',
+    uploaderInfo: 'No sales data uploaded for this company',
+    recordsCountFormatted: '0 Records',
+    status: 'NONE',
+    remarksText: 'Upload sales data to begin tracking analytics.'
   });
 
   const handleUploadStart = (fileName: string) => {
@@ -48,11 +48,18 @@ export default function StockUpload() {
   const fetchLatestBatch = async () => {
     try {
       const token = localStorage.getItem('token');
-      const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
-      const res = await fetch(`${API_BASE_URL}/uploads/latest`, { headers });
+      const tenantId = localStorage.getItem('rll_tenant_id');
+      const headers: Record<string, string> = {
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+        ...(tenantId ? { 'X-Tenant-ID': tenantId } : {})
+      };
+      const endpoint = tenantId
+        ? `${API_BASE_URL}/uploads/latest?tenant_id=${encodeURIComponent(tenantId)}`
+        : `${API_BASE_URL}/uploads/latest`;
+      const res = await fetch(endpoint, { headers });
       if (res.ok) {
         const data = await res.json();
-        if (data && data.batch_id) {
+        if (data && data.batch_id && data.status !== 'none') {
           const createdAt = data.created_at ? new Date(data.created_at) : null;
           const formattedDate = createdAt ? createdAt.toLocaleString('en-US', {
             day: '2-digit',
@@ -61,7 +68,7 @@ export default function StockUpload() {
             hour: '2-digit',
             minute: '2-digit',
             hour12: true
-          }) : '08 Aug 2026, 12:04 PM';
+          }) : 'Just now';
 
           const statusLower = (data.upload_status || data.status || '').toLowerCase();
           const isProcessing = ['processing', 'queued', 'running', 'validating', 'aggregating', 'uploading'].includes(statusLower);
@@ -69,23 +76,31 @@ export default function StockUpload() {
           const isSuccess = !isProcessing && !isFailed && (['success', 'loaded', 'completed'].includes(statusLower) || (data.imported_rows > 0 && !isFailed));
           const imported = isSuccess ? (data.imported_rows || data.total_rows || 0) : 0;
 
-          const fileName = data.source_file || data.file_name || 'IMFL Ind. May-26.xlsb';
+          const fileName = data.source_file || data.file_name || 'Upload File';
           const uploaderName = data.uploader_name || data.uploaded_by_name || localStorage.getItem('user_name') || 'Admin User';
           const uploaderInfo = `${fileName} (${uploaderName})`;
 
           setLatestUpload({
             lastUploadFormatted: formattedDate,
             uploaderInfo: uploaderInfo,
-            recordsCountFormatted: isSuccess ? imported.toLocaleString() : (isProcessing ? 'Processing...' : '0'),
+            recordsCountFormatted: isSuccess ? `${imported.toLocaleString()} Records` : (isProcessing ? 'Processing...' : '0 Records'),
             status: isProcessing ? 'PROCESSING' : (isSuccess ? 'SUCCESS' : 'FAILED'),
             remarksText: isProcessing 
               ? (data.remarks || 'Uploading, validating, and ingesting sheet records into database...')
               : (isSuccess ? `${imported.toLocaleString()} RECORDS VERIFIED & SAVED` : (data.remarks || 'Ingestion Failed: Execution stopped & rolled back.'))
           });
+        } else {
+          setLatestUpload({
+            lastUploadFormatted: 'No uploads yet',
+            uploaderInfo: 'No sales data uploaded for this company',
+            recordsCountFormatted: '0 Records',
+            status: 'NONE',
+            remarksText: 'Upload sales data to begin tracking analytics.'
+          });
         }
       }
     } catch (err) {
-      console.warn('Failed to fetch live upload batch details, using verified database records snapshot:', err);
+      console.warn('Failed to fetch live upload batch details:', err);
     }
   };
 
