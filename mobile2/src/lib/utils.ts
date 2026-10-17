@@ -87,16 +87,19 @@ export function normalizeCompanyName(name: string): string {
   const lowered = name.trim().toLowerCase();
   if (
     lowered === 'diageo' ||
+    lowered === 'diageo india' ||
+    lowered === 'united spirits'
+  ) {
+    return 'Diageo';
+  }
+  if (
     lowered === 'inbrew' ||
     lowered === 'in brew' ||
-    lowered === 'diageo/inbrew' ||
-    lowered === 'diageo/in brew' ||
-    lowered === 'diageo / inbrew' ||
-    lowered === 'diageo / in brew' ||
-    lowered === 'diageo inbrew' ||
-    lowered === 'diageo in brew'
+    lowered === 'in-brew' ||
+    lowered === 'inbrew beverages' ||
+    lowered === 'in brew beverages'
   ) {
-    return 'Diageo/In brew';
+    return 'Inbrew';
   }
   if (
     lowered === 'rll' ||
@@ -133,7 +136,7 @@ export function normalizeCompanyList(rawCompanies: any[], pinnedCompanyName?: st
     const normName = normalizeCompanyName(c.name || '');
     const normId = normName.toLowerCase().replace(/\s+/g, '-').replace(/\//g, '-');
 
-    const isMatchPinned = normName.toLowerCase().trim() === targetPinned || (targetPinned === 'rajasthan liquor limited' && normName === 'Diageo/In brew');
+    const isMatchPinned = normName.toLowerCase().trim() === targetPinned || (targetPinned === 'rajasthan liquor limited' && normName === 'Diageo');
 
     if (!map.has(normId)) {
       map.set(normId, {

@@ -433,39 +433,44 @@ class ImportPipelineEngine:
     def is_upload_active(self, exclude_batch_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """
         Phase 2 Single-Upload Queue:
-        Checks if an upload job is currently active in memory or PostgreSQL DB.
-        Returns the active batch record dict if active, otherwise None.
+        Checks if an upload job is currently active in PostgreSQL DB or memory.
+        Authoritative source: PostgreSQL DB.
         """
+        client = get_supabase()
+        if client:
+            db_active = get_active_upload_batch()
+            if db_active:
+                active_id = db_active.get("batch_id")
+                if exclude_batch_id and str(active_id) == str(exclude_batch_id):
+                    return None
+                return db_active
+            else:
+                # Database has no active batches - purge any stale in-memory active batches
+                active_statuses = {"queued", "running", "processing", "aggregating", "validating"}
+                for b_id, batch in list(upload_batches_db.items()):
+                    st = str(batch.get("status", "")).lower()
+                    if st in active_statuses:
+                        upload_batches_db.pop(b_id, None)
+                return None
+
+        # Fallback to local memory only if client is disconnected
         active_statuses = {"queued", "running", "processing", "aggregating", "validating"}
         now_ts = time.time()
-
-        # 1. Check local memory state first
         for b_id, batch in list(upload_batches_db.items()):
             if exclude_batch_id and str(b_id) == str(exclude_batch_id):
                 continue
             st = str(batch.get("status", "")).lower()
-            up_st = str(batch.get("upload_status", "")).lower()
-            if st in active_statuses or up_st in active_statuses:
+            if st in active_statuses:
                 c_iso = batch.get("created_at")
                 if c_iso:
                     try:
                         c_dt = datetime.fromisoformat(c_iso.replace("Z", "+00:00"))
-                        if (now_ts - c_dt.timestamp()) > 1200:  # 20 minutes optimal threshold for large uploads
-                            batch["status"] = "failed"
-                            batch["upload_status"] = "failed"
-                            batch["remarks"] = "Timed out: Active upload job stalled or abandoned."
+                        if (now_ts - c_dt.timestamp()) > 1200:
+                            upload_batches_db.pop(b_id, None)
                             continue
                     except Exception:
                         pass
                 return batch
-
-        # 2. Check Supabase database
-        db_active = get_active_upload_batch()
-        if db_active:
-            active_id = db_active.get("batch_id")
-            if exclude_batch_id and str(active_id) == str(exclude_batch_id):
-                return None
-            return db_active
 
         return None
 
@@ -611,15 +616,12 @@ class ImportPipelineEngine:
         if client:
             payload = {
                 "source_file": filename,
-                "file_name": filename,
                 "load_type": "daily",
                 "covers_start": today_str,
                 "covers_end": today_str,
                 "row_count": 0,
-                "total_rows": 0,
                 "imported_rows": 0,
                 "status": "queued",
-                "upload_status": "queued",
                 "tenant_id": tenant_id,
                 "remarks": "File accepted and queued for processing.",
             }
@@ -2751,7 +2753,6 @@ class ImportPipelineEngine:
 
         if row_count is not None:
             payload["row_count"] = row_count
-            payload["total_rows"] = row_count
 
         if status is not None:
             allowed_statuses = {
@@ -2765,7 +2766,6 @@ class ImportPipelineEngine:
             db_status = "loaded" if status == "completed" else status
             if db_status in allowed_statuses:
                 payload["status"] = db_status
-                payload["upload_status"] = db_status
 
         if local_batch:
             if "imported_rows" in local_batch:

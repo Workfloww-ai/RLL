@@ -3,7 +3,8 @@ import { API_BASE_URL } from '../config';
 
 export interface ActiveBatchInfo {
   batch_id: string;
-  file_name: string;
+  file_name?: string;
+  source_file?: string;
   status: string;
   remarks?: string;
   total_rows?: number;
@@ -203,6 +204,10 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
             totalRows: newBase.activeBatch.total_rows,
             importedRows: newBase.activeBatch.imported_rows
           }));
+        } else {
+          // If system is unlocked or batch ended, wipe stale upload locks from browser storage
+          localStorage.removeItem('rll_active_sales_upload');
+          localStorage.removeItem('rll_system_lock_base');
         }
 
         const isCooldownActive = newCooldownSec > 0;

@@ -165,12 +165,34 @@ class MasterService:
                         depot_user_map[did] = []
                     depot_user_map[did].append(u_info)
 
+            # 5b. Fetch user_headquarters_mapping for TSM / HQ users
+            hq_user_map: Dict[str, List[Dict[str, Any]]] = {}
+            try:
+                uhq_res = client.table("user_headquarters_mapping").select("user_id, headquarters_id, is_active").execute()
+                for uhq in (uhq_res.data or []):
+                    if uhq.get("is_active", True) is not False:
+                        hid = str(uhq.get("headquarters_id") or "")
+                        uid = str(uhq.get("user_id") or "")
+                        if hid and uid in users_map:
+                            u_info = dict(users_map[uid])
+                            u_info["role"] = user_role_map.get(uid, "TSM")
+                            if hid not in hq_user_map:
+                                hq_user_map[hid] = []
+                            hq_user_map[hid].append(u_info)
+            except Exception as e_uhq:
+                logger.warning(f"Error fetching user_headquarters_mapping in get_depots_with_hq: {e_uhq}")
+
             # Build result list
             result = []
             for d in depots_data:
                 did = str(d["depot_id"])
-                hq_id = str(d.get("headquarters_id") or "")
-                hq_name = hq_map.get(hq_id, "Unassigned")
+                hq_raw = d.get("headquarters_id")
+                hq_id = str(hq_raw) if hq_raw else None
+                hq_name = hq_map.get(str(hq_id), "Unassigned") if hq_id else "Unassigned"
+
+                hq_users = hq_user_map.get(str(hq_id), []) if hq_id else []
+                hq_user_names = ", ".join([u["name"] for u in hq_users]) if hq_users else "Unassigned"
+                hq_user_emails = ", ".join([u["email"] for u in hq_users if u.get("email")]) if hq_users else None
 
                 assigned_users = depot_user_map.get(did, [])
                 if assigned_users:
@@ -185,8 +207,8 @@ class MasterService:
                             "depot_user": u_info["name"],
                             "depot_user_role": u_info["role"],
                             "depot_user_email": u_info["email"],
-                            "hq_user": "Unassigned",
-                            "hq_user_email": ""
+                            "hq_user": hq_user_names,
+                            "hq_user_email": hq_user_emails
                         })
                 else:
                     result.append({
@@ -199,8 +221,8 @@ class MasterService:
                         "depot_user": "Unassigned",
                         "depot_user_role": "ASE",
                         "depot_user_email": None,
-                        "hq_user": "Unassigned",
-                        "hq_user_email": None
+                        "hq_user": hq_user_names,
+                        "hq_user_email": hq_user_emails
                     })
 
             return result

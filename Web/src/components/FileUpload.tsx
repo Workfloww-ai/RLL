@@ -152,9 +152,17 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
 
         const res = await fetch(`${API_BASE_URL}/uploads/batches/${batchId}`, { headers });
         if (!res.ok) {
+          if (res.status === 404 || res.status === 400) {
+            if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+            localStorage.removeItem('rll_active_sales_upload');
+            localStorage.removeItem('rll_system_lock_base');
+            setUploadState({ status: 'idle', progress: 0 });
+            return;
+          }
           if (pollAttempts >= maxPollAttempts) {
             if (pollTimerRef.current) clearInterval(pollTimerRef.current);
-            if (!uploadEndpoint) localStorage.removeItem('rll_active_sales_upload');
+            localStorage.removeItem('rll_active_sales_upload');
+            localStorage.removeItem('rll_system_lock_base');
             setUploadState({
               status: 'error',
               progress: 0,
@@ -174,6 +182,14 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
 
         const isSuccess = ['loaded', 'completed', 'success'].includes(statusMain) || ['loaded', 'completed', 'success'].includes(statusUpload);
         const isFailed = statusMain === 'failed' || statusUpload === 'failed';
+        const isNotFound = statusMain === 'not_found' || statusUpload === 'not_found';
+
+        if (isNotFound) {
+          if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+          if (!uploadEndpoint) localStorage.removeItem('rll_active_sales_upload');
+          setUploadState({ status: 'idle', progress: 0 });
+          return;
+        }
 
         const imported = batchInfo.imported_rows ?? batchInfo.row_count ?? 0;
         const total = batchInfo.row_count ?? 0;
@@ -401,72 +417,82 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
           if (token) headers['Authorization'] = `Bearer ${token}`;
 
           const res = await fetch(`${API_BASE_URL}/uploads/batches/${stored.batchId}`, { headers });
-          if (res.ok) {
-            const batchInfo = await res.json();
-            const statusMain = (batchInfo.status || '').toLowerCase();
-            const statusUpload = (batchInfo.upload_status || '').toLowerCase();
-            const isSuccess = ['loaded', 'completed', 'success'].includes(statusMain) || ['loaded', 'completed', 'success'].includes(statusUpload);
-            const isFailed = statusMain === 'failed' || statusUpload === 'failed';
-            const elapsed = Math.max(1, Math.floor((Date.now() - (stored.startTimestampMs || Date.now())) / 1000));
-
-            if (isSuccess) {
-              const imported = batchInfo.imported_rows ?? batchInfo.row_count ?? 0;
-              setUploadState({
-                status: 'success',
-                progress: 100,
-                fileName: stored.fileName || batchInfo.file_name || batchInfo.source_file,
-                batchId: stored.batchId,
-                importedRows: imported,
-                failedRows: batchInfo.failed_rows ?? 0,
-                duplicateRows: batchInfo.duplicate_rows ?? 0,
-                processingTimeSeconds: batchInfo.processing_time_seconds || elapsed,
-                uploadStartTime: stored.uploadStartTime,
-                elapsedSeconds: elapsed,
-                statusMessage: batchInfo.remarks || 'All Records Successfully Verified & Saved!'
-              });
+          if (!res.ok) {
+            if (res.status === 404 || res.status === 400) {
               localStorage.removeItem('rll_active_sales_upload');
-              startCooldownManually(1800);
-              if (onUploadComplete) onUploadComplete(stored.fileName);
-              return;
-            } else if (isFailed) {
-              setUploadState({
-                status: 'error',
-                progress: 0,
-                fileName: stored.fileName,
-                batchId: stored.batchId,
-                uploadStartTime: stored.uploadStartTime,
-                elapsedSeconds: elapsed,
-                errorMessage: batchInfo.remarks || 'Database insertion failed due to data validation errors.'
-              });
-              localStorage.removeItem('rll_active_sales_upload');
-              if (onErrorOccurred) onErrorOccurred(stored.batchId);
-              return;
-            } else {
-              // Batch is actively processing in background - maintain state and resume polling
-              const imported = batchInfo.imported_rows ?? batchInfo.row_count ?? 0;
-              const total = batchInfo.row_count ?? 0;
-              let currProg = 45;
-              if (total > 0 && imported > 0) {
-                currProg = Math.min(95, 40 + Math.floor((imported / total) * 55));
-              }
-              const timeFormatted = stored.uploadStartTime || (batchInfo.created_at ? new Date(batchInfo.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }) : 'Recently');
-              const fName = stored.fileName || batchInfo.file_name || batchInfo.source_file || 'Sales Data Sheet';
-              const startMs = stored.startTimestampMs || (batchInfo.created_at ? new Date(batchInfo.created_at).getTime() : (Date.now() - elapsed * 1000));
-
-              setUploadState({
-                status: 'processing',
-                progress: currProg,
-                fileName: fName,
-                batchId: stored.batchId,
-                uploadStartTime: timeFormatted,
-                elapsedSeconds: elapsed,
-                statusMessage: batchInfo.remarks || 'Saving data rows into database...'
-              });
-              startPollingBatchStatus(stored.batchId, fName, timeFormatted, startMs);
-              return;
+              localStorage.removeItem('rll_system_lock_base');
+              setUploadState({ status: 'idle', progress: 0 });
             }
-          } else if (res.status === 404) {
+            return;
+          }
+
+          const batchInfo = await res.json();
+          const statusMain = (batchInfo.status || '').toLowerCase();
+          const statusUpload = (batchInfo.upload_status || '').toLowerCase();
+          const isSuccess = ['loaded', 'completed', 'success'].includes(statusMain) || ['loaded', 'completed', 'success'].includes(statusUpload);
+          const isFailed = statusMain === 'failed' || statusUpload === 'failed';
+          const elapsed = Math.max(1, Math.floor((Date.now() - (stored.startTimestampMs || Date.now())) / 1000));
+
+          if (isSuccess) {
+            const imported = batchInfo.imported_rows ?? batchInfo.row_count ?? 0;
+            setUploadState({
+              status: 'success',
+              progress: 100,
+              fileName: stored.fileName || batchInfo.file_name || batchInfo.source_file,
+              batchId: stored.batchId,
+              importedRows: imported,
+              failedRows: batchInfo.failed_rows ?? 0,
+              duplicateRows: batchInfo.duplicate_rows ?? 0,
+              processingTimeSeconds: batchInfo.processing_time_seconds || elapsed,
+              uploadStartTime: stored.uploadStartTime,
+              elapsedSeconds: elapsed,
+              statusMessage: batchInfo.remarks || 'All Records Successfully Verified & Saved!'
+            });
             localStorage.removeItem('rll_active_sales_upload');
+            startCooldownManually(1800);
+            if (onUploadComplete) onUploadComplete(stored.fileName);
+            return;
+          } else if (isFailed) {
+            setUploadState({
+              status: 'error',
+              progress: 0,
+              fileName: stored.fileName,
+              batchId: stored.batchId,
+              uploadStartTime: stored.uploadStartTime,
+              elapsedSeconds: elapsed,
+              errorMessage: batchInfo.remarks || 'Database insertion failed due to data validation errors.'
+            });
+            localStorage.removeItem('rll_active_sales_upload');
+            if (onErrorOccurred) onErrorOccurred(stored.batchId);
+            return;
+          } else if (statusMain === 'not_found' || statusUpload === 'not_found') {
+            localStorage.removeItem('rll_active_sales_upload');
+            localStorage.removeItem('rll_system_lock_base');
+            setUploadState({ status: 'idle', progress: 0 });
+            return;
+          } else {
+            // Batch is actively processing in background - maintain state and resume polling
+            const imported = batchInfo.imported_rows ?? batchInfo.row_count ?? 0;
+            const total = batchInfo.row_count ?? 0;
+            let currProg = 45;
+            if (total > 0 && imported > 0) {
+              currProg = Math.min(95, 40 + Math.floor((imported / total) * 55));
+            }
+            const timeFormatted = stored.uploadStartTime || (batchInfo.created_at ? new Date(batchInfo.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }) : 'Recently');
+            const fName = stored.fileName || batchInfo.file_name || batchInfo.source_file || 'Sales Data Sheet';
+            const startMs = stored.startTimestampMs || (batchInfo.created_at ? new Date(batchInfo.created_at).getTime() : (Date.now() - elapsed * 1000));
+
+            setUploadState({
+              status: 'processing',
+              progress: currProg,
+              fileName: fName,
+              batchId: stored.batchId,
+              uploadStartTime: timeFormatted,
+              elapsedSeconds: elapsed,
+              statusMessage: batchInfo.remarks || 'Saving data rows into database...'
+            });
+            startPollingBatchStatus(stored.batchId, fName, timeFormatted, startMs);
+            return;
           }
         }
       } catch (err) {
@@ -664,7 +690,8 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
 
   const resetUpload = () => {
     if (pollTimerRef.current) clearInterval(pollTimerRef.current);
-    if (!uploadEndpoint) localStorage.removeItem('rll_active_sales_upload');
+    localStorage.removeItem('rll_active_sales_upload');
+    localStorage.removeItem('rll_system_lock_base');
     setUploadState({ status: 'idle', progress: 0 });
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
@@ -866,6 +893,15 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                 </div>
 
                 <p className="text-xs text-slate-500 mt-1 max-w-md font-medium">{uploadState.statusMessage}</p>
+
+                <button
+                  type="button"
+                  onClick={resetUpload}
+                  className="mt-2.5 px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-semibold rounded-lg transition-colors border border-slate-200 inline-flex items-center gap-1.5 cursor-pointer"
+                  title="Clear current upload status and reset dropzone"
+                >
+                  <X size={12} /> Cancel / Reset Ingestion
+                </button>
 
                 <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden mt-4">
                   <motion.div 

@@ -160,7 +160,7 @@ async def list_upload_batches(
     client = get_supabase()
     if client:
         try:
-            res = client.table("upload_batches").select("batch_id, source_file, file_name, storage_path, load_type, covers_start, covers_end, row_count, total_rows, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, upload_status, remarks, uploaded_by, created_at, updated_at, tenant_id").eq("tenant_id", target_tenant_id).order("created_at", desc=True).limit(50).execute()
+            res = client.table("upload_batches").select("batch_id, source_file, storage_path, load_type, covers_start, covers_end, row_count, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, remarks, uploaded_by, created_at, updated_at, tenant_id").eq("tenant_id", target_tenant_id).order("created_at", desc=True).limit(50).execute()
             if res.data:
                 return res.data
         except Exception as e:
@@ -191,7 +191,7 @@ async def get_latest_upload_batch():
     batch = None
     if client:
         try:
-            res = client.table("upload_batches").select("batch_id, source_file, file_name, storage_path, load_type, covers_start, covers_end, row_count, total_rows, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, upload_status, remarks, uploaded_by, created_at, updated_at").order("created_at", desc=True).limit(1).execute()
+            res = client.table("upload_batches").select("batch_id, source_file, storage_path, load_type, covers_start, covers_end, row_count, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, remarks, uploaded_by, created_at, updated_at").order("created_at", desc=True).limit(1).execute()
             if res.data:
                 batch = res.data[0]
                 # If imported_rows is 0, verify existence from sales_fact
@@ -237,23 +237,29 @@ async def get_latest_upload_batch():
 
 @router.get("/batches/{batch_id}", response_model=UploadBatchResponse)
 async def get_upload_batch(batch_id: str):
+    # Check in-memory first (both string and int key)
     if batch_id in upload_batches_db:
         return upload_batches_db[batch_id]
+    try:
+        int_id = int(batch_id)
+        if int_id in upload_batches_db:
+            return upload_batches_db[int_id]
+    except (ValueError, TypeError):
+        pass
 
     client = get_supabase()
     if client:
         try:
-            res = client.table("upload_batches").select("batch_id, source_file, file_name, storage_path, load_type, covers_start, covers_end, row_count, total_rows, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, upload_status, remarks, uploaded_by, created_at, updated_at").eq("batch_id", batch_id).execute()
+            res = client.table("upload_batches").select("batch_id, source_file, storage_path, load_type, covers_start, covers_end, row_count, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, remarks, uploaded_by, created_at, updated_at").eq("batch_id", batch_id).execute()
             if res.data:
                 return res.data[0]
         except Exception as e:
             logger.warning(f"Failed to fetch batch {batch_id} status from Supabase: {e}")
 
-    return upload_batches_db.get(batch_id, {
-        "batch_id": batch_id,
-        "status": "not_found",
-        "remarks": "Batch record not found."
-    })
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Batch {batch_id} not found."
+    )
 
 
 def extract_entity_val(msg: str) -> str:
@@ -598,7 +604,7 @@ async def get_upload_errors(
     if not raw_errors and client:
         try:
             target_id = batch_id if (batch_id and str(batch_id).strip().lower() not in ("all", "none", "")) else None
-            b_query = client.table("upload_batches").select("batch_id, status, upload_status, remarks, created_at")
+            b_query = client.table("upload_batches").select("batch_id, status, remarks, created_at")
             if target_id:
                 b_query = b_query.eq("batch_id", target_id)
             else:
@@ -606,7 +612,7 @@ async def get_upload_errors(
             b_res = b_query.execute()
             if b_res.data:
                 for b_item in b_res.data:
-                    st_val = str(b_item.get("upload_status") or b_item.get("status") or "").lower()
+                    st_val = str(b_item.get("status") or "").lower()
                     if st_val in ("failed", "interrupted", "error"):
                         rem_msg = b_item.get("remarks") or "Upload batch failed or was interrupted during execution."
                         raw_errors.append({
@@ -625,13 +631,13 @@ async def get_upload_errors(
     available_batches = []
     if client:
         try:
-            b_res = client.table("upload_batches").select("batch_id, file_name, source_file, status, upload_status, created_at").order("created_at", desc=True).limit(10).execute()
+            b_res = client.table("upload_batches").select("batch_id, source_file, status, created_at").order("created_at", desc=True).limit(10).execute()
             if b_res.data:
                 for b in b_res.data:
                     available_batches.append({
                         "batch_id": str(b["batch_id"]),
-                        "label": f"{b.get('source_file') or b.get('file_name') or 'Batch'} (#{str(b['batch_id'])[:8]})",
-                        "status": b.get("upload_status") or b.get("status"),
+                        "label": f"{b.get('source_file') or 'Batch'} (#{str(b['batch_id'])[:8]})",
+                        "status": b.get("status"),
                         "created_at": b.get("created_at")
                     })
         except Exception as eb:

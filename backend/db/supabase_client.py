@@ -89,7 +89,7 @@ def get_active_upload_batch() -> Optional[Dict[str, Any]]:
         from datetime import datetime, timezone
         active_statuses = ["queued", "running", "processing", "aggregating", "validating"]
         res = client.table("upload_batches").select(
-            "batch_id, source_file, file_name, covers_start, covers_end, status, upload_status, created_at, row_count, total_rows, imported_rows, remarks"
+            "batch_id, source_file, covers_start, covers_end, status, created_at, row_count, imported_rows, remarks"
         ).in_("status", active_statuses).order("created_at", desc=True).limit(5).execute()
         
         if res.data:
@@ -114,7 +114,6 @@ def get_active_upload_batch() -> Optional[Dict[str, Any]]:
                     try:
                         client.table("upload_batches").update({
                             "status": "failed",
-                            "upload_status": "failed",
                             "remarks": "Timed out: Active upload job stalled or was interrupted.",
                         }).eq("batch_id", b.get("batch_id")).execute()
                     except Exception:
@@ -136,12 +135,11 @@ def reset_orphaned_upload_batches() -> int:
     try:
         active_statuses = ["queued", "running", "processing", "aggregating", "validating"]
         # Select orphaned active batches first to obtain batch IDs
-        orphaned_res = client.table("upload_batches").select("batch_id, source_file, file_name").in_("status", active_statuses).execute()
+        orphaned_res = client.table("upload_batches").select("batch_id, source_file").in_("status", active_statuses).execute()
         orphaned_batches = orphaned_res.data or []
 
         res = client.table("upload_batches").update({
             "status": "failed",
-            "upload_status": "failed",
             "remarks": "Interrupted: Server process restarted during upload execution.",
         }).in_("status", active_statuses).execute()
         count = len(res.data) if res.data else len(orphaned_batches)
@@ -693,7 +691,7 @@ def get_batch_details(batch_id: Any) -> Dict[str, Any]:
             "error_count": 0,
         }
     try:
-        batch_res = client.table("upload_batches").select("batch_id, source_file, file_name, storage_path, status, upload_status, row_count, total_rows, imported_rows, remarks, created_at").eq("batch_id", batch_id).execute()
+        batch_res = client.table("upload_batches").select("batch_id, source_file, storage_path, status, row_count, imported_rows, remarks, created_at").eq("batch_id", batch_id).execute()
         logs_res = (
             client.table("upload_pipeline_logs")
             .select("log_id, batch_id, step, status, message, logged_at")

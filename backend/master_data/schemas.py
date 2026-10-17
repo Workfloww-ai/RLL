@@ -94,6 +94,7 @@ class DepotResponse(DepotBase):
     headquarters_name: Optional[str] = "Unassigned"
     assigned_user_id: Optional[str] = None
     depot_user: Optional[str] = "Unassigned"
+    depot_user_role: Optional[str] = "ASE"
     depot_user_email: Optional[str] = None
     hq_user: Optional[str] = "Unassigned"
     hq_user_email: Optional[str] = None

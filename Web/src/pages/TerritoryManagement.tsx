@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { API_BASE_URL } from "../lib/api";
+import { API_BASE_URL } from "../config";
 import { useToast } from "../contexts/ToastContext";
 import { useSystemLock } from "../contexts/SystemLockContext";
 import { 
   Search, Filter, Edit2, Check, X, MapPin, Trash2, RefreshCw, 
-  ChevronLeft, ChevronRight, ArrowUpDown, ChevronUp, ChevronDown, RotateCcw,
+  ChevronLeft, ChevronRight, ArrowUpDown, ChevronUp, ChevronDown,
   User as UserIcon, Building2, Shield, Plus, CheckCircle2, AlertCircle, Info
 } from "lucide-react";
 
@@ -71,18 +71,21 @@ export default function TerritoryManagement() {
 
   const { showToast } = useToast();
 
-  const token = localStorage.getItem("token");
-
   const fetchData = async () => {
     setLoading(true);
     try {
-      const headers = { Authorization: `Bearer ${token}` };
+      const token = localStorage.getItem("token");
+      const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
       
       const [depotsRes, hqRes, usersRes] = await Promise.all([
         fetch(`${API_BASE_URL}/master-data/depots`, { headers }),
         fetch(`${API_BASE_URL}/master-data/headquarters`, { headers }),
         fetch(`${API_BASE_URL}/users/`, { headers })
       ]);
+
+      if (!depotsRes.ok) {
+        console.error(`Depots fetch returned status ${depotsRes.status}`);
+      }
 
       let fetchedUsers: UserOption[] = [];
       if (usersRes.ok) {
@@ -100,6 +103,7 @@ export default function TerritoryManagement() {
 
       if (depotsRes.ok) {
         const depotsData = await depotsRes.json();
+        if (Array.isArray(depotsData)) {
 
         // Extract master list of unique depots for editing dropdown & filtering
         const uniqueDepotMap = new Map<string, { depot_id: string | number; name: string; headquarters_id?: string | number | null }>();
@@ -175,11 +179,14 @@ export default function TerritoryManagement() {
         });
 
         setDepots(expandedDepots);
+        }
       }
 
       if (hqRes.ok) {
         const hqData = await hqRes.json();
-        setHeadquartersList(hqData);
+        if (Array.isArray(hqData)) {
+          setHeadquartersList(hqData);
+        }
       }
     } catch (error) {
       console.error("Error fetching territory data:", error);
@@ -328,11 +335,12 @@ export default function TerritoryManagement() {
         assigned_user_id: editUserId && editUserId !== "Unassigned" ? editUserId : null
       };
 
+      const token = localStorage.getItem("token");
       const res = await fetch(`${API_BASE_URL}/master-data/depots/${targetDepotId}`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
         },
         body: JSON.stringify(payload)
       });
@@ -416,9 +424,10 @@ export default function TerritoryManagement() {
     if (!confirm("Are you sure you want to delete this depot record?")) return;
 
     try {
+      const token = localStorage.getItem("token");
       const res = await fetch(`${API_BASE_URL}/master-data/depots/${depotId}`, {
         method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` }
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
 
       if (res.ok) {
@@ -528,11 +537,15 @@ export default function TerritoryManagement() {
         </div>
 
         <button
-          onClick={resetFilters}
-          className="ml-auto flex items-center gap-1 text-[11px] font-bold text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
-          title="Reset Filters"
+          onClick={() => {
+            showToast("Refreshing territory records from database...", "info");
+            fetchData();
+          }}
+          disabled={loading}
+          className="ml-auto flex items-center gap-1 text-[11px] font-bold text-slate-600 hover:text-[#0D3B8E] transition-colors cursor-pointer"
+          title="Reload from Database"
         >
-          <RotateCcw className="w-3 h-3" /> Reset
+          <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} /> Refresh
         </button>
       </div>
 

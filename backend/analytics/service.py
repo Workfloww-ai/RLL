@@ -35,7 +35,7 @@ class AnalyticsService:
         # Target date (defaults to latest available sale_date in DB if not provided)
         if not to_date:
             try:
-                max_res = client.table("dashboard_summary_daily").select("sale_date").order("sale_date", desc=True).limit(1).execute()
+                max_res = client.table("sales_daily_summary").select("sale_date").order("sale_date", desc=True).limit(1).execute()
                 if max_res.data and max_res.data[0].get("sale_date"):
                     target_date_str = max_res.data[0]["sale_date"]
                 else:
@@ -115,8 +115,8 @@ class AnalyticsService:
 
             while True:
                 query = (
-                    client.table("dashboard_summary_daily")
-                    .select("sale_date, depot_id, brand_id, total_case, total_btl, total_bl")
+                    client.table("sales_daily_summary")
+                    .select("sale_date, depot_id, brand_id, total_cases, total_bottles, total_bl")
                     .gte("sale_date", start_date)
                     .lte("sale_date", end_date)
                 )
@@ -154,8 +154,8 @@ class AnalyticsService:
     ) -> Dict[str, Any]:
         """
         Hybrid YTD Algorithm:
-        - Completed Months (dashboard_summary_monthly) from FY Start (April 1) to previous month.
-        - Current Partial Month (dashboard_summary_daily) from 1st of current month to target_date.
+        - Completed Months (sales_monthly_summary) from FY Start (April 1) to previous month.
+        - Current Partial Month (sales_daily_summary) from 1st of current month to target_date.
         """
         # Determine Financial Year Start (April 1)
         if target_date.month >= 4:
@@ -172,13 +172,13 @@ class AnalyticsService:
             return self._empty_response("ytd", fy_start_date.strftime("%Y-%m-%d"), target_date.strftime("%Y-%m-%d"))
 
         try:
-            # 1. Fetch Completed Months from dashboard_summary_monthly
+            # 1. Fetch Completed Months from sales_monthly_summary
             if current_month_start > fy_start_date:
                 offset = 0
                 while True:
                     m_query = (
-                        client.table("dashboard_summary_monthly")
-                        .select("month_start, depot_id, brand_id, total_case, total_btl, total_bl")
+                        client.table("sales_monthly_summary")
+                        .select("month_start, depot_id, brand_id, total_cases, total_bottles, total_bl")
                         .gte("month_start", fy_start_date.strftime("%Y-%m-%d"))
                         .lt("month_start", current_month_start.strftime("%Y-%m-%d"))
                     )
@@ -202,12 +202,12 @@ class AnalyticsService:
                     else:
                         break
 
-            # 2. Fetch Current Partial Month from dashboard_summary_daily
+            # 2. Fetch Current Partial Month from sales_daily_summary
             offset = 0
             while True:
                 d_query = (
-                    client.table("dashboard_summary_daily")
-                    .select("sale_date, depot_id, brand_id, total_case, total_btl, total_bl")
+                    client.table("sales_daily_summary")
+                    .select("sale_date, depot_id, brand_id, total_cases, total_bottles, total_bl")
                     .gte("sale_date", current_month_start.strftime("%Y-%m-%d"))
                     .lte("sale_date", target_date.strftime("%Y-%m-%d"))
                 )
@@ -253,8 +253,8 @@ class AnalyticsService:
         client: Any
     ) -> Dict[str, Any]:
         """Aggregates rows by brand and company for API consumption."""
-        total_cases = sum(float(r.get("total_case") or 0) for r in rows)
-        total_bottles = sum(float(r.get("total_btl") or 0) for r in rows)
+        total_cases = sum(float(r.get("total_cases") or r.get("total_case") or 0) for r in rows)
+        total_bottles = sum(float(r.get("total_bottles") or r.get("total_btl") or 0) for r in rows)
         total_bl = sum(float(r.get("total_bl") or 0) for r in rows)
 
         # Brand-wise Aggregation
@@ -270,8 +270,8 @@ class AnalyticsService:
                     "total_bottles": 0.0,
                     "total_bl": 0.0
                 }
-            brand_stats[b_id]["total_cases"] += float(r.get("total_case") or 0)
-            brand_stats[b_id]["total_bottles"] += float(r.get("total_btl") or 0)
+            brand_stats[b_id]["total_cases"] += float(r.get("total_cases") or r.get("total_case") or 0)
+            brand_stats[b_id]["total_bottles"] += float(r.get("total_bottles") or r.get("total_btl") or 0)
             brand_stats[b_id]["total_bl"] += float(r.get("total_bl") or 0)
 
         # Fetch Brand & Company details from Master Tables

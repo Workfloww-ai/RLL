@@ -297,8 +297,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
                               </span>
                             </button>
                           );
-                        }
-                      ))}
+                        })}
                     </div>
                   </div>
                 )}

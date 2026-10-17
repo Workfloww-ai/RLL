@@ -122,7 +122,7 @@ def get_upload_cooldown_status() -> Dict[str, Any]:
         client = get_supabase()
         if client:
             res = client.table("upload_batches").select(
-                "batch_id, source_file, file_name, created_at, updated_at, status, upload_status"
+                "batch_id, source_file, created_at, updated_at, status"
             ).in_("status", ["loaded", "completed", "success"]).order("created_at", desc=True).limit(1).execute()
 
             if res.data and len(res.data) > 0:
