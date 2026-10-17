@@ -3,7 +3,7 @@ import FileUpload from '../components/FileUpload';
 import UploadErrorViewer from '../components/UploadErrorViewer';
 import { API_BASE_URL } from '../config';
 import { useSystemLock } from '../contexts/SystemLockContext';
-import { Clock } from 'lucide-react';
+import { Clock, RefreshCw } from 'lucide-react';
 
 interface LatestUpload {
   lastUploadFormatted: string;
@@ -25,6 +25,26 @@ export default function StockUpload() {
     remarksText: '100% DATA ACCURACY • 550,153 RECORDS VERIFIED'
   });
 
+  const handleUploadStart = (fileName: string) => {
+    const createdAt = new Date();
+    const formattedDate = createdAt.toLocaleString('en-US', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true
+    });
+    const uploaderName = localStorage.getItem('user_name') || 'Admin User';
+    setLatestUpload({
+      lastUploadFormatted: formattedDate,
+      uploaderInfo: `${fileName} (${uploaderName})`,
+      recordsCountFormatted: 'Processing...',
+      status: 'PROCESSING',
+      remarksText: 'Uploading, validating, and ingesting sheet records into database...'
+    });
+  };
+
   const fetchLatestBatch = async () => {
     try {
       const token = localStorage.getItem('token');
@@ -44,8 +64,9 @@ export default function StockUpload() {
           }) : '08 Aug 2026, 12:04 PM';
 
           const statusLower = (data.upload_status || data.status || '').toLowerCase();
-          const isFailed = statusLower === 'failed' || statusLower === 'interrupted' || statusLower === 'error';
-          const isSuccess = !isFailed && (['success', 'loaded', 'completed'].includes(statusLower) || (data.imported_rows > 0 && !isFailed));
+          const isProcessing = ['processing', 'queued', 'running', 'validating', 'aggregating', 'uploading'].includes(statusLower);
+          const isFailed = !isProcessing && (statusLower === 'failed' || statusLower === 'interrupted' || statusLower === 'error');
+          const isSuccess = !isProcessing && !isFailed && (['success', 'loaded', 'completed'].includes(statusLower) || (data.imported_rows > 0 && !isFailed));
           const imported = isSuccess ? (data.imported_rows || data.total_rows || 0) : 0;
 
           const fileName = data.source_file || data.file_name || 'IMFL Ind. May-26.xlsb';
@@ -55,9 +76,11 @@ export default function StockUpload() {
           setLatestUpload({
             lastUploadFormatted: formattedDate,
             uploaderInfo: uploaderInfo,
-            recordsCountFormatted: isSuccess ? imported.toLocaleString() : '0',
-            status: isSuccess ? 'SUCCESS' : (statusLower === 'processing' ? 'PROCESSING' : 'FAILED'),
-            remarksText: isSuccess ? `${imported.toLocaleString()} RECORDS VERIFIED & SAVED` : (data.remarks || 'Ingestion Failed: Execution stopped & rolled back.')
+            recordsCountFormatted: isSuccess ? imported.toLocaleString() : (isProcessing ? 'Processing...' : '0'),
+            status: isProcessing ? 'PROCESSING' : (isSuccess ? 'SUCCESS' : 'FAILED'),
+            remarksText: isProcessing 
+              ? (data.remarks || 'Uploading, validating, and ingesting sheet records into database...')
+              : (isSuccess ? `${imported.toLocaleString()} RECORDS VERIFIED & SAVED` : (data.remarks || 'Ingestion Failed: Execution stopped & rolled back.'))
           });
         }
       }
@@ -111,19 +134,31 @@ export default function StockUpload() {
           "Maximum file size: 30MB.",
           "System handles duplicate removal automatically based on Timestamp."
         ]}
+        onUploadStart={handleUploadStart}
         onUploadComplete={() => {
           fetchLatestBatch();
           setErrorRefreshTrigger(prev => prev + 1);
         }}
         onErrorOccurred={(batchId) => {
           if (batchId) setActiveErrorBatchId(String(batchId));
+          fetchLatestBatch();
           setErrorRefreshTrigger(prev => prev + 1);
         }}
       />
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
         <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-2xs hover:shadow-xs transition-shadow">
-          <h3 className="text-[10px] font-bold text-[#0D3B8E] uppercase tracking-wider mb-2">Last Upload</h3>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-[10px] font-bold text-[#0D3B8E] uppercase tracking-wider">
+              {latestUpload.status === 'PROCESSING' ? 'Current Upload' : 'Last Upload'}
+            </h3>
+            {latestUpload.status === 'PROCESSING' && (
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-blue-100 text-[#0D3B8E] animate-pulse">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#0D3B8E] animate-ping" />
+                IN PROGRESS
+              </span>
+            )}
+          </div>
           <p className="text-xl font-bold text-slate-900">{latestUpload.lastUploadFormatted}</p>
           <p className="text-xs text-slate-400 font-medium mt-1 truncate" title={latestUpload.uploaderInfo}>
             {latestUpload.uploaderInfo}
@@ -133,15 +168,26 @@ export default function StockUpload() {
         <div className={`rounded-2xl border p-6 shadow-2xs hover:shadow-xs transition-all ${
           latestUpload.status === 'FAILED' 
             ? 'bg-rose-50/40 border-rose-200' 
-            : 'bg-white border-slate-200/80'
+            : latestUpload.status === 'PROCESSING'
+              ? 'bg-blue-50/40 border-blue-200'
+              : 'bg-white border-slate-200/80'
         }`}>
-          <h3 className={`text-[10px] font-bold uppercase tracking-wider mb-2 ${
-            latestUpload.status === 'FAILED' ? 'text-rose-700' : 'text-[#0D3B8E]'
-          }`}>
-            Records Processed
-          </h3>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className={`text-[10px] font-bold uppercase tracking-wider ${
+              latestUpload.status === 'FAILED' ? 'text-rose-700' : 'text-[#0D3B8E]'
+            }`}>
+              Records Processed
+            </h3>
+            {latestUpload.status === 'PROCESSING' && (
+              <RefreshCw className="w-3.5 h-3.5 text-[#0D3B8E] animate-spin" />
+            )}
+          </div>
           <p className={`text-xl font-bold ${
-            latestUpload.status === 'FAILED' ? 'text-rose-950' : 'text-slate-900'
+            latestUpload.status === 'FAILED' 
+              ? 'text-rose-950' 
+              : latestUpload.status === 'PROCESSING'
+                ? 'text-[#0D3B8E]'
+                : 'text-slate-900'
           }`}>
             {latestUpload.status === 'SUCCESS' && `${latestUpload.recordsCountFormatted} Records`}
             {latestUpload.status === 'PROCESSING' && 'Processing Data...'}
@@ -149,9 +195,17 @@ export default function StockUpload() {
             {latestUpload.status === 'NONE' && 'No Upload Data'}
           </p>
           <p className={`text-xs font-medium mt-1 truncate ${
-            latestUpload.status === 'FAILED' ? 'text-rose-800' : 'text-slate-400'
+            latestUpload.status === 'FAILED' 
+              ? 'text-rose-800' 
+              : latestUpload.status === 'PROCESSING'
+                ? 'text-[#0D3B8E] font-semibold'
+                : 'text-slate-400'
           }`}>
-            {latestUpload.status === 'SUCCESS' ? '100% Data Accuracy • All Records Verified & Saved' : latestUpload.remarksText}
+            {latestUpload.status === 'SUCCESS' 
+              ? '100% Data Accuracy • All Records Verified & Saved' 
+              : (latestUpload.status === 'PROCESSING'
+                  ? (latestUpload.remarksText || 'Uploading, validating, and ingesting sheet records into database...')
+                  : latestUpload.remarksText)}
           </p>
         </div>
       </div>

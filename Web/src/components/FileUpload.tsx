@@ -11,6 +11,7 @@ interface FileUploadProps {
   instructions: string[];
   accept?: string;
   uploadEndpoint?: string;
+  onUploadStart?: (fileName: string) => void;
   onUploadComplete?: (fileName: string) => void;
   onErrorOccurred?: (batchId?: string | number) => void;
 }
@@ -62,7 +63,7 @@ function formatLaymanShortError(msg: string): string {
   return rowNum ? `${rowNum}: ${cleanMsg}` : cleanMsg;
 }
 
-export default function FileUpload({ title, instructions, accept = ".xlsx, .xls, .xlsb, .csv, .numbers", uploadEndpoint, onUploadComplete, onErrorOccurred }: FileUploadProps) {
+export default function FileUpload({ title, instructions, accept = ".xlsx, .xls, .xlsb, .csv, .numbers", uploadEndpoint, onUploadStart, onUploadComplete, onErrorOccurred }: FileUploadProps) {
   const { 
     isLocked, 
     lockType, 
@@ -121,6 +122,12 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
     }
     return { status: 'idle', progress: 0 };
   });
+
+  useEffect(() => {
+    if ((uploadState.status === 'uploading' || uploadState.status === 'processing') && uploadState.fileName && onUploadStart) {
+      onUploadStart(uploadState.fileName);
+    }
+  }, []);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -600,6 +607,10 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
       second: '2-digit',
       hour12: true
     });
+
+    if (onUploadStart) {
+      onUploadStart(file.name);
+    }
 
     setUploadState({
       status: 'uploading',

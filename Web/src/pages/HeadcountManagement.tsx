@@ -88,6 +88,7 @@ export default function HeadcountManagement() {
   const [editIsActive, setEditIsActive] = useState(true);
   const [editHeadquartersIds, setEditHeadquartersIds] = useState<string[]>([]);
   const [headquartersOptions, setHeadquartersOptions] = useState<{ headquarters_id: string; name: string }[]>([]);
+  const [savingId, setSavingId] = useState<string | null>(null);
 
   type SortField = 'name' | 'phoneNumber' | 'email' | 'role' | 'reportingManager' | 'isActive';
   type SortDirection = 'asc' | 'desc';
@@ -229,7 +230,7 @@ export default function HeadcountManagement() {
     setEditPhone(user.phoneNumber || "");
     setEditEmail(user.email || "");
     setEditRole(user.role || 'Territory Executive');
-    setEditReportingManager(user.reportingManager || "");
+    setEditReportingManager(user.reportingManager && user.reportingManager !== 'Unassigned' ? user.reportingManager : '');
     setEditIsActive(user.isActive ?? true);
     const initialHqIds = (user.headquarters_ids && user.headquarters_ids.length > 0)
       ? user.headquarters_ids
@@ -299,12 +300,18 @@ export default function HeadcountManagement() {
       return;
     }
 
+    const selectedMgr = managerOptions.find(
+      (m) => m.name.trim().toLowerCase() === editReportingManager.trim().toLowerCase()
+    );
+
     const updatedPayload = {
       name: editName.trim(),
       phone: cleanPhone,
       phoneNumber: cleanPhone,
       email: editEmail.trim(),
       role: editRole,
+      manager_id: selectedMgr?.id || null,
+      managerId: selectedMgr?.id || null,
       reportingManager: editReportingManager ? editReportingManager.trim() : 'Unassigned',
       reporting_manager: editReportingManager ? editReportingManager.trim() : 'Unassigned',
       isActive: editIsActive,
@@ -312,6 +319,7 @@ export default function HeadcountManagement() {
       headquarters_ids: editHeadquartersIds,
     };
 
+    setSavingId(userId);
     try {
       const token = localStorage.getItem('token');
       const res = await fetch(`${API_BASE_URL}/users/${userId}`, {
@@ -334,6 +342,8 @@ export default function HeadcountManagement() {
     } catch (err) {
       console.error('Error updating user on backend:', err);
       showToast('Network error while saving.', 'error');
+    } finally {
+      setSavingId(null);
     }
   };
 
@@ -384,8 +394,10 @@ export default function HeadcountManagement() {
       email: newUser.email.trim(),
       role: newUser.role,
       circleName: 'Unassigned',
-      reportingManager: newUser.reportingManager ? newUser.reportingManager.trim() : 'Unassigned',
-      reporting_manager: newUser.reportingManager ? newUser.reportingManager.trim() : 'Unassigned',
+      manager_id: managerOptions.find(m => m.name.trim().toLowerCase() === (newUser.reportingManager || '').trim().toLowerCase())?.id || null,
+      managerId: managerOptions.find(m => m.name.trim().toLowerCase() === (newUser.reportingManager || '').trim().toLowerCase())?.id || null,
+      reportingManager: newUser.reportingManager && newUser.reportingManager !== 'Unassigned' ? newUser.reportingManager.trim() : 'Unassigned',
+      reporting_manager: newUser.reportingManager && newUser.reportingManager !== 'Unassigned' ? newUser.reportingManager.trim() : 'Unassigned',
       is_active: newUser.isActive,
       headquarters_ids: newUser.headquarters_ids || [],
     };
@@ -425,6 +437,57 @@ export default function HeadcountManagement() {
       }
     });
     return Array.from(managers).sort();
+  }, [users]);
+
+  // Comprehensive manager options for dropdowns (prioritizes TSMs, Leaders, and Admins)
+  const managerOptions = useMemo(() => {
+    const list: { id: string; name: string; role: string }[] = [];
+    const seen = new Set<string>();
+
+    // 1. All users with managerial or leadership roles
+    users.forEach((u) => {
+      if (!u || !u.name) return;
+      const r = (u.role || '').toUpperCase();
+      const isMgr = r.includes('TSM') || r.includes('LEAD') || r.includes('ADMIN') || r.includes('SUPERVISOR') || r.includes('MANAGER') || r.includes('ASM');
+      if (isMgr && !seen.has(u.name.toLowerCase().trim())) {
+        seen.add(u.name.toLowerCase().trim());
+        list.push({ id: u.id, name: u.name.trim(), role: u.role });
+      }
+    });
+
+    // 2. Any other users currently designated as reportingManager
+    users.forEach((u) => {
+      if (u.reportingManager && u.reportingManager !== 'Unassigned') {
+        const key = u.reportingManager.toLowerCase().trim();
+        if (!seen.has(key)) {
+          seen.add(key);
+          const matched = users.find(x => x.name.toLowerCase().trim() === key);
+          list.push({
+            id: matched ? matched.id : '',
+            name: u.reportingManager.trim(),
+            role: matched ? matched.role : 'Manager'
+          });
+        }
+      }
+    });
+
+    // 3. Any remaining active personnel
+    users.forEach((u) => {
+      if (!u || !u.name) return;
+      const key = u.name.toLowerCase().trim();
+      if (!seen.has(key)) {
+        seen.add(key);
+        list.push({ id: u.id, name: u.name.trim(), role: u.role });
+      }
+    });
+
+    return list.sort((a, b) => {
+      const aIsMgr = /TSM|LEAD|ADMIN|MANAGER/i.test(a.role);
+      const bIsMgr = /TSM|LEAD|ADMIN|MANAGER/i.test(b.role);
+      if (aIsMgr && !bIsMgr) return -1;
+      if (!aIsMgr && bIsMgr) return 1;
+      return a.name.localeCompare(b.name);
+    });
   }, [users]);
 
   const uniqueRoles = useMemo(() => {
@@ -775,13 +838,18 @@ export default function HeadcountManagement() {
               <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
                 Reporting Manager <span className="text-slate-400 font-normal lowercase">(optional)</span>
               </label>
-              <input 
-                type="text" 
-                value={newUser.reportingManager}
-                onChange={(e) => setNewUser({...newUser, reportingManager: e.target.value})}
-                placeholder="Manager Name"
+              <select 
+                value={newUser.reportingManager === 'Unassigned' ? '' : newUser.reportingManager}
+                onChange={(e) => setNewUser({...newUser, reportingManager: e.target.value || 'Unassigned'})}
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:border-[#0D3B8E]"
-              />
+              >
+                <option value="">Unassigned (No Manager)</option>
+                {managerOptions.map((m) => (
+                  <option key={m.id || m.name} value={m.name}>
+                    {m.name} ({m.role})
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="md:col-span-3">
               <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
@@ -982,6 +1050,10 @@ export default function HeadcountManagement() {
                             type="text"
                             value={editName}
                             onChange={(e) => setEditName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleSave(user.id);
+                              if (e.key === 'Escape') handleCancel();
+                            }}
                             className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
                           />
                         ) : (
@@ -1001,6 +1073,10 @@ export default function HeadcountManagement() {
                             type="text"
                             value={editPhone}
                             onChange={(e) => setEditPhone(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleSave(user.id);
+                              if (e.key === 'Escape') handleCancel();
+                            }}
                             className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
                           />
                         ) : (
@@ -1018,6 +1094,10 @@ export default function HeadcountManagement() {
                             type="email"
                             value={editEmail}
                             onChange={(e) => setEditEmail(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleSave(user.id);
+                              if (e.key === 'Escape') handleCancel();
+                            }}
                             className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
                           />
                         ) : (
@@ -1111,12 +1191,20 @@ export default function HeadcountManagement() {
                       {/* Reporting Manager */}
                       <td className="px-2.5 py-2">
                         {editingId === user.id ? (
-                          <input
-                            type="text"
+                          <select
                             value={editReportingManager}
                             onChange={(e) => setEditReportingManager(e.target.value)}
-                            className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
-                          />
+                            className="w-full px-1.5 py-1 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
+                          >
+                            <option value="">Unassigned</option>
+                            {managerOptions
+                              .filter((m) => m.id !== user.id && m.name.toLowerCase() !== user.name.toLowerCase())
+                              .map((m) => (
+                                <option key={m.id || m.name} value={m.name}>
+                                  {m.name} ({m.role})
+                                </option>
+                              ))}
+                          </select>
                         ) : (
                           <p className={`text-xs font-bold truncate ${!user.reportingManager || user.reportingManager === "Unassigned" ? "text-slate-400 italic" : "text-slate-700"}`}>
                             {user.reportingManager || "Unassigned"}
@@ -1179,19 +1267,34 @@ export default function HeadcountManagement() {
                         {editingId === user.id ? (
                           <div className="inline-flex items-center justify-end gap-1.5 whitespace-nowrap">
                             <button
-                              disabled={isLocked}
+                              type="button"
+                              disabled={isLocked || savingId === user.id}
+                              onMouseDown={(e) => e.preventDefault()}
                               onClick={() => handleSave(user.id)}
-                              className="p-1 bg-emerald-50 text-emerald-600 rounded hover:bg-emerald-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              className={`w-7 h-7 inline-flex items-center justify-center rounded-lg border transition-all select-none ${
+                                savingId === user.id
+                                  ? 'bg-emerald-100 border-emerald-300 text-emerald-700 cursor-wait'
+                                  : isLocked
+                                    ? 'opacity-50 cursor-not-allowed bg-emerald-50 border-emerald-200 text-emerald-400'
+                                    : 'bg-emerald-50 hover:bg-emerald-100 border-emerald-300 hover:border-emerald-500 text-emerald-600 hover:text-emerald-700 shadow-2xs hover:shadow-xs cursor-pointer active:scale-95'
+                              }`}
                               title="Save Changes"
                             >
-                              <Check className="w-4 h-4" />
+                              {savingId === user.id ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-600" />
+                              ) : (
+                                <Check className="w-4 h-4 stroke-[2.5]" />
+                              )}
                             </button>
                             <button
+                              type="button"
+                              disabled={savingId === user.id}
+                              onMouseDown={(e) => e.preventDefault()}
                               onClick={handleCancel}
-                              className="p-1 bg-slate-100 text-slate-600 rounded hover:bg-slate-200 transition-colors"
+                              className="w-7 h-7 inline-flex items-center justify-center rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-500 hover:text-slate-700 transition-all shadow-2xs hover:shadow-xs cursor-pointer active:scale-95"
                               title="Cancel"
                             >
-                              <X className="w-4 h-4" />
+                              <X className="w-4 h-4 stroke-[2.5]" />
                             </button>
                           </div>
                         ) : (

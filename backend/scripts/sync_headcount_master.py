@@ -184,8 +184,7 @@ def sync_headcount_master():
                         client.table("ase_tsm_mapping").insert({
                             "tsm_user_id": mgr_id,
                             "ase_user_id": u_id,
-                            "is_active": True,
-                            "ase_name": rec["full_name"]
+                            "is_active": True
                         }).execute()
                         tsm_ase_count += 1
                     except Exception as e_ins:

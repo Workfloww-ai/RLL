@@ -455,34 +455,18 @@ class UserService:
                     ur_res = client.table("user_roles").select("user_role_id").eq("user_id", user_id).eq("role_id", role_id).limit(1).execute()
                     user_role_id = ur_res.data[0]["user_role_id"] if ur_res.data else None
 
-            # 3. If manager exists, insert/update public.ase_tsm_mapping for valid TSM mappings
-            if manager_user_id:
+            # 3. If manager exists, insert/update public.ase_tsm_mapping
+            manager_param = payload.get("manager_id") or payload.get("managerId") or payload.get("reportingManager") or payload.get("reporting_manager")
+            if manager_param and str(manager_param).strip().lower() not in ("unassigned", "none", "null", ""):
                 try:
-                    mgr_ur_res = client.table("user_roles").select("user_role_id, role_id").eq("user_id", manager_user_id).limit(1).execute()
-                    mgr_role_id = mgr_ur_res.data[0]["user_role_id"] if (mgr_ur_res.data and len(mgr_ur_res.data) > 0) else None
-
-                    mgr_role_name = ""
-                    if mgr_ur_res.data and mgr_ur_res.data[0].get("role_id"):
-                        r_res = client.table("roles").select("role_name").eq("role_id", mgr_ur_res.data[0]["role_id"]).limit(1).execute()
-                        if r_res.data:
-                            mgr_role_name = str(r_res.data[0].get("role_name") or "").strip().upper()
-
-                    is_mgr_tsm = any(k in mgr_role_name for k in ["TSM", "ASM", "TERRITORY SALES MANAGER", "AREA SALES MANAGER"])
-                    is_self = (str(manager_user_id) == str(user_id))
-
-                    if is_self or is_mgr_tsm:
-                        # Delete any existing stale hierarchy rows for this user
+                    manager_user_id = self._resolve_manager_user_id(client, str(manager_param).strip())
+                    if manager_user_id:
                         client.table("ase_tsm_mapping").delete().eq("ase_user_id", user_id).execute()
                         client.table("ase_tsm_mapping").insert({
                             "ase_user_id": user_id,
                             "tsm_user_id": manager_user_id,
-                            "ase_user_role_id": user_role_id,
-                            "tsm_user_role_id": mgr_role_id,
                             "is_active": True
                         }).execute()
-                    else:
-                        # Manager is Leader/RSM or State Head: remove from ase_tsm_mapping to avoid treating Leader as TSM
-                        client.table("ase_tsm_mapping").delete().eq("ase_user_id", user_id).execute()
                 except Exception as mgr_err:
                     logger.warning(f"Could not update ase_tsm_mapping: {mgr_err}")
 
@@ -574,11 +558,12 @@ class UserService:
         if "is_active" in payload or "isActive" in payload:
             user_update["is_active"] = payload.get("is_active", payload.get("isActive"))
 
-        reporting_manager = payload.get("reportingManager") or payload.get("reporting_manager")
+        manager_param = payload.get("manager_id") or payload.get("managerId") or payload.get("reportingManager") or payload.get("reporting_manager")
+        has_manager_field = any(k in payload for k in ("manager_id", "managerId", "reportingManager", "reporting_manager"))
         manager_user_id = None
-        if reporting_manager:
-            if str(reporting_manager).strip().lower() not in ("unassigned", "none", "null", ""):
-                manager_user_id = self._resolve_manager_user_id(client, reporting_manager)
+        if has_manager_field and manager_param:
+            if str(manager_param).strip().lower() not in ("unassigned", "none", "null", ""):
+                manager_user_id = self._resolve_manager_user_id(client, str(manager_param).strip())
 
         try:
             if user_update:
@@ -597,37 +582,18 @@ class UserService:
                     ur_res = client.table("user_roles").upsert({"user_id": user_id, "role_id": role_id, "is_active": True}, on_conflict="user_id,role_id").execute()
                     user_role_id = ur_res.data[0]["user_role_id"] if ur_res.data else None
 
-            # Upsert into public.ase_tsm_mapping if manager resolved and is a valid TSM / self-mapping
-            if manager_user_id:
+            # Upsert or clear public.ase_tsm_mapping if manager field was provided
+            if has_manager_field:
                 try:
-                    if not user_role_id:
-                        ur_res = client.table("user_roles").select("user_role_id").eq("user_id", user_id).limit(1).execute()
-                        user_role_id = ur_res.data[0]["user_role_id"] if ur_res.data else None
-
-                    mgr_ur_res = client.table("user_roles").select("user_role_id, role_id").eq("user_id", manager_user_id).limit(1).execute()
-                    mgr_ur_id = mgr_ur_res.data[0]["user_role_id"] if (mgr_ur_res.data and len(mgr_ur_res.data) > 0) else None
-
-                    mgr_role_name = ""
-                    if mgr_ur_res.data and mgr_ur_res.data[0].get("role_id"):
-                        r_res = client.table("roles").select("role_name").eq("role_id", mgr_ur_res.data[0]["role_id"]).limit(1).execute()
-                        if r_res.data:
-                            mgr_role_name = str(r_res.data[0].get("role_name") or "").strip().upper()
-
-                    is_mgr_tsm = any(k in mgr_role_name for k in ["TSM", "ASM", "TERRITORY SALES MANAGER", "AREA SALES MANAGER"])
-                    is_self = (str(manager_user_id) == str(user_id))
-
-                    if is_self or is_mgr_tsm:
-                        # Delete any existing stale hierarchy rows for this user
+                    if manager_user_id:
                         client.table("ase_tsm_mapping").delete().eq("ase_user_id", user_id).execute()
                         client.table("ase_tsm_mapping").insert({
                             "ase_user_id": user_id,
                             "tsm_user_id": manager_user_id,
-                            "ase_user_role_id": user_role_id,
-                            "tsm_user_role_id": mgr_ur_id,
                             "is_active": True
                         }).execute()
                     else:
-                        # Manager is Leader/RSM or State Head: remove from ase_tsm_mapping to avoid treating Leader as TSM
+                        # Manager explicitly unassigned or cleared
                         client.table("ase_tsm_mapping").delete().eq("ase_user_id", user_id).execute()
                 except Exception as e:
                     logger.warning(f"Could not update ase_tsm_mapping during update_user: {e}")
@@ -1135,8 +1101,7 @@ class UserService:
                     client.table("ase_tsm_mapping").insert({
                         "ase_user_id": u_id,
                         "tsm_user_id": mgr_id,
-                        "ase_user_role_id": ase_ur_id,
-                        "tsm_user_role_id": tsm_ur_id
+                        "is_active": True
                     }).execute()
                     mappings_count += 1
 
