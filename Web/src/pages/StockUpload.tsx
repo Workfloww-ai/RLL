@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import FileUpload from '../components/FileUpload';
+import FileUpload, { formatFriendlyStatusMessage } from '../components/FileUpload';
 import UploadErrorViewer from '../components/UploadErrorViewer';
 import { API_BASE_URL } from '../config';
 import { useSystemLock } from '../contexts/SystemLockContext';
@@ -41,7 +41,7 @@ export default function StockUpload() {
       uploaderInfo: `${fileName} (${uploaderName})`,
       recordsCountFormatted: 'Processing...',
       status: 'PROCESSING',
-      remarksText: 'Uploading, validating, and ingesting sheet records into database...'
+      remarksText: 'Processing started: Uploading sheet...'
     });
   };
 
@@ -86,8 +86,8 @@ export default function StockUpload() {
             recordsCountFormatted: isSuccess ? `${imported.toLocaleString()} Records` : (isProcessing ? 'Processing...' : '0 Records'),
             status: isProcessing ? 'PROCESSING' : (isSuccess ? 'SUCCESS' : 'FAILED'),
             remarksText: isProcessing 
-              ? (data.remarks || 'Uploading, validating, and ingesting sheet records into database...')
-              : (isSuccess ? `${imported.toLocaleString()} RECORDS VERIFIED & SAVED` : (data.remarks || 'Ingestion Failed: Execution stopped & rolled back.'))
+              ? formatFriendlyStatusMessage(data.remarks || 'Processing: Validating and saving records...')
+              : (isSuccess ? `${imported.toLocaleString()} Records Verified & Saved` : formatFriendlyStatusMessage(data.remarks || 'Upload halted due to validation issues.'))
           });
         } else {
           setLatestUpload({
@@ -221,8 +221,8 @@ export default function StockUpload() {
             {latestUpload.status === 'SUCCESS' 
               ? '100% Data Accuracy • All Records Verified & Saved' 
               : (latestUpload.status === 'PROCESSING'
-                  ? (latestUpload.remarksText || 'Uploading, validating, and ingesting sheet records into database...')
-                  : latestUpload.remarksText)}
+                  ? formatFriendlyStatusMessage(latestUpload.remarksText || 'Processing: Validating and saving records...')
+                  : formatFriendlyStatusMessage(latestUpload.remarksText))}
           </p>
         </div>
       </div>

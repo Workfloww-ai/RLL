@@ -709,7 +709,7 @@ class ImportPipelineEngine:
                 "row_count": 0,
                 "imported_rows": 0,
                 "status": "queued",
-                "remarks": "File accepted and queued for processing.",
+                "remarks": "Processing started: File received and queued...",
             }
             if tenant_id:
                 payload["tenant_id"] = tenant_id
@@ -833,14 +833,16 @@ class ImportPipelineEngine:
                 local_batch["started_at"] = started_at_iso
                 local_batch["status"] = "running"
                 local_batch["upload_status"] = "running"
+                local_batch["remarks"] = "Processing started: Reading uploaded file..."
 
             self._update_batch(batch_id=batch_id, status="running")
+            self._update_batch_progress(batch_id, remarks="Processing started: Reading uploaded file...")
 
             self._pipeline_log(
                 batch_id=batch_id,
                 step="file_received",
                 status="started",
-                message=f"Processing {filename}",
+                message=f"Processing started: {filename}",
             )
 
             self._upload_original_file(
@@ -868,7 +870,7 @@ class ImportPipelineEngine:
 
             self._update_batch_progress(
                 batch_id,
-                remarks=f"File parsed ({total_rows} rows). Prefetching and bulk resolving master data...",
+                remarks=f"Processing started: {total_rows:,} rows fetched from sheet. Validating Records...",
             )
             if self.is_batch_cancelled(batch_id):
                 raise UploadCancelledException(f"Batch {batch_id} cancelled by user after file parsing.")
@@ -1030,6 +1032,10 @@ class ImportPipelineEngine:
 
             # 1. Stage Data into raw_sales_upload FIRST
             if raw_records:
+                self._update_batch_progress(
+                    batch_id,
+                    remarks=f"Preparing {total_rows:,} rows...",
+                )
                 self._bulk_insert(
                     table="raw_sales_upload",
                     records=raw_records,
@@ -1138,6 +1144,10 @@ class ImportPipelineEngine:
                 return None
 
             # 3. Comprehensive Row-by-Row Pre-Promotion Validation
+            self._update_batch_progress(
+                batch_id,
+                remarks=f"Validating: Checking employee hierarchy and master records...",
+            )
             validation_error_records = []
 
             # Trackers for 1:1 constraints across the dataset (1 ASE -> 1 HQ, 1 TSM -> 1 HQ, 1 ASE -> 1 TSM)
@@ -1145,7 +1155,14 @@ class ImportPipelineEngine:
             sheet_tsm_hqs: Dict[str, Dict[str, List[int]]] = {}
             sheet_ase_managers: Dict[str, Dict[str, List[int]]] = {}
 
+            val_progress_step = max(2000, total_rows // 4)
             for idx in range(total_rows):
+                if idx > 0 and (idx % val_progress_step == 0):
+                    pct_val = int((idx / total_rows) * 100)
+                    self._update_batch_progress(
+                        batch_id,
+                        remarks=f"Checking for validation errors: {idx:,}/{total_rows:,} rows verified ({pct_val}%)..."
+                    )
                 row_num = idx + 2  # Excel 1-indexed row number (header is row 1)
                 r_id = staged_raw_ids[idx] if idx < len(staged_raw_ids) else None
 
@@ -1733,7 +1750,7 @@ class ImportPipelineEngine:
                     logger.warning(f"Batch {batch_id}: Exception logging detailed validation errors: {e_err_log}")
 
                 first_err = validation_error_records[0]["error_message"]
-                failure_reason = f"Upload validation failed for {failed_rows} issue(s): {first_err}"
+                failure_reason = f"Validation issue detected: {failed_rows} record(s) need attention. First issue: {first_err}"
                 logger.warning(f"Batch {batch_id}: {failure_reason}")
 
                 # Rollback partial production writes (if any)
@@ -1756,6 +1773,7 @@ class ImportPipelineEngine:
                     status="failed",
                     row_count=total_rows,
                 )
+                self._update_batch_progress(batch_id, remarks=failure_reason)
 
                 self._pipeline_log(
                     batch_id=batch_id,
@@ -1781,6 +1799,10 @@ class ImportPipelineEngine:
 
             # 5. ATOMIC PROMOTION TO PRODUCTION (ALL VALIDATIONS PASSED)
             self._update_batch(batch_id=batch_id, status="validated")
+            self._update_batch_progress(
+                batch_id,
+                remarks=f"Validation successful! All {total_rows:,} rows verified with 0 errors. Saving to database...",
+            )
 
             # Bulk Insert Sales Fact Records
             if fact_records:
@@ -1822,6 +1844,7 @@ class ImportPipelineEngine:
                 
                 # Update status state to aggregating
                 self._update_batch(batch_id=batch_id, status="aggregating")
+                self._update_batch_progress(batch_id, remarks="Updating sales dashboard and analytics charts...")
 
                 from backend.analytics.incremental_engine import incremental_engine
                 from backend.analytics.validator import analytics_validator
@@ -1837,6 +1860,7 @@ class ImportPipelineEngine:
                 # Run validation check on primary affected date
                 if distinct_dates:
                     self._update_batch(batch_id=batch_id, status="validating")
+                    self._update_batch_progress(batch_id, remarks="Final verification: Checking dashboard figures...")
                     val_res = analytics_validator.validate_date_accuracy(target_date=str(distinct_dates[0]).split("T")[0])
                     if val_res.get("is_accurate"):
                         logger.info(f"Batch {batch_id}: Incremental analytics 100% verified accurate against legacy RPC.")
@@ -1868,6 +1892,7 @@ class ImportPipelineEngine:
             completed_at_iso = datetime.now().isoformat()
             distinct_dates_count = len(distinct_dates) if fact_records else 0
 
+            final_remarks = f"Upload completed successfully! {imported_rows:,} records verified and saved."
             if local_batch:
                 local_batch.update({
                     "total_rows": total_rows,
@@ -1887,11 +1912,9 @@ class ImportPipelineEngine:
                         "user_fact_inserts": len(fact_records) if fact_records else 0,
                         "summary_writes": len(distinct_dates) if fact_records else 0
                     },
-                    "remarks": (
-                        f"Processed {total_rows} rows in {processing_time}s. "
-                        f"Loaded {imported_rows}. Failed {failed_rows}."
-                    ),
+                    "remarks": final_remarks,
                 })
+            self._update_batch_progress(batch_id, remarks=final_remarks)
 
             self._pipeline_log(
                 batch_id=batch_id,
@@ -2913,8 +2936,20 @@ class ImportPipelineEngine:
         client = get_supabase()
         total_chunks = (len(records) + chunk_size - 1) // chunk_size
 
+        t_clean = (table or "").lower()
+        if "raw" in t_clean:
+            friendly_stage = "Preparing sales data"
+        elif "sales_fact" in t_clean:
+            friendly_stage = "Saving sales records"
+        elif "user_sales" in t_clean:
+            friendly_stage = "Updating user metrics"
+        elif "summary" in t_clean:
+            friendly_stage = "Updating analytics"
+        else:
+            friendly_stage = "Saving records"
+
         if batch_id:
-            msg_init = f"Bulk inserting {len(records)} rows ({total_chunks} chunks of max {chunk_size}) into table '{table}'."
+            msg_init = f"{friendly_stage} ({len(records):,} rows in {total_chunks} parts)..."
             self._pipeline_log(
                 batch_id=batch_id,
                 step=f"chunk_created_{table}",
@@ -2937,7 +2972,7 @@ class ImportPipelineEngine:
             start_time_iso = datetime.now().isoformat()
 
             pct = int((idx / total_chunks) * 100)
-            msg_progress = f"Ingesting {table}: chunk {idx}/{total_chunks} ({pct}% complete, rows {start_row}-{end_row})..."
+            msg_progress = f"{friendly_stage} ({idx}/{total_chunks}) • {pct}% complete..."
 
             # Always update local memory state for zero-latency UI polling
             local_batch = upload_batches_db.get(batch_id) if batch_id else None
@@ -3096,7 +3131,7 @@ class ImportPipelineEngine:
                     )
 
         if batch_id:
-            msg_finish = f"Completed bulk insert of {len(records)} rows into table '{table}'."
+            msg_finish = f"{friendly_stage} completed ({len(records):,} rows)."
             self._pipeline_log(
                 batch_id=batch_id,
                 step=f"chunk_completed_{table}",

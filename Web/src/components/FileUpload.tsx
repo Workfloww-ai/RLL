@@ -63,6 +63,22 @@ function formatLaymanShortError(msg: string): string {
   return rowNum ? `${rowNum}: ${cleanMsg}` : cleanMsg;
 }
 
+export function formatFriendlyStatusMessage(msg: string): string {
+  if (!msg) return 'Processing data...';
+  let clean = msg;
+  clean = clean.replace(/into table\s*['"][a-z0-9_]+['"]/gi, '');
+  clean = clean.replace(/table\s*['"][a-z0-9_]+['"]/gi, '');
+  clean = clean.replace(/raw_sales_upload/gi, 'sales data');
+  clean = clean.replace(/sales_fact/gi, 'sales records');
+  clean = clean.replace(/user_sales_fact/gi, 'user metrics');
+  clean = clean.replace(/dashboard_summary_daily/gi, 'analytics');
+  clean = clean.replace(/Completed bulk insert of/gi, 'Saved');
+  clean = clean.replace(/Bulk inserting/gi, 'Saving');
+  clean = clean.replace(/Ingesting\s+[a-z0-9_]+:/gi, 'Saving records:');
+  clean = clean.replace(/\s{2,}/g, ' ').trim();
+  return clean;
+}
+
 export default function FileUpload({ title, instructions, accept = ".xlsx, .xls, .xlsb, .csv, .numbers", uploadEndpoint, onUploadStart, onUploadComplete, onErrorOccurred }: FileUploadProps) {
   const { 
     isLocked, 
@@ -933,7 +949,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                     <Clock size={11} /> Started: {uploadState.uploadStartTime}
                   </p>
                 )}
-                <p className="text-xs text-slate-500 mb-3">{uploadState.statusMessage}</p>
+                <p className="text-xs text-slate-500 mb-3">{formatFriendlyStatusMessage(uploadState.statusMessage)}</p>
                 <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
                   <motion.div 
                     className="h-full bg-[#0D3B8E] rounded-full"
@@ -992,7 +1008,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                   </span>
                 </div>
 
-                <p className="text-xs text-slate-500 mt-1 max-w-md font-medium">{uploadState.statusMessage}</p>
+                <p className="text-xs text-slate-500 mt-1 max-w-md font-medium">{formatFriendlyStatusMessage(uploadState.statusMessage)}</p>
 
                 <button
                   type="button"

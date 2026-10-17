@@ -217,7 +217,7 @@ export default function Login({ onLogin }: LoginProps) {
           <img 
             src="/images/workfloww_logo.png" 
             alt="LucidX360 Logo" 
-            className="w-48 sm:w-52 h-auto max-h-36 object-contain filter drop-shadow-sm transition-transform duration-300 hover:scale-105" 
+            className="w-44 sm:w-48 h-auto max-h-32 object-contain transition-transform duration-300 hover:scale-105 select-none" 
           />
         </div>
         <h1 className="text-2xl font-bold tracking-tight text-slate-900 drop-shadow-xs">
