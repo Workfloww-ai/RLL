@@ -14,7 +14,7 @@ interface LatestUpload {
 }
 
 export default function StockUpload() {
-  const { isCooldownActive, formattedCooldown, formattedCooldownLong } = useSystemLock();
+  const { isCooldownActive, formattedCooldown, formattedCooldownLong, cooldownTotalSeconds, cooldownMessage } = useSystemLock();
   const [activeErrorBatchId, setActiveErrorBatchId] = useState<string>('all');
   const [errorRefreshTrigger, setErrorRefreshTrigger] = useState<number>(0);
   const [latestUpload, setLatestUpload] = useState<LatestUpload>({
@@ -132,13 +132,19 @@ export default function StockUpload() {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h4 className="text-sm font-bold text-slate-900">30-Minute Cooldown Active • System in Read-Only Mode</h4>
+                <h4 className="text-sm font-bold text-slate-900">
+                  {cooldownTotalSeconds <= 600 ? '10-Minute Rollback Buffer Active' : '30-Minute Cooldown Active • System in Read-Only Mode'}
+                </h4>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-200/90 text-amber-950 border border-amber-300">
                   READ-ONLY
                 </span>
               </div>
               <p className="text-xs text-slate-600 mt-1 font-medium leading-relaxed">
-                A 30-minute buffer is active after the last upload to ensure complete background database indexing and accuracy. Next upload and system updates will be enabled once the timer completes.
+                {cooldownMessage || (
+                  cooldownTotalSeconds <= 600
+                    ? 'A 10-minute rollback & purge buffer is active following a file validation issue. Next upload will be enabled once the timer completes.'
+                    : 'A 30-minute buffer is active after the last upload to ensure complete background database indexing and accuracy. Next upload and system updates will be enabled once the timer completes.'
+                )}
               </p>
             </div>
           </div>

@@ -532,7 +532,7 @@ class ImportPipelineEngine:
                 return db_active
             else:
                 # Database has no active batches - purge any stale in-memory active batches
-                active_statuses = {"queued", "running", "processing", "aggregating", "validating"}
+                active_statuses = {"queued", "running", "processing", "aggregating", "validating", "validated", "staged", "saving", "uploading"}
                 for b_id, batch in list(upload_batches_db.items()):
                     st = str(batch.get("status", "")).lower()
                     if st in active_statuses:
@@ -540,7 +540,7 @@ class ImportPipelineEngine:
                 return None
 
         # Fallback to local memory only if client is disconnected
-        active_statuses = {"queued", "running", "processing", "aggregating", "validating"}
+        active_statuses = {"queued", "running", "processing", "aggregating", "validating", "validated", "staged", "saving", "uploading"}
         now_ts = time.time()
         for b_id, batch in list(upload_batches_db.items()):
             if exclude_batch_id and str(b_id) == str(exclude_batch_id):
@@ -1065,7 +1065,7 @@ class ImportPipelineEngine:
             user_manager_by_id: Dict[str, str] = {}
             user_manager_id_by_id: Dict[str, str] = {}
             tsm_user_ids: Set[str] = set()
-            user_approved_hq_name_by_id: Dict[str, str] = {}
+            user_approved_hq_names_by_id: Dict[str, Set[str]] = {}
             hq_id_to_name: Dict[str, str] = {}
 
             if client:
@@ -1114,7 +1114,7 @@ class ImportPipelineEngine:
                                     user_manager_by_id[a_uid] = t_uid
                                     user_manager_id_by_id[a_uid] = t_uid
 
-                    # Fetch registered user headquarters for 1:1 validation (1 ASE -> 1 HQ, 1 TSM -> 1 HQ)
+                    # Fetch registered user headquarters supporting M:N assignments
                     hq_res = client.table("headquarters").select("headquarters_id, name").execute()
                     if hq_res and hq_res.data:
                         for h in hq_res.data:
@@ -1130,7 +1130,7 @@ class ImportPipelineEngine:
                                 uid = str(uhq.get("user_id") or "").strip()
                                 hid = str(uhq.get("headquarters_id") or "").strip()
                                 if uid and hid in hq_id_to_name:
-                                    user_approved_hq_name_by_id[uid] = hq_id_to_name[hid]
+                                    user_approved_hq_names_by_id.setdefault(uid, set()).add(hq_id_to_name[hid])
                 except Exception as e_um:
                     logger.warning(f"Batch {batch_id}: Exception fetching User Management hierarchy: {e_um}")
 
@@ -1214,12 +1214,13 @@ class ImportPipelineEngine:
                                 if app_tsm_u:
                                     approved_tsm_name_curr = user_name_by_id.get(app_tsm_u)
 
-                # Check registered DB Headquarters mismatch for ASE (1:1 constraint)
+                # Check registered DB Headquarters mismatch for ASE
                 if raw_ase and raw_ase.lower() not in ("unassigned", "none", "null", "nan", ""):
                     ase_uid = _resolve_user_id(raw_ase)
-                    if ase_uid and ase_uid in user_approved_hq_name_by_id:
-                        reg_hq = user_approved_hq_name_by_id[ase_uid]
-                        if clean_hq_norm and clean_hq_norm != reg_hq.upper():
+                    if ase_uid and ase_uid in user_approved_hq_names_by_id:
+                        reg_hqs = user_approved_hq_names_by_id[ase_uid]
+                        if clean_hq_norm and clean_hq_norm not in reg_hqs:
+                            expected_str = ", ".join(sorted(list(reg_hqs)))
                             validation_error_records.append({
                                 "upload_batch_id": str(batch_id),
                                 "batch_id": str(batch_id),
@@ -1230,7 +1231,7 @@ class ImportPipelineEngine:
                                 "field_name": "H.Q.",
                                 "column_name": "hq_raw",
                                 "actual_value": raw_hq,
-                                "expected_value": reg_hq,
+                                "expected_value": expected_str,
                                 "ase": raw_ase,
                                 "asm_tsm": raw_asm,
                                 "approved_asm_tsm": approved_tsm_name_curr,
@@ -1240,16 +1241,17 @@ class ImportPipelineEngine:
                                 "company": raw_company,
                                 "brand": raw_brand,
                                 "raw_id": r_id,
-                                "error_message": f"[Row #{row_num}] HQ_MISMATCH_FOR_ASE: ASE '{raw_ase}' is registered under '{reg_hq}' in User Management, but the uploaded sales record specifies '{raw_hq}'.",
-                                "resolution": f"Update sales record to specify registered HQ '{reg_hq}' or reassign Headquarters in User Management."
+                                "error_message": f"[Row #{row_num}] HQ_MISMATCH_FOR_ASE: ASE '{raw_ase}' is registered under '{expected_str}' in User Management, but the uploaded sales record specifies '{raw_hq}'.",
+                                "resolution": f"Update sales record to specify an approved HQ ({expected_str}) or reassign Headquarters in User Management."
                             })
 
-                # Check registered DB Headquarters mismatch for TSM (1:1 constraint)
+                # Check registered DB Headquarters mismatch for TSM
                 if raw_asm and raw_asm.lower() not in ("unassigned", "none", "null", "nan", ""):
                     tsm_uid = _resolve_user_id(raw_asm)
-                    if tsm_uid and tsm_uid in user_approved_hq_name_by_id:
-                        reg_hq = user_approved_hq_name_by_id[tsm_uid]
-                        if clean_hq_norm and clean_hq_norm != reg_hq.upper():
+                    if tsm_uid and tsm_uid in user_approved_hq_names_by_id:
+                        reg_hqs = user_approved_hq_names_by_id[tsm_uid]
+                        if clean_hq_norm and clean_hq_norm not in reg_hqs:
+                            expected_str = ", ".join(sorted(list(reg_hqs)))
                             validation_error_records.append({
                                 "upload_batch_id": str(batch_id),
                                 "batch_id": str(batch_id),
@@ -1260,7 +1262,7 @@ class ImportPipelineEngine:
                                 "field_name": "H.Q.",
                                 "column_name": "hq_raw",
                                 "actual_value": raw_hq,
-                                "expected_value": reg_hq,
+                                "expected_value": expected_str,
                                 "ase": raw_ase,
                                 "asm_tsm": raw_asm,
                                 "approved_asm_tsm": approved_tsm_name_curr,
@@ -1270,8 +1272,8 @@ class ImportPipelineEngine:
                                 "company": raw_company,
                                 "brand": raw_brand,
                                 "raw_id": r_id,
-                                "error_message": f"[Row #{row_num}] HQ_MISMATCH_FOR_TSM: TSM '{raw_asm}' is registered under '{reg_hq}' in User Management, but the uploaded sales record specifies '{raw_hq}'.",
-                                "resolution": f"Update sales record to specify registered HQ '{reg_hq}' or reassign Headquarters in User Management."
+                                "error_message": f"[Row #{row_num}] HQ_MISMATCH_FOR_TSM: TSM '{raw_asm}' is registered under '{expected_str}' in User Management, but the uploaded sales record specifies '{raw_hq}'.",
+                                "resolution": f"Update sales record to specify an approved HQ ({expected_str}) or reassign Headquarters in User Management."
                             })
 
                 # A0. Validate Sale Date Field
@@ -1619,10 +1621,13 @@ class ImportPipelineEngine:
                                             "resolution": "Update sales record to specify approved ASM/TSM or reassign mapping in User Management."
                                         })
 
-            # 3b. Validate Intra-Sheet 1:1 Constraints Across the Uploaded Sheet:
-            # 1. An ASE must belong to at most 1 Headquarter across the uploaded dataset
+            # 3b. Validate Intra-Sheet Consistency Across the Uploaded Sheet:
+            # 1. An ASE must belong to their registered Headquarters across the uploaded dataset
             for ase_name, hq_dict in sheet_ase_hqs.items():
-                if len(hq_dict) > 1:
+                ase_uid = _resolve_user_id(ase_name)
+                approved_hqs = user_approved_hq_names_by_id.get(ase_uid, set()) if ase_uid else set()
+                # If ASE is mapped to multiple HQs, verify they are within their approved HQs
+                if len(hq_dict) > 1 and len(approved_hqs) <= 1:
                     sorted_hqs = sorted(list(hq_dict.keys()))
                     sample_details = ", ".join([f"Row #{rows[0]} ({h})" for h, rows in hq_dict.items()][:5])
                     for hq_val, row_nums in hq_dict.items():
@@ -1639,7 +1644,7 @@ class ImportPipelineEngine:
                                 "field_name": "H.Q.",
                                 "column_name": "hq_raw",
                                 "actual_value": f"{hq_val} (Conflicts with: {', '.join([h for h in sorted_hqs if h != hq_val])})",
-                                "expected_value": "Single Unique Headquarter per ASE (1:1 Constraint)",
+                                "expected_value": "Single Unique Headquarter per ASE",
                                 "ase": ase_name,
                                 "asm_tsm": str(s_asm.iloc[idx_r] or "").strip(),
                                 "approved_asm_tsm": None,
@@ -1653,8 +1658,10 @@ class ImportPipelineEngine:
                                 "resolution": f"Standardize Headquarter for ASE '{ase_name}' to a single Headquarter in the Excel file or update Headquarters in User Management."
                             })
 
-            # 2. A TSM must belong to at most 1 Headquarter across the uploaded dataset
+            # 2. A TSM must belong to their registered Headquarters across the uploaded dataset
             for tsm_name, hq_dict in sheet_tsm_hqs.items():
+                tsm_uid = _resolve_user_id(tsm_name)
+                approved_hqs = user_approved_hq_names_by_id.get(tsm_uid, set()) if tsm_uid else set()
                 if len(hq_dict) > 1:
                     sorted_hqs = sorted(list(hq_dict.keys()))
                     sample_details = ", ".join([f"Row #{rows[0]} ({h})" for h, rows in hq_dict.items()][:5])
@@ -1672,7 +1679,7 @@ class ImportPipelineEngine:
                                 "field_name": "H.Q.",
                                 "column_name": "hq_raw",
                                 "actual_value": f"{hq_val} (Conflicts with: {', '.join([h for h in sorted_hqs if h != hq_val])})",
-                                "expected_value": "Single Unique Headquarter per TSM (1:1 Constraint)",
+                                "expected_value": "Single Unique Headquarter per TSM",
                                 "ase": str(s_ase.iloc[idx_r] or "").strip(),
                                 "asm_tsm": tsm_name,
                                 "approved_asm_tsm": None,
@@ -1682,8 +1689,8 @@ class ImportPipelineEngine:
                                 "company": str(s_company.iloc[idx_r] or "").strip(),
                                 "brand": str(s_brand.iloc[idx_r] or "").strip(),
                                 "raw_id": r_id,
-                                "error_message": f"[Row #{r_num}] MULTIPLE_HQ_FOR_TSM: TSM '{tsm_name}' is mapped to multiple Headquarters ({', '.join(sorted_hqs)}) across sales records (e.g. {sample_details}). A TSM must belong to exactly 1 Headquarter.",
-                                "resolution": f"Standardize Headquarter for TSM '{tsm_name}' to a single Headquarter in the Excel file or update Headquarters in User Management."
+                                "error_message": f"[Row #{r_num}] MULTIPLE_HQ_FOR_TSM: TSM '{tsm_name}' is mapped to multiple Headquarters ({', '.join(sorted_hqs)}) across sales records (e.g. {sample_details}).",
+                                "resolution": f"Standardize Headquarter for TSM '{tsm_name}' in the Excel file or update Headquarters in User Management."
                             })
 
             # 3. An ASE must report to at most 1 ASM/TSM manager across the uploaded dataset
@@ -1777,6 +1784,7 @@ class ImportPipelineEngine:
                     batch_id=batch_id,
                     status="failed",
                     row_count=total_rows,
+                    remarks=failure_reason,
                 )
                 self._update_batch_progress(batch_id, remarks=failure_reason)
 
@@ -1852,6 +1860,11 @@ class ImportPipelineEngine:
             self._populate_user_sales_fact(
                 batch_id, s_date, s_company, s_ase, s_brand, s_cases, s_btl, s_bl,
                 company_cache, brand_cache, tenant_id=tenant_id
+            )
+
+            # Auto-populate user_depot and user_headquarters_mapping from validated upload data
+            self._sync_user_territory_mappings(
+                s_ase, s_asm, s_depot, s_hq, depot_cache, hq_cache, tenant_id=tenant_id
             )
 
             if self.is_batch_cancelled(batch_id):
@@ -3191,6 +3204,7 @@ class ImportPipelineEngine:
         batch_id: int,
         row_count: Optional[int] = None,
         status: Optional[str] = None,
+        remarks: Optional[str] = None,
     ):
         local_batch = upload_batches_db.get(batch_id)
         if local_batch:
@@ -3200,6 +3214,8 @@ class ImportPipelineEngine:
             if row_count is not None:
                 local_batch["total_rows"] = row_count
                 local_batch["row_count"] = row_count
+            if remarks is not None:
+                local_batch["remarks"] = remarks
 
         client = get_supabase()
         if not client:
@@ -3210,6 +3226,9 @@ class ImportPipelineEngine:
 
         if row_count is not None:
             payload["row_count"] = row_count
+
+        if remarks is not None:
+            payload["remarks"] = remarks
 
         if status is not None:
             allowed_statuses = {
@@ -3381,12 +3400,139 @@ class ImportPipelineEngine:
         return
 
     def _sync_user_hierarchy(self, s_ase: pd.Series, s_asm: pd.Series, s_depot: pd.Series, depot_cache: Dict[str, str]):
-        """
-        No-op: Employee Hierarchy (ase_tsm_mapping) and User-Depot mappings are managed
-        EXCLUSIVELY by User Management. Sales Excel ingestion must NEVER create, modify, or overwrite
-        employee hierarchy or user assignments.
-        """
         return
+
+    def _sync_user_territory_mappings(
+        self,
+        s_ase: pd.Series,
+        s_asm: pd.Series,
+        s_depot: pd.Series,
+        s_hq: pd.Series,
+        depot_cache: Dict[str, str],
+        hq_cache: Dict[str, str],
+        tenant_id: Optional[str] = None
+    ):
+        """
+        Automatically synchronizes user_depot and user_headquarters_mapping from validated upload data.
+        Ensures newly covered depots and registered headquarters for ASEs and TSMs are always populated.
+        """
+        client = get_supabase()
+        if not client:
+            return
+
+        effective_tenant = tenant_id or "a0000000-0000-0000-0000-000000000001"
+        try:
+            u_res = client.table("users").select("user_id, first_name, last_name, email").execute()
+            if not u_res or not u_res.data:
+                return
+
+            user_id_by_name = {}
+            for u in u_res.data:
+                uid = str(u["user_id"])
+                fn = (u.get("first_name") or "").strip()
+                ln = (u.get("last_name") or "").strip()
+                full_name = f"{fn} {ln}".strip()
+                full_name_clean = re.sub(r'\s+', ' ', full_name).lower()
+                email = str(u.get("email") or "").lower()
+                prefix = email.split("@")[0].strip()
+
+                if full_name_clean and full_name_clean not in user_id_by_name:
+                    user_id_by_name[full_name_clean] = uid
+                if prefix and prefix not in user_id_by_name:
+                    user_id_by_name[prefix] = uid
+                if fn and fn.lower() not in user_id_by_name:
+                    user_id_by_name[fn.lower()] = uid
+
+            def resolve_u(name_val):
+                if not name_val or str(name_val).lower() in ("unassigned", "none", "null", "nan", ""):
+                    return None
+                c_name = re.sub(r'\s+', ' ', str(name_val).strip()).lower()
+                if c_name in user_id_by_name:
+                    return user_id_by_name[c_name]
+                first_p = c_name.replace(",", "/").split("/")[0].strip()
+                if first_p in user_id_by_name:
+                    return user_id_by_name[first_p]
+                words = c_name.split()
+                if words and words[0] in user_id_by_name:
+                    return user_id_by_name[words[0]]
+                return None
+
+            clean_fn = master_service._clean
+            clean_no_space = master_service._clean_no_space
+
+            seen_user_depots = set()
+            user_depot_rows = []
+            existing_uhq_users = set()
+            try:
+                ex_res = client.table("user_headquarters_mapping").select("user_id").eq("is_active", True).execute()
+                if ex_res and ex_res.data:
+                    existing_uhq_users = {str(r["user_id"]) for r in ex_res.data if r.get("user_id")}
+            except Exception as e_ex_uhq:
+                logger.debug(f"Notice querying existing user headquarters: {e_ex_uhq}")
+
+            assigned_uhq_users = set(existing_uhq_users)
+            user_hq_rows = []
+
+            for ase_raw, asm_raw, depot_raw, hq_raw in zip(s_ase, s_asm, s_depot, s_hq):
+                c_dep = clean_fn(depot_raw)
+                depot_id = depot_cache.get(c_dep)
+                c_hq = clean_fn(hq_raw)
+                hq_id = hq_cache.get(c_hq) or hq_cache.get(clean_no_space(hq_raw))
+
+                # Process ASE
+                ase_uid = resolve_u(ase_raw)
+                if ase_uid:
+                    if depot_id and (ase_uid, depot_id) not in seen_user_depots:
+                        seen_user_depots.add((ase_uid, depot_id))
+                        user_depot_rows.append({"user_id": ase_uid, "depot_id": depot_id})
+                    if hq_id and ase_uid not in assigned_uhq_users:
+                        assigned_uhq_users.add(ase_uid)
+                        user_hq_rows.append({
+                            "tenant_id": effective_tenant,
+                            "user_id": ase_uid,
+                            "headquarters_id": hq_id,
+                            "is_active": True
+                        })
+
+                # Process ASM / TSM
+                asm_uid = resolve_u(asm_raw)
+                if asm_uid:
+                    if depot_id and (asm_uid, depot_id) not in seen_user_depots:
+                        seen_user_depots.add((asm_uid, depot_id))
+                        user_depot_rows.append({"user_id": asm_uid, "depot_id": depot_id})
+                    if hq_id and asm_uid not in assigned_uhq_users:
+                        assigned_uhq_users.add(asm_uid)
+                        user_hq_rows.append({
+                            "tenant_id": effective_tenant,
+                            "user_id": asm_uid,
+                            "headquarters_id": hq_id,
+                            "is_active": True
+                        })
+
+            # Upsert into user_depot in chunks of 100
+            if user_depot_rows:
+                for i in range(0, len(user_depot_rows), 100):
+                    batch = user_depot_rows[i:i+100]
+                    try:
+                        client.table("user_depot").upsert(batch, on_conflict="user_id,depot_id").execute()
+                    except Exception as e_ud_upsert:
+                        logger.warning(f"Error auto-syncing user_depot batch: {e_ud_upsert}")
+                logger.info(f"Auto-synced {len(user_depot_rows)} user-depot assignments into user_depot.")
+
+            # Upsert into user_headquarters_mapping in chunks of 100
+            if user_hq_rows:
+                for i in range(0, len(user_hq_rows), 100):
+                    batch = user_hq_rows[i:i+100]
+                    try:
+                        client.table("user_headquarters_mapping").upsert(
+                            batch, on_conflict="tenant_id,user_id,headquarters_id"
+                        ).execute()
+                    except Exception as e_uhq_upsert:
+                        logger.warning(f"Error auto-syncing user_headquarters_mapping batch: {e_uhq_upsert}")
+                logger.info(f"Auto-synced {len(user_hq_rows)} user-headquarters assignments into user_headquarters_mapping.")
+
+        except Exception as e_sync:
+            logger.warning(f"Notice in _sync_user_territory_mappings: {e_sync}")
 
     def _populate_user_sales_fact(
         self,

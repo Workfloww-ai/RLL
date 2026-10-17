@@ -87,7 +87,7 @@ def get_active_upload_batch() -> Optional[Dict[str, Any]]:
         return None
     try:
         from datetime import datetime, timezone
-        active_statuses = ["queued", "running", "processing", "aggregating", "validating"]
+        active_statuses = ["queued", "running", "processing", "aggregating", "validating", "validated", "staged", "saving", "uploading"]
         res = client.table("upload_batches").select(
             "batch_id, source_file, covers_start, covers_end, status, created_at, row_count, imported_rows, remarks"
         ).in_("status", active_statuses).order("created_at", desc=True).limit(5).execute()

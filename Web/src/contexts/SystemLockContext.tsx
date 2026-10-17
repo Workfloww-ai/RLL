@@ -309,12 +309,12 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('focus', handleVisibilityChange);
 
-    // Poll at a conservative 30-second interval when tab is active
+    // Poll at a responsive 5-second interval when tab is active
     pollIntervalRef.current = setInterval(() => {
       if (!document.hidden) {
         fetchLockStatus();
       }
-    }, 30000);
+    }, 5000);
 
     return () => {
       if (pollIntervalRef.current) {
@@ -325,12 +325,27 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
     };
   }, [fetchLockStatus]);
 
+  let hasLocalUpload = false;
+  try {
+    const localUploadRaw = localStorage.getItem('rll_active_sales_upload');
+    if (localUploadRaw) {
+      const parsed = JSON.parse(localUploadRaw);
+      if (parsed && parsed.status === 'processing') {
+        hasLocalUpload = true;
+      }
+    }
+  } catch (e) {}
+
   const isCooldownActive = cooldownRemaining > 0;
-  const isSystemLocked = Boolean(lockBase.isLocked || isCooldownActive);
-  const effectiveLockType = lockBase.isLocked ? lockBase.lockType : (isCooldownActive ? 'cooldown' : null);
+  const isSystemLocked = Boolean(lockBase.isLocked || isCooldownActive || hasLocalUpload);
+  const effectiveLockType = lockBase.isLocked 
+    ? lockBase.lockType 
+    : (hasLocalUpload ? 'sales_upload' : (isCooldownActive ? 'cooldown' : null));
   const effectiveLockReason = lockBase.isLocked 
     ? lockBase.lockReason 
-    : (isCooldownActive ? `Upload cooldown active (${formatMMSS(cooldownRemaining)} remaining). System is in Read-Only mode.` : null);
+    : (hasLocalUpload
+        ? 'Sales data ingestion in progress. System is locked in Read-Only mode to maintain transactional integrity.'
+        : (isCooldownActive ? (cooldownMessage || `Upload cooldown active (${formatMMSS(cooldownRemaining)} remaining). System is in Read-Only mode.`) : null));
 
   const stateValue: SystemLockState = {
     ...lockBase,

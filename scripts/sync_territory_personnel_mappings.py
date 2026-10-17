@@ -148,6 +148,15 @@ def run_sync(dry_run: bool = True):
                     seen_user_depots.add(key)
                     user_depot_rows.append({"user_id": u_id, "depot_id": d_id})
                     matched_ases += 1
+                # Map ASE to Headquarter (strictly 1:1)
+                if hq_id and u_id not in seen_user_hqs:
+                    seen_user_hqs.add(u_id)
+                    user_hq_rows.append({
+                        "user_id": u_id,
+                        "headquarters_id": hq_id,
+                        "is_active": True,
+                        "tenant_id": "a0000000-0000-0000-0000-000000000001"
+                    })
             else:
                 print(f"ℹ️  ASE not in DB: '{a_name}' (depot: {depot_obj['name']})")
 
@@ -157,18 +166,16 @@ def run_sync(dry_run: bool = True):
             u_tsm = find_best_user(t_name, db_users)
             if u_tsm:
                 u_id = u_tsm["user_id"]
-                # Map to HQ
-                if hq_id:
-                    hq_key = (u_id, hq_id)
-                    if hq_key not in seen_user_hqs:
-                        seen_user_hqs.add(hq_key)
-                        user_hq_rows.append({
-                            "user_id": u_id,
-                            "headquarters_id": hq_id,
-                            "is_active": True,
-                            "tenant_id": "a0000000-0000-0000-0000-000000000001"
-                        })
-                        matched_tsms += 1
+                # Map to HQ (strictly 1:1)
+                if hq_id and u_id not in seen_user_hqs:
+                    seen_user_hqs.add(u_id)
+                    user_hq_rows.append({
+                        "user_id": u_id,
+                        "headquarters_id": hq_id,
+                        "is_active": True,
+                        "tenant_id": "a0000000-0000-0000-0000-000000000001"
+                    })
+                    matched_tsms += 1
                 # Also map to depot
                 dep_key = (u_id, d_id)
                 if dep_key not in seen_user_depots:

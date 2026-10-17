@@ -16,7 +16,7 @@ _SYSTEM_LOCK_CACHE = {
     "data": None,
     "timestamp": 0.0
 }
-_SYSTEM_LOCK_CACHE_TTL = 30.0  # 30 seconds cache buffer (instantly invalidated on upload start/end)
+_SYSTEM_LOCK_CACHE_TTL = 10  # 3 seconds cache buffer for near real-time state sync
 
 def invalidate_system_lock_cache():
     global _SYSTEM_LOCK_CACHE
@@ -193,22 +193,33 @@ def get_upload_cooldown_status() -> Dict[str, Any]:
         if client:
             res = client.table("upload_batches").select(
                 "batch_id, source_file, created_at, updated_at, status"
-            ).in_("status", ["loaded", "completed", "success"]).order("created_at", desc=True).limit(1).execute()
+            ).order("created_at", desc=True).limit(5).execute()
 
-            if res.data and len(res.data) > 0:
-                b = res.data[0]
-                ts_str = b.get("updated_at") or b.get("created_at")
-                if ts_str:
-                    clean_dt_str = ts_str.replace("Z", "+00:00")
-                    c_dt = datetime.fromisoformat(clean_dt_str)
-                    if c_dt.tzinfo is None:
-                        c_dt = c_dt.replace(tzinfo=timezone.utc)
-                    db_ts = c_dt.timestamp()
-                    if db_ts > latest_ts:
-                        latest_ts = db_ts
-                        latest_type = "sales_upload"
-                        latest_file = b.get("source_file") or b.get("file_name")
-                        cooldown_target = UPLOAD_COOLDOWN_SECONDS
+            if res.data:
+                for b in res.data:
+                    b_status = str(b.get("status") or "").lower()
+                    if b_status in ("loaded", "completed", "success"):
+                        b_cd_target = UPLOAD_COOLDOWN_SECONDS  # 1800s
+                        b_type = "sales_upload"
+                    elif b_status in ("failed", "error", "interrupted"):
+                        b_cd_target = 600  # 10 minutes
+                        b_type = "validation_error"
+                    else:
+                        continue
+
+                    ts_str = b.get("updated_at") or b.get("created_at")
+                    if ts_str:
+                        clean_dt_str = ts_str.replace("Z", "+00:00")
+                        c_dt = datetime.fromisoformat(clean_dt_str)
+                        if c_dt.tzinfo is None:
+                            c_dt = c_dt.replace(tzinfo=timezone.utc)
+                        db_ts = c_dt.timestamp()
+                        if db_ts > latest_ts:
+                            latest_ts = db_ts
+                            latest_type = b_type
+                            latest_file = b.get("source_file") or b.get("file_name")
+                            cooldown_target = b_cd_target
+                            break
     except Exception as e_db:
         logger.debug(f"Notice querying latest upload batch for cooldown: {e_db}")
 
@@ -280,10 +291,14 @@ def get_system_lock_status() -> Dict[str, Any]:
         cd = cached.get("cooldown", {})
         if cd.get("is_active") and cd.get("last_upload_time"):
             elapsed = now - cd["last_upload_time"]
-            rem = max(0, int(UPLOAD_COOLDOWN_SECONDS - elapsed))
+            cd_target = cd.get("cooldown_seconds") or UPLOAD_COOLDOWN_SECONDS
+            rem = max(0, int(cd_target - elapsed))
             cd["remaining_seconds"] = rem
             rem_m = rem // 60
             rem_s = rem % 60
+            cd_target_m = cd_target // 60
+            is_clean = (cd_target_m <= 10 or cd.get("last_upload_type") == "validation_error")
+            desc_label = f"{cd_target_m}-minute rollback & purge buffer" if is_clean else f"{cd_target_m}-minute post-upload cooldown buffer"
             cd["message"] = f"Upload cooldown active. Next upload enabled in {rem_m}m {rem_s:02d}s."
             if rem == 0:
                 cd["is_active"] = False
@@ -295,7 +310,7 @@ def get_system_lock_status() -> Dict[str, Any]:
             else:
                 if cached.get("lock_type") == "cooldown":
                     cached["is_locked"] = True
-                    cached["lock_reason"] = f"System is in 30-minute post-upload cooldown buffer. Next upload enabled in {rem_m}m {rem_s:02d}s. All updates, personnel edits, and uploads are locked in Read-Only mode."
+                    cached["lock_reason"] = f"System is in {desc_label}. Next upload enabled in {rem_m}m {rem_s:02d}s. All updates, personnel edits, and uploads are locked in Read-Only mode."
         return cached
 
     cooldown_info = get_upload_cooldown_status()
