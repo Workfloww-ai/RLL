@@ -101,27 +101,29 @@ export default function StockUpload() {
       </div>
 
       {isCooldownActive && (
-        <div className="bg-amber-500/10 border border-amber-300 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+        <div className="bg-amber-500/10 border border-amber-300 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-2xs">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-xs">
-              <Clock className="w-5 h-5 animate-pulse" />
+            <div className="w-11 h-11 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-xs">
+              <Clock className="w-6 h-6 animate-pulse" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h4 className="text-xs font-bold text-slate-900">30-Minute Upload Interval Active</h4>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-200/80 text-amber-900 border border-amber-300">
-                  COOLDOWN
+                <h4 className="text-sm font-bold text-slate-900">30-Minute Cooldown Active • System in Read-Only Mode</h4>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-200/90 text-amber-950 border border-amber-300">
+                  READ-ONLY
                 </span>
               </div>
-              <p className="text-xs text-slate-600 mt-0.5 font-medium">
-                Upload will be enabled after 30 mins of the last upload. Sales and User Management bulk uploads are paused until then.
+              <p className="text-xs text-slate-600 mt-1 font-medium leading-relaxed">
+                A 30-minute buffer is active after the last upload to ensure complete background database indexing and accuracy. Next upload and system updates will be enabled once the timer completes.
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2 self-start sm:self-auto bg-white border border-amber-300/80 rounded-xl px-4 py-2 shadow-2xs">
-            <Clock size={15} className="text-amber-600 animate-spin" style={{ animationDuration: '6s' }} />
-            <span className="text-xs font-bold text-slate-600">Enabled in:</span>
-            <span className="text-sm font-black text-amber-600 font-mono tracking-wider">{formattedCooldown}</span>
+          <div className="flex items-center gap-2.5 self-start sm:self-auto bg-white border border-amber-300/80 rounded-xl px-4 py-2.5 shadow-2xs shrink-0">
+            <Clock size={16} className="text-amber-600 animate-spin" style={{ animationDuration: '6s' }} />
+            <div className="flex flex-col text-right">
+              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Unlocks in</span>
+              <span className="text-base font-black text-amber-600 font-mono tracking-wider">{formattedCooldown}</span>
+            </div>
           </div>
         </div>
       )}

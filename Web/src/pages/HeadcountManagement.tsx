@@ -356,20 +356,20 @@ export default function HeadcountManagement() {
       showToast('System is in read-only mode during data upload. Deletion is locked.', 'warning');
       return;
     }
-    if (!confirm("Are you sure you want to delete this user record?")) return;
+    if (!confirm("Are you sure you want to deactivate this user? Their historical sales data and mappings will be preserved, and their status will become Inactive.")) return;
     try {
       const token = localStorage.getItem('token');
       const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
       const res = await fetch(`${API_BASE_URL}/users/${id}`, { method: 'DELETE', headers });
       if (res.ok) {
-        setUsers(users.filter(u => u.id !== id));
-        showToast('User record deleted & active sessions revoked.', 'success');
+        setUsers(prev => prev.map(u => u.id === id ? { ...u, isActive: false, is_active: false } : u));
+        showToast('User deactivated. Historical records and mappings preserved as inactive.', 'info');
       } else {
-        showToast('Failed to delete user.', 'error');
+        showToast('Failed to deactivate user.', 'error');
       }
     } catch (err) {
-      console.error('Error deleting user on backend:', err);
-      showToast('Network error while deleting.', 'error');
+      console.error('Error deactivating user on backend:', err);
+      showToast('Network error while deactivating.', 'error');
     }
   };
 
@@ -637,17 +637,41 @@ export default function HeadcountManagement() {
           </select>
         </div>
 
-        <div className="flex items-center gap-1.5">
-          <span className="text-slate-400 font-bold uppercase tracking-wider text-[9px]">Status:</span>
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as any)}
-            className="px-2.5 py-1 bg-slate-50 border border-slate-200/80 rounded-lg font-bold text-slate-700 text-xs focus:outline-none focus:border-[#0D3B8E]"
+        {/* Status Filter Tabs */}
+        <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200/80">
+          <button
+            type="button"
+            onClick={() => setStatusFilter('all')}
+            className={`px-2.5 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
+              statusFilter === 'all'
+                ? 'bg-white text-[#0D3B8E] shadow-2xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
           >
-            <option value="all">All Statuses</option>
-            <option value="active">Active Only</option>
-            <option value="inactive">Inactive Only</option>
-          </select>
+            All <span className="ml-1 text-[10px] px-1.5 py-0.2 rounded-full bg-slate-200 text-slate-700">{users.length}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter('active')}
+            className={`px-2.5 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
+              statusFilter === 'active'
+                ? 'bg-white text-emerald-700 shadow-2xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            Active <span className="ml-1 text-[10px] px-1.5 py-0.2 rounded-full bg-emerald-100 text-emerald-800">{users.filter(u => u.isActive).length}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter('inactive')}
+            className={`px-2.5 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
+              statusFilter === 'inactive'
+                ? 'bg-white text-rose-700 shadow-2xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            Inactive <span className="ml-1 text-[10px] px-1.5 py-0.2 rounded-full bg-rose-100 text-rose-800">{users.filter(u => !u.isActive).length}</span>
+          </button>
         </div>
 
         <div className="flex items-center gap-1.5">
@@ -1037,7 +1061,10 @@ export default function HeadcountManagement() {
                   const serialNumber = (currentPage - 1) * rowsPerPage + idx + 1;
 
                   return (
-                    <tr key={user.id} className="hover:bg-blue-50/20 transition-colors group">
+                    <tr 
+                      key={user.id} 
+                      className={`hover:bg-blue-50/20 transition-colors group ${!user.isActive ? 'bg-slate-50/60' : ''}`}
+                    >
                       {/* S.No */}
                       <td className="px-2 py-2 text-center text-xs font-bold text-slate-400">
                         {serialNumber}
@@ -1058,10 +1085,19 @@ export default function HeadcountManagement() {
                           />
                         ) : (
                           <div className="flex items-center gap-2">
-                            <div className="w-6 h-6 rounded-full bg-[#0D3B8E]/10 flex items-center justify-center text-[#0D3B8E] font-bold text-[11px] shrink-0">
+                            <div className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-[11px] shrink-0 ${
+                              user.isActive ? 'bg-[#0D3B8E]/10 text-[#0D3B8E]' : 'bg-slate-200 text-slate-500'
+                            }`}>
                               {user.name.charAt(0)}
                             </div>
-                            <p className="font-bold text-slate-900 text-xs truncate">{user.name}</p>
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <p className={`font-bold text-xs truncate ${user.isActive ? 'text-slate-900' : 'text-slate-600'}`}>{user.name}</p>
+                              {!user.isActive && (
+                                <span className="px-1.5 py-0.2 text-[9px] font-extrabold uppercase bg-rose-50 text-rose-700 border border-rose-200 rounded shrink-0">
+                                  Inactive
+                                </span>
+                              )}
+                            </div>
                           </div>
                         )}
                       </td>

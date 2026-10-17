@@ -1,3 +1,5 @@
+import os
+import json
 import time
 import copy
 import logging
@@ -6,6 +8,8 @@ from fastapi import HTTPException, status
 from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
+
+COOLDOWN_STATE_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".cooldown_state.json"))
 
 # Short in-memory cache to prevent concurrent browser tabs/pollers from spamming Supabase
 _SYSTEM_LOCK_CACHE = {
@@ -65,7 +69,7 @@ _COOLDOWN_OVERRIDE_RESET = False
 def record_upload_completion(upload_type: str, filename: str):
     """
     Records the timestamp when an upload (sales or roster) completes,
-    initiating the 30-minute system cooldown.
+    initiating the 30-minute system cooldown and locking the whole system in read-only mode.
     """
     global _LAST_UPLOAD_COMPLETION, _COOLDOWN_OVERRIDE_RESET
     invalidate_system_lock_cache()
@@ -76,6 +80,12 @@ def record_upload_completion(upload_type: str, filename: str):
         "upload_type": upload_type,
         "filename": filename
     }
+    try:
+        with open(COOLDOWN_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(_LAST_UPLOAD_COMPLETION, f)
+    except Exception as e_save:
+        logger.warning(f"Could not save cooldown state to disk: {e_save}")
+
     logger.info(f"Recorded upload completion for '{filename}' ({upload_type}) at timestamp {now}. 30-minute cooldown active.")
 
 
@@ -91,6 +101,11 @@ def reset_upload_cooldown():
         "upload_type": None,
         "filename": None
     }
+    try:
+        if os.path.exists(COOLDOWN_STATE_FILE):
+            os.remove(COOLDOWN_STATE_FILE)
+    except Exception:
+        pass
     logger.info("Upload cooldown manually reset.")
 
 
@@ -99,6 +114,7 @@ def get_upload_cooldown_status() -> Dict[str, Any]:
     Determines if the system is within the 30-minute post-upload buffer.
     Checks memory state and queries Supabase DB for the most recent completed batch.
     """
+    global _LAST_UPLOAD_COMPLETION
     if _COOLDOWN_OVERRIDE_RESET:
         return {
             "is_active": False,
@@ -114,6 +130,26 @@ def get_upload_cooldown_status() -> Dict[str, Any]:
     latest_ts = _LAST_UPLOAD_COMPLETION.get("timestamp", 0.0)
     latest_type = _LAST_UPLOAD_COMPLETION.get("upload_type")
     latest_file = _LAST_UPLOAD_COMPLETION.get("filename")
+
+    # If memory is uninitialized, check persistent file on disk
+    if latest_ts <= 0:
+        try:
+            if os.path.exists(COOLDOWN_STATE_FILE):
+                with open(COOLDOWN_STATE_FILE, "r", encoding="utf-8") as f:
+                    saved = json.load(f)
+                    saved_ts = float(saved.get("timestamp", 0.0))
+                    if 0 <= (now - saved_ts) < UPLOAD_COOLDOWN_SECONDS:
+                        latest_ts = saved_ts
+                        latest_type = saved.get("upload_type")
+                        latest_file = saved.get("filename")
+                        _LAST_UPLOAD_COMPLETION = saved
+                    else:
+                        try:
+                            os.remove(COOLDOWN_STATE_FILE)
+                        except Exception:
+                            pass
+        except Exception as e_file:
+            logger.debug(f"Notice reading cooldown file: {e_file}")
 
     # Check database for latest batch if DB timestamp is newer or memory is uninitialized
     try:
@@ -206,11 +242,20 @@ def get_system_lock_status() -> Dict[str, Any]:
             cd["message"] = f"Upload cooldown active. Next upload enabled in {rem_m}m {rem_s:02d}s."
             if rem == 0:
                 cd["is_active"] = False
+                # Cooldown expired: system unlocked
+                if cached.get("lock_type") == "cooldown":
+                    cached["is_locked"] = False
+                    cached["lock_type"] = None
+                    cached["lock_reason"] = None
+            else:
+                if cached.get("lock_type") == "cooldown":
+                    cached["is_locked"] = True
+                    cached["lock_reason"] = f"System is in 30-minute post-upload cooldown buffer. Next upload enabled in {rem_m}m {rem_s:02d}s. All updates, personnel edits, and uploads are locked in Read-Only mode."
         return cached
 
     cooldown_info = get_upload_cooldown_status()
 
-    # 1. Check sales upload pipeline
+    # 1. Check sales upload pipeline (active row ingestion)
     try:
         from backend.uploads.service import import_pipeline
         active_sales = import_pipeline.is_upload_active()
@@ -242,7 +287,6 @@ def get_system_lock_status() -> Dict[str, Any]:
 
     # 2. Check roster upload pipeline
     if _ROSTER_UPLOAD_LOCK["active"]:
-        # Auto-timeout after 5 minutes if something crashed
         if (now - _ROSTER_UPLOAD_LOCK["started_at"]) < 300:
             fn = _ROSTER_UPLOAD_LOCK.get("filename") or "User Roster File"
             locked_res = {
@@ -263,6 +307,24 @@ def get_system_lock_status() -> Dict[str, Any]:
         else:
             clear_roster_upload_active()
 
+    # 3. If no active upload is running, but 30-minute cooldown is active:
+    # Lock the ENTIRE system in Read-Only mode!
+    if cooldown_info.get("is_active"):
+        rem = cooldown_info.get("remaining_seconds", 0)
+        rem_m = rem // 60
+        rem_s = rem % 60
+        file_desc = f" ({cooldown_info.get('last_upload_file')})" if cooldown_info.get('last_upload_file') else ""
+        locked_res = {
+            "is_locked": True,
+            "lock_type": "cooldown",
+            "lock_reason": f"System is in 30-minute post-upload cooldown buffer{file_desc}. Next upload enabled in {rem_m}m {rem_s:02d}s. All updates, personnel edits, and uploads are locked in Read-Only mode.",
+            "active_batch": None,
+            "cooldown": cooldown_info
+        }
+        _SYSTEM_LOCK_CACHE["data"] = locked_res
+        _SYSTEM_LOCK_CACHE["timestamp"] = now
+        return locked_res
+
     res = {
         "is_locked": False,
         "lock_type": None,
@@ -277,11 +339,11 @@ def get_system_lock_status() -> Dict[str, Any]:
 
 def check_system_lock_or_raise():
     """
-    Enforces read-only mode during active uploads by raising HTTP 423 Locked.
+    Enforces read-only mode during active uploads and 30-minute cooldown by raising HTTP 423 Locked.
     """
     status_info = get_system_lock_status()
     if status_info.get("is_locked"):
-        reason = status_info.get("lock_reason") or "A file upload is currently in progress"
+        reason = status_info.get("lock_reason") or "A file upload or 30-minute cooldown buffer is currently active."
         raise HTTPException(
             status_code=status.HTTP_423_LOCKED,
             detail=f"System is temporarily in Read-Only mode: {reason}. Personnel changes, manager reassignments, and additional uploads are locked to prevent data corruption."

@@ -840,17 +840,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                 exit={{ opacity: 0, scale: 0.96 }}
                 className="flex flex-col items-center text-center w-full"
               >
-                {isLocked ? (
-                  <>
-                    <div className="w-14 h-14 bg-amber-500/10 text-amber-600 rounded-full flex items-center justify-center mb-3">
-                      <Database className="w-7 h-7" />
-                    </div>
-                    <p className="text-sm text-slate-800 font-bold">Upload Temporarily Locked</p>
-                    <p className="text-xs text-amber-700 mt-1 max-w-sm font-medium">
-                      {lockReason || 'Another ingestion process is active.'} Only one upload or modification can run at a time to prevent conflicts.
-                    </p>
-                  </>
-                ) : isCooldownActive ? (
+                {isCooldownActive || lockType === 'cooldown' ? (
                   <div className="flex flex-col items-center text-center max-w-md mx-auto py-2">
                     <div className="relative mb-3">
                       <div className="w-16 h-16 bg-amber-500/10 border-2 border-amber-300 text-amber-600 rounded-full flex items-center justify-center shadow-inner">
@@ -863,7 +853,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
 
                     <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-100 text-amber-900 text-xs font-bold rounded-full border border-amber-300 mb-2">
                       <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping" />
-                      30-Minute Cooldown Active
+                      30-Minute Cooldown Active • Read-Only Mode
                     </span>
 
                     <h3 className="text-base font-extrabold text-slate-900 tracking-tight">
@@ -892,7 +882,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                     </div>
 
                     <p className="text-xs text-slate-500 mt-2 max-w-sm font-medium leading-relaxed">
-                      Sales uploads and bulk roster uploads are paused for 30 minutes following an upload to ensure complete background database indexing and accuracy.
+                      All sales uploads, roster imports, and user modifications are locked in Read-Only mode for 30 minutes following an upload to protect database integrity.
                     </p>
 
                     {/* Disabled "Click here to upload" button */}
@@ -904,6 +894,16 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                       Click here to upload (Disabled - Cooldown Active)
                     </button>
                   </div>
+                ) : isLocked ? (
+                  <>
+                    <div className="w-14 h-14 bg-amber-500/10 text-amber-600 rounded-full flex items-center justify-center mb-3">
+                      <Database className="w-7 h-7" />
+                    </div>
+                    <p className="text-sm text-slate-800 font-bold">Upload Temporarily Locked</p>
+                    <p className="text-xs text-amber-700 mt-1 max-w-sm font-medium">
+                      {lockReason || 'Another ingestion process is active.'} Only one upload or modification can run at a time to prevent conflicts.
+                    </p>
+                  </>
                 ) : (
                   <>
                     <div className="w-14 h-14 bg-[#0D3B8E]/8 text-[#0D3B8E] rounded-full flex items-center justify-center mb-3 group-hover:scale-110 group-hover:bg-[#0D3B8E] group-hover:text-white transition-all duration-200">

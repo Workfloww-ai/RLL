@@ -38,9 +38,10 @@ class UserService:
             user_roles_res = client.table("user_roles").select("user_id, role_id, is_active").execute()
             role_by_user_id: Dict[str, str] = {}
             for ur in (user_roles_res.data or []):
-                if ur.get("is_active", True):
-                    uid = str(ur["user_id"])
-                    rid = str(ur.get("role_id") or "")
+                uid = str(ur["user_id"])
+                rid = str(ur.get("role_id") or "")
+                # Prioritize active role; fallback to inactive role if none assigned yet
+                if ur.get("is_active", True) or uid not in role_by_user_id:
                     role_by_user_id[uid] = roles_map.get(rid, "ASE")
 
             # 4. Fetch depots & headquarters map
@@ -50,10 +51,10 @@ class UserService:
             hq_res = client.table("headquarters").select("headquarters_id, name").execute()
             hq_map = {str(h["headquarters_id"]): h.get("name", "Unassigned") for h in (hq_res.data or []) if h.get("headquarters_id")}
 
-            # 5. Fetch user_headquarters_mapping
-            user_hqs_map: Dict[str, List[Dict[str, str]]] = {}
+            # 5. Fetch user_headquarters_mapping (include both active and historical for display)
+            user_hqs_map: Dict[str, List[Dict[str, Any]]] = {}
             try:
-                uhq_res = client.table("user_headquarters_mapping").select("user_id, headquarters_id, is_active").eq("is_active", True).execute()
+                uhq_res = client.table("user_headquarters_mapping").select("user_id, headquarters_id, is_active").execute()
                 for uhq in (uhq_res.data or []):
                     uid = str(uhq.get("user_id") or "")
                     hid = str(uhq.get("headquarters_id") or "")
@@ -62,7 +63,8 @@ class UserService:
                             user_hqs_map[uid] = []
                         user_hqs_map[uid].append({
                             "headquarters_id": hid,
-                            "name": hq_map[hid]
+                            "name": hq_map[hid],
+                            "is_active": uhq.get("is_active", True)
                         })
             except Exception as e_uhq:
                 logger.warning(f"Error fetching user_headquarters_mapping in list_users: {e_uhq}")
@@ -87,15 +89,16 @@ class UserService:
             except Exception as e_ud:
                 logger.warning(f"Error fetching user_depot: {e_ud}")
 
-            # 6. Build final list
+            # 6. Build final list (preserve manager assignment even if inactive)
             mapping_manager_by_user: Dict[str, str] = {}
             try:
                 atm_res = client.table("ase_tsm_mapping").select("ase_user_id, tsm_user_id, is_active").execute()
                 for m in (atm_res.data or []):
-                    if m.get("is_active", True) is not False:
-                        a_u = str(m.get("ase_user_id") or "")
-                        t_u = str(m.get("tsm_user_id") or "")
-                        if a_u and t_u:
+                    a_u = str(m.get("ase_user_id") or "")
+                    t_u = str(m.get("tsm_user_id") or "")
+                    if a_u and t_u:
+                        # Prioritize active mapping, fallback to inactive mapping if none set
+                        if m.get("is_active", True) or a_u not in mapping_manager_by_user:
                             mapping_manager_by_user[a_u] = t_u
             except Exception as e_atm:
                 logger.warning(f"Error fetching ase_tsm_mapping in list_users: {e_atm}")
@@ -120,9 +123,12 @@ class UserService:
                 depot_name = ud_data.get("depot_name", "Unassigned")
                 circle_name = ud_data.get("circle_name", "Unassigned")
 
-                assigned_hqs = user_hqs_map.get(uid, [])
-                hq_names = [h["name"] for h in assigned_hqs]
-                hq_ids = [h["headquarters_id"] for h in assigned_hqs]
+                all_assigned_hqs = user_hqs_map.get(uid, [])
+                # If active HQs exist, use them; otherwise show assigned historical HQs so inactive users aren't unassigned
+                active_hqs = [h for h in all_assigned_hqs if h.get("is_active", True)]
+                display_hqs = active_hqs if active_hqs else all_assigned_hqs
+                hq_names = [h["name"] for h in display_hqs]
+                hq_ids = [h["headquarters_id"] for h in display_hqs]
                 headquarters_str = ", ".join(hq_names) if hq_names else ud_data.get("headquarters", "Unassigned")
 
                 result.append({
@@ -142,7 +148,7 @@ class UserService:
                     "depot_name": depot_name,
                     "headquarters": headquarters_str,
                     "headquarters_ids": hq_ids,
-                    "headquarters_list": assigned_hqs,
+                    "headquarters_list": display_hqs,
                     "circleName": circle_name,
                     "isActive": u.get("is_active", True),
                     "is_active": u.get("is_active", True)
@@ -555,8 +561,10 @@ class UserService:
             user_update["phone"] = payload.get("phone", payload.get("phoneNumber"))
         if "email" in payload:
             user_update["email"] = payload["email"]
-        if "is_active" in payload or "isActive" in payload:
-            user_update["is_active"] = payload.get("is_active", payload.get("isActive"))
+        is_active_val = payload.get("is_active", payload.get("isActive"))
+        if is_active_val is not None:
+            user_update["is_active"] = bool(is_active_val)
+            user_update["updated_at"] = datetime.now(timezone.utc).isoformat()
 
         manager_param = payload.get("manager_id") or payload.get("managerId") or payload.get("reportingManager") or payload.get("reporting_manager")
         has_manager_field = any(k in payload for k in ("manager_id", "managerId", "reportingManager", "reporting_manager"))
@@ -568,6 +576,26 @@ class UserService:
         try:
             if user_update:
                 client.table("users").update(user_update).eq("user_id", user_id).execute()
+
+            if is_active_val is not None:
+                new_status = bool(is_active_val)
+                try:
+                    client.table("user_roles").update({"is_active": new_status}).eq("user_id", user_id).execute()
+                except Exception as e_ur:
+                    logger.warning(f"Could not update user_roles is_active to {new_status} for {user_id}: {e_ur}")
+
+                try:
+                    client.table("ase_tsm_mapping").update({"is_active": new_status}).or_(f"ase_user_id.eq.{user_id},tsm_user_id.eq.{user_id}").execute()
+                except Exception as e_atm:
+                    logger.warning(f"Could not update ase_tsm_mapping is_active to {new_status} for {user_id}: {e_atm}")
+
+                try:
+                    client.table("user_headquarters_mapping").update({
+                        "is_active": new_status,
+                        "updated_at": user_update.get("updated_at", datetime.now(timezone.utc).isoformat())
+                    }).eq("user_id", user_id).execute()
+                except Exception as e_uhq:
+                    logger.warning(f"Could not update user_headquarters_mapping is_active to {new_status} for {user_id}: {e_uhq}")
 
             role_name = payload.get("role")
             user_role_id = None
@@ -727,36 +755,41 @@ class UserService:
     def delete_user(self, user_id: str) -> bool:
         client = get_supabase()
         
-        # Always remove from in-memory cache
-        self.in_memory_users = [u for u in self.in_memory_users if u.get("id") != user_id and u.get("user_id") != user_id]
+        # Keep user in in-memory cache marked as inactive so it remains visible on web
+        for u in self.in_memory_users:
+            if u.get("id") == user_id or u.get("user_id") == user_id:
+                u["is_active"] = False
+                u["isActive"] = False
 
         if not client:
             return True
 
         try:
+            now_iso = datetime.now(timezone.utc).isoformat()
             try:
-                client.table("user_headquarters_mapping").delete().eq("user_id", user_id).execute()
+                client.table("users").update({"is_active": False, "updated_at": now_iso}).eq("user_id", user_id).execute()
             except Exception as e:
-                logger.warning(f"Could not delete user_headquarters_mapping for {user_id}: {e}")
+                logger.warning(f"Could not set users.is_active=False for {user_id}: {e}")
 
             try:
-                client.table("ase_tsm_mapping").delete().or_(f"ase_user_id.eq.{user_id},tsm_user_id.eq.{user_id}").execute()
+                client.table("user_roles").update({"is_active": False}).eq("user_id", user_id).execute()
             except Exception as e:
-                logger.warning(f"Could not delete ase_tsm_mapping for {user_id}: {e}")
+                logger.warning(f"Could not deactivate user_roles for {user_id}: {e}")
 
             try:
-                client.table("user_roles").delete().eq("user_id", user_id).execute()
+                client.table("ase_tsm_mapping").update({"is_active": False}).or_(f"ase_user_id.eq.{user_id},tsm_user_id.eq.{user_id}").execute()
             except Exception as e:
-                logger.warning(f"Could not delete user_roles for {user_id}: {e}")
+                logger.warning(f"Could not deactivate ase_tsm_mapping for {user_id}: {e}")
 
             try:
-                client.table("users").update({"is_active": False}).eq("user_id", user_id).execute()
+                client.table("user_headquarters_mapping").update({"is_active": False, "updated_at": now_iso}).eq("user_id", user_id).execute()
             except Exception as e:
-                client.table("users").delete().eq("user_id", user_id).execute()
+                logger.warning(f"Could not deactivate user_headquarters_mapping for {user_id}: {e}")
 
+            # Note: user_depot row and users row are preserved intact to retain historical reporting and web details
             return True
         except Exception as e:
-            logger.error(f"Error deleting user {user_id}: {e}")
+            logger.error(f"Error deactivating user {user_id}: {e}")
             return True
 
     def process_excel_roster(self, file_content: bytes, filename: str) -> Dict[str, Any]:

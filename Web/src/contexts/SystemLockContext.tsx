@@ -14,7 +14,7 @@ export interface ActiveBatchInfo {
 
 export interface SystemLockState {
   isLocked: boolean;
-  lockType: 'sales_upload' | 'roster_upload' | null;
+  lockType: 'sales_upload' | 'roster_upload' | 'cooldown' | null;
   lockReason: string | null;
   activeBatch: ActiveBatchInfo | null;
   isCooldownActive: boolean;
@@ -211,8 +211,17 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
         }
 
         const isCooldownActive = newCooldownSec > 0;
+        const isSystemLocked = Boolean(newBase.isLocked || isCooldownActive);
+        const effectiveLockType = newBase.isLocked ? newBase.lockType : (isCooldownActive ? 'cooldown' : null);
+        const effectiveLockReason = newBase.isLocked 
+          ? newBase.lockReason 
+          : (isCooldownActive ? `Upload cooldown active (${formatMMSS(newCooldownSec)} remaining). System is in Read-Only mode.` : null);
+
         return {
           ...newBase,
+          isLocked: isSystemLocked,
+          lockType: effectiveLockType as any,
+          lockReason: effectiveLockReason,
           isCooldownActive,
           cooldownRemainingSeconds: newCooldownSec,
           formattedCooldown: formatMMSS(newCooldownSec),
@@ -225,8 +234,17 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
     }
 
     const isCooldownActive = cooldownRemainingRef.current > 0;
+    const isSystemLocked = Boolean(lockBaseRef.current.isLocked || isCooldownActive);
+    const effectiveLockType = lockBaseRef.current.isLocked ? lockBaseRef.current.lockType : (isCooldownActive ? 'cooldown' : null);
+    const effectiveLockReason = lockBaseRef.current.isLocked 
+      ? lockBaseRef.current.lockReason 
+      : (isCooldownActive ? `Upload cooldown active (${formatMMSS(cooldownRemainingRef.current)} remaining). System is in Read-Only mode.` : null);
+
     return {
       ...lockBaseRef.current,
+      isLocked: isSystemLocked,
+      lockType: effectiveLockType as any,
+      lockReason: effectiveLockReason,
       isCooldownActive,
       cooldownRemainingSeconds: cooldownRemainingRef.current,
       formattedCooldown: formatMMSS(cooldownRemainingRef.current),
@@ -252,8 +270,17 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
   }, [fetchLockStatus]);
 
   const isCooldownActive = cooldownRemaining > 0;
+  const isSystemLocked = Boolean(lockBase.isLocked || isCooldownActive);
+  const effectiveLockType = lockBase.isLocked ? lockBase.lockType : (isCooldownActive ? 'cooldown' : null);
+  const effectiveLockReason = lockBase.isLocked 
+    ? lockBase.lockReason 
+    : (isCooldownActive ? `Upload cooldown active (${formatMMSS(cooldownRemaining)} remaining). System is in Read-Only mode.` : null);
+
   const stateValue: SystemLockState = {
     ...lockBase,
+    isLocked: isSystemLocked,
+    lockType: effectiveLockType as any,
+    lockReason: effectiveLockReason,
     isCooldownActive,
     cooldownRemainingSeconds: cooldownRemaining,
     formattedCooldown: formatMMSS(cooldownRemaining),

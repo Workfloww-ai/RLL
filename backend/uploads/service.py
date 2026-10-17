@@ -1675,7 +1675,7 @@ class ImportPipelineEngine:
                 imported_rows=imported_rows,
             )
 
-            if final_status == "loaded":
+            if final_status in ("loaded", "completed", "success"):
                 try:
                     from backend.core.system_lock import record_upload_completion
                     record_upload_completion("sales_upload", filename)
@@ -3079,14 +3079,21 @@ class ImportPipelineEngine:
         tenant_id = tenant_id or "a0000000-0000-0000-0000-000000000001"
 
         try:
-            u_res = client.table("users").select("user_id, first_name, last_name, email, is_active").execute()
+            u_res = client.table("users").select("user_id, first_name, last_name, email, is_active, updated_at").execute()
             all_u = u_res.data or []
             # Sort active users first so active user_ids take precedence in user_lookup
             all_u.sort(key=lambda x: 0 if x.get("is_active") else 1)
 
             user_lookup = {}
+            user_active_map = {}
+            user_deact_date_map = {}
             for u in all_u:
                 uid = str(u["user_id"])
+                is_act = bool(u.get("is_active", True))
+                user_active_map[uid] = is_act
+                up_at = str(u.get("updated_at") or "")
+                user_deact_date_map[uid] = up_at[:10] if (not is_act and len(up_at) >= 10) else None
+
                 fn = (u.get("first_name") or "").strip().lower()
                 ln = (u.get("last_name") or "").strip().lower()
                 full_name = f"{fn} {ln}".strip()
@@ -3119,12 +3126,23 @@ class ImportPipelineEngine:
                 if not user_id:
                     continue
 
+                sale_dt_str = self._parse_date(dt)
+
+                # Temporal Inactive Scope:
+                # Inactive users only have sales credited up to their deactivation date.
+                # Sales for subsequent periods (post-deactivation / current month) are not calculated.
+                if not user_active_map.get(user_id, True):
+                    deact_date = user_deact_date_map.get(user_id)
+                    if deact_date and sale_dt_str:
+                        if sale_dt_str > deact_date:
+                            continue
+                    else:
+                        continue
+
                 company_id = company_cache.get(master_service._clean_company(comp_clean)) or company_cache.get(clean_fn(comp_clean))
                 brand_id = brand_cache.get(clean_fn(brand_raw))
                 if not company_id or not brand_id:
                     continue
-
-                sale_dt_str = self._parse_date(dt)
 
                 fact_records.append({
                     "tenant_id": tenant_id,
