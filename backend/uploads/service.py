@@ -3588,6 +3588,11 @@ class ImportPipelineEngine:
 
                 if full_name and full_name not in user_lookup:
                     user_lookup[full_name] = uid
+                ln_parts = ln.split()
+                if len(ln_parts) > 1:
+                    short_name = f"{fn} {ln_parts[-1]}".strip()
+                    if short_name and short_name not in user_lookup:
+                        user_lookup[short_name] = uid
                 if prefix and prefix not in user_lookup:
                     user_lookup[prefix] = uid
                 if fn and fn not in user_lookup:
