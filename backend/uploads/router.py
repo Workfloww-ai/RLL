@@ -262,6 +262,46 @@ async def get_upload_batch(batch_id: str):
     )
 
 
+@router.post("/batches/{batch_id}/cancel")
+async def cancel_upload_batch(
+    batch_id: str,
+    current_user: dict = Depends(admin_only)
+):
+    """
+    Stops execution of an in-progress upload pipeline and executes an atomic rollback
+    to 0 rows in database (sales_fact, user_sales_fact, raw_sales_upload, batch_chunks, upload_pipeline_logs).
+    Releases all locks and marks batch as cancelled.
+    """
+    logger.info(f"User {current_user.get('user_id')} requested cancellation and rollback for batch {batch_id}")
+    result = import_pipeline.cancel_batch(batch_id)
+    return result
+
+
+@router.post("/cancel-active")
+async def cancel_active_upload(
+    current_user: dict = Depends(admin_only)
+):
+    """
+    Cancels and rolls back whatever upload batch is currently active.
+    """
+    active_batch = import_pipeline.is_upload_active()
+    if not active_batch:
+        from backend.db.supabase_client import get_active_upload_batch
+        active_batch = get_active_upload_batch()
+
+    if not active_batch:
+        from backend.core.system_lock import invalidate_system_lock_cache, clear_roster_upload_active, reset_upload_cooldown
+        invalidate_system_lock_cache()
+        clear_roster_upload_active()
+        reset_upload_cooldown()
+        import_pipeline.release_pipeline_lock()
+        return {"success": True, "message": "No active upload found. Locks cleared."}
+
+    b_id = active_batch.get("batch_id") or active_batch.get("upload_batch_id")
+    result = import_pipeline.cancel_batch(b_id)
+    return result
+
+
 def extract_entity_val(msg: str) -> str:
     """Extract single-quoted string or clean entity name from error message."""
     m_quote = re.search(r"'(.*?)'", msg)

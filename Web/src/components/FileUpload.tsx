@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { FileUploadState } from '../types';
 import { API_BASE_URL } from '../config';
 import { useSystemLock } from '../contexts/SystemLockContext';
+import { useToast } from '../contexts/ToastContext';
 
 interface FileUploadProps {
   title: string;
@@ -71,8 +72,13 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
     cooldownRemainingSeconds,
     formattedCooldown,
     formattedCooldownLong,
-    startCooldownManually
+    startCooldownManually,
+    refreshLockStatus
   } = useSystemLock();
+  const { showToast } = useToast();
+  const [isCancelling, setIsCancelling] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
   const [uploadState, setUploadState] = useState<FileUploadState>(() => {
     if (!uploadEndpoint) {
       try {
@@ -182,9 +188,10 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
 
         const isSuccess = ['loaded', 'completed', 'success'].includes(statusMain) || ['loaded', 'completed', 'success'].includes(statusUpload);
         const isFailed = statusMain === 'failed' || statusUpload === 'failed';
+        const isCancelled = statusMain === 'cancelled' || statusUpload === 'cancelled';
         const isNotFound = statusMain === 'not_found' || statusUpload === 'not_found';
 
-        if (isNotFound) {
+        if (isNotFound || isCancelled) {
           if (pollTimerRef.current) clearInterval(pollTimerRef.current);
           if (!uploadEndpoint) localStorage.removeItem('rll_active_sales_upload');
           setUploadState({ status: 'idle', progress: 0 });
@@ -465,7 +472,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
             localStorage.removeItem('rll_active_sales_upload');
             if (onErrorOccurred) onErrorOccurred(stored.batchId);
             return;
-          } else if (statusMain === 'not_found' || statusUpload === 'not_found') {
+          } else if (statusMain === 'cancelled' || statusUpload === 'cancelled' || statusMain === 'not_found' || statusUpload === 'not_found') {
             localStorage.removeItem('rll_active_sales_upload');
             localStorage.removeItem('rll_system_lock_base');
             setUploadState({ status: 'idle', progress: 0 });
@@ -580,6 +587,11 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
 
   const processFile = async (file: File) => {
     if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const abortCtrl = new AbortController();
+    abortControllerRef.current = abortCtrl;
 
     const startMs = Date.now();
     const timeFormatted = new Date().toLocaleTimeString('en-IN', {
@@ -613,7 +625,8 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
       const response = await fetch(targetUrl, {
         method: 'POST',
         headers,
-        body: formData
+        body: formData,
+        signal: abortCtrl.signal
       });
 
       if (!response.ok) {
@@ -674,6 +687,10 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
       startPollingBatchStatus(batchId, file.name, timeFormatted, startMs);
 
     } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        console.log('Upload aborted by user');
+        return;
+      }
       console.error('Upload error:', error);
       if (!uploadEndpoint) localStorage.removeItem('rll_active_sales_upload');
       setUploadState({
@@ -694,6 +711,69 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
     localStorage.removeItem('rll_system_lock_base');
     setUploadState({ status: 'idle', progress: 0 });
     if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleCancelUpload = async () => {
+    if (isCancelling) return;
+    setIsCancelling(true);
+
+    // 1. Abort in-flight network upload if active
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+
+    // 2. Clear status poller immediately
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+
+    const currentBatchId = uploadState.batchId || (() => {
+      try {
+        const raw = localStorage.getItem('rll_active_sales_upload');
+        return raw ? JSON.parse(raw).batchId : null;
+      } catch { return null; }
+    })() || (activeBatch as any)?.batch_id;
+
+    try {
+      const token = localStorage.getItem('token');
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      };
+
+      const cancelUrl = currentBatchId
+        ? `${API_BASE_URL}/uploads/batches/${currentBatchId}/cancel`
+        : `${API_BASE_URL}/uploads/cancel-active`;
+
+      const res = await fetch(cancelUrl, {
+        method: 'POST',
+        headers
+      });
+
+      if (!res.ok && currentBatchId && res.status !== 401 && res.status !== 403) {
+        // Fallback to cancel-active
+        await fetch(`${API_BASE_URL}/uploads/cancel-active`, {
+          method: 'POST',
+          headers
+        }).catch(() => {});
+      }
+
+      showToast("Upload cancelled. In-flight execution stopped and partial records rolled back to 0.", "info");
+    } catch (err) {
+      console.error("Error cancelling upload:", err);
+      showToast("Upload cancellation requested. Resetting dropzone.", "warning");
+    } finally {
+      setIsCancelling(false);
+      resetUpload();
+      try {
+        if (refreshLockStatus) await refreshLockStatus();
+      } catch (e) {}
+      if (onErrorOccurred && currentBatchId) {
+        onErrorOccurred(currentBatchId);
+      }
+    }
   };
 
   return (
@@ -852,6 +932,15 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                   />
                 </div>
                 <p className="text-slate-500 text-xs mt-2 font-bold">{uploadState.progress}%</p>
+                <button
+                  type="button"
+                  onClick={handleCancelUpload}
+                  disabled={isCancelling}
+                  className="mt-2.5 px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-semibold rounded-lg transition-colors border border-slate-200 inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  title="Cancel upload"
+                >
+                  <X size={12} /> Cancel Upload
+                </button>
               </motion.div>
             )}
 
@@ -896,11 +985,22 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
 
                 <button
                   type="button"
-                  onClick={resetUpload}
-                  className="mt-2.5 px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-semibold rounded-lg transition-colors border border-slate-200 inline-flex items-center gap-1.5 cursor-pointer"
-                  title="Clear current upload status and reset dropzone"
+                  onClick={handleCancelUpload}
+                  disabled={isCancelling}
+                  className="mt-2.5 px-3.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-semibold rounded-lg transition-colors border border-rose-200 inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-2xs"
+                  title="Stop execution and rollback this upload"
                 >
-                  <X size={12} /> Cancel / Reset Ingestion
+                  {isCancelling ? (
+                    <>
+                      <RefreshCw size={12} className="animate-spin text-rose-600" />
+                      <span>Stopping & Rolling Back...</span>
+                    </>
+                  ) : (
+                    <>
+                      <X size={13} className="text-rose-600" />
+                      <span>Cancel & Rollback Ingestion</span>
+                    </>
+                  )}
                 </button>
 
                 <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden mt-4">

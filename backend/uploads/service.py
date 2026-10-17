@@ -166,7 +166,82 @@ upload_batches_db: Dict[int, Dict[str, Any]] = {}
 upload_logs_db: List[Dict[str, Any]] = []
 
 
+class UploadCancelledException(Exception):
+    """Raised when an active upload batch has been cancelled by the user."""
+    pass
+
+
 class ImportPipelineEngine:
+
+    def __init__(self):
+        self._cancelled_batches = set()
+
+    def cancel_batch(self, batch_id: Any) -> Dict[str, Any]:
+        """
+        Stops the execution of an upload batch pipeline and executes an atomic rollback
+        to 0 rows in database (sales_fact, user_sales_fact, raw_sales_upload, batch_chunks, upload_pipeline_logs).
+        Releases advisory lock and resets system lock cache immediately.
+        """
+        b_str = str(batch_id).strip()
+        logger.warning(f"Request to cancel and rollback upload batch {b_str} received.")
+        self._cancelled_batches.add(b_str)
+        try:
+            self._cancelled_batches.add(int(b_str))
+        except (ValueError, TypeError):
+            pass
+
+        # 1. Update in-memory state
+        local_batch = upload_batches_db.get(b_str) or upload_batches_db.get(int(b_str) if b_str.isdigit() else -1)
+        if local_batch:
+            local_batch.update({
+                "status": "cancelled",
+                "upload_status": "cancelled",
+                "remarks": "Upload cancelled by user. Execution stopped and partial records rolled back to 0."
+            })
+
+        # 2. Update DB upload_batches status
+        client = get_supabase()
+        if client:
+            try:
+                client.table("upload_batches").update({
+                    "status": "cancelled",
+                    "remarks": "Upload cancelled by user. Execution stopped and partial records rolled back to 0.",
+                    "updated_at": datetime.now().isoformat()
+                }).eq("batch_id", b_str).execute()
+                logger.info(f"Updated upload_batches #{b_str} status to 'cancelled'.")
+            except Exception as exc:
+                logger.warning(f"Failed to update batch {b_str} status to cancelled: {exc}")
+
+        # 3. Clean up all partial records inserted for this batch
+        self._cleanup_failed_batch(b_str)
+
+        # 4. Release locks and invalidate system lock cache
+        self.release_pipeline_lock(b_str)
+        try:
+            from backend.core.system_lock import invalidate_system_lock_cache, clear_roster_upload_active, reset_upload_cooldown
+            invalidate_system_lock_cache()
+            clear_roster_upload_active()
+            reset_upload_cooldown()
+        except Exception as e_lock:
+            logger.warning(f"Error invalidating system lock cache during cancel: {e_lock}")
+
+        return {
+            "success": True,
+            "batch_id": b_str,
+            "status": "cancelled",
+            "message": "Upload batch successfully cancelled and all partial records rolled back to 0."
+        }
+
+    def is_batch_cancelled(self, batch_id: Any) -> bool:
+        if not batch_id:
+            return False
+        b_str = str(batch_id).strip()
+        if b_str in self._cancelled_batches or (b_str.isdigit() and int(b_str) in self._cancelled_batches):
+            return True
+        batch = upload_batches_db.get(b_str) or upload_batches_db.get(int(b_str) if b_str.isdigit() else -1)
+        if batch and str(batch.get("status", "")).lower() == "cancelled":
+            return True
+        return False
 
     # ========================================================
     # BASIC HELPERS
@@ -720,6 +795,8 @@ class ImportPipelineEngine:
             return local_batch
 
         try:
+            if self.is_batch_cancelled(batch_id):
+                raise UploadCancelledException(f"Batch {batch_id} cancelled by user before processing.")
             local_batch = upload_batches_db.get(batch_id)
             if local_batch:
                 local_batch["started_at"] = started_at_iso
@@ -762,6 +839,9 @@ class ImportPipelineEngine:
                 batch_id,
                 remarks=f"File parsed ({total_rows} rows). Prefetching and bulk resolving master data...",
             )
+            if self.is_batch_cancelled(batch_id):
+                raise UploadCancelledException(f"Batch {batch_id} cancelled by user after file parsing.")
+
             master_service.prefetch_all_caches()
 
             # Vectorized Series Extraction & Cleaning
@@ -1462,6 +1542,9 @@ class ImportPipelineEngine:
                 self.release_pipeline_lock(batch_id)
                 return local_batch
 
+            if self.is_batch_cancelled(batch_id):
+                raise UploadCancelledException(f"Batch {batch_id} cancelled by user before sales_fact insertion.")
+
             # 5. ATOMIC PROMOTION TO PRODUCTION (ALL VALIDATIONS PASSED)
             self._update_batch(batch_id=batch_id, status="validated")
 
@@ -1495,6 +1578,9 @@ class ImportPipelineEngine:
                 batch_id, s_date, s_company, s_ase, s_brand, s_cases, s_btl, s_bl,
                 company_cache, brand_cache, tenant_id=tenant_id
             )
+
+            if self.is_batch_cancelled(batch_id):
+                raise UploadCancelledException(f"Batch {batch_id} cancelled by user before analytics aggregation.")
 
             # Step 10 - Trigger Incremental Analytics Summaries & Validation ONLY after complete sales_fact ingestion
             if fact_records and imported_rows > 0:
@@ -1600,8 +1686,45 @@ class ImportPipelineEngine:
 
 
         # =====================================================
-        # COMPLETE PIPELINE FAILURE (WITH AUTOMATIC ROLLBACK)
+        # USER CANCELLATION OR FAILURE (WITH AUTOMATIC ROLLBACK)
         # =====================================================
+
+        except UploadCancelledException as exc:
+            logger.warning(
+                "Upload batch %s cancelled by user: %s. Executing atomic rollback to 0.",
+                batch_id,
+                exc,
+            )
+            self._cleanup_failed_batch(batch_id)
+            self.release_pipeline_lock(batch_id)
+
+            local_batch = upload_batches_db.get(batch_id)
+            if local_batch:
+                local_batch.update({
+                    "status": "cancelled",
+                    "upload_status": "cancelled",
+                    "remarks": "Upload cancelled by user. Execution stopped and partial records rolled back to 0.",
+                    "processing_time_seconds": round(time.time() - start_time, 2),
+                })
+
+            try:
+                self._update_batch(
+                    batch_id=batch_id,
+                    status="cancelled",
+                    remarks="Upload cancelled by user. Execution stopped and partial records rolled back to 0."
+                )
+            except Exception:
+                pass
+
+            try:
+                from backend.core.system_lock import invalidate_system_lock_cache, clear_roster_upload_active, reset_upload_cooldown
+                invalidate_system_lock_cache()
+                clear_roster_upload_active()
+                reset_upload_cooldown()
+            except Exception:
+                pass
+
+            return local_batch
 
         except Exception as exc:
 
@@ -2468,6 +2591,22 @@ class ImportPipelineEngine:
         except Exception as exc_r:
             logger.warning(f"Notice purging raw_sales_upload in _cleanup_failed_batch: {exc_r}")
 
+        # Purge temporary chunk tracking, staging records, and pipeline logs via RPC or table deletes
+        try:
+            from backend.db.supabase_client import purge_batch_data_fast_rpc
+            purge_batch_data_fast_rpc(b_str)
+        except Exception:
+            for t in ["raw_sales_upload", "batch_chunks", "upload_pipeline_logs"]:
+                try:
+                    client.table(t).delete().eq("batch_id", b_str).execute()
+                except Exception as exc_sub:
+                    logger.debug(f"Notice purging {t} in _cleanup_failed_batch: {exc_sub}")
+
+        try:
+            client.table("upload_validation_errors").delete().eq("batch_id", b_str).execute()
+        except Exception:
+            pass
+
     def _record_batch_chunk(
         self,
         batch_id: int,
@@ -2519,7 +2658,7 @@ class ImportPipelineEngine:
         table: str,
         records: List[Dict[str, Any]],
         chunk_size: int = 5000,
-        batch_id: Optional[int] = None,
+        batch_id: Optional[Any] = None,
         chunk_number_offset: int = 0,
     ):
         """
@@ -2547,6 +2686,9 @@ class ImportPipelineEngine:
         milestone_step = max(1, total_chunks // 5)
 
         for idx, start_index in enumerate(range(0, len(records), chunk_size), start=1):
+            if batch_id and self.is_batch_cancelled(batch_id):
+                logger.warning(f"Upload batch {batch_id} cancellation detected in _bulk_insert ({table}) at chunk {idx}/{total_chunks}.")
+                raise UploadCancelledException(f"Batch {batch_id} cancelled by user during {table} chunk {idx}/{total_chunks}.")
             chunk = records[start_index : start_index + chunk_size]
             start_row = start_index + 1
             end_row = min(start_index + chunk_size, len(records))
@@ -3010,7 +3152,8 @@ class ImportPipelineEngine:
                 self._bulk_insert(
                     table="user_sales_fact",
                     records=fact_records,
-                    chunk_size=5000
+                    chunk_size=5000,
+                    batch_id=batch_id
                 )
         except Exception as e_usf:
             logger.warning(f"_populate_user_sales_fact error: {e_usf}")

@@ -840,18 +840,18 @@ export default function HeadcountManagement() {
       {!showUpload && (
         <div className="bg-white rounded-2xl shadow-2xs border border-slate-200/80 flex-1 min-h-0 overflow-hidden flex flex-col">
         <div className="overflow-x-auto flex-1">
-          <table className="w-full text-left border-collapse table-fixed min-w-[1020px]">
+          <table className="w-full text-left border-collapse table-fixed">
             <thead>
               <tr className="bg-slate-50/80 border-b border-slate-200/80 select-none">
                 {/* S.No Column */}
-                <th className="w-[4%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">
+                <th className="w-[3.5%] px-2 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">
                   #
                 </th>
 
                 {/* Name */}
                 <th 
                   onClick={() => handleSort('name')}
-                  className="w-[16%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[14.5%] px-2.5 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Name</span>
@@ -863,13 +863,13 @@ export default function HeadcountManagement() {
                   </div>
                 </th>
 
-                {/* Phone Number */}
+                {/* Phone */}
                 <th 
                   onClick={() => handleSort('phoneNumber')}
-                  className="w-[11%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[11%] px-2 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
-                    <span>Phone Number</span>
+                    <span>Phone</span>
                     {sortField === 'phoneNumber' ? (
                       sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#0D3B8E]" /> : <ChevronDown className="w-3 h-3 text-[#0D3B8E]" />
                     ) : (
@@ -881,7 +881,7 @@ export default function HeadcountManagement() {
                 {/* Email */}
                 <th 
                   onClick={() => handleSort('email')}
-                  className="w-[16%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[15%] px-2.5 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Email</span>
@@ -896,7 +896,7 @@ export default function HeadcountManagement() {
                 {/* Role */}
                 <th 
                   onClick={() => handleSort('role')}
-                  className="w-[9%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[7.5%] px-2 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Role</span>
@@ -909,17 +909,17 @@ export default function HeadcountManagement() {
                 </th>
 
                 {/* Headquarters */}
-                <th className="w-[18%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                <th className="w-[13.5%] px-2.5 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
                   Headquarters
                 </th>
 
                 {/* Reporting Manager */}
                 <th 
                   onClick={() => handleSort('reportingManager')}
-                  className="w-[12%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[13%] px-2.5 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
-                    <span>Reporting Manager</span>
+                    <span>Manager</span>
                     {sortField === 'reportingManager' ? (
                       sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#0D3B8E]" /> : <ChevronDown className="w-3 h-3 text-[#0D3B8E]" />
                     ) : (
@@ -931,7 +931,7 @@ export default function HeadcountManagement() {
                 {/* Status */}
                 <th 
                   onClick={() => handleSort('isActive')}
-                  className="w-[7%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[10.5%] px-2 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors whitespace-nowrap"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Status</span>
@@ -944,7 +944,7 @@ export default function HeadcountManagement() {
                 </th>
 
                 {/* Actions */}
-                <th className="w-[7%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">
+                <th className="w-[11.5%] px-2 py-3 pr-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right whitespace-nowrap">
                   Actions
                 </th>
               </tr>
@@ -971,12 +971,12 @@ export default function HeadcountManagement() {
                   return (
                     <tr key={user.id} className="hover:bg-blue-50/20 transition-colors group">
                       {/* S.No */}
-                      <td className="px-4 py-2.5 text-center text-xs font-bold text-slate-400">
+                      <td className="px-2 py-2 text-center text-xs font-bold text-slate-400">
                         {serialNumber}
                       </td>
 
                       {/* Name */}
-                      <td className="px-4 py-2.5">
+                      <td className="px-2.5 py-2">
                         {editingId === user.id ? (
                           <input
                             type="text"
@@ -985,8 +985,8 @@ export default function HeadcountManagement() {
                             className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
                           />
                         ) : (
-                          <div className="flex items-center gap-2.5">
-                            <div className="w-7 h-7 rounded-full bg-[#0D3B8E]/10 flex items-center justify-center text-[#0D3B8E] font-bold text-xs shrink-0">
+                          <div className="flex items-center gap-2">
+                            <div className="w-6 h-6 rounded-full bg-[#0D3B8E]/10 flex items-center justify-center text-[#0D3B8E] font-bold text-[11px] shrink-0">
                               {user.name.charAt(0)}
                             </div>
                             <p className="font-bold text-slate-900 text-xs truncate">{user.name}</p>
@@ -995,7 +995,7 @@ export default function HeadcountManagement() {
                       </td>
 
                       {/* Phone Number */}
-                      <td className="px-4 py-2.5">
+                      <td className="px-2 py-2">
                         {editingId === user.id ? (
                           <input
                             type="text"
@@ -1004,15 +1004,15 @@ export default function HeadcountManagement() {
                             className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
                           />
                         ) : (
-                          <div className="flex items-center gap-2 text-slate-600">
-                            <Phone className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          <div className="flex items-center gap-1.5 text-slate-600">
+                            <Phone className="w-3 h-3 text-slate-400 shrink-0" />
                             <span className="text-xs font-bold truncate">{user.phoneNumber || 'N/A'}</span>
                           </div>
                         )}
                       </td>
 
                       {/* Email */}
-                      <td className="px-4 py-2.5">
+                      <td className="px-2.5 py-2">
                         {editingId === user.id ? (
                           <input
                             type="email"
@@ -1021,15 +1021,15 @@ export default function HeadcountManagement() {
                             className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
                           />
                         ) : (
-                          <div className="flex items-center gap-2 text-slate-600">
-                            <Mail className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                            <span className="text-xs font-medium truncate">{user.email || 'N/A'}</span>
+                          <div className="flex items-center gap-1.5 text-slate-600">
+                            <Mail className="w-3 h-3 text-slate-400 shrink-0" />
+                            <span className="text-xs font-medium truncate" title={user.email}>{user.email || 'N/A'}</span>
                           </div>
                         )}
                       </td>
 
                       {/* Role */}
-                      <td className="px-4 py-2.5">
+                      <td className="px-2 py-2">
                         {editingId === user.id ? (
                           <select
                             value={editRole}
@@ -1041,14 +1041,14 @@ export default function HeadcountManagement() {
                             ))}
                           </select>
                         ) : (
-                          <span className={`px-2.5 py-1 rounded border text-[10px] font-bold uppercase tracking-wider ${getRoleColor(user.role)}`}>
+                          <span className={`px-2 py-0.5 rounded border text-[10px] font-bold uppercase tracking-wider ${getRoleColor(user.role)}`}>
                             {user.role}
                           </span>
                         )}
                       </td>
 
                       {/* Headquarters */}
-                      <td className="px-4 py-2.5">
+                      <td className="px-2.5 py-2">
                         {editingId === user.id ? (
                           <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto p-1 bg-white border border-slate-300 rounded">
                             {headquartersOptions.length === 0 ? (
@@ -1109,7 +1109,7 @@ export default function HeadcountManagement() {
                       </td>
 
                       {/* Reporting Manager */}
-                      <td className="px-4 py-2.5">
+                      <td className="px-2.5 py-2">
                         {editingId === user.id ? (
                           <input
                             type="text"
@@ -1125,26 +1125,26 @@ export default function HeadcountManagement() {
                       </td>
 
                       {/* Status */}
-                      <td className="px-4 py-2.5">
+                      <td className="px-2 py-2 whitespace-nowrap">
                         {editingId === user.id ? (
                           <button
                             type="button"
                             onClick={() => setEditIsActive(!editIsActive)}
-                            className="flex items-center gap-2 cursor-pointer group select-none"
+                            className="inline-flex items-center gap-1.5 cursor-pointer group select-none whitespace-nowrap"
                             title={`Click to switch to ${editIsActive ? 'Inactive' : 'Active'}`}
                           >
                             <div
-                              className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
+                              className={`relative inline-flex h-4 w-7 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
                                 editIsActive ? 'bg-emerald-500' : 'bg-slate-300'
                               }`}
                             >
                               <span
-                                className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
-                                  editIsActive ? 'translate-x-4' : 'translate-x-0'
+                                className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
+                                  editIsActive ? 'translate-x-3' : 'translate-x-0'
                                 }`}
                               />
                             </div>
-                            <span className={`text-xs font-extrabold ${editIsActive ? 'text-emerald-700' : 'text-slate-500'}`}>
+                            <span className={`text-[11px] font-extrabold ${editIsActive ? 'text-emerald-700' : 'text-slate-500'}`}>
                               {editIsActive ? 'Active' : 'Inactive'}
                             </span>
                           </button>
@@ -1153,21 +1153,21 @@ export default function HeadcountManagement() {
                             type="button"
                             disabled={isLocked}
                             onClick={() => !isLocked && handleToggleUserStatus(user)}
-                            className={`flex items-center gap-2 select-none ${isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer group'}`}
+                            className={`inline-flex items-center gap-1.5 select-none whitespace-nowrap ${isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer group'}`}
                             title={isLocked ? 'Status changes are locked during active data ingestion' : `Click to ${user.isActive ? 'deactivate user' : 'reactivate user'}`}
                           >
                             <div
-                              className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
+                              className={`relative inline-flex h-4 w-7 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
                                 user.isActive ? 'bg-emerald-500' : 'bg-slate-300'
                               }`}
                             >
                               <span
-                                className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
-                                  user.isActive ? 'translate-x-4' : 'translate-x-0'
+                                className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
+                                  user.isActive ? 'translate-x-3' : 'translate-x-0'
                                 }`}
                               />
                             </div>
-                            <span className={`text-xs font-bold ${user.isActive ? 'text-emerald-700' : 'text-slate-500'}`}>
+                            <span className={`text-[11px] font-bold ${user.isActive ? 'text-emerald-700' : 'text-slate-500'}`}>
                               {user.isActive ? 'Active' : 'Inactive'}
                             </span>
                           </button>
@@ -1175,9 +1175,9 @@ export default function HeadcountManagement() {
                       </td>
 
                       {/* Actions */}
-                      <td className="px-4 py-2.5 text-right">
+                      <td className="px-2 py-2 pr-4 text-right whitespace-nowrap">
                         {editingId === user.id ? (
-                          <div className="flex items-center justify-end gap-1.5">
+                          <div className="inline-flex items-center justify-end gap-1.5 whitespace-nowrap">
                             <button
                               disabled={isLocked}
                               onClick={() => handleSave(user.id)}
@@ -1195,12 +1195,12 @@ export default function HeadcountManagement() {
                             </button>
                           </div>
                         ) : (
-                          <div className="flex items-center justify-end gap-1.5">
+                          <div className="inline-flex items-center justify-end gap-1.5 whitespace-nowrap">
                             <button
                               disabled={isLocked}
                               onClick={() => !isLocked && handleEditClick(user)}
                               title={isLocked ? 'Editing is locked during active data ingestion' : 'Edit'}
-                              className={`px-2.5 py-1 border rounded text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1 transition-colors ${
+                              className={`px-2 py-0.5 border rounded text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1 transition-colors shrink-0 ${
                                 isLocked 
                                   ? 'border-slate-200 text-slate-300 cursor-not-allowed opacity-50' 
                                   : 'border-slate-200 text-slate-600 hover:border-[#0D3B8E] hover:text-[#0D3B8E] cursor-pointer'
@@ -1211,14 +1211,14 @@ export default function HeadcountManagement() {
                             <button 
                               disabled={isLocked}
                               onClick={() => !isLocked && handleDelete(user.id)}
-                              className={`p-1 rounded transition-colors inline-flex ${
+                              className={`p-1 rounded transition-colors inline-flex shrink-0 ${
                                 isLocked 
                                   ? 'text-slate-200 cursor-not-allowed opacity-40' 
                                   : 'text-slate-400 hover:text-red-500 hover:bg-red-50 cursor-pointer'
                               }`}
                               title={isLocked ? 'Deletion is locked during active data ingestion' : 'Delete Record'}
                             >
-                              <Trash2 className="w-4 h-4" />
+                              <Trash2 className="w-3.5 h-3.5" />
                             </button>
                           </div>
                         )}

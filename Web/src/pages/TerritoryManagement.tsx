@@ -553,18 +553,18 @@ export default function TerritoryManagement() {
       {/* Data Table Container */}
       <div className="bg-white rounded-xl shadow-2xs border border-slate-200/80 flex-1 min-h-0 overflow-hidden flex flex-col">
         <div className="overflow-x-auto flex-1">
-          <table className="w-full text-left border-collapse table-fixed min-w-[750px]">
+          <table className="w-full text-left border-collapse table-fixed min-w-[950px]">
             <thead>
               <tr className="bg-slate-50/80 border-b border-slate-200/80 sticky top-0 z-10 select-none">
                 {/* S.No Column */}
-                <th className="w-[6%] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">
+                <th className="w-[5%] min-w-[45px] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">
                   #
                 </th>
 
                 {/* User */}
                 <th 
                   onClick={() => handleSort("depot_user")}
-                  className="w-[22%] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[21%] min-w-[170px] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>User</span>
@@ -579,7 +579,7 @@ export default function TerritoryManagement() {
                 {/* Role */}
                 <th 
                   onClick={() => handleSort("depot_user_role")}
-                  className="w-[12%] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[11%] min-w-[90px] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Role</span>
@@ -594,7 +594,7 @@ export default function TerritoryManagement() {
                 {/* Depot */}
                 <th 
                   onClick={() => handleSort("name")}
-                  className="w-[24%] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[22%] min-w-[180px] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Depot</span>
@@ -609,7 +609,7 @@ export default function TerritoryManagement() {
                 {/* Headquarter */}
                 <th 
                   onClick={() => handleSort("headquarters_name")}
-                  className="w-[20%] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[19%] min-w-[150px] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Headquarter</span>
@@ -624,7 +624,7 @@ export default function TerritoryManagement() {
                 {/* Active / Inactive Status */}
                 <th 
                   onClick={() => handleSort("is_active")}
-                  className="w-[10%] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[11%] min-w-[115px] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors whitespace-nowrap"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Status</span>
@@ -637,7 +637,7 @@ export default function TerritoryManagement() {
                 </th>
 
                 {/* Actions */}
-                <th className="w-[10%] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">
+                <th className="w-[11%] min-w-[105px] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right whitespace-nowrap">
                   Actions
                 </th>
               </tr>
@@ -786,14 +786,13 @@ export default function TerritoryManagement() {
                           </div>
                         )}
                       </td>
-
-                      {/* Status */}
-                      <td className="px-4 py-2.5">
+                      {/* Active Status Toggle */}
+                      <td className="px-3 py-2.5 whitespace-nowrap">
                         {isEditing ? (
                           <button
                             type="button"
                             onClick={() => setEditIsActive(!editIsActive)}
-                            className="flex items-center gap-2 cursor-pointer group select-none"
+                            className="inline-flex items-center gap-2 cursor-pointer group select-none whitespace-nowrap"
                             title={`Click to switch to ${editIsActive ? 'Inactive' : 'Active'}`}
                           >
                             <div
@@ -815,7 +814,7 @@ export default function TerritoryManagement() {
                           <button
                             type="button"
                             onClick={() => handleToggleDepotStatus(depot)}
-                            className="flex items-center gap-2 cursor-pointer group select-none"
+                            className="inline-flex items-center gap-2 cursor-pointer group select-none whitespace-nowrap"
                             title={`Click to ${depot.is_active ? 'deactivate territory' : 'reactivate territory'}`}
                           >
                             <div
@@ -837,9 +836,9 @@ export default function TerritoryManagement() {
                       </td>
 
                       {/* Actions */}
-                      <td className="px-4 py-2.5 text-right">
+                      <td className="px-3 py-2.5 text-right whitespace-nowrap">
                         {isEditing ? (
-                          <div className="flex items-center justify-end gap-2">
+                          <div className="inline-flex items-center justify-end gap-1.5 whitespace-nowrap">
                             <button
                               onClick={() => handleSave(depot)}
                               className="p-1.5 bg-emerald-50 text-emerald-600 rounded hover:bg-emerald-100 transition-colors"
@@ -856,12 +855,12 @@ export default function TerritoryManagement() {
                             </button>
                           </div>
                         ) : (
-                          <div className="flex items-center justify-end gap-2">
+                          <div className="inline-flex items-center justify-end gap-1.5 whitespace-nowrap">
                             <button
                               disabled={isLocked}
                               onClick={() => !isLocked && handleEditClick(depot)}
                               title={isLocked ? "Editing locked during active data ingestion" : "Edit Territory"}
-                              className={`px-3 py-1.5 border rounded text-[10px] font-bold uppercase tracking-widest inline-flex items-center gap-1 transition-colors ${
+                              className={`px-2.5 py-1 border rounded text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1 transition-colors shrink-0 ${
                                 isLocked 
                                   ? 'border-slate-200 text-slate-300 opacity-40 cursor-not-allowed' 
                                   : 'border-slate-200 text-slate-600 hover:border-[#004B87] hover:text-[#004B87] cursor-pointer'
@@ -872,7 +871,7 @@ export default function TerritoryManagement() {
                             <button 
                               disabled={isLocked}
                               onClick={() => !isLocked && handleDelete(depot.depot_id)}
-                              className={`p-1.5 rounded transition-colors inline-flex ${
+                              className={`p-1 rounded transition-colors inline-flex shrink-0 ${
                                 isLocked 
                                   ? 'text-slate-200 opacity-40 cursor-not-allowed' 
                                   : 'text-slate-400 hover:text-red-500 hover:bg-red-50 cursor-pointer'
