@@ -81,9 +81,8 @@ def _pad(text: str, width: int = 76) -> str:
     return f"│ {text.ljust(width)} │"
 
 def log_telemetry_summary(status_code: int, response_size_bytes: int = 0) -> None:
-    ctx = _telemetry_ctx.get()
-    if not ctx:
-        return
+    # Telemetry logging disabled per user request
+    return
 
     end_perf = time.perf_counter()
     backend_total_ms = (end_perf - ctx["start_perf"]) * 1000.0

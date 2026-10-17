@@ -22,3 +22,8 @@ def setup_logging():
     logging.getLogger("uvicorn").setLevel(logging.INFO)
     logging.getLogger("uvicorn.error").setLevel(logging.INFO)
     logging.getLogger("uvicorn.access").setLevel(logging.INFO)
+    
+    # Silence noisy HTTP client and telemetry loggers
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("telemetry").setLevel(logging.WARNING)

@@ -48,7 +48,16 @@ export default function StockUpload() {
   const fetchLatestBatch = async () => {
     try {
       const token = localStorage.getItem('token');
-      const tenantId = localStorage.getItem('rll_tenant_id');
+      let tenantId = localStorage.getItem('rll_tenant_id');
+      if (!tenantId) {
+        try {
+          const raw = localStorage.getItem('user');
+          if (raw) {
+            const u = JSON.parse(raw);
+            if (u && u.tenant_id) tenantId = u.tenant_id;
+          }
+        } catch {}
+      }
       const headers: Record<string, string> = {
         ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
         ...(tenantId ? { 'X-Tenant-ID': tenantId } : {})

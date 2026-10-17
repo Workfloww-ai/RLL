@@ -223,12 +223,18 @@ class ImportPipelineEngine:
         # 4. Release locks and invalidate system lock cache
         self.release_pipeline_lock(b_str)
         try:
-            from backend.core.system_lock import invalidate_system_lock_cache, clear_roster_upload_active, reset_upload_cooldown
+            from backend.core.system_lock import invalidate_system_lock_cache, clear_roster_upload_active, record_upload_cooldown
             invalidate_system_lock_cache()
             clear_roster_upload_active()
-            reset_upload_cooldown()
+            source_fname = (local_batch.get("source_file") if local_batch else None) or "Cancelled Upload"
+            record_upload_cooldown(
+                upload_type="validation_error",
+                filename=source_fname,
+                cooldown_seconds=600,
+                reason=f"Upload cancelled and rolled back for '{source_fname}'. 10-minute purge buffer active."
+            )
         except Exception as e_lock:
-            logger.warning(f"Error invalidating system lock cache during cancel: {e_lock}")
+            logger.warning(f"Error setting cooldown during cancel: {e_lock}")
 
         return {
             "success": True,
@@ -716,7 +722,6 @@ class ImportPipelineEngine:
 
             if user_id and len(str(user_id)) == 36:
                 payload["uploaded_by"] = str(user_id)
-                payload["created_by"] = str(user_id)
                 payload["updated_by"] = str(user_id)
 
             try:
@@ -1791,6 +1796,20 @@ class ImportPipelineEngine:
                 except Exception as e_purge:
                     logger.warning(f"Notice purging raw_sales_upload for batch {batch_id}: {e_purge}")
 
+                # Enforce 10-minute cooldown on validation error as requested:
+                # "agr validation error ajaye toh 10 minutes ka timer ajaye uske baad upload hoyegi dusri sheet. yeh purge wale task fir un 10 minute mai hojaye."
+                try:
+                    from backend.core.system_lock import record_upload_cooldown
+                    source_fname = (local_batch.get("source_file") if local_batch else None) or filename or "Sales Data File"
+                    record_upload_cooldown(
+                        upload_type="validation_error",
+                        filename=source_fname,
+                        cooldown_seconds=600,
+                        reason=f"Validation issue detected in '{source_fname}'. 10-minute rollback & purge buffer active."
+                    )
+                except Exception as e_cd:
+                    logger.warning(f"Notice setting validation error cooldown: {e_cd}")
+
                 self.release_pipeline_lock(batch_id)
                 return local_batch
 
@@ -1974,10 +1993,16 @@ class ImportPipelineEngine:
                 pass
 
             try:
-                from backend.core.system_lock import invalidate_system_lock_cache, clear_roster_upload_active, reset_upload_cooldown
+                from backend.core.system_lock import invalidate_system_lock_cache, clear_roster_upload_active, record_upload_cooldown
                 invalidate_system_lock_cache()
                 clear_roster_upload_active()
-                reset_upload_cooldown()
+                source_fname = (local_batch.get("source_file") if local_batch else None) or "Cancelled Upload"
+                record_upload_cooldown(
+                    upload_type="validation_error",
+                    filename=source_fname,
+                    cooldown_seconds=600,
+                    reason=f"Upload cancelled and rolled back for '{source_fname}'. 10-minute purge buffer active."
+                )
             except Exception:
                 pass
 
@@ -2032,6 +2057,20 @@ class ImportPipelineEngine:
                     step="file_processing",
                     status="failed",
                     message=str(exc),
+                )
+            except Exception:
+                pass
+
+            try:
+                from backend.core.system_lock import invalidate_system_lock_cache, clear_roster_upload_active, record_upload_cooldown
+                invalidate_system_lock_cache()
+                clear_roster_upload_active()
+                source_fname = (local_batch.get("source_file") if local_batch else None) or "Failed Upload"
+                record_upload_cooldown(
+                    upload_type="validation_error",
+                    filename=source_fname,
+                    cooldown_seconds=600,
+                    reason=f"Upload failed: {str(exc)}. 10-minute purge buffer active."
                 )
             except Exception:
                 pass
@@ -3203,8 +3242,6 @@ class ImportPipelineEngine:
                 payload["updated_by"] = str(u_fk)
                 if "uploaded_by" not in payload:
                     payload["uploaded_by"] = str(u_fk)
-                if "created_by" not in payload:
-                    payload["created_by"] = str(u_fk)
 
         if not payload:
             return

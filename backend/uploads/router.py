@@ -180,7 +180,7 @@ async def list_upload_batches(
     client = get_supabase()
     if client:
         try:
-            query = client.table("upload_batches").select("batch_id, source_file, storage_path, load_type, covers_start, covers_end, row_count, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, remarks, uploaded_by, created_by, updated_by, created_at, updated_at, tenant_id")
+            query = client.table("upload_batches").select("batch_id, source_file, storage_path, load_type, covers_start, covers_end, row_count, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, remarks, uploaded_by, updated_by, created_at, updated_at, tenant_id")
             if target_tenant_id:
                 query = query.eq("tenant_id", target_tenant_id)
             res = query.order("created_at", desc=True).limit(50).execute()
@@ -214,12 +214,22 @@ async def get_latest_upload_batch(
     """
     Returns details of the latest upload batch for the authenticated tenant from Supabase DB or memory.
     """
-    target_tenant_id = x_tenant_id or tenant_id or (current_user.get("tenant_id") if current_user else None)
     client = get_supabase()
+    user_tenant = current_user.get("tenant_id") if current_user else None
+    if not user_tenant and current_user and current_user.get("user_id"):
+        try:
+            if client:
+                u_res = client.table("users").select("tenant_id").eq("user_id", current_user["user_id"]).limit(1).execute()
+                if u_res.data and u_res.data[0].get("tenant_id"):
+                    user_tenant = str(u_res.data[0]["tenant_id"])
+        except Exception:
+            pass
+
+    target_tenant_id = x_tenant_id or tenant_id or user_tenant
     batch = None
     if client:
         try:
-            q = client.table("upload_batches").select("batch_id, source_file, storage_path, load_type, covers_start, covers_end, row_count, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, remarks, uploaded_by, created_by, updated_by, created_at, updated_at, tenant_id")
+            q = client.table("upload_batches").select("batch_id, source_file, storage_path, load_type, covers_start, covers_end, row_count, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, remarks, uploaded_by, updated_by, created_at, updated_at, tenant_id")
             if target_tenant_id:
                 q = q.eq("tenant_id", target_tenant_id)
             res = q.order("created_at", desc=True).limit(1).execute()
@@ -238,7 +248,7 @@ async def get_latest_upload_batch(
     if not batch:
         batches = [
             b for b in upload_batches_db.values()
-            if not target_tenant_id or b.get("tenant_id") == target_tenant_id
+            if target_tenant_id and str(b.get("tenant_id")) == str(target_tenant_id)
         ]
         if batches:
             batch = sorted(batches, key=lambda x: x.get("created_at", ""), reverse=True)[0]
@@ -284,7 +294,7 @@ async def get_upload_batch(batch_id: str):
     client = get_supabase()
     if client:
         try:
-            res = client.table("upload_batches").select("batch_id, source_file, storage_path, load_type, covers_start, covers_end, row_count, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, remarks, uploaded_by, created_by, updated_by, created_at, updated_at").eq("batch_id", batch_id).execute()
+            res = client.table("upload_batches").select("batch_id, source_file, storage_path, load_type, covers_start, covers_end, row_count, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, remarks, uploaded_by, updated_by, created_at, updated_at").eq("batch_id", batch_id).execute()
             if res.data:
                 return res.data[0]
         except Exception as e:

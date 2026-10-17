@@ -19,6 +19,7 @@ export interface SystemLockState {
   activeBatch: ActiveBatchInfo | null;
   isCooldownActive: boolean;
   cooldownRemainingSeconds: number;
+  cooldownTotalSeconds: number;
   formattedCooldown: string;
   formattedCooldownLong: string;
   cooldownMessage: string;
@@ -26,7 +27,7 @@ export interface SystemLockState {
 
 export interface SystemLockContextType extends SystemLockState {
   refreshLockStatus: () => Promise<SystemLockState>;
-  startCooldownManually: (seconds?: number) => void;
+  startCooldownManually: (seconds?: number, message?: string) => void;
 }
 
 const defaultState: SystemLockState = {
@@ -36,6 +37,7 @@ const defaultState: SystemLockState = {
   activeBatch: null,
   isCooldownActive: false,
   cooldownRemainingSeconds: 0,
+  cooldownTotalSeconds: 1800,
   formattedCooldown: '00:00',
   formattedCooldownLong: '0s',
   cooldownMessage: '',
@@ -85,6 +87,14 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
     };
   });
 
+  const [cooldownTotalSeconds, setCooldownTotalSeconds] = useState<number>(() => {
+    try {
+      const tot = localStorage.getItem('rll_cooldown_total_seconds');
+      if (tot) return parseInt(tot, 10);
+    } catch (e) {}
+    return 1800;
+  });
+
   const [cooldownRemaining, setCooldownRemaining] = useState<number>(() => {
     try {
       const expiry = localStorage.getItem('rll_cooldown_expiry_ms');
@@ -96,7 +106,13 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
     return 0;
   });
 
-  const [cooldownMessage, setCooldownMessage] = useState<string>('');
+  const [cooldownMessage, setCooldownMessage] = useState<string>(() => {
+    try {
+      return localStorage.getItem('rll_cooldown_message') || '';
+    } catch (e) {
+      return '';
+    }
+  });
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Keep refs for latest values so fetchLockStatus never re-creates or triggers effect cascades
@@ -117,6 +133,8 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
         if (next === 0) {
           try {
             localStorage.removeItem('rll_cooldown_expiry_ms');
+            localStorage.removeItem('rll_cooldown_total_seconds');
+            localStorage.removeItem('rll_cooldown_message');
           } catch (e) {}
         }
         return next;
@@ -126,10 +144,14 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(timer);
   }, [cooldownRemaining > 0]);
 
-  const startCooldownManually = useCallback((seconds: number = 1800) => {
+  const startCooldownManually = useCallback((seconds: number = 600, message?: string) => {
     setCooldownRemaining(seconds);
+    setCooldownTotalSeconds(seconds);
+    if (message) setCooldownMessage(message);
     try {
       localStorage.setItem('rll_cooldown_expiry_ms', String(Date.now() + seconds * 1000));
+      localStorage.setItem('rll_cooldown_total_seconds', String(seconds));
+      if (message) localStorage.setItem('rll_cooldown_message', message);
     } catch (e) {}
   }, []);
 
@@ -155,24 +177,42 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
         } catch (e) {}
 
         let newCooldownSec = 0;
+        let effectiveTotalSec = 1800;
         // Handle cooldown from backend
         const cooldownData = data.cooldown;
         if (cooldownData && cooldownData.is_active && cooldownData.remaining_seconds > 0) {
           const rem = Math.max(0, parseInt(cooldownData.remaining_seconds, 10));
+          const totalSec = parseInt(cooldownData.cooldown_seconds, 10) || (rem > 600 ? 1800 : 600);
           newCooldownSec = rem;
+          effectiveTotalSec = totalSec;
           setCooldownRemaining(rem);
-          setCooldownMessage(cooldownData.message || 'Upload cooldown active.');
+          setCooldownTotalSeconds(totalSec);
+          const msg = cooldownData.message || 'Upload cooldown active.';
+          setCooldownMessage(msg);
           try {
             localStorage.setItem('rll_cooldown_expiry_ms', String(Date.now() + rem * 1000));
+            localStorage.setItem('rll_cooldown_total_seconds', String(totalSec));
+            localStorage.setItem('rll_cooldown_message', msg);
+          } catch (e) {}
+        } else if (cooldownData && !cooldownData.is_active) {
+          // If server explicitly confirms no cooldown active, clear client cooldown immediately
+          setCooldownRemaining(0);
+          newCooldownSec = 0;
+          try {
+            localStorage.removeItem('rll_cooldown_expiry_ms');
+            localStorage.removeItem('rll_cooldown_total_seconds');
+            localStorage.removeItem('rll_cooldown_message');
           } catch (e) {}
         } else {
-          // If server confirmed no cooldown active
+          // Fallback if cooldownData was not provided in response
           const expiryStr = localStorage.getItem('rll_cooldown_expiry_ms');
           if (expiryStr) {
             const rem = Math.max(0, Math.ceil((parseInt(expiryStr, 10) - Date.now()) / 1000));
             if (rem <= 0) {
               setCooldownRemaining(0);
               localStorage.removeItem('rll_cooldown_expiry_ms');
+              localStorage.removeItem('rll_cooldown_total_seconds');
+              localStorage.removeItem('rll_cooldown_message');
             } else {
               newCooldownSec = rem;
             }
@@ -181,8 +221,11 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        // Keep localStorage upload record synchronized
-        if (newBase.isLocked && newBase.lockType === 'sales_upload' && newBase.activeBatch) {
+        // Keep localStorage upload record synchronized ONLY IF batch is actually in progress
+        const batchStatus = (newBase.activeBatch?.status || '').toLowerCase();
+        const isBatchLive = ['queued', 'running', 'processing', 'aggregating', 'validating', 'pending'].includes(batchStatus);
+
+        if (newBase.isLocked && newBase.lockType === 'sales_upload' && newBase.activeBatch && isBatchLive) {
           const currentStored = localStorage.getItem('rll_active_sales_upload');
           let existingData: any = {};
           try {
@@ -205,9 +248,8 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
             importedRows: newBase.activeBatch.imported_rows
           }));
         } else {
-          // If system is unlocked or batch ended, wipe stale upload locks from browser storage
+          // If system is unlocked or batch ended/failed/cancelled, wipe stale upload locks from browser storage
           localStorage.removeItem('rll_active_sales_upload');
-          localStorage.removeItem('rll_system_lock_base');
         }
 
         const isCooldownActive = newCooldownSec > 0;
@@ -215,7 +257,7 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
         const effectiveLockType = newBase.isLocked ? newBase.lockType : (isCooldownActive ? 'cooldown' : null);
         const effectiveLockReason = newBase.isLocked 
           ? newBase.lockReason 
-          : (isCooldownActive ? `Upload cooldown active (${formatMMSS(newCooldownSec)} remaining). System is in Read-Only mode.` : null);
+          : (isCooldownActive ? (cooldownMessageRef.current || `Upload cooldown active (${formatMMSS(newCooldownSec)} remaining). System is in Read-Only mode.`) : null);
 
         return {
           ...newBase,
@@ -224,6 +266,7 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
           lockReason: effectiveLockReason,
           isCooldownActive,
           cooldownRemainingSeconds: newCooldownSec,
+          cooldownTotalSeconds: effectiveTotalSec,
           formattedCooldown: formatMMSS(newCooldownSec),
           formattedCooldownLong: formatLong(newCooldownSec),
           cooldownMessage: cooldownMessageRef.current,
@@ -238,7 +281,7 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
     const effectiveLockType = lockBaseRef.current.isLocked ? lockBaseRef.current.lockType : (isCooldownActive ? 'cooldown' : null);
     const effectiveLockReason = lockBaseRef.current.isLocked 
       ? lockBaseRef.current.lockReason 
-      : (isCooldownActive ? `Upload cooldown active (${formatMMSS(cooldownRemainingRef.current)} remaining). System is in Read-Only mode.` : null);
+      : (isCooldownActive ? (cooldownMessageRef.current || `Upload cooldown active (${formatMMSS(cooldownRemainingRef.current)} remaining). System is in Read-Only mode.`) : null);
 
     return {
       ...lockBaseRef.current,
@@ -247,6 +290,7 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
       lockReason: effectiveLockReason,
       isCooldownActive,
       cooldownRemainingSeconds: cooldownRemainingRef.current,
+      cooldownTotalSeconds: 1800,
       formattedCooldown: formatMMSS(cooldownRemainingRef.current),
       formattedCooldownLong: formatLong(cooldownRemainingRef.current),
       cooldownMessage: cooldownMessageRef.current,
@@ -257,15 +301,27 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
     // Initial fetch once on mount
     fetchLockStatus();
 
-    // Poll at a healthy 10-second interval
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        fetchLockStatus();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleVisibilityChange);
+
+    // Poll at a conservative 30-second interval when tab is active
     pollIntervalRef.current = setInterval(() => {
-      fetchLockStatus();
-    }, 10000);
+      if (!document.hidden) {
+        fetchLockStatus();
+      }
+    }, 30000);
 
     return () => {
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
       }
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleVisibilityChange);
     };
   }, [fetchLockStatus]);
 
@@ -283,6 +339,7 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
     lockReason: effectiveLockReason,
     isCooldownActive,
     cooldownRemainingSeconds: cooldownRemaining,
+    cooldownTotalSeconds,
     formattedCooldown: formatMMSS(cooldownRemaining),
     formattedCooldownLong: formatLong(cooldownRemaining),
     cooldownMessage,

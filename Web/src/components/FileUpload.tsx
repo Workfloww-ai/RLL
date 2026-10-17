@@ -87,6 +87,8 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
     activeBatch,
     isCooldownActive,
     cooldownRemainingSeconds,
+    cooldownTotalSeconds,
+    cooldownMessage,
     formattedCooldown,
     formattedCooldownLong,
     startCooldownManually,
@@ -94,6 +96,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
   } = useSystemLock();
   const { showToast } = useToast();
   const [isCancelling, setIsCancelling] = useState(false);
+  const [showRollbackConfirm, setShowRollbackConfirm] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const [uploadState, setUploadState] = useState<FileUploadState>(() => {
@@ -259,6 +262,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
           // Background ingestion encountered errors
           if (pollTimerRef.current) clearInterval(pollTimerRef.current);
           if (!uploadEndpoint) localStorage.removeItem('rll_active_sales_upload');
+          startCooldownManually(600, 'Validation issue detected. 10-minute rollback & purge buffer active.');
 
           // Fetch error logs for detail if available
           let logs: string[] = [];
@@ -364,6 +368,10 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
   useEffect(() => {
     if (uploadEndpoint) return;
     if (activeBatch && lockType === 'sales_upload') {
+      const bStatus = (activeBatch.status || '').toLowerCase();
+      const isLive = ['queued', 'running', 'processing', 'aggregating', 'validating', 'pending'].includes(bStatus);
+      if (!isLive) return;
+
       if (uploadState.status !== 'processing') {
         const bId = activeBatch.batch_id;
         const fName = activeBatch.file_name || 'Sales Data Sheet';
@@ -483,6 +491,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
             if (onUploadComplete) onUploadComplete(stored.fileName);
             return;
           } else if (isFailed) {
+            startCooldownManually(600, 'Validation issue detected. 10-minute rollback & purge buffer active.');
             setUploadState({
               status: 'error',
               progress: 0,
@@ -794,6 +803,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
     } finally {
       setIsCancelling(false);
       resetUpload();
+      startCooldownManually(600, 'Upload cancelled and rolled back. 10-minute cleanup buffer active.');
       try {
         if (refreshLockStatus) await refreshLockStatus();
       } catch (e) {}
@@ -856,61 +866,68 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                 exit={{ opacity: 0, scale: 0.96 }}
                 className="flex flex-col items-center text-center w-full"
               >
-                {isCooldownActive || lockType === 'cooldown' ? (
-                  <div className="flex flex-col items-center text-center max-w-md mx-auto py-2">
-                    <div className="relative mb-3">
-                      <div className="w-16 h-16 bg-amber-500/10 border-2 border-amber-300 text-amber-600 rounded-full flex items-center justify-center shadow-inner">
-                        <Clock className="w-8 h-8 animate-pulse text-amber-600" />
+                {isCooldownActive || lockType === 'cooldown' ? (() => {
+                  const totalCd = cooldownTotalSeconds || (cooldownRemainingSeconds > 600 ? 1800 : 600);
+                  const isCleanupCd = totalCd <= 600;
+
+                  return (
+                    <div className="flex flex-col items-center text-center max-w-md mx-auto py-2">
+                      <div className="relative mb-3">
+                        <div className="w-16 h-16 bg-amber-500/10 border-2 border-amber-300 text-amber-600 rounded-full flex items-center justify-center shadow-inner">
+                          <Clock className="w-8 h-8 animate-pulse text-amber-600" />
+                        </div>
+                        <div className="absolute -bottom-1 -right-1 bg-amber-600 text-white rounded-full p-1 shadow-xs">
+                          <Lock size={12} />
+                        </div>
                       </div>
-                      <div className="absolute -bottom-1 -right-1 bg-amber-600 text-white rounded-full p-1 shadow-xs">
-                        <Lock size={12} />
+
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-100 text-amber-900 text-xs font-bold rounded-full border border-amber-300 mb-2">
+                        <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping" />
+                        {isCleanupCd ? '10-Minute Cooldown Active • Rollback & Purge Buffer' : '30-Minute Cooldown Active • Read-Only Mode'}
+                      </span>
+
+                      <h3 className="text-base font-extrabold text-slate-900 tracking-tight">
+                        Upload will be enabled in {formattedCooldownLong || formattedCooldown}
+                      </h3>
+
+                      {/* Digital Onscreen Countdown Clock */}
+                      <div className="my-3 px-6 py-2.5 bg-slate-900 text-amber-400 rounded-2xl shadow-md border border-slate-800 flex items-center gap-3">
+                        <Clock size={20} className="text-amber-400/80 animate-spin" style={{ animationDuration: '6s' }} />
+                        <span className="text-3xl font-black font-mono tracking-widest text-amber-400 drop-shadow-xs">
+                          {formattedCooldown}
+                        </span>
+                        <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider border-l border-slate-700 pl-3 text-left">
+                          Time<br />Remaining
+                        </span>
                       </div>
+
+                      {/* Progress bar towards completion */}
+                      <div className="w-full max-w-xs bg-slate-200 rounded-full h-2 overflow-hidden my-1 border border-slate-300/60">
+                        <div 
+                          className="bg-gradient-to-r from-amber-500 to-amber-600 h-2 rounded-full transition-all duration-1000 ease-linear"
+                          style={{ 
+                            width: `${Math.min(100, Math.max(0, Math.round(((totalCd - cooldownRemainingSeconds) / totalCd) * 100)))}%` 
+                          }}
+                        />
+                      </div>
+
+                      <p className="text-xs text-slate-500 mt-2 max-w-sm font-medium leading-relaxed">
+                        {cooldownMessage || (isCleanupCd 
+                          ? 'A validation issue occurred. Database rollback and record purge are running in the background. Next upload will be unlocked in 10 minutes.' 
+                          : 'All sales uploads, roster imports, and user modifications are locked in Read-Only mode for 30 minutes following an upload to protect database integrity.')}
+                      </p>
+
+                      {/* Disabled "Click here to upload" button */}
+                      <button 
+                        disabled={true}
+                        className="mt-4 px-5 py-2.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-xl text-xs font-bold cursor-not-allowed flex items-center gap-2 shadow-2xs"
+                      >
+                        <Lock size={13} className="text-amber-500" />
+                        Click here to upload (Disabled - {formattedCooldownLong} remaining)
+                      </button>
                     </div>
-
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-100 text-amber-900 text-xs font-bold rounded-full border border-amber-300 mb-2">
-                      <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping" />
-                      30-Minute Cooldown Active • Read-Only Mode
-                    </span>
-
-                    <h3 className="text-base font-extrabold text-slate-900 tracking-tight">
-                      Upload will be enabled after 30 mins
-                    </h3>
-
-                    {/* Digital Onscreen Countdown Clock */}
-                    <div className="my-3 px-6 py-2.5 bg-slate-900 text-amber-400 rounded-2xl shadow-md border border-slate-800 flex items-center gap-3">
-                      <Clock size={20} className="text-amber-400/80 animate-spin" style={{ animationDuration: '6s' }} />
-                      <span className="text-3xl font-black font-mono tracking-widest text-amber-400 drop-shadow-xs">
-                        {formattedCooldown}
-                      </span>
-                      <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider border-l border-slate-700 pl-3 text-left">
-                        Time<br />Remaining
-                      </span>
-                    </div>
-
-                    {/* Progress bar towards completion */}
-                    <div className="w-full max-w-xs bg-slate-200 rounded-full h-2 overflow-hidden my-1 border border-slate-300/60">
-                      <div 
-                        className="bg-gradient-to-r from-amber-500 to-amber-600 h-2 rounded-full transition-all duration-1000 ease-linear"
-                        style={{ 
-                          width: `${Math.min(100, Math.max(0, Math.round(((1800 - cooldownRemainingSeconds) / 1800) * 100)))}%` 
-                        }}
-                      />
-                    </div>
-
-                    <p className="text-xs text-slate-500 mt-2 max-w-sm font-medium leading-relaxed">
-                      All sales uploads, roster imports, and user modifications are locked in Read-Only mode for 30 minutes following an upload to protect database integrity.
-                    </p>
-
-                    {/* Disabled "Click here to upload" button */}
-                    <button 
-                      disabled={true}
-                      className="mt-4 px-5 py-2.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-xl text-xs font-bold cursor-not-allowed flex items-center gap-2 shadow-2xs"
-                    >
-                      <Lock size={13} className="text-amber-500" />
-                      Click here to upload (Disabled - Cooldown Active)
-                    </button>
-                  </div>
-                ) : isLocked ? (
+                  );
+                })() : isLocked ? (
                   <>
                     <div className="w-14 h-14 bg-amber-500/10 text-amber-600 rounded-full flex items-center justify-center mb-3">
                       <Database className="w-7 h-7" />
@@ -961,7 +978,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                 <p className="text-slate-500 text-xs mt-2 font-bold">{uploadState.progress}%</p>
                 <button
                   type="button"
-                  onClick={handleCancelUpload}
+                  onClick={() => setShowRollbackConfirm(true)}
                   disabled={isCancelling}
                   className="mt-2.5 px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-semibold rounded-lg transition-colors border border-slate-200 inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                   title="Cancel upload"
@@ -1012,7 +1029,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
 
                 <button
                   type="button"
-                  onClick={handleCancelUpload}
+                  onClick={() => setShowRollbackConfirm(true)}
                   disabled={isCancelling}
                   className="mt-2.5 px-3.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-semibold rounded-lg transition-colors border border-rose-200 inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-2xs"
                   title="Stop execution and rollback this upload"
@@ -1161,20 +1178,19 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                   </div>
                 )}
 
+                {isCooldownActive && (
+                  <div className="mt-3.5 inline-flex items-center gap-2 px-3.5 py-2 bg-amber-50 border border-amber-300/80 rounded-xl text-amber-900 text-xs font-semibold shadow-2xs">
+                    <Clock size={14} className="text-amber-600 animate-spin shrink-0" style={{ animationDuration: '6s' }} />
+                    <span>Upload locked for 10-minute rollback & cleanup buffer ({formattedCooldown} remaining)</span>
+                  </div>
+                )}
+
                 <div className="flex flex-wrap items-center justify-center gap-2.5 mt-4">
-                  {/* {uploadState.batchId && (
-                    <button 
-                      onClick={(e) => { e.stopPropagation(); checkBatchStatusDirectly(); }}
-                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition-colors text-xs font-bold cursor-pointer shadow-xs flex items-center gap-1.5"
-                    >
-                      <RefreshCw size={12} /> Check Live DB Status
-                    </button>
-                  )} */}
                   <button 
                     onClick={(e) => { e.stopPropagation(); resetUpload(); }}
                     className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl transition-colors text-xs font-bold cursor-pointer"
                   >
-                    Try Uploading Again
+                    {isCooldownActive ? 'Dismiss & View Cooldown Status' : 'Try Uploading Again'}
                   </button>
                   <button 
                     onClick={(e) => { 
@@ -1211,6 +1227,61 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
           Download Template
         </button>
       </div>
+
+      {/* Rollback Confirmation Modal Popup */}
+      <AnimatePresence>
+        {showRollbackConfirm && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 text-center relative overflow-hidden"
+            >
+              <div className="w-14 h-14 bg-rose-100 text-rose-600 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-rose-200 shadow-inner">
+                <AlertCircle className="w-7 h-7 text-rose-600" />
+              </div>
+
+              <h3 className="text-base font-extrabold text-slate-900 mb-2">
+                Confirm Cancellation & Rollback
+              </h3>
+
+              <div className="bg-rose-50 border border-rose-200/80 rounded-xl p-3.5 my-3 text-center">
+                <p className="text-sm font-bold text-rose-800 leading-snug">
+                  Do you surely want to rollback? All your records will be lost.
+                </p>
+              </div>
+
+              <p className="text-xs text-slate-500 mb-6 leading-relaxed">
+                Ongoing ingestion will be stopped immediately. Any partial or temporary rows will be safely purged from the database.
+              </p>
+
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowRollbackConfirm(false)}
+                  disabled={isCancelling}
+                  className="flex-1 py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl transition-colors cursor-pointer border border-slate-200"
+                >
+                  No, Keep Uploading
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setShowRollbackConfirm(false);
+                    await handleCancelUpload();
+                  }}
+                  disabled={isCancelling}
+                  className="flex-1 py-2.5 px-4 bg-rose-600 hover:bg-rose-700 active:scale-[0.98] text-white text-xs font-bold rounded-xl transition-all cursor-pointer shadow-md shadow-rose-600/25 flex items-center justify-center gap-1.5"
+                >
+                  <X size={14} />
+                  Yes, Rollback
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

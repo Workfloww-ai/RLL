@@ -16,7 +16,7 @@ _SYSTEM_LOCK_CACHE = {
     "data": None,
     "timestamp": 0.0
 }
-_SYSTEM_LOCK_CACHE_TTL = 4.0  # 4 seconds
+_SYSTEM_LOCK_CACHE_TTL = 30.0  # 30 seconds cache buffer (instantly invalidated on upload start/end)
 
 def invalidate_system_lock_cache():
     global _SYSTEM_LOCK_CACHE
@@ -56,29 +56,45 @@ def roster_upload_lock(filename: str):
     finally:
         clear_roster_upload_active()
 
-UPLOAD_COOLDOWN_SECONDS = 1800  # 30 minutes
+UPLOAD_COOLDOWN_SECONDS = 1800  # 30 minutes for success
+VALIDATION_ERROR_COOLDOWN_SECONDS = 600  # 10 minutes for validation error / rollback
 
 _LAST_UPLOAD_COMPLETION = {
     "timestamp": 0.0,
     "upload_type": None,
-    "filename": None
+    "filename": None,
+    "cooldown_seconds": UPLOAD_COOLDOWN_SECONDS,
+    "reason": None
 }
 
 _COOLDOWN_OVERRIDE_RESET = False
 
-def record_upload_completion(upload_type: str, filename: str):
+def record_upload_cooldown(
+    upload_type: str = "validation_error",
+    filename: Optional[str] = None,
+    cooldown_seconds: int = VALIDATION_ERROR_COOLDOWN_SECONDS,
+    reason: Optional[str] = None
+):
     """
-    Records the timestamp when an upload (sales or roster) completes,
-    initiating the 30-minute system cooldown and locking the whole system in read-only mode.
+    Enforces a cooldown buffer (10 minutes for validation errors/rollbacks, 30 minutes for successful uploads).
+    During this period, any partial records are purged safely and new uploads are locked.
     """
     global _LAST_UPLOAD_COMPLETION, _COOLDOWN_OVERRIDE_RESET
     invalidate_system_lock_cache()
     _COOLDOWN_OVERRIDE_RESET = False
     now = time.time()
+    rem_m = cooldown_seconds // 60
+    default_msg = (
+        f"Validation issue detected. 10-minute rollback & purge buffer active. Next upload enabled in {rem_m} minutes."
+        if cooldown_seconds <= 600 else
+        f"Upload completed. 30-minute verification cooldown active."
+    )
     _LAST_UPLOAD_COMPLETION = {
         "timestamp": now,
         "upload_type": upload_type,
-        "filename": filename
+        "filename": filename,
+        "cooldown_seconds": cooldown_seconds,
+        "reason": reason or default_msg
     }
     try:
         with open(COOLDOWN_STATE_FILE, "w", encoding="utf-8") as f:
@@ -86,7 +102,20 @@ def record_upload_completion(upload_type: str, filename: str):
     except Exception as e_save:
         logger.warning(f"Could not save cooldown state to disk: {e_save}")
 
-    logger.info(f"Recorded upload completion for '{filename}' ({upload_type}) at timestamp {now}. 30-minute cooldown active.")
+    logger.info(f"Recorded cooldown for '{filename}' ({upload_type}) for {cooldown_seconds}s at timestamp {now}.")
+
+
+def record_upload_completion(upload_type: str, filename: str):
+    """
+    Records the timestamp when an upload (sales or roster) completes,
+    initiating the 30-minute system cooldown and locking the whole system in read-only mode.
+    """
+    record_upload_cooldown(
+        upload_type=upload_type,
+        filename=filename,
+        cooldown_seconds=UPLOAD_COOLDOWN_SECONDS,
+        reason=f"Sales data ingestion successfully verified. 30-minute post-upload verification cooldown active."
+    )
 
 
 def reset_upload_cooldown():
@@ -99,7 +128,9 @@ def reset_upload_cooldown():
     _LAST_UPLOAD_COMPLETION = {
         "timestamp": 0.0,
         "upload_type": None,
-        "filename": None
+        "filename": None,
+        "cooldown_seconds": UPLOAD_COOLDOWN_SECONDS,
+        "reason": None
     }
     try:
         if os.path.exists(COOLDOWN_STATE_FILE):
@@ -130,6 +161,7 @@ def get_upload_cooldown_status() -> Dict[str, Any]:
     latest_ts = _LAST_UPLOAD_COMPLETION.get("timestamp", 0.0)
     latest_type = _LAST_UPLOAD_COMPLETION.get("upload_type")
     latest_file = _LAST_UPLOAD_COMPLETION.get("filename")
+    cooldown_target = _LAST_UPLOAD_COMPLETION.get("cooldown_seconds") or UPLOAD_COOLDOWN_SECONDS
 
     # If memory is uninitialized, check persistent file on disk
     if latest_ts <= 0:
@@ -138,10 +170,12 @@ def get_upload_cooldown_status() -> Dict[str, Any]:
                 with open(COOLDOWN_STATE_FILE, "r", encoding="utf-8") as f:
                     saved = json.load(f)
                     saved_ts = float(saved.get("timestamp", 0.0))
-                    if 0 <= (now - saved_ts) < UPLOAD_COOLDOWN_SECONDS:
+                    saved_cd = int(saved.get("cooldown_seconds", UPLOAD_COOLDOWN_SECONDS))
+                    if 0 <= (now - saved_ts) < saved_cd:
                         latest_ts = saved_ts
                         latest_type = saved.get("upload_type")
                         latest_file = saved.get("filename")
+                        cooldown_target = saved_cd
                         _LAST_UPLOAD_COMPLETION = saved
                     else:
                         try:
@@ -174,6 +208,7 @@ def get_upload_cooldown_status() -> Dict[str, Any]:
                         latest_ts = db_ts
                         latest_type = "sales_upload"
                         latest_file = b.get("source_file") or b.get("file_name")
+                        cooldown_target = UPLOAD_COOLDOWN_SECONDS
     except Exception as e_db:
         logger.debug(f"Notice querying latest upload batch for cooldown: {e_db}")
 
@@ -181,24 +216,31 @@ def get_upload_cooldown_status() -> Dict[str, Any]:
         elapsed = now - latest_ts
         if -60 < elapsed < 0:
             elapsed = 0.0
-        if 0 <= elapsed < UPLOAD_COOLDOWN_SECONDS:
-            remaining = int(UPLOAD_COOLDOWN_SECONDS - elapsed)
+        if 0 <= elapsed < cooldown_target:
+            remaining = int(cooldown_target - elapsed)
             rem_m = remaining // 60
             rem_s = remaining % 60
+            is_val_err = (latest_type == "validation_error" or cooldown_target <= 600)
+            default_msg = (
+                f"Validation issue detected: 10-minute rollback & purge buffer active. Next upload enabled in {rem_m}m {rem_s:02d}s."
+                if is_val_err
+                else f"Upload cooldown active. Next upload enabled in {rem_m}m {rem_s:02d}s."
+            )
+            msg = _LAST_UPLOAD_COMPLETION.get("reason") or default_msg
             return {
                 "is_active": True,
                 "remaining_seconds": remaining,
-                "cooldown_seconds": UPLOAD_COOLDOWN_SECONDS,
+                "cooldown_seconds": cooldown_target,
                 "last_upload_time": latest_ts,
                 "last_upload_type": latest_type,
                 "last_upload_file": latest_file,
-                "message": f"Upload cooldown active. Next upload enabled in {rem_m}m {rem_s:02d}s."
+                "message": msg
             }
 
     return {
         "is_active": False,
         "remaining_seconds": 0,
-        "cooldown_seconds": UPLOAD_COOLDOWN_SECONDS,
+        "cooldown_seconds": cooldown_target,
         "last_upload_time": latest_ts if latest_ts > 0 else None,
         "last_upload_type": latest_type,
         "last_upload_file": latest_file,
@@ -208,15 +250,18 @@ def get_upload_cooldown_status() -> Dict[str, Any]:
 
 def check_upload_cooldown_or_raise():
     """
-    Raises HTTP 429 Too Many Requests if an upload is attempted during the 30-minute cooldown.
+    Raises HTTP 429 Too Many Requests if an upload is attempted during an active cooldown.
     """
     cooldown = get_upload_cooldown_status()
     if cooldown.get("is_active"):
         rem_m = cooldown["remaining_seconds"] // 60
         rem_s = cooldown["remaining_seconds"] % 60
+        total_m = (cooldown.get("cooldown_seconds") or 1800) // 60
+        custom_msg = cooldown.get("message")
+        detail_msg = custom_msg or f"Upload rate limit: A {total_m}-minute interval is enforced between uploads. Next upload will be enabled in {rem_m}m {rem_s:02d}s."
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Upload rate limit: A 30-minute interval is enforced between uploads. Next upload will be enabled in {rem_m}m {rem_s:02d}s."
+            detail=detail_msg
         )
 
 
@@ -312,12 +357,13 @@ def get_system_lock_status() -> Dict[str, Any]:
     if cooldown_info.get("is_active"):
         rem = cooldown_info.get("remaining_seconds", 0)
         rem_m = rem // 60
-        rem_s = rem % 60
-        file_desc = f" ({cooldown_info.get('last_upload_file')})" if cooldown_info.get('last_upload_file') else ""
+        cd_target_m = (cooldown_info.get("cooldown_seconds") or 1800) // 60
+        is_clean = (cd_target_m <= 10 or cooldown_info.get("last_upload_type") == "validation_error")
+        desc_label = f"{cd_target_m}-minute rollback & purge cleanup buffer" if is_clean else f"{cd_target_m}-minute post-upload cooldown buffer"
         locked_res = {
             "is_locked": True,
             "lock_type": "cooldown",
-            "lock_reason": f"System is in 30-minute post-upload cooldown buffer{file_desc}. Next upload enabled in {rem_m}m {rem_s:02d}s. All updates, personnel edits, and uploads are locked in Read-Only mode.",
+            "lock_reason": f"System is in {desc_label}{file_desc}. Next upload enabled in {rem_m}m {rem_s:02d}s. All updates, personnel edits, and uploads are locked in Read-Only mode.",
             "active_batch": None,
             "cooldown": cooldown_info
         }

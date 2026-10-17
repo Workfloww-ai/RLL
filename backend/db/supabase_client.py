@@ -194,7 +194,6 @@ def create_upload_batch(
     user_fk = uploaded_by or created_by
     if user_fk and len(str(user_fk)) == 36:
         data["uploaded_by"] = str(user_fk)
-        data["created_by"] = str(user_fk)
         data["updated_by"] = str(user_fk)
         if not data.get("tenant_id"):
             try:
