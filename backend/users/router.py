@@ -45,10 +45,11 @@ async def list_users():
 
 
 @router.post("/")
-async def create_user(payload: Dict[str, Any]):
+async def create_user(payload: Dict[str, Any], current_user: dict = Depends(get_current_user)):
     check_system_lock_or_raise()
     try:
-        res = user_service.create_user(payload)
+        acting_user_id = current_user.get("user_id") if current_user else None
+        res = user_service.create_user(payload, created_by=acting_user_id)
         await invalidate_user_and_territory_caches()
         return res
     except ValueError as ve:
@@ -74,10 +75,11 @@ async def list_roles():
 
 
 @router.post("/roles")
-async def create_role(payload: Dict[str, Any]):
+async def create_role(payload: Dict[str, Any], current_user: dict = Depends(get_current_user)):
     check_system_lock_or_raise()
     try:
-        res = user_service.create_role(payload)
+        acting_user_id = current_user.get("user_id") if current_user else None
+        res = user_service.create_role(payload, created_by=acting_user_id)
         await invalidate_user_and_territory_caches()
         return res
     except Exception as e:
@@ -85,10 +87,11 @@ async def create_role(payload: Dict[str, Any]):
 
 
 @router.put("/roles/{role_id}")
-async def update_role(role_id: str, payload: Dict[str, Any]):
+async def update_role(role_id: str, payload: Dict[str, Any], current_user: dict = Depends(get_current_user)):
     check_system_lock_or_raise()
     try:
-        res = user_service.update_role(role_id, payload)
+        acting_user_id = current_user.get("user_id") if current_user else None
+        res = user_service.update_role(role_id, payload, updated_by=acting_user_id)
         await invalidate_user_and_territory_caches()
         return res
     except Exception as e:
@@ -111,7 +114,7 @@ async def get_hierarchy():
 
 
 @router.post("/upload-roster")
-async def upload_roster(file: UploadFile = File(...)):
+async def upload_roster(file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
     check_system_lock_or_raise()
     check_upload_cooldown_or_raise()
     if not file.filename.endswith(('.xlsx', '.xls', '.csv', '.xlsb')):
@@ -120,7 +123,8 @@ async def upload_roster(file: UploadFile = File(...)):
     with roster_upload_lock(file.filename):
         contents = await file.read()
         try:
-            res = user_service.process_excel_roster(contents, file.filename)
+            acting_user_id = current_user.get("user_id") if current_user else None
+            res = user_service.process_excel_roster(contents, file.filename, uploaded_by=acting_user_id)
             await invalidate_user_and_territory_caches()
             record_upload_completion("roster_upload", file.filename)
             return res
@@ -138,7 +142,8 @@ async def update_user(user_id: str, payload: Dict[str, Any], current_user: dict 
         raise HTTPException(status_code=400, detail="You cannot deactivate your own account.")
 
     try:
-        res = user_service.update_user(user_id, payload)
+        acting_user_id = current_user.get("user_id") if current_user else None
+        res = user_service.update_user(user_id, payload, updated_by=acting_user_id)
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
@@ -166,7 +171,8 @@ async def delete_user(user_id: str, current_user: dict = Depends(get_current_use
     if str(current_user.get("user_id")) == str(user_id):
         raise HTTPException(status_code=400, detail="You cannot delete your own account.")
 
-    success = user_service.delete_user(user_id)
+    acting_user_id = current_user.get("user_id") if current_user else None
+    success = user_service.delete_user(user_id, deleted_by=acting_user_id)
     if not success:
         raise HTTPException(status_code=400, detail="Failed to delete user.")
     

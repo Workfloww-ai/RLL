@@ -18,7 +18,8 @@ import {
   WifiOff,
   FileSpreadsheet,
   HelpCircle,
-  Clock
+  Clock,
+  Users
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { API_BASE_URL } from '../config';
@@ -198,12 +199,16 @@ export default function UploadErrorViewer({ initialBatchId, refreshTrigger = 0, 
     switch (category) {
       case 'Master Data Mapping':
         return 'bg-amber-50 text-amber-800 border-amber-200';
+      case 'Employee Hierarchy':
+        return 'bg-indigo-50 text-indigo-800 border-indigo-200';
       case 'System & Network':
         return 'bg-blue-50 text-blue-800 border-blue-200';
       case 'Database Insertion':
         return 'bg-rose-50 text-rose-800 border-rose-200';
       case 'File Validation':
         return 'bg-purple-50 text-purple-800 border-purple-200';
+      case 'Data Validation':
+        return 'bg-orange-50 text-orange-800 border-orange-200';
       default:
         return 'bg-slate-50 text-slate-700 border-slate-200';
     }
@@ -213,12 +218,16 @@ export default function UploadErrorViewer({ initialBatchId, refreshTrigger = 0, 
     switch (category) {
       case 'Master Data Mapping':
         return <HelpCircle className="w-4 h-4 text-amber-600 shrink-0" />;
+      case 'Employee Hierarchy':
+        return <Users className="w-4 h-4 text-indigo-600 shrink-0" />;
       case 'System & Network':
         return <WifiOff className="w-4 h-4 text-blue-600 shrink-0" />;
       case 'Database Insertion':
         return <Database className="w-4 h-4 text-rose-600 shrink-0" />;
       case 'File Validation':
         return <FileSpreadsheet className="w-4 h-4 text-purple-600 shrink-0" />;
+      case 'Data Validation':
+        return <AlertCircle className="w-4 h-4 text-orange-600 shrink-0" />;
       default:
         return <AlertTriangle className="w-4 h-4 text-slate-600 shrink-0" />;
     }

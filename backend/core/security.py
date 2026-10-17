@@ -131,7 +131,7 @@ async def get_current_user(
 
     if client:
         try:
-            res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active").ilike("email", email).execute()
+            res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, tenant_id").ilike("email", email).execute()
             if res.data and len(res.data) > 0:
                 db_user = res.data[0]
                 if not db_user.get("is_active", True):
@@ -163,6 +163,7 @@ async def get_current_user(
                     "phone": db_user.get("phone", ""),
                     "role_name": role_name,
                     "role": role_name,
+                    "tenant_id": str(db_user.get("tenant_id")) if db_user.get("tenant_id") else (str(payload.get("tenant_id")) if 'payload' in locals() and isinstance(payload, dict) and payload.get("tenant_id") else None),
                     "is_active": True
                 }
         except HTTPException:
@@ -177,6 +178,7 @@ async def get_current_user(
                     "phone": "",
                     "role_name": role_name or "admin",
                     "role": role_name or "admin",
+                    "tenant_id": str(payload.get("tenant_id")) if 'payload' in locals() and isinstance(payload, dict) and payload.get("tenant_id") else None,
                     "is_active": True
                 }
 
@@ -190,6 +192,7 @@ async def get_current_user(
                 "phone": "",
                 "role_name": role_name or "admin",
                 "role": role_name or "admin",
+                "tenant_id": str(payload.get("tenant_id")) if 'payload' in locals() and isinstance(payload, dict) and payload.get("tenant_id") else None,
                 "is_active": True
             }
         else:

@@ -160,7 +160,7 @@ async def list_upload_batches(
     client = get_supabase()
     if client:
         try:
-            res = client.table("upload_batches").select("batch_id, source_file, storage_path, load_type, covers_start, covers_end, row_count, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, remarks, uploaded_by, created_at, updated_at, tenant_id").eq("tenant_id", target_tenant_id).order("created_at", desc=True).limit(50).execute()
+            res = client.table("upload_batches").select("batch_id, source_file, storage_path, load_type, covers_start, covers_end, row_count, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, remarks, uploaded_by, created_by, updated_by, created_at, updated_at, tenant_id").eq("tenant_id", target_tenant_id).order("created_at", desc=True).limit(50).execute()
             if res.data:
                 return res.data
         except Exception as e:
@@ -191,7 +191,7 @@ async def get_latest_upload_batch():
     batch = None
     if client:
         try:
-            res = client.table("upload_batches").select("batch_id, source_file, storage_path, load_type, covers_start, covers_end, row_count, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, remarks, uploaded_by, created_at, updated_at").order("created_at", desc=True).limit(1).execute()
+            res = client.table("upload_batches").select("batch_id, source_file, storage_path, load_type, covers_start, covers_end, row_count, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, remarks, uploaded_by, created_by, updated_by, created_at, updated_at").order("created_at", desc=True).limit(1).execute()
             if res.data:
                 batch = res.data[0]
                 # If imported_rows is 0, verify existence from sales_fact
@@ -215,8 +215,8 @@ async def get_latest_upload_batch():
             "message": "No upload history found."
         }
 
-    # Resolve uploader's name if uploaded_by is present
-    uploader_id = batch.get("uploaded_by")
+    # Resolve uploader's name if uploaded_by or created_by is present
+    uploader_id = batch.get("uploaded_by") or batch.get("created_by")
     uploader_name = "Admin User"
     if uploader_id and client:
         try:
@@ -250,7 +250,7 @@ async def get_upload_batch(batch_id: str):
     client = get_supabase()
     if client:
         try:
-            res = client.table("upload_batches").select("batch_id, source_file, storage_path, load_type, covers_start, covers_end, row_count, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, remarks, uploaded_by, created_at, updated_at").eq("batch_id", batch_id).execute()
+            res = client.table("upload_batches").select("batch_id, source_file, storage_path, load_type, covers_start, covers_end, row_count, imported_rows, duplicate_rows, failed_rows, processing_time_seconds, status, remarks, uploaded_by, created_by, updated_by, created_at, updated_at").eq("batch_id", batch_id).execute()
             if res.data:
                 return res.data[0]
         except Exception as e:
@@ -349,8 +349,65 @@ def humanize_upload_error(column_name: Optional[str], raw_message: str) -> Dict[
             "group_key": "db_timeout"
         }
 
-    # 2. Master Data Mapping Errors
-    if "UNMAPPED_LICENSEE" in msg or "Unmapped Licensee" in msg or col.lower() in ("licensee_raw", "licensee_name", "licensee"):
+    # 2. 1:1 Constraints & Hierarchy Integrity Checks
+    if "MULTIPLE_HQ_FOR_ASE" in msg:
+        return {
+            "category": "Employee Hierarchy",
+            "category_key": "employee_mapping",
+            "severity": "critical",
+            "friendly_title": f"1:1 Violation: Multiple Headquarters for ASE '{val}'",
+            "friendly_explanation": msg,
+            "suggested_action": f"An ASE can belong to only 1 Headquarter. Standardize the Headquarter column for ASE '{val}' across all records in the Excel file or update Headquarters mapping in User Management.",
+            "entity": f"ASE: {val}",
+            "group_key": f"multiple_hq_ase_{val.lower().replace(' ', '_')}"
+        }
+    elif "MULTIPLE_HQ_FOR_TSM" in msg:
+        return {
+            "category": "Employee Hierarchy",
+            "category_key": "employee_mapping",
+            "severity": "critical",
+            "friendly_title": f"1:1 Violation: Multiple Headquarters for TSM '{val}'",
+            "friendly_explanation": msg,
+            "suggested_action": f"A TSM can belong to only 1 Headquarter. Standardize the Headquarter column for TSM '{val}' across all records in the Excel file or update Headquarters mapping in User Management.",
+            "entity": f"TSM: {val}",
+            "group_key": f"multiple_hq_tsm_{val.lower().replace(' ', '_')}"
+        }
+    elif "MULTIPLE_MANAGERS_FOR_ASE" in msg:
+        return {
+            "category": "Employee Hierarchy",
+            "category_key": "employee_mapping",
+            "severity": "critical",
+            "friendly_title": f"1:1 Violation: Multiple Managers for ASE '{val}'",
+            "friendly_explanation": msg,
+            "suggested_action": f"An ASE must report to exactly 1 manager. Standardize the ASM/TSM column for ASE '{val}' across all records in the Excel file or update mapping in User Management.",
+            "entity": f"ASE: {val}",
+            "group_key": f"multiple_managers_ase_{val.lower().replace(' ', '_')}"
+        }
+    elif "HQ_MISMATCH_FOR_ASE" in msg:
+        return {
+            "category": "Employee Hierarchy",
+            "category_key": "employee_mapping",
+            "severity": "critical",
+            "friendly_title": f"Registered HQ Mismatch for ASE '{val}'",
+            "friendly_explanation": msg,
+            "suggested_action": f"Update Excel file to use the registered Headquarter for ASE '{val}' or reassign Headquarter in User Management.",
+            "entity": f"ASE: {val}",
+            "group_key": f"hq_mismatch_ase_{val.lower().replace(' ', '_')}"
+        }
+    elif "HQ_MISMATCH_FOR_TSM" in msg:
+        return {
+            "category": "Employee Hierarchy",
+            "category_key": "employee_mapping",
+            "severity": "critical",
+            "friendly_title": f"Registered HQ Mismatch for TSM '{val}'",
+            "friendly_explanation": msg,
+            "suggested_action": f"Update Excel file to use the registered Headquarter for TSM '{val}' or reassign Headquarter in User Management.",
+            "entity": f"TSM: {val}",
+            "group_key": f"hq_mismatch_tsm_{val.lower().replace(' ', '_')}"
+        }
+
+    # 3. Master Data Mapping Errors
+    if "UNMAPPED_LICENSEE" in msg or "Unmapped Licensee" in msg or (col.lower() in ("licensee_raw", "licensee_name", "licensee") and "unmapped" in msg.lower()):
         return {
             "category": "Master Data Mapping",
             "category_key": "master_mapping",
@@ -361,7 +418,7 @@ def humanize_upload_error(column_name: Optional[str], raw_message: str) -> Dict[
             "entity": f"Licensee: {val}",
             "group_key": f"unmapped_licensee_{val.lower().replace(' ', '_')}"
         }
-    elif "UNMAPPED_DEPOT" in msg or "Unmapped Depot" in msg or col.lower() in ("depot_raw", "depot_name", "depot"):
+    elif "UNMAPPED_DEPOT" in msg or "Unmapped Depot" in msg or (col.lower() in ("depot_raw", "depot_name", "depot") and "unmapped" in msg.lower()):
         return {
             "category": "Master Data Mapping",
             "category_key": "master_mapping",
@@ -372,7 +429,7 @@ def humanize_upload_error(column_name: Optional[str], raw_message: str) -> Dict[
             "entity": f"Depot: {val}",
             "group_key": f"unmapped_depot_{val.lower().replace(' ', '_')}"
         }
-    elif "UNMAPPED_BRAND" in msg or "Unmapped Brand" in msg or col.lower() in ("brand_raw", "brand_name", "brand"):
+    elif "UNMAPPED_BRAND" in msg or "Unmapped Brand" in msg or (col.lower() in ("brand_raw", "brand_name", "brand") and "unmapped" in msg.lower()):
         return {
             "category": "Master Data Mapping",
             "category_key": "master_mapping",
@@ -383,7 +440,7 @@ def humanize_upload_error(column_name: Optional[str], raw_message: str) -> Dict[
             "entity": f"Brand: {val}",
             "group_key": f"unmapped_brand_{val.lower().replace(' ', '_')}"
         }
-    elif "UNMAPPED_COMPANY" in msg or "Unmapped Company" in msg or col.lower() in ("company_raw", "company_name", "company"):
+    elif "UNMAPPED_COMPANY" in msg or "Unmapped Company" in msg or (col.lower() in ("company_raw", "company_name", "company") and "unmapped" in msg.lower()):
         return {
             "category": "Master Data Mapping",
             "category_key": "master_mapping",
@@ -394,7 +451,7 @@ def humanize_upload_error(column_name: Optional[str], raw_message: str) -> Dict[
             "entity": f"Company: {val}",
             "group_key": f"unmapped_company_{val.lower().replace(' ', '_')}"
         }
-    elif "UNMAPPED_HQ" in msg or "Unmapped Headquarters" in msg or col.lower() in ("hq_raw", "headquarters", "hq"):
+    elif "UNMAPPED_HQ" in msg or "Unmapped Headquarters" in msg or (col.lower() in ("hq_raw", "headquarters", "hq") and "unmapped" in msg.lower()):
         return {
             "category": "Master Data Mapping",
             "category_key": "master_mapping",
@@ -406,7 +463,7 @@ def humanize_upload_error(column_name: Optional[str], raw_message: str) -> Dict[
             "group_key": f"unmapped_hq_{val.lower().replace(' ', '_')}"
         }
 
-    # 3. Employee Hierarchy & Mapping Errors
+    # 4. Employee Hierarchy & Mapping Details
     if "ASE_TSM_MAPPING_MISMATCH" in msg:
         return {
             "category": "Employee Hierarchy",

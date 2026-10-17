@@ -190,10 +190,16 @@ def create_upload_batch(
     if uploaded_by:
         data["uploaded_by"] = uploaded_by
     user_fk = uploaded_by or created_by
-    if user_fk:
-        data["uploaded_by"] = user_fk
-        data["created_by"] = user_fk
-        data["updated_by"] = user_fk
+    if user_fk and len(str(user_fk)) == 36:
+        data["uploaded_by"] = str(user_fk)
+        data["created_by"] = str(user_fk)
+        data["updated_by"] = str(user_fk)
+        try:
+            u_res = client.table("users").select("tenant_id").eq("user_id", str(user_fk)).limit(1).execute()
+            if u_res.data and u_res.data[0].get("tenant_id"):
+                data["tenant_id"] = str(u_res.data[0]["tenant_id"])
+        except Exception as e_ten:
+            logger.warning(f"Could not resolve tenant_id for user {user_fk}: {e_ten}")
     if browser_info:
         data["browser_info"] = browser_info
     if client_ip:
@@ -206,7 +212,7 @@ def create_upload_batch(
         logger.error(f"create_upload_batch error: {e}")
         raise
     return None
-def update_upload_batch(batch_id: int, status: str, row_count: Optional[int] = None) -> bool:
+def update_upload_batch(batch_id: int, status: str, row_count: Optional[int] = None, updated_by: Optional[str] = None) -> bool:
     client = get_supabase_client()
     if not client:
         logger.info(f"[Mock] update_upload_batch batch_id={batch_id} status={status}")
@@ -214,6 +220,14 @@ def update_upload_batch(batch_id: int, status: str, row_count: Optional[int] = N
     data: Dict[str, Any] = {"status": status}
     if row_count is not None:
         data["row_count"] = row_count
+    if updated_by and len(str(updated_by)) == 36:
+        data["updated_by"] = str(updated_by)
+        try:
+            u_res = client.table("users").select("tenant_id").eq("user_id", str(updated_by)).limit(1).execute()
+            if u_res.data and u_res.data[0].get("tenant_id"):
+                data["tenant_id"] = str(u_res.data[0]["tenant_id"])
+        except Exception:
+            pass
     try:
         client.table("upload_batches").update(data).eq("batch_id", batch_id).execute()
         return True
