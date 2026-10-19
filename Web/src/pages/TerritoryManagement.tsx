@@ -384,6 +384,10 @@ export default function TerritoryManagement() {
   };
 
   const handleToggleDepotStatus = async (depot: DepotRecord) => {
+    if (isLocked) {
+      showToast("Modifying territory status is locked while system ingestion is in progress.", "warning");
+      return;
+    }
     const newActiveState = !depot.is_active;
     const targetDepotId = depot.real_depot_id || depot.depot_id;
     
@@ -791,13 +795,18 @@ export default function TerritoryManagement() {
                         {isEditing ? (
                           <button
                             type="button"
-                            onClick={() => setEditIsActive(!editIsActive)}
-                            className="inline-flex items-center gap-2 cursor-pointer group select-none whitespace-nowrap"
-                            title={`Click to switch to ${editIsActive ? 'Inactive' : 'Active'}`}
+                            disabled={isLocked}
+                            onClick={() => !isLocked && setEditIsActive(!editIsActive)}
+                            className={`inline-flex items-center gap-2 select-none whitespace-nowrap ${
+                              isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer group'
+                            }`}
+                            title={isLocked ? "Editing locked during active data ingestion" : `Click to switch to ${editIsActive ? 'Inactive' : 'Active'}`}
                           >
                             <div
                               className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
-                                editIsActive ? 'bg-emerald-500' : 'bg-slate-300'
+                                isLocked 
+                                  ? (editIsActive ? 'bg-emerald-500/50' : 'bg-slate-300/50') 
+                                  : (editIsActive ? 'bg-emerald-500' : 'bg-slate-300')
                               }`}
                             >
                               <span
@@ -806,20 +815,25 @@ export default function TerritoryManagement() {
                                 }`}
                               />
                             </div>
-                            <span className={`text-xs font-extrabold ${editIsActive ? 'text-emerald-700' : 'text-slate-500'}`}>
+                            <span className={`text-xs font-extrabold ${editIsActive ? (isLocked ? 'text-emerald-700/60' : 'text-emerald-700') : 'text-slate-400'}`}>
                               {editIsActive ? 'Active' : 'Inactive'}
                             </span>
                           </button>
                         ) : (
                           <button
                             type="button"
-                            onClick={() => handleToggleDepotStatus(depot)}
-                            className="inline-flex items-center gap-2 cursor-pointer group select-none whitespace-nowrap"
-                            title={`Click to ${depot.is_active ? 'deactivate territory' : 'reactivate territory'}`}
+                            disabled={isLocked}
+                            onClick={() => !isLocked && handleToggleDepotStatus(depot)}
+                            className={`inline-flex items-center gap-2 select-none whitespace-nowrap ${
+                              isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer group'
+                            }`}
+                            title={isLocked ? "Modifying territory status is locked during active data ingestion" : `Click to ${depot.is_active ? 'deactivate territory' : 'reactivate territory'}`}
                           >
                             <div
                               className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
-                                depot.is_active ? 'bg-emerald-500' : 'bg-slate-300'
+                                isLocked 
+                                  ? (depot.is_active ? 'bg-emerald-500/50' : 'bg-slate-300/50') 
+                                  : (depot.is_active ? 'bg-emerald-500' : 'bg-slate-300')
                               }`}
                             >
                               <span
@@ -828,7 +842,7 @@ export default function TerritoryManagement() {
                                 }`}
                               />
                             </div>
-                            <span className={`text-xs font-bold ${depot.is_active ? 'text-emerald-700' : 'text-slate-500'}`}>
+                            <span className={`text-xs font-bold ${depot.is_active ? (isLocked ? 'text-emerald-700/60' : 'text-emerald-700') : 'text-slate-400'}`}>
                               {depot.is_active ? 'Active' : 'Inactive'}
                             </span>
                           </button>
