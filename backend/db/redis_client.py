@@ -2,6 +2,7 @@ import logging
 import asyncio
 from typing import Optional, Dict, Any, Callable
 import redis.asyncio as aioredis
+import redis
 from redis.exceptions import RedisError, ConnectionError, TimeoutError
 
 from backend.core.config import settings
@@ -212,3 +213,98 @@ async def safe_delete_pattern(pattern: str) -> int:
     except Exception as e:
         logger.warning(f"Redis delete_pattern failed for '{pattern}': {e}")
         return 0
+
+
+# ============================================================
+# SYNCHRONOUS REDIS CLIENT & HELPERS
+# ============================================================
+
+_sync_redis_instance: Optional[redis.Redis] = None
+
+
+def get_sync_redis() -> Optional[redis.Redis]:
+    """Get or initialize thread-safe synchronous Redis client instance."""
+    global _sync_redis_instance
+    if not settings.REDIS_ENABLED:
+        return None
+    if _sync_redis_instance is not None:
+        return _sync_redis_instance
+
+    try:
+        if settings.REDIS_URL:
+            _sync_redis_instance = redis.from_url(
+                settings.REDIS_URL,
+                decode_responses=True,
+                socket_connect_timeout=3,
+                socket_timeout=3,
+                retry_on_timeout=True
+            )
+        elif settings.REDIS_HOST:
+            _sync_redis_instance = redis.Redis(
+                host=settings.REDIS_HOST,
+                port=settings.REDIS_PORT,
+                password=settings.REDIS_PASSWORD or None,
+                db=settings.REDIS_DB,
+                decode_responses=True,
+                socket_connect_timeout=3,
+                socket_timeout=3,
+                retry_on_timeout=True
+            )
+        if _sync_redis_instance:
+            _sync_redis_instance.ping()
+        return _sync_redis_instance
+    except Exception as e:
+        logger.warning(f"Sync Redis initialization notice: {e}")
+        return None
+
+
+def sync_get(key: str) -> Optional[str]:
+    """Synchronously fetch key value from Redis with in-memory fallback."""
+    r = get_sync_redis()
+    if r is not None:
+        try:
+            return r.get(key)
+        except Exception as e:
+            logger.warning(f"Sync Redis GET failed for '{key}': {e}")
+    return _in_memory_store.get(key)
+
+
+def sync_set(key: str, value: str, ttl: Optional[int] = None) -> bool:
+    """Synchronously store key in Redis with optional TTL and in-memory fallback."""
+    _in_memory_store[key] = value
+    r = get_sync_redis()
+    if r is not None:
+        try:
+            if ttl and ttl > 0:
+                r.set(key, value, ex=ttl)
+            else:
+                r.set(key, value)
+            return True
+        except Exception as e:
+            logger.warning(f"Sync Redis SET failed for '{key}': {e}")
+    return True
+
+
+def sync_delete(key: str) -> bool:
+    """Synchronously delete key from Redis and in-memory store."""
+    _in_memory_store.pop(key, None)
+    r = get_sync_redis()
+    if r is not None:
+        try:
+            r.delete(key)
+            return True
+        except Exception as e:
+            logger.warning(f"Sync Redis DELETE failed for '{key}': {e}")
+    return True
+
+
+def sync_ttl(key: str) -> int:
+    """Synchronously get TTL in seconds (-2 if not exists, -1 if no expiry)."""
+    r = get_sync_redis()
+    if r is not None:
+        try:
+            return r.ttl(key)
+        except Exception:
+            pass
+    return -2
+
