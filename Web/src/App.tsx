@@ -175,10 +175,36 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
+      const token = localStorage.getItem('token');
+      const activeRaw = localStorage.getItem('rll_active_sales_upload');
+      let currentBatchId = null;
+      if (activeRaw) {
+        try {
+          const parsed = JSON.parse(activeRaw);
+          currentBatchId = parsed.batchId || null;
+        } catch (e) {}
+      }
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      };
+
+      // If upload is in-flight when signing out, execute atomic rollback to 0
+      const cancelUrl = currentBatchId
+        ? `${API_BASE_URL}/uploads/batches/${currentBatchId}/cancel`
+        : `${API_BASE_URL}/uploads/cancel-active`;
+
+      await fetch(cancelUrl, {
+        method: 'POST',
+        headers
+      }).catch(() => {});
+
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 1500);
       await fetch(`${API_BASE_URL}/auth/logout`, {
         method: 'POST',
+        headers,
         credentials: 'include',
         signal: controller.signal
       }).catch(() => {});
@@ -193,6 +219,8 @@ export default function App() {
       localStorage.removeItem('user');
       localStorage.removeItem('current_view');
       localStorage.removeItem('rll_tenant_id');
+      localStorage.removeItem('rll_active_sales_upload');
+      localStorage.removeItem('rll_system_lock_base');
       setTenantId('');
       document.title = 'LucidX360 Admin Portal';
     }

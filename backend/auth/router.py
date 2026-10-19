@@ -328,6 +328,23 @@ async def logout(request: Request, response: Response):
     if session_token:
         await safe_delete(f"rll:session:{session_token}")
     response.delete_cookie(key="rll_session")
+
+    # If an upload is active when the user signs out, cancel and rollback immediately
+    try:
+        from backend.uploads.service import import_pipeline
+        from backend.db.supabase_client import get_active_upload_batch
+        active = import_pipeline.is_upload_active()
+        if not active:
+            active = get_active_upload_batch()
+
+        if active:
+            b_id = active.get("batch_id") or active.get("upload_batch_id")
+            if b_id:
+                logger.warning(f"User signed out during active upload batch {b_id}. Executing automatic rollback to 0.")
+                import_pipeline.cancel_batch(b_id)
+    except Exception as e_rollback:
+        logger.warning(f"Notice rolling back active upload on logout: {e_rollback}")
+
     return {
         "success": True,
         "message": "Logged out successfully"
