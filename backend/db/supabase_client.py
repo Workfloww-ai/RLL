@@ -12,22 +12,33 @@ def get_supabase_client() -> Optional[Client]:
 
 def _clean_error_msg(e: Any) -> str:
     """Safely extracts a readable string message from any exception or Supabase error object, truncating raw HTML responses if needed."""
+    raw_str = ""
     if isinstance(e, dict):
-        msg = e.get("message") or e.get("details") or str(e)
+        details = str(e.get("details") or "")
+        message = str(e.get("message") or "")
+        code = str(e.get("code") or "")
+        raw_str = f"{code} {message} {details}"
     else:
-        msg = str(e)
-    msg_lower = msg.lower()
-    if "<html>" in msg_lower or "<!doctype html>" in msg_lower:
-        if "521" in msg or "web server is down" in msg_lower:
-            return "Supabase HTTP 521: Web server is down (Cloudflare connection failure)"
-        elif "520" in msg:
-            return "Supabase HTTP 520: Web server returned an unknown response"
-        elif "502" in msg or "bad gateway" in msg_lower:
-            return "Supabase HTTP 502: Bad Gateway"
-        elif "504" in msg or "gateway timeout" in msg_lower:
+        raw_str = str(e)
+
+    raw_lower = raw_str.lower()
+    if "<html" in raw_lower or "<!doctype" in raw_lower:
+        if "521" in raw_str or "web server is down" in raw_lower:
+            return "Supabase HTTP 521: Web server is temporarily down or restarting (Cloudflare origin connection refused)"
+        elif "502" in raw_str or "bad gateway" in raw_lower:
+            return "Supabase HTTP 502: Bad Gateway (PostgREST origin unavailable)"
+        elif "503" in raw_str or "service unavailable" in raw_lower:
+            return "Supabase HTTP 503: Service Unavailable"
+        elif "504" in raw_str or "gateway timeout" in raw_lower:
             return "Supabase HTTP 504: Gateway Timeout"
-        return msg[:200] + "... [HTML response truncated]"
-    return msg
+        elif "520" in raw_str:
+            return "Supabase HTTP 520: Origin Server Unknown Error"
+        elif "522" in raw_str or "connection timed out" in raw_lower:
+            return "Supabase HTTP 522: Connection Timed Out"
+        elif "524" in raw_str or "a timeout occurred" in raw_lower:
+            return "Supabase HTTP 524: Cloudflare Origin Timeout"
+        return f"Supabase Gateway Error: [HTML response truncated] ({raw_str[:120]})"
+    return str(e)
 
 # ---------------------------------------------------------------------------
 # Database Advisory Lock & Concurrency Control Helpers
@@ -87,9 +98,9 @@ def get_active_upload_batch() -> Optional[Dict[str, Any]]:
         return None
     try:
         from datetime import datetime, timezone
-        active_statuses = ["queued", "running", "processing", "aggregating", "validating"]
+        active_statuses = ["queued", "running", "processing", "aggregating", "validating", "validated", "staged", "saving", "uploading"]
         res = client.table("upload_batches").select(
-            "batch_id, source_file, file_name, covers_start, covers_end, status, upload_status, created_at"
+            "batch_id, source_file, covers_start, covers_end, status, created_at, row_count, imported_rows, remarks"
         ).in_("status", active_statuses).order("created_at", desc=True).limit(5).execute()
         
         if res.data:
@@ -103,18 +114,17 @@ def get_active_upload_batch() -> Optional[Dict[str, Any]]:
                         c_dt = datetime.fromisoformat(clean_dt_str)
                         if c_dt.tzinfo is None:
                             c_dt = c_dt.replace(tzinfo=timezone.utc)
-                        if (now_utc - c_dt).total_seconds() > 600:  # 10 minutes optimal threshold to prevent DB resource exhaustion
+                        if (now_utc - c_dt).total_seconds() > 1200:  # 20 minutes optimal threshold for large uploads
                             is_stale = True
                     except Exception:
                         pass
 
                 if is_stale:
                     b_id = str(b.get("batch_id"))
-                    logger.warning(f"Resetting stale orphaned upload batch #{b_id} created > 10 mins ago.")
+                    logger.warning(f"Resetting stale orphaned upload batch #{b_id} created > 20 mins ago.")
                     try:
                         client.table("upload_batches").update({
                             "status": "failed",
-                            "upload_status": "failed",
                             "remarks": "Timed out: Active upload job stalled or was interrupted.",
                         }).eq("batch_id", b.get("batch_id")).execute()
                     except Exception:
@@ -122,7 +132,7 @@ def get_active_upload_batch() -> Optional[Dict[str, Any]]:
                 else:
                     return b
     except Exception as e:
-        logger.warning(f"get_active_upload_batch error: {e}")
+        logger.warning(f"get_active_upload_batch error: {_clean_error_msg(e)}")
     return None
 
 def reset_orphaned_upload_batches() -> int:
@@ -136,12 +146,11 @@ def reset_orphaned_upload_batches() -> int:
     try:
         active_statuses = ["queued", "running", "processing", "aggregating", "validating"]
         # Select orphaned active batches first to obtain batch IDs
-        orphaned_res = client.table("upload_batches").select("batch_id, source_file, file_name").in_("status", active_statuses).execute()
+        orphaned_res = client.table("upload_batches").select("batch_id, source_file").in_("status", active_statuses).execute()
         orphaned_batches = orphaned_res.data or []
 
         res = client.table("upload_batches").update({
             "status": "failed",
-            "upload_status": "failed",
             "remarks": "Interrupted: Server process restarted during upload execution.",
         }).in_("status", active_statuses).execute()
         count = len(res.data) if res.data else len(orphaned_batches)
@@ -174,9 +183,9 @@ def create_upload_batch(
     created_by: Optional[str] = None,
     browser_info: Optional[str] = None,
     client_ip: Optional[str] = None,
+    tenant_id: Optional[str] = None,
 ) -> Optional[int]:
-    """Creates a new upload_batches row and returns the generated batch_id."""
-    """Creates a new upload_batches row with user FKs and client browser/IP metadata."""
+    """Creates a new upload_batches row with user FKs, dynamic tenant partitioning, and client browser/IP metadata."""
     client = get_supabase_client()
     if not client:
         logger.info("[Mock] create_upload_batch → batch_id=1")
@@ -189,13 +198,21 @@ def create_upload_batch(
         "status": "pending",
         "is_active": True,
     }
+    if tenant_id:
+        data["tenant_id"] = str(tenant_id)
     if uploaded_by:
         data["uploaded_by"] = uploaded_by
     user_fk = uploaded_by or created_by
-    if user_fk:
-        data["uploaded_by"] = user_fk
-        data["created_by"] = user_fk
-        data["updated_by"] = user_fk
+    if user_fk and len(str(user_fk)) == 36:
+        data["uploaded_by"] = str(user_fk)
+        data["updated_by"] = str(user_fk)
+        if not data.get("tenant_id"):
+            try:
+                u_res = client.table("users").select("tenant_id").eq("user_id", str(user_fk)).limit(1).execute()
+                if u_res.data and u_res.data[0].get("tenant_id"):
+                    data["tenant_id"] = str(u_res.data[0]["tenant_id"])
+            except Exception as e_ten:
+                logger.warning(f"Could not resolve tenant_id for user {user_fk}: {e_ten}")
     if browser_info:
         data["browser_info"] = browser_info
     if client_ip:
@@ -208,7 +225,7 @@ def create_upload_batch(
         logger.error(f"create_upload_batch error: {e}")
         raise
     return None
-def update_upload_batch(batch_id: int, status: str, row_count: Optional[int] = None) -> bool:
+def update_upload_batch(batch_id: int, status: str, row_count: Optional[int] = None, updated_by: Optional[str] = None) -> bool:
     client = get_supabase_client()
     if not client:
         logger.info(f"[Mock] update_upload_batch batch_id={batch_id} status={status}")
@@ -216,6 +233,14 @@ def update_upload_batch(batch_id: int, status: str, row_count: Optional[int] = N
     data: Dict[str, Any] = {"status": status}
     if row_count is not None:
         data["row_count"] = row_count
+    if updated_by and len(str(updated_by)) == 36:
+        data["updated_by"] = str(updated_by)
+        try:
+            u_res = client.table("users").select("tenant_id").eq("user_id", str(updated_by)).limit(1).execute()
+            if u_res.data and u_res.data[0].get("tenant_id"):
+                data["tenant_id"] = str(u_res.data[0]["tenant_id"])
+        except Exception:
+            pass
     try:
         client.table("upload_batches").update(data).eq("batch_id", batch_id).execute()
         return True
@@ -693,7 +718,7 @@ def get_batch_details(batch_id: Any) -> Dict[str, Any]:
             "error_count": 0,
         }
     try:
-        batch_res = client.table("upload_batches").select("batch_id, source_file, file_name, storage_path, status, upload_status, row_count, total_rows, imported_rows, remarks, created_at").eq("batch_id", batch_id).execute()
+        batch_res = client.table("upload_batches").select("batch_id, source_file, storage_path, status, row_count, imported_rows, remarks, created_at").eq("batch_id", batch_id).execute()
         logs_res = (
             client.table("upload_pipeline_logs")
             .select("log_id, batch_id, step, status, message, logged_at")
@@ -1343,8 +1368,9 @@ def fetch_company_brand_sales_db(
 ) -> List[Dict[str, Any]]:
     """
     Calls get_company_brand_sales_summary RPC in Supabase PostgreSQL.
-    Returns brand sales summary for a selected company, excluding 'Others'.
+    Returns brand sales summary for a selected company.
     Automatically resolves slug/name company identifiers to UUIDs.
+    Respects system_settings include_others_in_sales and explicit company drilldowns.
     """
     client = get_supabase_client()
     if not client:
@@ -1352,12 +1378,21 @@ def fetch_company_brand_sales_db(
 
     resolved_company_uuid = resolve_company_id_uuid(client, company_id)
 
+    from backend.services.tenant_service import get_include_others_setting_sync
+    include_others = get_include_others_setting_sync()
+
+    is_target_others = (
+        str(company_id).strip().lower() in ("others", "other")
+        or str(resolved_company_uuid) == "30739e78-c438-4a60-a5cb-6d9e9e79d1c6"
+    )
+    eff_exclude = "" if (include_others or is_target_others) else exclude_company
+
     try:
         rpc_params = {
             "p_company_id": resolved_company_uuid,
             "p_date_from": date_from,
             "p_date_to": date_to,
-            "p_exclude_company": exclude_company,
+            "p_exclude_company": eff_exclude,
         }
         if hq_name and hq_name.strip() and hq_name.strip() != "All Headquarters":
             rpc_params["p_hq_name"] = hq_name.strip()
@@ -1377,18 +1412,23 @@ def fetch_brand_licensees_sales_db(
 ) -> List[Dict[str, Any]]:
     """
     Calls get_brand_licensees_summary RPC in Supabase PostgreSQL.
-    Returns licensee sales summary for a selected brand, excluding 'Others'.
+    Returns licensee sales summary for a selected brand.
+    Respects system_settings include_others_in_sales toggle.
     """
     client = get_supabase_client()
     if not client:
         return []
+
+    from backend.services.tenant_service import get_include_others_setting_sync
+    include_others = get_include_others_setting_sync()
+    eff_exclude = "" if include_others else exclude_company
 
     try:
         rpc_params = {
             "p_brand_id": brand_id,
             "p_date_from": date_from,
             "p_date_to": date_to,
-            "p_exclude_company": exclude_company,
+            "p_exclude_company": eff_exclude,
         }
         if hq_name and hq_name.strip() and hq_name.strip() != "All Headquarters":
             rpc_params["p_hq_name"] = hq_name.strip()

@@ -13,7 +13,7 @@ import {
   RefreshControl,
 } from 'react-native';
 import { TSM, Period, ASE } from '../../types';
-import { formatNumber } from '../../lib/utils';
+import { formatNumber, toTitleCase } from '../../lib/utils';
 import { TsmListSkeletonList } from '../../components/SkeletonLoaders';
 import { MetricsCard } from '../../components/MetricsCard';
 import { SegmentedTabs } from '../../components/SegmentedTabs';
@@ -158,7 +158,8 @@ export function TsmView({
     return tsms.filter((t) => {
       const matchHq =
         selectedHq === 'All Headquarters' ||
-        (t.hqLocation && t.hqLocation.toLowerCase() === selectedHq.toLowerCase());
+        (t.assignedHqs && Array.isArray(t.assignedHqs) && t.assignedHqs.some((h: string) => h.toLowerCase() === selectedHq.toLowerCase())) ||
+        (t.hqLocation && t.hqLocation.toLowerCase().includes(selectedHq.toLowerCase()));
       const matchSearch =
         !searchQuery.trim() ||
         t.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -236,6 +237,43 @@ export function TsmView({
     return `Search companies for ${firstName}...`;
   }, [level, activeTsmTab, selectedAse]);
 
+  const getItemCases = useCallback(
+    (item: any): number => {
+      if (!item) return 0;
+      const rawData = item.data?.[period] || { cases: 0 };
+      const cases = Number(((rawData.cases || item.total_cases || 0) * scaleFactor).toFixed(2));
+      return cases;
+    },
+    [period, scaleFactor]
+  );
+
+  const headerMetrics = useMemo(() => {
+    if (level === 2 && selectedTsm) {
+      const cases = getItemCases(selectedTsm);
+      const aseCount = selectedTsm.ases?.length || 0;
+      const itemTsm = selectedTsm as any;
+      const companyCount = itemTsm.companyCount?.[period] ?? itemTsm.company_count?.[period] ?? (itemTsm.brands?.filter((b: any) => (b.data?.[period]?.cases || 0) > 0 || (b.data?.[period]?.bottles || 0) > 0).length || 0);
+      const subtitle = `${aseCount} ASE(s)  •  ${companyCount} Companies`;
+      return {
+        cases,
+        title: toTitleCase(selectedTsm.name || 'TSM'),
+        subtitle,
+      };
+    }
+    if (level === 3 && selectedAse) {
+      const cases = getItemCases(selectedAse);
+      const itemAse = selectedAse as any;
+      const companyCount = itemAse.companyCount?.[period] ?? itemAse.company_count?.[period] ?? (itemAse.brands?.filter((b: any) => (b.data?.[period]?.cases || 0) > 0 || (b.data?.[period]?.bottles || 0) > 0).length || 0);
+      const subtitle = `${companyCount} Companies`;
+      return {
+        cases,
+        title: toTitleCase(selectedAse.name || 'ASE'),
+        subtitle,
+      };
+    }
+    return null;
+  }, [level, selectedTsm, selectedAse, period, getItemCases]);
+
   const getSortOptionLabel = (option: SortOptionValue): string => {
     switch (option) {
       case 'az': return 'A to Z';
@@ -277,6 +315,27 @@ export function TsmView({
             }}
             scaleFactor={scaleFactor}
           />
+        </View>
+      )}
+
+      {/* Breadcrumb Header Panel: Inline single-line compact layout below back panel */}
+      {level > 1 && headerMetrics && (
+        <View style={styles.headerCard}>
+          <View style={styles.headerLeftTitleBlock}>
+            <Text style={styles.headerTitleInline} numberOfLines={1}>
+              <Text style={styles.headerTitleText}>{headerMetrics.title}</Text>
+              {!!headerMetrics.subtitle && (
+                <Text style={styles.headerSubtitleInline}> ({headerMetrics.subtitle})</Text>
+              )}
+            </Text>
+          </View>
+
+          <View style={styles.headerRightMetricsBlock}>
+            <View style={styles.metricBadgePrimary}>
+              <Text style={styles.metricLabelPrimary}>cases </Text>
+              <Text style={styles.metricValuePrimary}>{formatNumber(headerMetrics.cases)}</Text>
+            </View>
+          </View>
         </View>
       )}
 
@@ -353,7 +412,7 @@ export function TsmView({
               const bottles = Math.round((rawData.bottles || 0) * scaleFactor);
               const aseCount = item.ases?.length || 0;
               const companyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.brands?.filter((b: any) => (b.data?.[period]?.cases || 0) > 0 || (b.data?.[period]?.bottles || 0) > 0).length || 0);
-              const hqName = item.hqLocation || 'All Headquarters';
+              const hqName = item.hqLocation || 'Unassigned';
 
               return (
                 <MetricsCard
@@ -396,6 +455,7 @@ export function TsmView({
               const cases = Number(((rawData.cases || 0) * scaleFactor).toFixed(2));
               const bottles = Math.round((rawData.bottles || 0) * scaleFactor);
               const companyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.brands?.filter((b: any) => (b.data?.[period]?.cases || 0) > 0 || (b.data?.[period]?.bottles || 0) > 0).length || 0);
+              const hqName = item.hqLocation || 'Unassigned';
 
               return (
                 <MetricsCard
@@ -405,6 +465,7 @@ export function TsmView({
                   metrics={[
                     { label: 'Cases', value: cases },
                   ]}
+                  locationPill={hqName}
                   pillTheme="blue"
                   onPress={() => handleSelectAse(item)}
                   scaleFactor={scaleFactor}
@@ -690,5 +751,58 @@ const styles = StyleSheet.create({
   perPageOptionTextSelected: {
     color: '#0284C7',
     fontWeight: '700',
+  },
+  headerCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+  },
+  headerLeftTitleBlock: {
+    flex: 1,
+    marginRight: 8,
+  },
+  headerTitleInline: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+  },
+  headerTitleText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  headerSubtitleInline: {
+    fontSize: 11.5,
+    fontWeight: '500',
+    color: '#64748B',
+  },
+  headerRightMetricsBlock: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  metricBadgePrimary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#DBEAFE',
+  },
+  metricLabelPrimary: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#3B82F6',
+    textTransform: 'lowercase',
+  },
+  metricValuePrimary: {
+    fontSize: 12.5,
+    fontWeight: '800',
+    color: '#1D4ED8',
   },
 });

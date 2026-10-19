@@ -166,7 +166,93 @@ upload_batches_db: Dict[int, Dict[str, Any]] = {}
 upload_logs_db: List[Dict[str, Any]] = []
 
 
+class UploadCancelledException(Exception):
+    """Raised when an active upload batch has been cancelled by the user."""
+    pass
+
+
 class ImportPipelineEngine:
+
+    def __init__(self):
+        self._cancelled_batches = set()
+
+    def cancel_batch(self, batch_id: Any) -> Dict[str, Any]:
+        """
+        Stops the execution of an upload batch pipeline and executes an atomic rollback
+        to 0 rows in database (sales_fact, user_sales_fact, raw_sales_upload, batch_chunks, upload_pipeline_logs).
+        Releases advisory lock and resets system lock cache immediately.
+        """
+        b_str = str(batch_id).strip()
+        logger.warning(f"Request to cancel and rollback upload batch {b_str} received.")
+        self._cancelled_batches.add(b_str)
+        try:
+            self._cancelled_batches.add(int(b_str))
+        except (ValueError, TypeError):
+            pass
+
+        # 1. Update in-memory state
+        local_batch = upload_batches_db.get(b_str) or upload_batches_db.get(int(b_str) if b_str.isdigit() else -1)
+        if local_batch:
+            local_batch.update({
+                "status": "cancelled",
+                "upload_status": "cancelled",
+                "remarks": "Upload cancelled by user. Execution stopped and partial records rolled back to 0."
+            })
+
+        # 2. Update DB upload_batches status
+        client = get_supabase()
+        if client:
+            try:
+                cancel_payload = {
+                    "status": "cancelled",
+                    "remarks": "Upload cancelled by user. Execution stopped and partial records rolled back to 0.",
+                    "updated_at": datetime.now().isoformat()
+                }
+                if local_batch:
+                    u_fk = local_batch.get("uploaded_by") or local_batch.get("created_by") or local_batch.get("updated_by")
+                    if u_fk and len(str(u_fk)) == 36 and str(u_fk) != "00000000-0000-0000-0000-000000000001":
+                        cancel_payload["updated_by"] = str(u_fk)
+                client.table("upload_batches").update(cancel_payload).eq("batch_id", b_str).execute()
+                logger.info(f"Updated upload_batches #{b_str} status to 'cancelled'.")
+            except Exception as exc:
+                logger.warning(f"Failed to update batch {b_str} status to cancelled: {exc}")
+
+        # 3. Clean up all partial records inserted for this batch
+        self._cleanup_failed_batch(b_str)
+
+        # 4. Release locks and invalidate system lock cache
+        self.release_pipeline_lock(b_str)
+        try:
+            from backend.core.system_lock import invalidate_system_lock_cache, clear_roster_upload_active, record_upload_cooldown
+            invalidate_system_lock_cache()
+            clear_roster_upload_active()
+            source_fname = (local_batch.get("source_file") if local_batch else None) or "Cancelled Upload"
+            record_upload_cooldown(
+                upload_type="validation_error",
+                filename=source_fname,
+                cooldown_seconds=600,
+                reason=f"Upload cancelled and rolled back for '{source_fname}'. 10-minute purge buffer active."
+            )
+        except Exception as e_lock:
+            logger.warning(f"Error setting cooldown during cancel: {e_lock}")
+
+        return {
+            "success": True,
+            "batch_id": b_str,
+            "status": "cancelled",
+            "message": "Upload batch successfully cancelled and all partial records rolled back to 0."
+        }
+
+    def is_batch_cancelled(self, batch_id: Any) -> bool:
+        if not batch_id:
+            return False
+        b_str = str(batch_id).strip()
+        if b_str in self._cancelled_batches or (b_str.isdigit() and int(b_str) in self._cancelled_batches):
+            return True
+        batch = upload_batches_db.get(b_str) or upload_batches_db.get(int(b_str) if b_str.isdigit() else -1)
+        if batch and str(batch.get("status", "")).lower() == "cancelled":
+            return True
+        return False
 
     # ========================================================
     # BASIC HELPERS
@@ -406,17 +492,23 @@ class ImportPipelineEngine:
         b_str = str(batch_id).strip()
         for table_name in temp_tables:
             try:
-                # Chunked fallback delete to avoid RETURNING * PostgREST overhead
-                while True:
-                    sub_res = client.table(table_name).select("raw_id" if table_name == "raw_sales_upload" else "id").eq("batch_id", b_str).limit(5000).execute()
-                    rows = sub_res.data or []
-                    if not rows:
-                        break
-                    pks = [r.get("raw_id") or r.get("id") for r in rows if r.get("raw_id") or r.get("id")]
-                    if not pks:
-                        break
-                    client.table(table_name).delete().in_("raw_id" if table_name == "raw_sales_upload" else "id", pks).execute()
-                logger.info(f"Batch {batch_id}: Cleaned up temporary {table_name} table.")
+                pk_col = "raw_id" if table_name == "raw_sales_upload" else ("log_id" if table_name == "upload_pipeline_logs" else "id")
+                # 1. Attempt direct delete by batch_id
+                try:
+                    client.table(table_name).delete().eq("batch_id", b_str).execute()
+                    logger.info(f"Batch {batch_id}: Cleaned up temporary {table_name} table.")
+                except Exception:
+                    # 2. Chunked fallback (1000 at a time to stay well within URL length limits)
+                    while True:
+                        sub_res = client.table(table_name).select(pk_col).eq("batch_id", b_str).limit(1000).execute()
+                        rows = sub_res.data or []
+                        if not rows:
+                            break
+                        pks = [r.get(pk_col) for r in rows if r.get(pk_col)]
+                        if not pks:
+                            break
+                        client.table(table_name).delete().in_(pk_col, pks).execute()
+                    logger.info(f"Batch {batch_id}: Cleaned up temporary {table_name} table via chunked purge.")
             except Exception as exc:
                 logger.warning(f"Phase 1 Cleanup notice for table '{table_name}' batch {batch_id}: {exc}")
 
@@ -427,39 +519,44 @@ class ImportPipelineEngine:
     def is_upload_active(self, exclude_batch_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """
         Phase 2 Single-Upload Queue:
-        Checks if an upload job is currently active in memory or PostgreSQL DB.
-        Returns the active batch record dict if active, otherwise None.
+        Checks if an upload job is currently active in PostgreSQL DB or memory.
+        Authoritative source: PostgreSQL DB.
         """
-        active_statuses = {"queued", "running", "processing", "aggregating", "validating"}
-        now_ts = time.time()
+        client = get_supabase()
+        if client:
+            db_active = get_active_upload_batch()
+            if db_active:
+                active_id = db_active.get("batch_id")
+                if exclude_batch_id and str(active_id) == str(exclude_batch_id):
+                    return None
+                return db_active
+            else:
+                # Database has no active batches - purge any stale in-memory active batches
+                active_statuses = {"queued", "running", "processing", "aggregating", "validating", "validated", "staged", "saving", "uploading"}
+                for b_id, batch in list(upload_batches_db.items()):
+                    st = str(batch.get("status", "")).lower()
+                    if st in active_statuses:
+                        upload_batches_db.pop(b_id, None)
+                return None
 
-        # 1. Check local memory state first
+        # Fallback to local memory only if client is disconnected
+        active_statuses = {"queued", "running", "processing", "aggregating", "validating", "validated", "staged", "saving", "uploading"}
+        now_ts = time.time()
         for b_id, batch in list(upload_batches_db.items()):
             if exclude_batch_id and str(b_id) == str(exclude_batch_id):
                 continue
             st = str(batch.get("status", "")).lower()
-            up_st = str(batch.get("upload_status", "")).lower()
-            if st in active_statuses or up_st in active_statuses:
+            if st in active_statuses:
                 c_iso = batch.get("created_at")
                 if c_iso:
                     try:
                         c_dt = datetime.fromisoformat(c_iso.replace("Z", "+00:00"))
-                        if (now_ts - c_dt.timestamp()) > 600:  # 10 minutes optimal threshold
-                            batch["status"] = "failed"
-                            batch["upload_status"] = "failed"
-                            batch["remarks"] = "Timed out: Active upload job stalled or abandoned."
+                        if (now_ts - c_dt.timestamp()) > 1200:
+                            upload_batches_db.pop(b_id, None)
                             continue
                     except Exception:
                         pass
                 return batch
-
-        # 2. Check Supabase database
-        db_active = get_active_upload_batch()
-        if db_active:
-            active_id = db_active.get("batch_id")
-            if exclude_batch_id and str(active_id) == str(exclude_batch_id):
-                return None
-            return db_active
 
         return None
 
@@ -598,27 +695,34 @@ class ImportPipelineEngine:
 
         client = get_supabase()
         batch_id = None
-        tenant_id = tenant_id or "a0000000-0000-0000-0000-000000000001"
+        # Dynamically resolve tenant_id from the uploading user if not supplied
+        if not tenant_id and user_id and client:
+            try:
+                u_res = client.table("users").select("tenant_id").eq("user_id", str(user_id)).limit(1).execute()
+                if u_res.data and u_res.data[0].get("tenant_id"):
+                    tenant_id = str(u_res.data[0]["tenant_id"])
+            except Exception as e_t:
+                logger.warning(f"Could not resolve tenant_id for user {user_id}: {e_t}")
 
         today_str = datetime.now().strftime("%Y-%m-%d")
 
         if client:
             payload = {
                 "source_file": filename,
-                "file_name": filename,
                 "load_type": "daily",
                 "covers_start": today_str,
                 "covers_end": today_str,
                 "row_count": 0,
-                "total_rows": 0,
                 "imported_rows": 0,
                 "status": "queued",
-                "upload_status": "queued",
-                "tenant_id": tenant_id,
-                "remarks": "File accepted and queued for processing.",
+                "remarks": "Processing started: File received and queued...",
             }
-            if user_id and len(str(user_id)) == 36 and user_id != "00000000-0000-0000-0000-000000000001":
-                payload["uploaded_by"] = user_id
+            if tenant_id:
+                payload["tenant_id"] = tenant_id
+
+            if user_id and len(str(user_id)) == 36:
+                payload["uploaded_by"] = str(user_id)
+                payload["updated_by"] = str(user_id)
 
             try:
                 response = client.table("upload_batches").insert(payload).execute()
@@ -627,6 +731,8 @@ class ImportPipelineEngine:
             except Exception as exc:
                 try:
                     payload.pop("uploaded_by", None)
+                    payload.pop("created_by", None)
+                    payload.pop("updated_by", None)
                     response = client.table("upload_batches").insert(payload).execute()
                     if response.data:
                         batch_id = response.data[0].get("batch_id") or response.data[0].get("upload_batch_id")
@@ -637,6 +743,7 @@ class ImportPipelineEngine:
             batch_id = len(upload_batches_db) + 1
 
         now_iso = datetime.now().isoformat()
+        clean_user_fk = str(user_id) if (user_id and len(str(user_id)) == 36) else None
         batch_record = {
             "batch_id": batch_id,
             "upload_batch_id": batch_id,
@@ -647,7 +754,9 @@ class ImportPipelineEngine:
             "covers_start": today_str,
             "covers_end": today_str,
             "storage_path": f"uploads/{int(time.time())}_{filename}",
-            "uploaded_by": user_id if (user_id and len(str(user_id)) == 36 and user_id != "00000000-0000-0000-0000-000000000001") else None,
+            "uploaded_by": clean_user_fk,
+            "created_by": clean_user_fk,
+            "updated_by": clean_user_fk,
             "total_rows": 0,
             "imported_rows": 0,
             "duplicate_rows": 0,
@@ -696,7 +805,17 @@ class ImportPipelineEngine:
         batch_id: int,
         tenant_id: Optional[str] = None,
     ):
-        tenant_id = tenant_id or (upload_batches_db.get(batch_id) or {}).get("tenant_id") or "a0000000-0000-0000-0000-000000000001"
+        if not tenant_id:
+            tenant_id = (upload_batches_db.get(batch_id) or {}).get("tenant_id")
+        if not tenant_id and user_id:
+            client = get_supabase()
+            if client:
+                try:
+                    u_res = client.table("users").select("tenant_id").eq("user_id", str(user_id)).limit(1).execute()
+                    if u_res.data and u_res.data[0].get("tenant_id"):
+                        tenant_id = str(u_res.data[0]["tenant_id"])
+                except Exception:
+                    pass
         start_time = time.time()
         started_at_iso = datetime.now().isoformat()
 
@@ -712,19 +831,23 @@ class ImportPipelineEngine:
             return local_batch
 
         try:
+            if self.is_batch_cancelled(batch_id):
+                raise UploadCancelledException(f"Batch {batch_id} cancelled by user before processing.")
             local_batch = upload_batches_db.get(batch_id)
             if local_batch:
                 local_batch["started_at"] = started_at_iso
                 local_batch["status"] = "running"
                 local_batch["upload_status"] = "running"
+                local_batch["remarks"] = "Processing started: Reading uploaded file..."
 
             self._update_batch(batch_id=batch_id, status="running")
+            self._update_batch_progress(batch_id, remarks="Processing started: Reading uploaded file...")
 
             self._pipeline_log(
                 batch_id=batch_id,
                 step="file_received",
                 status="started",
-                message=f"Processing {filename}",
+                message=f"Processing started: {filename}",
             )
 
             self._upload_original_file(
@@ -752,8 +875,11 @@ class ImportPipelineEngine:
 
             self._update_batch_progress(
                 batch_id,
-                remarks=f"File parsed ({total_rows} rows). Prefetching and bulk resolving master data...",
+                remarks=f"Processing started: {total_rows:,} rows fetched from sheet. Validating Records...",
             )
+            if self.is_batch_cancelled(batch_id):
+                raise UploadCancelledException(f"Batch {batch_id} cancelled by user after file parsing.")
+
             master_service.prefetch_all_caches()
 
             # Vectorized Series Extraction & Cleaning
@@ -822,8 +948,8 @@ class ImportPipelineEngine:
             group_cache = master_service.bulk_resolve_groups(unique_groups)
             office_cache = master_service.bulk_resolve_offices(unique_offices)
             circle_cache = master_service.bulk_resolve_circles(unique_circles)
-            hq_cache = master_service.bulk_resolve_headquarters(unique_hqs)
-            company_cache = master_service.bulk_resolve_companies(unique_companies)
+            hq_cache = master_service.bulk_resolve_headquarters(unique_hqs, tenant_id=tenant_id)
+            company_cache = master_service.bulk_resolve_companies(unique_companies, tenant_id=tenant_id)
 
             depot_items = [
                 {
@@ -835,7 +961,7 @@ class ImportPipelineEngine:
                 for d, deo, cir, hq in zip(s_depot, s_deo, s_circle, s_hq)
                 if d
             ]
-            depot_cache = master_service.bulk_resolve_depots(depot_items)
+            depot_cache = master_service.bulk_resolve_depots(depot_items, tenant_id=tenant_id)
 
             lic_items = [
                 {
@@ -851,7 +977,7 @@ class ImportPipelineEngine:
                 for l, t, g, d, hq, deo, cir in zip(s_licensee, s_trade, s_group, s_depot, s_hq, s_deo, s_circle)
                 if l
             ]
-            licensee_cache = master_service.bulk_resolve_licensees(lic_items)
+            licensee_cache = master_service.bulk_resolve_licensees(lic_items, tenant_id=tenant_id)
 
             brand_items = [
                 {
@@ -861,7 +987,9 @@ class ImportPipelineEngine:
                 for b, c in zip(s_brand, s_company)
                 if b
             ]
-            brand_cache = master_service.bulk_resolve_brands(brand_items)
+            if not tenant_id:
+                raise ValueError(f"Batch #{batch_id}: Cannot resolve brands without tenant_id. Dynamic tenant_id is mandatory.")
+            brand_cache = master_service.bulk_resolve_brands(brand_items, tenant_id=tenant_id)
             packaging_cache = master_service.bulk_resolve_packagings(unique_packagings)
             # Sync user depot mapping (non-destructive)
             self._sync_user_hierarchy(s_ase, s_asm, s_depot, depot_cache)
@@ -909,6 +1037,10 @@ class ImportPipelineEngine:
 
             # 1. Stage Data into raw_sales_upload FIRST
             if raw_records:
+                self._update_batch_progress(
+                    batch_id,
+                    remarks=f"Preparing {total_rows:,} rows...",
+                )
                 self._bulk_insert(
                     table="raw_sales_upload",
                     records=raw_records,
@@ -931,6 +1063,10 @@ class ImportPipelineEngine:
             user_id_by_name: Dict[str, str] = {}
             user_name_by_id: Dict[str, str] = {}
             user_manager_by_id: Dict[str, str] = {}
+            user_manager_id_by_id: Dict[str, str] = {}
+            tsm_user_ids: Set[str] = set()
+            user_approved_hq_names_by_id: Dict[str, Set[str]] = {}
+            hq_id_to_name: Dict[str, str] = {}
 
             if client:
                 try:
@@ -955,13 +1091,46 @@ class ImportPipelineEngine:
                             if fn and fn.lower() not in user_id_by_name:
                                 user_id_by_name[fn.lower()] = uid
 
-                    atm_res = client.table("ase_tsm_mapping").select("ase_user_id, tsm_user_id").execute()
+                    # Fetch user roles to identify registered TSM / ASM personnel
+                    roles_res = client.table("roles").select("role_id, role_name").execute()
+                    role_name_by_id = {str(r["role_id"]): str(r.get("role_name") or "").strip().upper() for r in (roles_res.data or []) if r.get("role_id")}
+
+                    ur_res = client.table("user_roles").select("user_id, role_id, is_active").execute()
+                    for ur in (ur_res.data or []):
+                        if ur.get("is_active", True) is not False:
+                            uid = str(ur.get("user_id") or "")
+                            rid = str(ur.get("role_id") or "")
+                            rname = role_name_by_id.get(rid, "")
+                            if any(k in rname for k in ["TSM", "ASM", "TERRITORY SALES MANAGER", "AREA SALES MANAGER"]):
+                                tsm_user_ids.add(uid)
+
+                    atm_res = client.table("ase_tsm_mapping").select("ase_user_id, tsm_user_id, is_active").execute()
                     if atm_res and atm_res.data:
                         for m in atm_res.data:
-                            a_uid = str(m.get("ase_user_id") or "").strip()
-                            t_uid = str(m.get("tsm_user_id") or "").strip()
-                            if a_uid and t_uid:
-                                user_manager_by_id[a_uid] = t_uid
+                            if m.get("is_active", True) is not False:
+                                a_uid = str(m.get("ase_user_id") or "").strip()
+                                t_uid = str(m.get("tsm_user_id") or "").strip()
+                                if a_uid and t_uid:
+                                    user_manager_by_id[a_uid] = t_uid
+                                    user_manager_id_by_id[a_uid] = t_uid
+
+                    # Fetch registered user headquarters supporting M:N assignments
+                    hq_res = client.table("headquarters").select("headquarters_id, name").execute()
+                    if hq_res and hq_res.data:
+                        for h in hq_res.data:
+                            hid = str(h.get("headquarters_id") or "")
+                            hname = str(h.get("name") or "").strip().upper()
+                            if hid and hname:
+                                hq_id_to_name[hid] = hname
+
+                    uhq_res = client.table("user_headquarters_mapping").select("user_id, headquarters_id, is_active").execute()
+                    if uhq_res and uhq_res.data:
+                        for uhq in uhq_res.data:
+                            if uhq.get("is_active", True) is not False:
+                                uid = str(uhq.get("user_id") or "").strip()
+                                hid = str(uhq.get("headquarters_id") or "").strip()
+                                if uid and hid in hq_id_to_name:
+                                    user_approved_hq_names_by_id.setdefault(uid, set()).add(hq_id_to_name[hid])
                 except Exception as e_um:
                     logger.warning(f"Batch {batch_id}: Exception fetching User Management hierarchy: {e_um}")
 
@@ -980,9 +1149,25 @@ class ImportPipelineEngine:
                 return None
 
             # 3. Comprehensive Row-by-Row Pre-Promotion Validation
+            self._update_batch_progress(
+                batch_id,
+                remarks=f"Validating: Checking employee hierarchy and master records...",
+            )
             validation_error_records = []
 
+            # Trackers for 1:1 constraints across the dataset (1 ASE -> 1 HQ, 1 TSM -> 1 HQ, 1 ASE -> 1 TSM)
+            sheet_ase_hqs: Dict[str, Dict[str, List[int]]] = {}
+            sheet_tsm_hqs: Dict[str, Dict[str, List[int]]] = {}
+            sheet_ase_managers: Dict[str, Dict[str, List[int]]] = {}
+
+            val_progress_step = max(2000, total_rows // 4)
             for idx in range(total_rows):
+                if idx > 0 and (idx % val_progress_step == 0):
+                    pct_val = int((idx / total_rows) * 100)
+                    self._update_batch_progress(
+                        batch_id,
+                        remarks=f"Checking for validation errors: {idx:,}/{total_rows:,} rows verified ({pct_val}%)..."
+                    )
                 row_num = idx + 2  # Excel 1-indexed row number (header is row 1)
                 r_id = staged_raw_ids[idx] if idx < len(staged_raw_ids) else None
 
@@ -997,13 +1182,99 @@ class ImportPipelineEngine:
                 raw_company = str(s_company.iloc[idx] or "").strip()
                 val_case = s_cases.iloc[idx]
 
+                clean_ase = re.sub(r'\s+', ' ', raw_ase).strip()
+                clean_asm = re.sub(r'\s+', ' ', raw_asm).strip()
+                clean_hq_norm = re.sub(r'\s+', ' ', raw_hq).strip().upper()
+
+                # Collect for 1:1 integrity verification (1 ASE -> 1 HQ, 1 TSM -> 1 HQ, 1 ASE -> 1 TSM)
+                # Note: 1 ASE/TSM can have multiple depots, and 1 depot can have multiple ASEs (no restriction)
+                if clean_ase and clean_ase.lower() not in ("unassigned", "none", "null", "nan", ""):
+                    if clean_hq_norm and clean_hq_norm.lower() not in ("unassigned", "none", "null", "nan", ""):
+                        sheet_ase_hqs.setdefault(clean_ase, {}).setdefault(clean_hq_norm, []).append(row_num)
+                    if clean_asm and clean_asm.lower() not in ("unassigned", "none", "null", "nan", ""):
+                        sheet_ase_managers.setdefault(clean_ase, {}).setdefault(clean_asm, []).append(row_num)
+
+                if clean_asm and clean_asm.lower() not in ("unassigned", "none", "null", "nan", ""):
+                    if clean_hq_norm and clean_hq_norm.lower() not in ("unassigned", "none", "null", "nan", ""):
+                        sheet_tsm_hqs.setdefault(clean_asm, {}).setdefault(clean_hq_norm, []).append(row_num)
+
                 approved_tsm_name_curr = None
                 if raw_ase and raw_ase.lower() not in ("unassigned", "none", "null", "nan"):
-                    ase_u = _resolve_user_id(raw_ase)
-                    if ase_u:
-                        app_tsm_u = user_manager_by_id.get(ase_u)
-                        if app_tsm_u:
-                            approved_tsm_name_curr = user_name_by_id.get(app_tsm_u)
+                    clean_a = re.sub(r'\s+', ' ', raw_ase.strip()).lower()
+                    clean_m = re.sub(r'\s+', ' ', raw_asm.strip()).lower()
+                    if clean_a == clean_m:
+                        approved_tsm_name_curr = raw_ase
+                    else:
+                        ase_u = _resolve_user_id(raw_ase)
+                        if ase_u:
+                            if ase_u in tsm_user_ids:
+                                approved_tsm_name_curr = user_name_by_id.get(ase_u, raw_ase)
+                            else:
+                                app_tsm_u = user_manager_by_id.get(ase_u) or user_manager_id_by_id.get(ase_u)
+                                if app_tsm_u:
+                                    approved_tsm_name_curr = user_name_by_id.get(app_tsm_u)
+
+                # Check registered DB Headquarters mismatch for ASE
+                if raw_ase and raw_ase.lower() not in ("unassigned", "none", "null", "nan", ""):
+                    ase_uid = _resolve_user_id(raw_ase)
+                    if ase_uid and ase_uid in user_approved_hq_names_by_id:
+                        reg_hqs = user_approved_hq_names_by_id[ase_uid]
+                        if clean_hq_norm and clean_hq_norm not in reg_hqs:
+                            expected_str = ", ".join(sorted(list(reg_hqs)))
+                            validation_error_records.append({
+                                "upload_batch_id": str(batch_id),
+                                "batch_id": str(batch_id),
+                                "filename": filename,
+                                "excel_row_number": row_num,
+                                "error_code": "HQ_MISMATCH_FOR_ASE",
+                                "severity": "CRITICAL",
+                                "field_name": "H.Q.",
+                                "column_name": "hq_raw",
+                                "actual_value": raw_hq,
+                                "expected_value": expected_str,
+                                "ase": raw_ase,
+                                "asm_tsm": raw_asm,
+                                "approved_asm_tsm": approved_tsm_name_curr,
+                                "hq": raw_hq,
+                                "depot": raw_depot,
+                                "licensee": raw_licensee,
+                                "company": raw_company,
+                                "brand": raw_brand,
+                                "raw_id": r_id,
+                                "error_message": f"[Row #{row_num}] HQ_MISMATCH_FOR_ASE: ASE '{raw_ase}' is registered under '{expected_str}' in User Management, but the uploaded sales record specifies '{raw_hq}'.",
+                                "resolution": f"Update sales record to specify an approved HQ ({expected_str}) or reassign Headquarters in User Management."
+                            })
+
+                # Check registered DB Headquarters mismatch for TSM
+                if raw_asm and raw_asm.lower() not in ("unassigned", "none", "null", "nan", ""):
+                    tsm_uid = _resolve_user_id(raw_asm)
+                    if tsm_uid and tsm_uid in user_approved_hq_names_by_id:
+                        reg_hqs = user_approved_hq_names_by_id[tsm_uid]
+                        if clean_hq_norm and clean_hq_norm not in reg_hqs:
+                            expected_str = ", ".join(sorted(list(reg_hqs)))
+                            validation_error_records.append({
+                                "upload_batch_id": str(batch_id),
+                                "batch_id": str(batch_id),
+                                "filename": filename,
+                                "excel_row_number": row_num,
+                                "error_code": "HQ_MISMATCH_FOR_TSM",
+                                "severity": "CRITICAL",
+                                "field_name": "H.Q.",
+                                "column_name": "hq_raw",
+                                "actual_value": raw_hq,
+                                "expected_value": expected_str,
+                                "ase": raw_ase,
+                                "asm_tsm": raw_asm,
+                                "approved_asm_tsm": approved_tsm_name_curr,
+                                "hq": raw_hq,
+                                "depot": raw_depot,
+                                "licensee": raw_licensee,
+                                "company": raw_company,
+                                "brand": raw_brand,
+                                "raw_id": r_id,
+                                "error_message": f"[Row #{row_num}] HQ_MISMATCH_FOR_TSM: TSM '{raw_asm}' is registered under '{expected_str}' in User Management, but the uploaded sales record specifies '{raw_hq}'.",
+                                "resolution": f"Update sales record to specify an approved HQ ({expected_str}) or reassign Headquarters in User Management."
+                            })
 
                 # A0. Validate Sale Date Field
                 parsed_dt_val = None
@@ -1219,61 +1490,59 @@ class ImportPipelineEngine:
                             "resolution": "Create or activate ASE user profile in User Management."
                         })
                     else:
-                        approved_tsm_uid = user_manager_by_id.get(ase_uid)
-                        if not approved_tsm_uid:
+                        uploaded_asm_uid = _resolve_user_id(raw_asm) if (raw_asm and raw_asm.lower() not in ("unassigned", "none", "null", "nan")) else None
+
+                        if raw_asm and raw_asm.lower() not in ("unassigned", "none", "null", "nan") and not uploaded_asm_uid:
                             validation_error_records.append({
                                 "upload_batch_id": str(batch_id),
                                 "batch_id": str(batch_id),
                                 "filename": filename,
                                 "excel_row_number": row_num,
-                                "error_code": "MISSING_ASE_TSM_MAPPING",
+                                "error_code": "UNMAPPED_TSM",
                                 "severity": "CRITICAL",
-                                "field_name": "ASE",
-                                "column_name": "ase_raw",
-                                "actual_value": raw_ase,
-                                "expected_value": "Approved ASM/TSM assignment in User Management",
+                                "field_name": "ASM/TSM",
+                                "column_name": "asm_tsm_raw",
+                                "actual_value": raw_asm,
+                                "expected_value": "Active ASM/TSM registered in User Management",
                                 "ase": raw_ase,
                                 "asm_tsm": raw_asm,
-                                "approved_asm_tsm": None,
+                                "approved_asm_tsm": approved_tsm_name_curr,
                                 "hq": raw_hq,
                                 "depot": raw_depot,
                                 "licensee": raw_licensee,
                                 "company": raw_company,
                                 "brand": raw_brand,
                                 "raw_id": r_id,
-                                "error_message": f"[Row #{row_num}] MISSING_ASE_TSM_MAPPING: ASE '{raw_ase}' does not have an approved ASM/TSM mapping in User Management.",
-                                "resolution": "Assign an approved ASM/TSM to this ASE in User Management."
+                                "error_message": f"[Row #{row_num}] UNMAPPED_TSM: ASM/TSM '{raw_asm}' specified in sales record is not registered in User Management.",
+                                "resolution": "Create or activate ASM/TSM user profile in User Management."
                             })
                         else:
-                            approved_tsm_name = user_name_by_id.get(approved_tsm_uid, "Approved ASM/TSM")
-                            if raw_asm and raw_asm.lower() not in ("unassigned", "none", "null", "nan"):
-                                uploaded_asm_uid = _resolve_user_id(raw_asm)
+                            # Dual-Role TSM/ASE check:
+                            # A TSM can act as an ASE for a depot if:
+                            # 1. Both columns specify the exact same person name (raw text match)
+                            # 2. The user has a TSM/ASM role in User Management
+                            # 3. Both columns resolve to the exact same user ID
+                            clean_raw_ase = re.sub(r'\s+', ' ', raw_ase.strip()).lower()
+                            clean_raw_asm = re.sub(r'\s+', ' ', raw_asm.strip()).lower()
+                            is_same_person = (clean_raw_ase == clean_raw_asm and clean_raw_ase not in ("unassigned", "none", "null", "nan", ""))
+                            is_dual_role_tsm = is_same_person or (ase_uid in tsm_user_ids) or (uploaded_asm_uid is not None and uploaded_asm_uid == ase_uid)
 
-                                if not uploaded_asm_uid:
-                                    validation_error_records.append({
-                                        "upload_batch_id": str(batch_id),
-                                        "batch_id": str(batch_id),
-                                        "filename": filename,
-                                        "excel_row_number": row_num,
-                                        "error_code": "UNMAPPED_TSM",
-                                        "severity": "CRITICAL",
-                                        "field_name": "ASM/TSM",
-                                        "column_name": "asm_tsm_raw",
-                                        "actual_value": raw_asm,
-                                        "expected_value": "Active ASM/TSM registered in User Management",
-                                        "ase": raw_ase,
-                                        "asm_tsm": raw_asm,
-                                        "approved_asm_tsm": approved_tsm_name,
-                                        "hq": raw_hq,
-                                        "depot": raw_depot,
-                                        "licensee": raw_licensee,
-                                        "company": raw_company,
-                                        "brand": raw_brand,
-                                        "raw_id": r_id,
-                                        "error_message": f"[Row #{row_num}] UNMAPPED_TSM: ASM/TSM '{raw_asm}' specified in sales record is not registered in User Management.",
-                                        "resolution": "Create or activate ASM/TSM user profile in User Management."
-                                    })
-                                elif uploaded_asm_uid != approved_tsm_uid:
+                            if is_dual_role_tsm:
+                                # DUAL-ROLE TSM/ASE:
+                                # The TSM directly covers this depot as the ASE.
+                                # Valid uploaded_asm values:
+                                # 1. Direct name match or identical user (is_same_person or uploaded_asm_uid == ase_uid)
+                                # 2. Empty / Unassigned (TSM is self-managing this depot)
+                                # 3. Their reporting manager / Leader / RSM (uploaded_asm_uid == user_manager_id_by_id.get(ase_uid))
+                                ase_mgr_uid = user_manager_id_by_id.get(ase_uid) or user_manager_by_id.get(ase_uid)
+                                is_valid_asm = (
+                                    is_same_person or
+                                    uploaded_asm_uid is None or
+                                    uploaded_asm_uid == ase_uid or
+                                    (ase_mgr_uid and uploaded_asm_uid == ase_mgr_uid)
+                                )
+                                if not is_valid_asm:
+                                    approved_name = user_name_by_id.get(ase_uid, raw_ase)
                                     validation_error_records.append({
                                         "upload_batch_id": str(batch_id),
                                         "batch_id": str(batch_id),
@@ -1284,19 +1553,178 @@ class ImportPipelineEngine:
                                         "field_name": "ASM/TSM",
                                         "column_name": "asm_tsm_raw",
                                         "actual_value": raw_asm,
-                                        "expected_value": approved_tsm_name,
+                                        "expected_value": approved_name,
                                         "ase": raw_ase,
                                         "asm_tsm": raw_asm,
-                                        "approved_asm_tsm": approved_tsm_name,
+                                        "approved_asm_tsm": approved_name,
                                         "hq": raw_hq,
                                         "depot": raw_depot,
                                         "licensee": raw_licensee,
                                         "company": raw_company,
                                         "brand": raw_brand,
                                         "raw_id": r_id,
-                                        "error_message": f"[Row #{row_num}] ASE_TSM_MAPPING_MISMATCH: ASE '{raw_ase}' is currently mapped to '{approved_tsm_name}' in User Management, but the uploaded sales record specifies '{raw_asm}'.",
+                                        "error_message": f"[Row #{row_num}] ASE_TSM_MAPPING_MISMATCH: TSM '{raw_ase}' acting as ASE is expected to specify '{approved_name}' as ASM/TSM, but uploaded record specifies '{raw_asm}'.",
                                         "resolution": "Update sales record to specify approved ASM/TSM or reassign mapping in User Management."
                                     })
+                            else:
+                                # REGULAR SUBORDINATE ASE:
+                                # Must have an approved ASM/TSM mapping in User Management
+                                approved_tsm_uid = user_manager_by_id.get(ase_uid)
+                                if not approved_tsm_uid:
+                                    validation_error_records.append({
+                                        "upload_batch_id": str(batch_id),
+                                        "batch_id": str(batch_id),
+                                        "filename": filename,
+                                        "excel_row_number": row_num,
+                                        "error_code": "MISSING_ASE_TSM_MAPPING",
+                                        "severity": "CRITICAL",
+                                        "field_name": "ASE",
+                                        "column_name": "ase_raw",
+                                        "actual_value": raw_ase,
+                                        "expected_value": "Approved ASM/TSM assignment in User Management",
+                                        "ase": raw_ase,
+                                        "asm_tsm": raw_asm,
+                                        "approved_asm_tsm": None,
+                                        "hq": raw_hq,
+                                        "depot": raw_depot,
+                                        "licensee": raw_licensee,
+                                        "company": raw_company,
+                                        "brand": raw_brand,
+                                        "raw_id": r_id,
+                                        "error_message": f"[Row #{row_num}] MISSING_ASE_TSM_MAPPING: ASE '{raw_ase}' does not have an approved ASM/TSM mapping in User Management.",
+                                        "resolution": "Assign an approved ASM/TSM to this ASE in User Management."
+                                    })
+                                else:
+                                    approved_tsm_name = user_name_by_id.get(approved_tsm_uid, "Approved ASM/TSM")
+                                    if uploaded_asm_uid and uploaded_asm_uid != approved_tsm_uid:
+                                        validation_error_records.append({
+                                            "upload_batch_id": str(batch_id),
+                                            "batch_id": str(batch_id),
+                                            "filename": filename,
+                                            "excel_row_number": row_num,
+                                            "error_code": "ASE_TSM_MAPPING_MISMATCH",
+                                            "severity": "CRITICAL",
+                                            "field_name": "ASM/TSM",
+                                            "column_name": "asm_tsm_raw",
+                                            "actual_value": raw_asm,
+                                            "expected_value": approved_tsm_name,
+                                            "ase": raw_ase,
+                                            "asm_tsm": raw_asm,
+                                            "approved_asm_tsm": approved_tsm_name,
+                                            "hq": raw_hq,
+                                            "depot": raw_depot,
+                                            "licensee": raw_licensee,
+                                            "company": raw_company,
+                                            "brand": raw_brand,
+                                            "raw_id": r_id,
+                                            "error_message": f"[Row #{row_num}] ASE_TSM_MAPPING_MISMATCH: ASE '{raw_ase}' is currently mapped to '{approved_tsm_name}' in User Management, but the uploaded sales record specifies '{raw_asm}'.",
+                                            "resolution": "Update sales record to specify approved ASM/TSM or reassign mapping in User Management."
+                                        })
+
+            # 3b. Validate Intra-Sheet Consistency Across the Uploaded Sheet:
+            # 1. An ASE must belong to their registered Headquarters across the uploaded dataset
+            for ase_name, hq_dict in sheet_ase_hqs.items():
+                ase_uid = _resolve_user_id(ase_name)
+                approved_hqs = user_approved_hq_names_by_id.get(ase_uid, set()) if ase_uid else set()
+                # If ASE is mapped to multiple HQs, verify they are within their approved HQs
+                if len(hq_dict) > 1 and len(approved_hqs) <= 1:
+                    sorted_hqs = sorted(list(hq_dict.keys()))
+                    sample_details = ", ".join([f"Row #{rows[0]} ({h})" for h, rows in hq_dict.items()][:5])
+                    for hq_val, row_nums in hq_dict.items():
+                        for r_num in row_nums[:3]:
+                            idx_r = r_num - 2
+                            r_id = staged_raw_ids[idx_r] if idx_r < len(staged_raw_ids) else None
+                            validation_error_records.append({
+                                "upload_batch_id": str(batch_id),
+                                "batch_id": str(batch_id),
+                                "filename": filename,
+                                "excel_row_number": r_num,
+                                "error_code": "MULTIPLE_HQ_FOR_ASE",
+                                "severity": "CRITICAL",
+                                "field_name": "H.Q.",
+                                "column_name": "hq_raw",
+                                "actual_value": f"{hq_val} (Conflicts with: {', '.join([h for h in sorted_hqs if h != hq_val])})",
+                                "expected_value": "Single Unique Headquarter per ASE",
+                                "ase": ase_name,
+                                "asm_tsm": str(s_asm.iloc[idx_r] or "").strip(),
+                                "approved_asm_tsm": None,
+                                "hq": hq_val,
+                                "depot": str(s_depot.iloc[idx_r] or "").strip(),
+                                "licensee": str(s_licensee.iloc[idx_r] or "").strip(),
+                                "company": str(s_company.iloc[idx_r] or "").strip(),
+                                "brand": str(s_brand.iloc[idx_r] or "").strip(),
+                                "raw_id": r_id,
+                                "error_message": f"[Row #{r_num}] MULTIPLE_HQ_FOR_ASE: ASE '{ase_name}' is mapped to multiple Headquarters ({', '.join(sorted_hqs)}) across sales records (e.g. {sample_details}). An ASE must belong to exactly 1 Headquarter.",
+                                "resolution": f"Standardize Headquarter for ASE '{ase_name}' to a single Headquarter in the Excel file or update Headquarters in User Management."
+                            })
+
+            # 2. A TSM must belong to their registered Headquarters across the uploaded dataset
+            for tsm_name, hq_dict in sheet_tsm_hqs.items():
+                tsm_uid = _resolve_user_id(tsm_name)
+                approved_hqs = user_approved_hq_names_by_id.get(tsm_uid, set()) if tsm_uid else set()
+                if len(hq_dict) > 1:
+                    sorted_hqs = sorted(list(hq_dict.keys()))
+                    sample_details = ", ".join([f"Row #{rows[0]} ({h})" for h, rows in hq_dict.items()][:5])
+                    for hq_val, row_nums in hq_dict.items():
+                        for r_num in row_nums[:3]:
+                            idx_r = r_num - 2
+                            r_id = staged_raw_ids[idx_r] if idx_r < len(staged_raw_ids) else None
+                            validation_error_records.append({
+                                "upload_batch_id": str(batch_id),
+                                "batch_id": str(batch_id),
+                                "filename": filename,
+                                "excel_row_number": r_num,
+                                "error_code": "MULTIPLE_HQ_FOR_TSM",
+                                "severity": "CRITICAL",
+                                "field_name": "H.Q.",
+                                "column_name": "hq_raw",
+                                "actual_value": f"{hq_val} (Conflicts with: {', '.join([h for h in sorted_hqs if h != hq_val])})",
+                                "expected_value": "Single Unique Headquarter per TSM",
+                                "ase": str(s_ase.iloc[idx_r] or "").strip(),
+                                "asm_tsm": tsm_name,
+                                "approved_asm_tsm": None,
+                                "hq": hq_val,
+                                "depot": str(s_depot.iloc[idx_r] or "").strip(),
+                                "licensee": str(s_licensee.iloc[idx_r] or "").strip(),
+                                "company": str(s_company.iloc[idx_r] or "").strip(),
+                                "brand": str(s_brand.iloc[idx_r] or "").strip(),
+                                "raw_id": r_id,
+                                "error_message": f"[Row #{r_num}] MULTIPLE_HQ_FOR_TSM: TSM '{tsm_name}' is mapped to multiple Headquarters ({', '.join(sorted_hqs)}) across sales records (e.g. {sample_details}).",
+                                "resolution": f"Standardize Headquarter for TSM '{tsm_name}' in the Excel file or update Headquarters in User Management."
+                            })
+
+            # 3. An ASE must report to at most 1 ASM/TSM manager across the uploaded dataset
+            for ase_name, mgr_dict in sheet_ase_managers.items():
+                if len(mgr_dict) > 1:
+                    sorted_mgrs = sorted(list(mgr_dict.keys()))
+                    sample_details = ", ".join([f"Row #{rows[0]} ({m})" for m, rows in mgr_dict.items()][:5])
+                    for mgr_val, row_nums in mgr_dict.items():
+                        for r_num in row_nums[:3]:
+                            idx_r = r_num - 2
+                            r_id = staged_raw_ids[idx_r] if idx_r < len(staged_raw_ids) else None
+                            validation_error_records.append({
+                                "upload_batch_id": str(batch_id),
+                                "batch_id": str(batch_id),
+                                "filename": filename,
+                                "excel_row_number": r_num,
+                                "error_code": "MULTIPLE_MANAGERS_FOR_ASE",
+                                "severity": "CRITICAL",
+                                "field_name": "ASM/TSM",
+                                "column_name": "asm_tsm_raw",
+                                "actual_value": f"{mgr_val} (Conflicts with: {', '.join([m for m in sorted_mgrs if m != mgr_val])})",
+                                "expected_value": "Single Unique Reporting Manager per ASE (1:1 Constraint)",
+                                "ase": ase_name,
+                                "asm_tsm": mgr_val,
+                                "approved_asm_tsm": None,
+                                "hq": str(s_hq.iloc[idx_r] or "").strip(),
+                                "depot": str(s_depot.iloc[idx_r] or "").strip(),
+                                "licensee": str(s_licensee.iloc[idx_r] or "").strip(),
+                                "company": str(s_company.iloc[idx_r] or "").strip(),
+                                "brand": str(s_brand.iloc[idx_r] or "").strip(),
+                                "raw_id": r_id,
+                                "error_message": f"[Row #{r_num}] MULTIPLE_MANAGERS_FOR_ASE: ASE '{ase_name}' is mapped to multiple ASM/TSM managers ({', '.join(sorted_mgrs)}) across sales records (e.g. {sample_details}). An ASE must report to exactly 1 manager.",
+                                "resolution": f"Standardize the ASM/TSM manager for ASE '{ase_name}' in the Excel file or reassign mapping in User Management."
+                            })
 
             # Build Sales Fact DataFrame & Records
             fact_df = pd.DataFrame({
@@ -1334,7 +1762,7 @@ class ImportPipelineEngine:
                     logger.warning(f"Batch {batch_id}: Exception logging detailed validation errors: {e_err_log}")
 
                 first_err = validation_error_records[0]["error_message"]
-                failure_reason = f"Upload validation failed for {failed_rows} issue(s): {first_err}"
+                failure_reason = f"Validation issue detected: {failed_rows} record(s) need attention. First issue: {first_err}"
                 logger.warning(f"Batch {batch_id}: {failure_reason}")
 
                 # Rollback partial production writes (if any)
@@ -1356,7 +1784,9 @@ class ImportPipelineEngine:
                     batch_id=batch_id,
                     status="failed",
                     row_count=total_rows,
+                    remarks=failure_reason,
                 )
+                self._update_batch_progress(batch_id, remarks=failure_reason)
 
                 self._pipeline_log(
                     batch_id=batch_id,
@@ -1374,11 +1804,32 @@ class ImportPipelineEngine:
                 except Exception as e_purge:
                     logger.warning(f"Notice purging raw_sales_upload for batch {batch_id}: {e_purge}")
 
+                # Enforce 10-minute cooldown on validation error as requested:
+                # "agr validation error ajaye toh 10 minutes ka timer ajaye uske baad upload hoyegi dusri sheet. yeh purge wale task fir un 10 minute mai hojaye."
+                try:
+                    from backend.core.system_lock import record_upload_cooldown
+                    source_fname = (local_batch.get("source_file") if local_batch else None) or filename or "Sales Data File"
+                    record_upload_cooldown(
+                        upload_type="validation_error",
+                        filename=source_fname,
+                        cooldown_seconds=600,
+                        reason=f"Validation issue detected in '{source_fname}'. 10-minute rollback & purge buffer active."
+                    )
+                except Exception as e_cd:
+                    logger.warning(f"Notice setting validation error cooldown: {e_cd}")
+
                 self.release_pipeline_lock(batch_id)
                 return local_batch
 
+            if self.is_batch_cancelled(batch_id):
+                raise UploadCancelledException(f"Batch {batch_id} cancelled by user before sales_fact insertion.")
+
             # 5. ATOMIC PROMOTION TO PRODUCTION (ALL VALIDATIONS PASSED)
             self._update_batch(batch_id=batch_id, status="validated")
+            self._update_batch_progress(
+                batch_id,
+                remarks=f"Validation successful! All {total_rows:,} rows verified with 0 errors. Saving to database...",
+            )
 
             # Bulk Insert Sales Fact Records
             if fact_records:
@@ -1411,12 +1862,21 @@ class ImportPipelineEngine:
                 company_cache, brand_cache, tenant_id=tenant_id
             )
 
+            # Auto-populate user_depot and user_headquarters_mapping from validated upload data
+            self._sync_user_territory_mappings(
+                s_ase, s_asm, s_depot, s_hq, depot_cache, hq_cache, tenant_id=tenant_id
+            )
+
+            if self.is_batch_cancelled(batch_id):
+                raise UploadCancelledException(f"Batch {batch_id} cancelled by user before analytics aggregation.")
+
             # Step 10 - Trigger Incremental Analytics Summaries & Validation ONLY after complete sales_fact ingestion
             if fact_records and imported_rows > 0:
                 distinct_dates = list({r.get("sale_date") for r in fact_records if r.get("sale_date")})
                 
                 # Update status state to aggregating
                 self._update_batch(batch_id=batch_id, status="aggregating")
+                self._update_batch_progress(batch_id, remarks="Updating sales dashboard and analytics charts...")
 
                 from backend.analytics.incremental_engine import incremental_engine
                 from backend.analytics.validator import analytics_validator
@@ -1432,6 +1892,7 @@ class ImportPipelineEngine:
                 # Run validation check on primary affected date
                 if distinct_dates:
                     self._update_batch(batch_id=batch_id, status="validating")
+                    self._update_batch_progress(batch_id, remarks="Final verification: Checking dashboard figures...")
                     val_res = analytics_validator.validate_date_accuracy(target_date=str(distinct_dates[0]).split("T")[0])
                     if val_res.get("is_accurate"):
                         logger.info(f"Batch {batch_id}: Incremental analytics 100% verified accurate against legacy RPC.")
@@ -1463,6 +1924,7 @@ class ImportPipelineEngine:
             completed_at_iso = datetime.now().isoformat()
             distinct_dates_count = len(distinct_dates) if fact_records else 0
 
+            final_remarks = f"Upload completed successfully! {imported_rows:,} records verified and saved."
             if local_batch:
                 local_batch.update({
                     "total_rows": total_rows,
@@ -1482,11 +1944,9 @@ class ImportPipelineEngine:
                         "user_fact_inserts": len(fact_records) if fact_records else 0,
                         "summary_writes": len(distinct_dates) if fact_records else 0
                     },
-                    "remarks": (
-                        f"Processed {total_rows} rows in {processing_time}s. "
-                        f"Loaded {imported_rows}. Failed {failed_rows}."
-                    ),
+                    "remarks": final_remarks,
                 })
+            self._update_batch_progress(batch_id, remarks=final_remarks)
 
             self._pipeline_log(
                 batch_id=batch_id,
@@ -1504,12 +1964,62 @@ class ImportPipelineEngine:
                 imported_rows=imported_rows,
             )
 
+            if final_status in ("loaded", "completed", "success"):
+                try:
+                    from backend.core.system_lock import record_upload_completion
+                    record_upload_completion("sales_upload", filename)
+                except Exception as e_cd:
+                    logger.warning(f"Failed to record upload completion cooldown: {e_cd}")
+
             return local_batch
 
 
         # =====================================================
-        # COMPLETE PIPELINE FAILURE (WITH AUTOMATIC ROLLBACK)
+        # USER CANCELLATION OR FAILURE (WITH AUTOMATIC ROLLBACK)
         # =====================================================
+
+        except UploadCancelledException as exc:
+            logger.warning(
+                "Upload batch %s cancelled by user: %s. Executing atomic rollback to 0.",
+                batch_id,
+                exc,
+            )
+            self._cleanup_failed_batch(batch_id)
+            self.release_pipeline_lock(batch_id)
+
+            local_batch = upload_batches_db.get(batch_id)
+            if local_batch:
+                local_batch.update({
+                    "status": "cancelled",
+                    "upload_status": "cancelled",
+                    "remarks": "Upload cancelled by user. Execution stopped and partial records rolled back to 0.",
+                    "processing_time_seconds": round(time.time() - start_time, 2),
+                })
+
+            try:
+                self._update_batch(
+                    batch_id=batch_id,
+                    status="cancelled",
+                    remarks="Upload cancelled by user. Execution stopped and partial records rolled back to 0."
+                )
+            except Exception:
+                pass
+
+            try:
+                from backend.core.system_lock import invalidate_system_lock_cache, clear_roster_upload_active, record_upload_cooldown
+                invalidate_system_lock_cache()
+                clear_roster_upload_active()
+                source_fname = (local_batch.get("source_file") if local_batch else None) or "Cancelled Upload"
+                record_upload_cooldown(
+                    upload_type="validation_error",
+                    filename=source_fname,
+                    cooldown_seconds=600,
+                    reason=f"Upload cancelled and rolled back for '{source_fname}'. 10-minute purge buffer active."
+                )
+            except Exception:
+                pass
+
+            return local_batch
 
         except Exception as exc:
 
@@ -1560,6 +2070,20 @@ class ImportPipelineEngine:
                     step="file_processing",
                     status="failed",
                     message=str(exc),
+                )
+            except Exception:
+                pass
+
+            try:
+                from backend.core.system_lock import invalidate_system_lock_cache, clear_roster_upload_active, record_upload_cooldown
+                invalidate_system_lock_cache()
+                clear_roster_upload_active()
+                source_fname = (local_batch.get("source_file") if local_batch else None) or "Failed Upload"
+                record_upload_cooldown(
+                    upload_type="validation_error",
+                    filename=source_fname,
+                    cooldown_seconds=600,
+                    reason=f"Upload failed: {str(exc)}. 10-minute purge buffer active."
                 )
             except Exception:
                 pass
@@ -2322,9 +2846,16 @@ class ImportPipelineEngine:
         if client and status:
             try:
                 payload = {"status": status}
+                if local_batch:
+                    u_fk = local_batch.get("uploaded_by") or local_batch.get("created_by") or local_batch.get("updated_by")
+                    if u_fk and len(str(u_fk)) == 36 and str(u_fk) != "00000000-0000-0000-0000-000000000001":
+                        payload["updated_by"] = str(u_fk)
                 client.table("upload_batches").update(payload).eq("batch_id", batch_id).execute()
             except Exception as e:
-                logger.warning(f"Could not update batch progress status: {e}")
+                try:
+                    client.table("upload_batches").update({"status": status}).eq("batch_id", batch_id).execute()
+                except Exception as e2:
+                    logger.warning(f"Could not update batch progress status: {e2}")
 
     def _cleanup_failed_batch(self, batch_id: Any):
         """
@@ -2375,6 +2906,22 @@ class ImportPipelineEngine:
             logger.info(f"Atomic Rollback: Purged raw_sales_upload staging records for batch {b_str}.")
         except Exception as exc_r:
             logger.warning(f"Notice purging raw_sales_upload in _cleanup_failed_batch: {exc_r}")
+
+        # Purge temporary chunk tracking, staging records, and pipeline logs via RPC or table deletes
+        try:
+            from backend.db.supabase_client import purge_batch_data_fast_rpc
+            purge_batch_data_fast_rpc(b_str)
+        except Exception:
+            for t in ["raw_sales_upload", "batch_chunks", "upload_pipeline_logs"]:
+                try:
+                    client.table(t).delete().eq("batch_id", b_str).execute()
+                except Exception as exc_sub:
+                    logger.debug(f"Notice purging {t} in _cleanup_failed_batch: {exc_sub}")
+
+        try:
+            client.table("upload_validation_errors").delete().eq("batch_id", b_str).execute()
+        except Exception:
+            pass
 
     def _record_batch_chunk(
         self,
@@ -2427,7 +2974,7 @@ class ImportPipelineEngine:
         table: str,
         records: List[Dict[str, Any]],
         chunk_size: int = 5000,
-        batch_id: Optional[int] = None,
+        batch_id: Optional[Any] = None,
         chunk_number_offset: int = 0,
     ):
         """
@@ -2441,8 +2988,20 @@ class ImportPipelineEngine:
         client = get_supabase()
         total_chunks = (len(records) + chunk_size - 1) // chunk_size
 
+        t_clean = (table or "").lower()
+        if "raw" in t_clean:
+            friendly_stage = "Preparing sales data"
+        elif "sales_fact" in t_clean:
+            friendly_stage = "Saving sales records"
+        elif "user_sales" in t_clean:
+            friendly_stage = "Updating user metrics"
+        elif "summary" in t_clean:
+            friendly_stage = "Updating analytics"
+        else:
+            friendly_stage = "Saving records"
+
         if batch_id:
-            msg_init = f"Bulk inserting {len(records)} rows ({total_chunks} chunks of max {chunk_size}) into table '{table}'."
+            msg_init = f"{friendly_stage} ({len(records):,} rows in {total_chunks} parts)..."
             self._pipeline_log(
                 batch_id=batch_id,
                 step=f"chunk_created_{table}",
@@ -2455,6 +3014,9 @@ class ImportPipelineEngine:
         milestone_step = max(1, total_chunks // 5)
 
         for idx, start_index in enumerate(range(0, len(records), chunk_size), start=1):
+            if batch_id and self.is_batch_cancelled(batch_id):
+                logger.warning(f"Upload batch {batch_id} cancellation detected in _bulk_insert ({table}) at chunk {idx}/{total_chunks}.")
+                raise UploadCancelledException(f"Batch {batch_id} cancelled by user during {table} chunk {idx}/{total_chunks}.")
             chunk = records[start_index : start_index + chunk_size]
             start_row = start_index + 1
             end_row = min(start_index + chunk_size, len(records))
@@ -2462,7 +3024,7 @@ class ImportPipelineEngine:
             start_time_iso = datetime.now().isoformat()
 
             pct = int((idx / total_chunks) * 100)
-            msg_progress = f"Ingesting {table}: chunk {idx}/{total_chunks} ({pct}% complete, rows {start_row}-{end_row})..."
+            msg_progress = f"{friendly_stage} ({idx}/{total_chunks}) • {pct}% complete..."
 
             # Always update local memory state for zero-latency UI polling
             local_batch = upload_batches_db.get(batch_id) if batch_id else None
@@ -2621,7 +3183,7 @@ class ImportPipelineEngine:
                     )
 
         if batch_id:
-            msg_finish = f"Completed bulk insert of {len(records)} rows into table '{table}'."
+            msg_finish = f"{friendly_stage} completed ({len(records):,} rows)."
             self._pipeline_log(
                 batch_id=batch_id,
                 step=f"chunk_completed_{table}",
@@ -2642,6 +3204,7 @@ class ImportPipelineEngine:
         batch_id: int,
         row_count: Optional[int] = None,
         status: Optional[str] = None,
+        remarks: Optional[str] = None,
     ):
         local_batch = upload_batches_db.get(batch_id)
         if local_batch:
@@ -2651,6 +3214,8 @@ class ImportPipelineEngine:
             if row_count is not None:
                 local_batch["total_rows"] = row_count
                 local_batch["row_count"] = row_count
+            if remarks is not None:
+                local_batch["remarks"] = remarks
 
         client = get_supabase()
         if not client:
@@ -2661,7 +3226,9 @@ class ImportPipelineEngine:
 
         if row_count is not None:
             payload["row_count"] = row_count
-            payload["total_rows"] = row_count
+
+        if remarks is not None:
+            payload["remarks"] = remarks
 
         if status is not None:
             allowed_statuses = {
@@ -2675,7 +3242,6 @@ class ImportPipelineEngine:
             db_status = "loaded" if status == "completed" else status
             if db_status in allowed_statuses:
                 payload["status"] = db_status
-                payload["upload_status"] = db_status
 
         if local_batch:
             if "imported_rows" in local_batch:
@@ -2688,6 +3254,13 @@ class ImportPipelineEngine:
                 payload["remarks"] = local_batch["remarks"]
             if "processing_time_seconds" in local_batch:
                 payload["processing_time_seconds"] = local_batch["processing_time_seconds"]
+
+            # Populate audit user IDs from batch context
+            u_fk = local_batch.get("uploaded_by") or local_batch.get("created_by") or local_batch.get("updated_by")
+            if u_fk and len(str(u_fk)) == 36 and str(u_fk) != "00000000-0000-0000-0000-000000000001":
+                payload["updated_by"] = str(u_fk)
+                if "uploaded_by" not in payload:
+                    payload["uploaded_by"] = str(u_fk)
 
         if not payload:
             return
@@ -2702,7 +3275,14 @@ class ImportPipelineEngine:
                 except Exception as cache_exc:
                     logger.warning(f"Could not trigger cache invalidation: {cache_exc}")
         except Exception as exc:
-            logger.warning(f"Could not update upload_batches row: {exc}")
+            # Fallback retry without foreign key audit fields if constraint fails
+            payload.pop("uploaded_by", None)
+            payload.pop("created_by", None)
+            payload.pop("updated_by", None)
+            try:
+                client.table("upload_batches").update(payload).eq("batch_id", batch_id).execute()
+            except Exception as exc2:
+                logger.warning(f"Could not update upload_batches row: {exc2}")
 
 
 
@@ -2781,6 +3361,10 @@ class ImportPipelineEngine:
                 message,
         }
 
+        batch_rec = upload_batches_db.get(batch_id) or {}
+        tid = batch_rec.get("tenant_id") or "unspecified"
+        logger.info(f"[Batch #{batch_id} | Tenant: {tid}] Step '{step}' {status}: {message or ''}")
+
         try:
             client.table("upload_pipeline_logs").insert(record).execute()
         except Exception as exc:
@@ -2816,12 +3400,139 @@ class ImportPipelineEngine:
         return
 
     def _sync_user_hierarchy(self, s_ase: pd.Series, s_asm: pd.Series, s_depot: pd.Series, depot_cache: Dict[str, str]):
-        """
-        No-op: Employee Hierarchy (ase_tsm_mapping) and User-Depot mappings are managed
-        EXCLUSIVELY by User Management. Sales Excel ingestion must NEVER create, modify, or overwrite
-        employee hierarchy or user assignments.
-        """
         return
+
+    def _sync_user_territory_mappings(
+        self,
+        s_ase: pd.Series,
+        s_asm: pd.Series,
+        s_depot: pd.Series,
+        s_hq: pd.Series,
+        depot_cache: Dict[str, str],
+        hq_cache: Dict[str, str],
+        tenant_id: Optional[str] = None
+    ):
+        """
+        Automatically synchronizes user_depot and user_headquarters_mapping from validated upload data.
+        Ensures newly covered depots and registered headquarters for ASEs and TSMs are always populated.
+        """
+        client = get_supabase()
+        if not client:
+            return
+
+        effective_tenant = tenant_id or "a0000000-0000-0000-0000-000000000001"
+        try:
+            u_res = client.table("users").select("user_id, first_name, last_name, email").execute()
+            if not u_res or not u_res.data:
+                return
+
+            user_id_by_name = {}
+            for u in u_res.data:
+                uid = str(u["user_id"])
+                fn = (u.get("first_name") or "").strip()
+                ln = (u.get("last_name") or "").strip()
+                full_name = f"{fn} {ln}".strip()
+                full_name_clean = re.sub(r'\s+', ' ', full_name).lower()
+                email = str(u.get("email") or "").lower()
+                prefix = email.split("@")[0].strip()
+
+                if full_name_clean and full_name_clean not in user_id_by_name:
+                    user_id_by_name[full_name_clean] = uid
+                if prefix and prefix not in user_id_by_name:
+                    user_id_by_name[prefix] = uid
+                if fn and fn.lower() not in user_id_by_name:
+                    user_id_by_name[fn.lower()] = uid
+
+            def resolve_u(name_val):
+                if not name_val or str(name_val).lower() in ("unassigned", "none", "null", "nan", ""):
+                    return None
+                c_name = re.sub(r'\s+', ' ', str(name_val).strip()).lower()
+                if c_name in user_id_by_name:
+                    return user_id_by_name[c_name]
+                first_p = c_name.replace(",", "/").split("/")[0].strip()
+                if first_p in user_id_by_name:
+                    return user_id_by_name[first_p]
+                words = c_name.split()
+                if words and words[0] in user_id_by_name:
+                    return user_id_by_name[words[0]]
+                return None
+
+            clean_fn = master_service._clean
+            clean_no_space = master_service._clean_no_space
+
+            seen_user_depots = set()
+            user_depot_rows = []
+            existing_uhq_users = set()
+            try:
+                ex_res = client.table("user_headquarters_mapping").select("user_id").eq("is_active", True).execute()
+                if ex_res and ex_res.data:
+                    existing_uhq_users = {str(r["user_id"]) for r in ex_res.data if r.get("user_id")}
+            except Exception as e_ex_uhq:
+                logger.debug(f"Notice querying existing user headquarters: {e_ex_uhq}")
+
+            assigned_uhq_users = set(existing_uhq_users)
+            user_hq_rows = []
+
+            for ase_raw, asm_raw, depot_raw, hq_raw in zip(s_ase, s_asm, s_depot, s_hq):
+                c_dep = clean_fn(depot_raw)
+                depot_id = depot_cache.get(c_dep)
+                c_hq = clean_fn(hq_raw)
+                hq_id = hq_cache.get(c_hq) or hq_cache.get(clean_no_space(hq_raw))
+
+                # Process ASE
+                ase_uid = resolve_u(ase_raw)
+                if ase_uid:
+                    if depot_id and (ase_uid, depot_id) not in seen_user_depots:
+                        seen_user_depots.add((ase_uid, depot_id))
+                        user_depot_rows.append({"user_id": ase_uid, "depot_id": depot_id})
+                    if hq_id and ase_uid not in assigned_uhq_users:
+                        assigned_uhq_users.add(ase_uid)
+                        user_hq_rows.append({
+                            "tenant_id": effective_tenant,
+                            "user_id": ase_uid,
+                            "headquarters_id": hq_id,
+                            "is_active": True
+                        })
+
+                # Process ASM / TSM
+                asm_uid = resolve_u(asm_raw)
+                if asm_uid:
+                    if depot_id and (asm_uid, depot_id) not in seen_user_depots:
+                        seen_user_depots.add((asm_uid, depot_id))
+                        user_depot_rows.append({"user_id": asm_uid, "depot_id": depot_id})
+                    if hq_id and asm_uid not in assigned_uhq_users:
+                        assigned_uhq_users.add(asm_uid)
+                        user_hq_rows.append({
+                            "tenant_id": effective_tenant,
+                            "user_id": asm_uid,
+                            "headquarters_id": hq_id,
+                            "is_active": True
+                        })
+
+            # Upsert into user_depot in chunks of 100
+            if user_depot_rows:
+                for i in range(0, len(user_depot_rows), 100):
+                    batch = user_depot_rows[i:i+100]
+                    try:
+                        client.table("user_depot").upsert(batch, on_conflict="user_id,depot_id").execute()
+                    except Exception as e_ud_upsert:
+                        logger.warning(f"Error auto-syncing user_depot batch: {e_ud_upsert}")
+                logger.info(f"Auto-synced {len(user_depot_rows)} user-depot assignments into user_depot.")
+
+            # Upsert into user_headquarters_mapping in chunks of 100
+            if user_hq_rows:
+                for i in range(0, len(user_hq_rows), 100):
+                    batch = user_hq_rows[i:i+100]
+                    try:
+                        client.table("user_headquarters_mapping").upsert(
+                            batch, on_conflict="tenant_id,user_id,headquarters_id"
+                        ).execute()
+                    except Exception as e_uhq_upsert:
+                        logger.warning(f"Error auto-syncing user_headquarters_mapping batch: {e_uhq_upsert}")
+                logger.info(f"Auto-synced {len(user_hq_rows)} user-headquarters assignments into user_headquarters_mapping.")
+
+        except Exception as e_sync:
+            logger.warning(f"Notice in _sync_user_territory_mappings: {e_sync}")
 
     def _populate_user_sales_fact(
         self,
@@ -2844,17 +3555,31 @@ class ImportPipelineEngine:
         if not client:
             return
 
-        tenant_id = tenant_id or "a0000000-0000-0000-0000-000000000001"
+        if not tenant_id and batch_id:
+            tenant_id = (upload_batches_db.get(batch_id) or {}).get("tenant_id")
 
         try:
-            u_res = client.table("users").select("user_id, first_name, last_name, email, is_active").execute()
-            all_u = u_res.data or []
+            q = client.table("users").select("user_id, first_name, last_name, email, is_active, updated_at, tenant_id")
+            if tenant_id:
+                u_res = q.eq("tenant_id", tenant_id).execute()
+                all_u = u_res.data or []
+                if not all_u:
+                    all_u = client.table("users").select("user_id, first_name, last_name, email, is_active, updated_at, tenant_id").execute().data or []
+            else:
+                all_u = q.execute().data or []
             # Sort active users first so active user_ids take precedence in user_lookup
             all_u.sort(key=lambda x: 0 if x.get("is_active") else 1)
 
             user_lookup = {}
+            user_active_map = {}
+            user_deact_date_map = {}
             for u in all_u:
                 uid = str(u["user_id"])
+                is_act = bool(u.get("is_active", True))
+                user_active_map[uid] = is_act
+                up_at = str(u.get("updated_at") or "")
+                user_deact_date_map[uid] = up_at[:10] if (not is_act and len(up_at) >= 10) else None
+
                 fn = (u.get("first_name") or "").strip().lower()
                 ln = (u.get("last_name") or "").strip().lower()
                 full_name = f"{fn} {ln}".strip()
@@ -2863,6 +3588,11 @@ class ImportPipelineEngine:
 
                 if full_name and full_name not in user_lookup:
                     user_lookup[full_name] = uid
+                ln_parts = ln.split()
+                if len(ln_parts) > 1:
+                    short_name = f"{fn} {ln_parts[-1]}".strip()
+                    if short_name and short_name not in user_lookup:
+                        user_lookup[short_name] = uid
                 if prefix and prefix not in user_lookup:
                     user_lookup[prefix] = uid
                 if fn and fn not in user_lookup:
@@ -2887,15 +3617,25 @@ class ImportPipelineEngine:
                 if not user_id:
                     continue
 
+                sale_dt_str = self._parse_date(dt)
+
+                # Temporal Inactive Scope:
+                # Inactive users only have sales credited up to their deactivation date.
+                # Sales for subsequent periods (post-deactivation / current month) are not calculated.
+                if not user_active_map.get(user_id, True):
+                    deact_date = user_deact_date_map.get(user_id)
+                    if deact_date and sale_dt_str:
+                        if sale_dt_str > deact_date:
+                            continue
+                    else:
+                        continue
+
                 company_id = company_cache.get(master_service._clean_company(comp_clean)) or company_cache.get(clean_fn(comp_clean))
                 brand_id = brand_cache.get(clean_fn(brand_raw))
                 if not company_id or not brand_id:
                     continue
 
-                sale_dt_str = self._parse_date(dt)
-
-                fact_records.append({
-                    "tenant_id": tenant_id,
+                fact_row = {
                     "user_id": user_id,
                     "company_id": company_id,
                     "brand_id": brand_id,
@@ -2904,7 +3644,10 @@ class ImportPipelineEngine:
                     "bottles": float(btl or 0.0),
                     "bl": float(bl or 0.0),
                     "batch_id": str(batch_id)
-                })
+                }
+                if tenant_id:
+                    fact_row["tenant_id"] = tenant_id
+                fact_records.append(fact_row)
 
             if fact_records and client:
                 # Phase 3 Batch-Scoped Replacement: Purge existing user sales facts for this specific batch_id once before insert
@@ -2920,7 +3663,8 @@ class ImportPipelineEngine:
                 self._bulk_insert(
                     table="user_sales_fact",
                     records=fact_records,
-                    chunk_size=5000
+                    chunk_size=5000,
+                    batch_id=batch_id
                 )
         except Exception as e_usf:
             logger.warning(f"_populate_user_sales_fact error: {e_usf}")

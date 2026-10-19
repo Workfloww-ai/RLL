@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     DOVESOFT_ENTITY_ID: str = ""
     DOVESOFT_TEMP_ID: str = ""
     DOVESOFT_MESSAGE_TEMPLATE: str = ""
+
+    # AI & Chatbot LLM Credentials
+    GEMINI_API_KEY: str = ""
     
     # Redis Cloud Configuration (loaded from .env or environment variables)
     REDIS_URL: str = ""

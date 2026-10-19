@@ -111,22 +111,31 @@ class MasterService:
                 logger.warning(f"Failed to fetch headquarters from Supabase: {e}")
         return []
 
-    def get_depots_with_hq(self) -> List[Dict[str, Any]]:
+    def get_depots_with_hq(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
         client = get_supabase()
         if not client:
             return []
 
         try:
-            # 1. Fetch depots
-            dep_res = client.table("depots").select("depot_id, name, headquarters_id, office_id, circle_id, is_active").execute()
+            # 1. Fetch depots strictly scoped by tenant_id if provided
+            dep_q = client.table("depots").select("depot_id, name, headquarters_id, office_id, circle_id, is_active, tenant_id")
+            if tenant_id:
+                dep_q = dep_q.eq("tenant_id", tenant_id)
+            dep_res = dep_q.execute()
             depots_data = dep_res.data or []
 
             # 2. Fetch headquarters map
-            hq_res = client.table("headquarters").select("headquarters_id, name, is_active").execute()
+            hq_q = client.table("headquarters").select("headquarters_id, name, is_active, tenant_id")
+            if tenant_id:
+                hq_q = hq_q.eq("tenant_id", tenant_id)
+            hq_res = hq_q.execute()
             hq_map = {str(h["headquarters_id"]): h.get("name", "Unassigned") for h in (hq_res.data or []) if h.get("headquarters_id")}
 
-            # 3. Fetch users map
-            users_res = client.table("users").select("user_id, first_name, last_name, email, is_active").execute()
+            # 3. Fetch users map strictly scoped by tenant_id if provided
+            users_q = client.table("users").select("user_id, first_name, last_name, email, is_active, tenant_id")
+            if tenant_id:
+                users_q = users_q.eq("tenant_id", tenant_id)
+            users_res = users_q.execute()
             users_map = {}
             for u in (users_res.data or []):
                 uid = str(u["user_id"])
@@ -165,12 +174,34 @@ class MasterService:
                         depot_user_map[did] = []
                     depot_user_map[did].append(u_info)
 
+            # 5b. Fetch user_headquarters_mapping for TSM / HQ users
+            hq_user_map: Dict[str, List[Dict[str, Any]]] = {}
+            try:
+                uhq_res = client.table("user_headquarters_mapping").select("user_id, headquarters_id, is_active").execute()
+                for uhq in (uhq_res.data or []):
+                    if uhq.get("is_active", True) is not False:
+                        hid = str(uhq.get("headquarters_id") or "")
+                        uid = str(uhq.get("user_id") or "")
+                        if hid and uid in users_map:
+                            u_info = dict(users_map[uid])
+                            u_info["role"] = user_role_map.get(uid, "TSM")
+                            if hid not in hq_user_map:
+                                hq_user_map[hid] = []
+                            hq_user_map[hid].append(u_info)
+            except Exception as e_uhq:
+                logger.warning(f"Error fetching user_headquarters_mapping in get_depots_with_hq: {e_uhq}")
+
             # Build result list
             result = []
             for d in depots_data:
                 did = str(d["depot_id"])
-                hq_id = str(d.get("headquarters_id") or "")
-                hq_name = hq_map.get(hq_id, "Unassigned")
+                hq_raw = d.get("headquarters_id")
+                hq_id = str(hq_raw) if hq_raw else None
+                hq_name = hq_map.get(str(hq_id), "Unassigned") if hq_id else "Unassigned"
+
+                hq_users = hq_user_map.get(str(hq_id), []) if hq_id else []
+                hq_user_names = ", ".join([u["name"] for u in hq_users]) if hq_users else "Unassigned"
+                hq_user_emails = ", ".join([u["email"] for u in hq_users if u.get("email")]) if hq_users else None
 
                 assigned_users = depot_user_map.get(did, [])
                 if assigned_users:
@@ -185,8 +216,8 @@ class MasterService:
                             "depot_user": u_info["name"],
                             "depot_user_role": u_info["role"],
                             "depot_user_email": u_info["email"],
-                            "hq_user": "Unassigned",
-                            "hq_user_email": ""
+                            "hq_user": hq_user_names,
+                            "hq_user_email": hq_user_emails
                         })
                 else:
                     result.append({
@@ -199,8 +230,8 @@ class MasterService:
                         "depot_user": "Unassigned",
                         "depot_user_role": "ASE",
                         "depot_user_email": None,
-                        "hq_user": "Unassigned",
-                        "hq_user_email": None
+                        "hq_user": hq_user_names,
+                        "hq_user_email": hq_user_emails
                     })
 
             return result
@@ -662,7 +693,7 @@ class MasterService:
 
         return self._circle_cache
 
-    def bulk_resolve_headquarters(self, names: List[str]) -> Dict[str, Any]:
+    def bulk_resolve_headquarters(self, names: List[str], tenant_id: Optional[str] = None) -> Dict[str, Any]:
         client = get_supabase()
 
         # 1. Preload existing headquarters from database if cache is empty
@@ -702,7 +733,7 @@ class MasterService:
 
         # 3. Insert truly new headquarters if any
         if missing and client:
-            payloads = [{"name": disp, "is_active": True} for disp in missing.values()]
+            payloads = [{"name": disp, "is_active": True, **({"tenant_id": tenant_id} if tenant_id else {})} for disp in missing.values()]
             try:
                 res = client.table("headquarters").insert(payloads).execute()
                 for row in res.data or []:
@@ -730,7 +761,7 @@ class MasterService:
 
         return self._headquarter_cache
 
-    def bulk_resolve_companies(self, names: List[str]) -> Dict[str, Any]:
+    def bulk_resolve_companies(self, names: List[str], tenant_id: Optional[str] = None) -> Dict[str, Any]:
         client = get_supabase()
         from backend.db.company_aliases import get_company_aliases, upsert_company_alias
 
@@ -774,6 +805,8 @@ class MasterService:
             for name, (k_clean, k_norm, disp) in missing.items():
                 try:
                     payload = {"company_name": disp, "is_active": True}
+                    if tenant_id:
+                        payload["tenant_id"] = tenant_id
                     res = client.table("companies").insert(payload).execute()
                     if res.data:
                         c_id = str(res.data[0].get("company_id") or res.data[0].get("id"))
@@ -785,7 +818,7 @@ class MasterService:
 
         return self._company_cache
 
-    def bulk_resolve_depots(self, depot_items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def bulk_resolve_depots(self, depot_items: List[Dict[str, Any]], tenant_id: Optional[str] = None) -> Dict[str, Any]:
         client = get_supabase()
         missing = {}
         for item in depot_items:
@@ -793,13 +826,16 @@ class MasterService:
             display = self._display(name)
             key = self._clean(name)
             if key and key not in self._depot_cache:
-                missing[key] = {
+                d_dict = {
                     "name": display,
                     "office_id": item.get("office_id"),
                     "circle_id": item.get("circle_id"),
                     "headquarters_id": item.get("headquarters_id"),
                     "is_active": True
                 }
+                if tenant_id:
+                    d_dict["tenant_id"] = tenant_id
+                missing[key] = d_dict
 
         if missing and client:
             payloads = list(missing.values())
@@ -822,7 +858,7 @@ class MasterService:
 
         return self._depot_cache
 
-    def bulk_resolve_licensees(self, licensee_items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def bulk_resolve_licensees(self, licensee_items: List[Dict[str, Any]], tenant_id: Optional[str] = None) -> Dict[str, Any]:
         client = get_supabase()
         missing = {}
         existing_hq_updates = {}
@@ -840,7 +876,7 @@ class MasterService:
                 else:
                     trade = "Off"
 
-                missing[key] = {
+                l_dict = {
                     "licensee_name": display,
                     "trade": trade,
                     "group_id": item.get("group_id"),
@@ -850,6 +886,9 @@ class MasterService:
                     "circle_id": item.get("circle_id"),
                     "is_active": True
                 }
+                if tenant_id:
+                    l_dict["tenant_id"] = tenant_id
+                missing[key] = l_dict
             elif key and key in self._licensee_cache and hq_id:
                 current_hq = self._licensee_hq_cache.get(key)
                 if not current_hq or current_hq != hq_id:
@@ -925,19 +964,48 @@ class MasterService:
 
         return self._licensee_cache
 
-    def bulk_resolve_brands(self, brand_items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def bulk_resolve_brands(self, brand_items: List[Dict[str, Any]], tenant_id: str) -> Dict[str, Any]:
+        """
+        Bulk resolves brands strictly partitioned by tenant_id.
+        tenant_id is MANDATORY to ensure multi-tenant brand isolation.
+        """
+        if not tenant_id or not str(tenant_id).strip():
+            raise ValueError("tenant_id is strictly mandatory for brand resolution. Cannot resolve or insert brands without a valid tenant UUID.")
+
+        clean_tenant_id = str(tenant_id).strip()
         client = get_supabase()
+
+        if not hasattr(self, "_tenant_brand_caches"):
+            self._tenant_brand_caches = {}
+
+        if clean_tenant_id not in self._tenant_brand_caches:
+            t_cache = {}
+            if client:
+                try:
+                    res = client.table("brands").select("brand_id,brand_name").eq("tenant_id", clean_tenant_id).execute()
+                    for row in res.data or []:
+                        k = self._clean(row.get("brand_name"))
+                        if k:
+                            t_cache[k] = row["brand_id"]
+                except Exception as e_br:
+                    logger.warning(f"Error preloading brands for tenant {clean_tenant_id}: {e_br}")
+            self._tenant_brand_caches[clean_tenant_id] = t_cache
+
+        tenant_brand_cache = self._tenant_brand_caches[clean_tenant_id]
+
         missing = {}
         for item in brand_items:
             name = item.get("brand_name")
             display = self._display(name)
             key = self._clean(name)
-            if key and key not in self._brand_cache:
-                missing[key] = {
+            if key and key not in tenant_brand_cache:
+                b_dict = {
                     "brand_name": display,
                     "company_id": item.get("company_id"),
-                    "is_active": True
+                    "is_active": True,
+                    "tenant_id": clean_tenant_id
                 }
+                missing[key] = b_dict
 
         if missing and client:
             payloads = list(missing.values())
@@ -948,29 +1016,32 @@ class MasterService:
                     for row in res.data or []:
                         k = self._clean(row.get("brand_name"))
                         if k:
+                            tenant_brand_cache[k] = row["brand_id"]
                             self._brand_cache[k] = row["brand_id"]
                 except Exception as e_brd:
-                    logger.warning(f"bulk_resolve_brands chunk insert notice: {e_brd}")
+                    logger.warning(f"bulk_resolve_brands chunk insert notice for tenant {clean_tenant_id}: {e_brd}")
                     for single_item in chunk:
                         try:
                             res_single = client.table("brands").insert(single_item).execute()
                             if res_single.data:
                                 k = self._clean(res_single.data[0].get("brand_name"))
                                 if k:
+                                    tenant_brand_cache[k] = res_single.data[0]["brand_id"]
                                     self._brand_cache[k] = res_single.data[0]["brand_id"]
                         except Exception:
                             pass
 
             try:
-                res = client.table("brands").select("brand_id,brand_name").execute()
+                res = client.table("brands").select("brand_id,brand_name").eq("tenant_id", clean_tenant_id).execute()
                 for row in res.data or []:
                     k = self._clean(row.get("brand_name"))
                     if k:
+                        tenant_brand_cache[k] = row["brand_id"]
                         self._brand_cache[k] = row["brand_id"]
             except Exception as e_fetch:
-                logger.warning(f"bulk_resolve_brands fetch notice: {e_fetch}")
+                logger.warning(f"bulk_resolve_brands fetch notice for tenant {clean_tenant_id}: {e_fetch}")
 
-        return self._brand_cache
+        return tenant_brand_cache
 
     def bulk_resolve_packagings(self, packing_raws: List[str]) -> Dict[str, Any]:
         client = get_supabase()

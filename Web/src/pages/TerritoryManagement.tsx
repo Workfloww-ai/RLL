@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { API_BASE_URL } from "../lib/api";
+import { API_BASE_URL } from "../config";
 import { useToast } from "../contexts/ToastContext";
+import { useSystemLock } from "../contexts/SystemLockContext";
 import { 
   Search, Filter, Edit2, Check, X, MapPin, Trash2, RefreshCw, 
-  ChevronLeft, ChevronRight, ArrowUpDown, ChevronUp, ChevronDown, RotateCcw,
+  ChevronLeft, ChevronRight, ArrowUpDown, ChevronUp, ChevronDown,
   User as UserIcon, Building2, Shield, Plus, CheckCircle2, AlertCircle, Info
 } from "lucide-react";
 
@@ -39,6 +40,7 @@ type SortField = "name" | "headquarters_name" | "depot_user" | "depot_user_role"
 type SortDirection = "asc" | "desc";
 
 export default function TerritoryManagement() {
+  const { isLocked, lockReason } = useSystemLock();
   const [depots, setDepots] = useState<DepotRecord[]>([]);
   const [headquartersList, setHeadquartersList] = useState<HeadquartersRecord[]>([]);
   const [usersList, setUsersList] = useState<UserOption[]>([]);
@@ -69,18 +71,21 @@ export default function TerritoryManagement() {
 
   const { showToast } = useToast();
 
-  const token = localStorage.getItem("token");
-
   const fetchData = async () => {
     setLoading(true);
     try {
-      const headers = { Authorization: `Bearer ${token}` };
+      const token = localStorage.getItem("token");
+      const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
       
       const [depotsRes, hqRes, usersRes] = await Promise.all([
         fetch(`${API_BASE_URL}/master-data/depots`, { headers }),
         fetch(`${API_BASE_URL}/master-data/headquarters`, { headers }),
         fetch(`${API_BASE_URL}/users/`, { headers })
       ]);
+
+      if (!depotsRes.ok) {
+        console.error(`Depots fetch returned status ${depotsRes.status}`);
+      }
 
       let fetchedUsers: UserOption[] = [];
       if (usersRes.ok) {
@@ -98,6 +103,7 @@ export default function TerritoryManagement() {
 
       if (depotsRes.ok) {
         const depotsData = await depotsRes.json();
+        if (Array.isArray(depotsData)) {
 
         // Extract master list of unique depots for editing dropdown & filtering
         const uniqueDepotMap = new Map<string, { depot_id: string | number; name: string; headquarters_id?: string | number | null }>();
@@ -173,11 +179,14 @@ export default function TerritoryManagement() {
         });
 
         setDepots(expandedDepots);
+        }
       }
 
       if (hqRes.ok) {
         const hqData = await hqRes.json();
-        setHeadquartersList(hqData);
+        if (Array.isArray(hqData)) {
+          setHeadquartersList(hqData);
+        }
       }
     } catch (error) {
       console.error("Error fetching territory data:", error);
@@ -296,6 +305,10 @@ export default function TerritoryManagement() {
 
   // Inline Edit Handlers
   const handleEditClick = (depot: DepotRecord) => {
+    if (isLocked) {
+      showToast("System is in read-only mode during data upload. Editing locked.", "warning");
+      return;
+    }
     setEditingId(depot.depot_id);
     setEditName(depot.name || "");
     setEditDepotId(depot.real_depot_id ? String(depot.real_depot_id) : String(depot.depot_id));
@@ -305,6 +318,10 @@ export default function TerritoryManagement() {
   };
 
   const handleSave = async (depot: DepotRecord) => {
+    if (isLocked) {
+      showToast("System is in read-only mode during data upload. Changes locked.", "warning");
+      return;
+    }
     try {
       showToast("Updating territory alignment...", "info");
       const targetDepotId = editDepotId || depot.real_depot_id || depot.depot_id;
@@ -318,11 +335,12 @@ export default function TerritoryManagement() {
         assigned_user_id: editUserId && editUserId !== "Unassigned" ? editUserId : null
       };
 
+      const token = localStorage.getItem("token");
       const res = await fetch(`${API_BASE_URL}/master-data/depots/${targetDepotId}`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
         },
         body: JSON.stringify(payload)
       });
@@ -406,9 +424,10 @@ export default function TerritoryManagement() {
     if (!confirm("Are you sure you want to delete this depot record?")) return;
 
     try {
+      const token = localStorage.getItem("token");
       const res = await fetch(`${API_BASE_URL}/master-data/depots/${depotId}`, {
         method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` }
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
 
       if (res.ok) {
@@ -518,11 +537,15 @@ export default function TerritoryManagement() {
         </div>
 
         <button
-          onClick={resetFilters}
-          className="ml-auto flex items-center gap-1 text-[11px] font-bold text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
-          title="Reset Filters"
+          onClick={() => {
+            showToast("Refreshing territory records from database...", "info");
+            fetchData();
+          }}
+          disabled={loading}
+          className="ml-auto flex items-center gap-1 text-[11px] font-bold text-slate-600 hover:text-[#0D3B8E] transition-colors cursor-pointer"
+          title="Reload from Database"
         >
-          <RotateCcw className="w-3 h-3" /> Reset
+          <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} /> Refresh
         </button>
       </div>
 
@@ -530,18 +553,18 @@ export default function TerritoryManagement() {
       {/* Data Table Container */}
       <div className="bg-white rounded-xl shadow-2xs border border-slate-200/80 flex-1 min-h-0 overflow-hidden flex flex-col">
         <div className="overflow-x-auto flex-1">
-          <table className="w-full text-left border-collapse table-fixed min-w-[750px]">
+          <table className="w-full text-left border-collapse table-fixed min-w-[950px]">
             <thead>
               <tr className="bg-slate-50/80 border-b border-slate-200/80 sticky top-0 z-10 select-none">
                 {/* S.No Column */}
-                <th className="w-[6%] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">
+                <th className="w-[5%] min-w-[45px] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">
                   #
                 </th>
 
                 {/* User */}
                 <th 
                   onClick={() => handleSort("depot_user")}
-                  className="w-[22%] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[21%] min-w-[170px] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>User</span>
@@ -556,7 +579,7 @@ export default function TerritoryManagement() {
                 {/* Role */}
                 <th 
                   onClick={() => handleSort("depot_user_role")}
-                  className="w-[12%] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[11%] min-w-[90px] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Role</span>
@@ -571,7 +594,7 @@ export default function TerritoryManagement() {
                 {/* Depot */}
                 <th 
                   onClick={() => handleSort("name")}
-                  className="w-[24%] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[22%] min-w-[180px] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Depot</span>
@@ -586,7 +609,7 @@ export default function TerritoryManagement() {
                 {/* Headquarter */}
                 <th 
                   onClick={() => handleSort("headquarters_name")}
-                  className="w-[20%] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[19%] min-w-[150px] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Headquarter</span>
@@ -601,7 +624,7 @@ export default function TerritoryManagement() {
                 {/* Active / Inactive Status */}
                 <th 
                   onClick={() => handleSort("is_active")}
-                  className="w-[10%] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[11%] min-w-[115px] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors whitespace-nowrap"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Status</span>
@@ -614,7 +637,7 @@ export default function TerritoryManagement() {
                 </th>
 
                 {/* Actions */}
-                <th className="w-[10%] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">
+                <th className="w-[11%] min-w-[105px] px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right whitespace-nowrap">
                   Actions
                 </th>
               </tr>
@@ -763,14 +786,13 @@ export default function TerritoryManagement() {
                           </div>
                         )}
                       </td>
-
-                      {/* Status */}
-                      <td className="px-4 py-2.5">
+                      {/* Active Status Toggle */}
+                      <td className="px-3 py-2.5 whitespace-nowrap">
                         {isEditing ? (
                           <button
                             type="button"
                             onClick={() => setEditIsActive(!editIsActive)}
-                            className="flex items-center gap-2 cursor-pointer group select-none"
+                            className="inline-flex items-center gap-2 cursor-pointer group select-none whitespace-nowrap"
                             title={`Click to switch to ${editIsActive ? 'Inactive' : 'Active'}`}
                           >
                             <div
@@ -792,7 +814,7 @@ export default function TerritoryManagement() {
                           <button
                             type="button"
                             onClick={() => handleToggleDepotStatus(depot)}
-                            className="flex items-center gap-2 cursor-pointer group select-none"
+                            className="inline-flex items-center gap-2 cursor-pointer group select-none whitespace-nowrap"
                             title={`Click to ${depot.is_active ? 'deactivate territory' : 'reactivate territory'}`}
                           >
                             <div
@@ -814,9 +836,9 @@ export default function TerritoryManagement() {
                       </td>
 
                       {/* Actions */}
-                      <td className="px-4 py-2.5 text-right">
+                      <td className="px-3 py-2.5 text-right whitespace-nowrap">
                         {isEditing ? (
-                          <div className="flex items-center justify-end gap-2">
+                          <div className="inline-flex items-center justify-end gap-1.5 whitespace-nowrap">
                             <button
                               onClick={() => handleSave(depot)}
                               className="p-1.5 bg-emerald-50 text-emerald-600 rounded hover:bg-emerald-100 transition-colors"
@@ -833,17 +855,28 @@ export default function TerritoryManagement() {
                             </button>
                           </div>
                         ) : (
-                          <div className="flex items-center justify-end gap-2">
+                          <div className="inline-flex items-center justify-end gap-1.5 whitespace-nowrap">
                             <button
-                              onClick={() => handleEditClick(depot)}
-                              className="px-3 py-1.5 border border-slate-200 rounded text-[10px] font-bold text-slate-600 hover:border-[#004B87] hover:text-[#004B87] transition-colors uppercase tracking-widest inline-flex items-center gap-1"
+                              disabled={isLocked}
+                              onClick={() => !isLocked && handleEditClick(depot)}
+                              title={isLocked ? "Editing locked during active data ingestion" : "Edit Territory"}
+                              className={`px-2.5 py-1 border rounded text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1 transition-colors shrink-0 ${
+                                isLocked 
+                                  ? 'border-slate-200 text-slate-300 opacity-40 cursor-not-allowed' 
+                                  : 'border-slate-200 text-slate-600 hover:border-[#004B87] hover:text-[#004B87] cursor-pointer'
+                              }`}
                             >
                               <Edit2 className="w-3 h-3" /> Edit
                             </button>
                             <button 
-                              onClick={() => handleDelete(depot.depot_id)}
-                              className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors inline-flex"
-                              title="Delete Record"
+                              disabled={isLocked}
+                              onClick={() => !isLocked && handleDelete(depot.depot_id)}
+                              className={`p-1 rounded transition-colors inline-flex shrink-0 ${
+                                isLocked 
+                                  ? 'text-slate-200 opacity-40 cursor-not-allowed' 
+                                  : 'text-slate-400 hover:text-red-500 hover:bg-red-50 cursor-pointer'
+                              }`}
+                              title={isLocked ? "Deletion locked during active data ingestion" : "Delete Record"}
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>

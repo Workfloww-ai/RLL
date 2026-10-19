@@ -19,6 +19,14 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { sendChatMessage } from './chatbotApi';
 
+interface QuickReply {
+  label: string;
+  value: string;
+  entity_type?: string;
+  entity_id?: string;
+  subtext?: string;
+}
+
 interface Message {
   id: string;
   sender: 'user' | 'ai';
@@ -28,6 +36,7 @@ interface Message {
   table?: { title: string; columns: Array<{ key: string; label: string; align?: string }>; rows: Array<any> };
   chart?: { title: string; data: Array<{ label: string; value: number }> };
   suggestedQuestions?: string[];
+  quickReplies?: QuickReply[];
 }
 
 interface ChatbotModalProps {
@@ -85,7 +94,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
       id: 'welcome_1',
       sender: 'ai',
       text:
-        'RLL Sales AI\n\n' +
+        'RLL Sales Agent\n\n' +
         'Ask questions about your sales data.\n\n' +
         'I can help you understand:\n' +
         '• Sales performance\n' +
@@ -113,7 +122,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
     }
   }, [visible, messages]);
 
-  const handleSend = async (queryText?: string) => {
+  const handleSend = async (queryText?: string, entityType?: string, entityId?: string) => {
     const textToSend = (queryText || inputQuery).trim();
     if (!textToSend || loading) return;
 
@@ -132,7 +141,15 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
     setLoading(true);
 
     try {
-      const res = await sendChatMessage(textToSend, period, selectedHq);
+      const res = await sendChatMessage(
+        textToSend,
+        period,
+        selectedHq,
+        undefined,
+        undefined,
+        entityType,
+        entityId
+      );
 
       const aiMsgId = `ai_${Date.now()}`;
       const aiTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -146,6 +163,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
         table: res.table,
         chart: res.chart,
         suggestedQuestions: res.suggested_questions,
+        quickReplies: res.quick_replies,
       };
 
       setMessages((prev) => [...prev, newAiMessage]);
@@ -168,7 +186,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
         id: `welcome_${Date.now()}`,
         sender: 'ai',
         text:
-          'RLL Sales AI\n\n' +
+          'RLL Sales Agent\n\n' +
           'Ask questions about your sales data.\n\n' +
           'I can help you understand:\n' +
           '• Sales performance\n' +
@@ -197,19 +215,27 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
   if (!visible) return null;
 
   return (
-    <Modal visible={visible} animationType="slide" transparent={true} onRequestClose={onClose}>
-      <SafeAreaView style={styles.overlay}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.modalCard}
-        >
+    <Modal
+      visible={visible}
+      animationType="slide"
+      transparent={false}
+      onRequestClose={onClose}
+      statusBarTranslucent
+    >
+      <View style={styles.modalBackground}>
+        <SafeAreaView style={styles.safeAreaContainer} edges={['top', 'bottom']}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.keyboardAvoidingContainer}
+            keyboardVerticalOffset={Platform.OS === 'android' ? 24 : 0}
+          >
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.headerLeft}>
               <AiBadgeStarIcon />
               <View>
                 <View style={styles.titleRow}>
-                  <Text style={styles.headerTitle}>RLL Sales AI</Text>
+                  <Text style={styles.headerTitle}>RLL Sales Agent</Text>
                   <View style={styles.liveBadge}>
                     <View style={styles.liveDot} />
                     <Text style={styles.liveBadgeText}>Live</Text>
@@ -242,6 +268,8 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
             style={styles.chatArea}
             contentContainerStyle={styles.chatContent}
             showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
           >
             {messages.map((msg) => (
               <View
@@ -265,6 +293,93 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
                   >
                     {msg.text}
                   </Text>
+
+                  {/* Zomato-style Quick-Reply Selection Chips */}
+                  {msg.quickReplies && msg.quickReplies.length > 0 && (
+                    <View style={styles.quickRepliesContainer}>
+                      <Text style={styles.quickRepliesPrompt}>
+                        SELECT AN OPTION:
+                      </Text>
+                      {msg.quickReplies.map((qr, qIdx) => {
+                        const isGroup = qr.entity_type === 'group';
+                        const isMulti = qr.entity_type === 'multi_licensee';
+                        const isTsm = qr.entity_type === 'tsm';
+                        const isAse = qr.entity_type === 'ase' || qr.entity_type === 'tsm_ase';
+                        const cleanLabel = (qr.label || '').replace(/^[🏢🏪📊👔\s]*(Group:\s*|Licensee:\s*|Outlet:\s*|TSM:\s*|ASE:\s*)?/i, '');
+
+                        return (
+                          <TouchableOpacity
+                            key={qIdx}
+                            activeOpacity={0.7}
+                            onPress={() => handleSend(qr.value, qr.entity_type, qr.entity_id)}
+                            disabled={loading}
+                            style={[
+                              styles.quickReplyCard,
+                              isGroup && styles.quickReplyCardGroup,
+                              isMulti && styles.quickReplyCardMulti,
+                              isTsm && styles.quickReplyCardTsm,
+                              isAse && styles.quickReplyCardAse,
+                            ]}
+                          >
+                            <View style={styles.quickReplyCardLeft}>
+                              <View style={styles.quickReplyBadgeRow}>
+                                <View
+                                  style={[
+                                    styles.typeBadge,
+                                    isGroup && styles.typeBadgeGroup,
+                                    isMulti && styles.typeBadgeMulti,
+                                    isTsm && styles.typeBadgeTsm,
+                                    isAse && styles.typeBadgeAse,
+                                  ]}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.typeBadgeText,
+                                      isGroup && styles.typeBadgeTextGroup,
+                                      isMulti && styles.typeBadgeTextMulti,
+                                      isTsm && styles.typeBadgeTextTsm,
+                                      isAse && styles.typeBadgeTextAse,
+                                    ]}
+                                  >
+                                    {isGroup ? '🏢 GROUP' : isMulti ? '📊 ALL OUTLETS' : isTsm ? '👔 TSM' : isAse ? '👔 ASE' : '🏪 OUTLET'}
+                                  </Text>
+                                </View>
+                              </View>
+                              <Text style={styles.quickReplyLabel}>
+                                {cleanLabel}
+                              </Text>
+                              {qr.subtext ? (
+                                <Text style={styles.quickReplySubtext} numberOfLines={2}>
+                                  {(qr.subtext || '').replace(/\bLicensee\b/g, 'Outlet')}
+                                </Text>
+                              ) : null}
+                            </View>
+                            <View
+                              style={[
+                                styles.quickReplyArrowCircle,
+                                isGroup && { backgroundColor: '#F3E8FF', borderColor: '#E9D5FF' },
+                                isMulti && { backgroundColor: '#DBEAFE', borderColor: '#BFDBFE' },
+                                isTsm && { backgroundColor: '#FEF3C7', borderColor: '#FDE68A' },
+                                isAse && { backgroundColor: '#DCFCE7', borderColor: '#BBF7D0' },
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.quickReplyArrowText,
+                                  isGroup && { color: '#7C3AED' },
+                                  isMulti && { color: '#2563EB' },
+                                  isTsm && { color: '#D97706' },
+                                  isAse && { color: '#059669' },
+                                ]}
+                              >
+                                →
+                              </Text>
+                            </View>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  )}
 
                   {/* KPIs rendering */}
                   {msg.kpis && msg.kpis.length > 0 && (
@@ -292,8 +407,8 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
                               col.align === 'right'
                                 ? { textAlign: 'right' }
                                 : col.align === 'center'
-                                ? { textAlign: 'center' }
-                                : { textAlign: 'left' },
+                                  ? { textAlign: 'center' }
+                                  : { textAlign: 'left' },
                             ]}
                           >
                             {col.label}
@@ -310,8 +425,8 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
                                 col.align === 'right'
                                   ? { textAlign: 'right' }
                                   : col.align === 'center'
-                                  ? { textAlign: 'center' }
-                                  : { textAlign: 'left' },
+                                    ? { textAlign: 'center' }
+                                    : { textAlign: 'left' },
                               ]}
                             >
                               {row[col.key]}
@@ -416,28 +531,30 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
 
           {/* Footer note */}
           <View style={styles.footerRow}>
-            <Text style={styles.footerNote}>Powered by Gemini</Text>
+            <Text style={styles.footerNote}>Powered by Workfloww.ai</Text>
           </View>
         </KeyboardAvoidingView>
       </SafeAreaView>
-    </Modal>
+    </View>
+  </Modal>
   );
 };
 
 const styles = StyleSheet.create({
-  overlay: {
+  modalBackground: {
     flex: 1,
-    backgroundColor: 'rgba(15, 39, 71, 0.45)',
-    justifyContent: 'flex-end',
-  },
-  modalCard: {
-    height: '92%',
     backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingTop: 16,
+  },
+  safeAreaContainer: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  keyboardAvoidingContainer: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
     paddingHorizontal: 16,
-    paddingBottom: 12,
+    paddingTop: Platform.OS === 'android' ? 4 : 0,
+    paddingBottom: Platform.OS === 'ios' ? 4 : 4,
   },
   header: {
     flexDirection: 'row',
@@ -599,32 +716,36 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
   },
   kpiContainer: {
-    marginTop: 10,
+    flexDirection: 'row',
+    marginTop: 8,
     gap: 8,
   },
   kpiCard: {
+    flex: 1,
     backgroundColor: '#F8FAFC',
-    borderRadius: 10,
-    padding: 12,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    borderLeftWidth: 3.5,
+    borderLeftWidth: 3,
     borderLeftColor: '#0D3B8E',
   },
   kpiTitle: {
-    fontSize: 11,
-    fontWeight: '600',
+    fontSize: 9.5,
+    fontWeight: '700',
     color: '#64748B',
     textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
   kpiValue: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '800',
     color: '#0D3B8E',
-    marginVertical: 2,
+    marginVertical: 1,
   },
   kpiSubtext: {
-    fontSize: 11,
+    fontSize: 9.5,
     color: '#64748B',
   },
   tableContainer: {
@@ -822,5 +943,124 @@ const styles = StyleSheet.create({
   footerNote: {
     fontSize: 11,
     color: '#94A3B8',
+  },
+  quickRepliesContainer: {
+    marginTop: 8,
+    gap: 6,
+  },
+  quickRepliesPrompt: {
+    fontSize: 9.5,
+    fontWeight: '700',
+    color: '#64748B',
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
+  quickReplyCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderLeftWidth: 3,
+    borderLeftColor: '#0D3B8E',
+    borderRadius: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+  },
+  quickReplyCardGroup: {
+    backgroundColor: '#FAF5FF',
+    borderColor: '#E9D5FF',
+    borderLeftColor: '#7C3AED',
+  },
+  quickReplyCardMulti: {
+    backgroundColor: '#F0F7FF',
+    borderColor: '#BFDBFE',
+    borderLeftColor: '#2563EB',
+  },
+  quickReplyCardTsm: {
+    backgroundColor: '#FFFBEB',
+    borderColor: '#FDE68A',
+    borderLeftColor: '#D97706',
+  },
+  quickReplyCardAse: {
+    backgroundColor: '#F0FDF4',
+    borderColor: '#BBF7D0',
+    borderLeftColor: '#059669',
+  },
+  quickReplyCardLeft: {
+    flex: 1,
+    marginRight: 8,
+  },
+  quickReplyBadgeRow: {
+    flexDirection: 'row',
+    marginBottom: 2,
+  },
+  typeBadge: {
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    alignSelf: 'flex-start',
+  },
+  typeBadgeGroup: {
+    backgroundColor: '#EDE9FE',
+  },
+  typeBadgeMulti: {
+    backgroundColor: '#DBEAFE',
+  },
+  typeBadgeTsm: {
+    backgroundColor: '#FEF3C7',
+  },
+  typeBadgeAse: {
+    backgroundColor: '#DCFCE7',
+  },
+  typeBadgeText: {
+    fontSize: 8.5,
+    fontWeight: '800',
+    color: '#475569',
+    letterSpacing: 0.4,
+  },
+  typeBadgeTextGroup: {
+    color: '#6D28D9',
+  },
+  typeBadgeTextMulti: {
+    color: '#1D4ED8',
+  },
+  typeBadgeTextTsm: {
+    color: '#B45309',
+  },
+  typeBadgeTextAse: {
+    color: '#15803D',
+  },
+  quickReplyLabel: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: '#0F172A',
+    lineHeight: 16,
+  },
+  quickReplySubtext: {
+    fontSize: 10,
+    color: '#64748B',
+    marginTop: 1,
+    lineHeight: 13.5,
+  },
+  quickReplyArrowCircle: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    marginLeft: 6,
+  },
+  quickReplyArrowText: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#0D3B8E',
+    marginTop: -1,
   },
 });

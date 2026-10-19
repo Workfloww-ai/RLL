@@ -1,21 +1,50 @@
 import { Metrics, Period } from '../types';
 
 export function formatNumber(val: number, minimumFractionDigits: number = 2): string {
-  if (val === undefined || val === null) return '0.00';
+  if (val === undefined || val === null) return minimumFractionDigits === 0 ? '0' : '0.00';
   
   try {
     return new Intl.NumberFormat('en-IN', {
-      maximumFractionDigits: 2,
+      maximumFractionDigits: minimumFractionDigits === 0 ? 0 : 2,
       minimumFractionDigits: minimumFractionDigits,
     }).format(val);
   } catch (e) {
-    return Number(val).toFixed(2);
+    return Number(val).toFixed(minimumFractionDigits);
   }
 }
 
 export function formatBL(val: number): string {
   if (val === undefined || val === null) return '0.0 BL';
   return `${formatNumber(val)} BL`;
+}
+
+export function toTitleCase(str?: string | null): string {
+  if (!str) return '';
+  const trimmed = String(str).trim();
+  if (!trimmed) return '';
+
+  const acronyms = new Set(['RLL', 'TSM', 'ASE', 'HQ', 'YTD', 'MTD', 'BL']);
+  if (acronyms.has(trimmed.toUpperCase())) {
+    return trimmed.toUpperCase();
+  }
+
+  return trimmed
+    .split(/\s+/)
+    .map((word) => {
+      if (!word) return '';
+      const lower = word.toLowerCase();
+      if (lower === 'depot:' || lower === 'headquarter:' || lower === 'headquarters:') {
+        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+      }
+      if (word.includes('/')) {
+        return word.split('/').map(w => w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : '').join('/');
+      }
+      if (word.includes('-')) {
+        return word.split('-').map(w => w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : '').join('-');
+      }
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .join(' ');
 }
 
 export function calculateDateFactor(fromStr: string, toStr: string, period: Period): number {
@@ -58,16 +87,19 @@ export function normalizeCompanyName(name: string): string {
   const lowered = name.trim().toLowerCase();
   if (
     lowered === 'diageo' ||
+    lowered === 'diageo india' ||
+    lowered === 'united spirits'
+  ) {
+    return 'Diageo';
+  }
+  if (
     lowered === 'inbrew' ||
     lowered === 'in brew' ||
-    lowered === 'diageo/inbrew' ||
-    lowered === 'diageo/in brew' ||
-    lowered === 'diageo / inbrew' ||
-    lowered === 'diageo / in brew' ||
-    lowered === 'diageo inbrew' ||
-    lowered === 'diageo in brew'
+    lowered === 'in-brew' ||
+    lowered === 'inbrew beverages' ||
+    lowered === 'in brew beverages'
   ) {
-    return 'Diageo/In brew';
+    return 'Inbrew';
   }
   if (
     lowered === 'rll' ||
@@ -104,7 +136,7 @@ export function normalizeCompanyList(rawCompanies: any[], pinnedCompanyName?: st
     const normName = normalizeCompanyName(c.name || '');
     const normId = normName.toLowerCase().replace(/\s+/g, '-').replace(/\//g, '-');
 
-    const isMatchPinned = normName.toLowerCase().trim() === targetPinned || (targetPinned === 'rajasthan liquor limited' && normName === 'Diageo/In brew');
+    const isMatchPinned = normName.toLowerCase().trim() === targetPinned || (targetPinned === 'rajasthan liquor limited' && normName === 'Diageo');
 
     if (!map.has(normId)) {
       map.set(normId, {

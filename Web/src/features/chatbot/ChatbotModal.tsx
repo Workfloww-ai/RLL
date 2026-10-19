@@ -7,6 +7,14 @@ import React, { useState, useRef, useEffect } from 'react';
 import { X, RefreshCw, Send, Mic, Sparkles } from 'lucide-react';
 import { sendChatMessage } from './chatbotApi';
 
+interface QuickReply {
+  label: string;
+  value: string;
+  entity_type?: string;
+  entity_id?: string;
+  subtext?: string;
+}
+
 interface Message {
   id: string;
   sender: 'user' | 'ai';
@@ -16,6 +24,7 @@ interface Message {
   table?: { title: string; columns: Array<{ key: string; label: string; align?: string }>; rows: Array<any> };
   chart?: { title: string; data: Array<{ label: string; value: number }> };
   suggestedQuestions?: string[];
+  quickReplies?: QuickReply[];
 }
 
 interface ChatbotModalProps {
@@ -38,7 +47,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
       id: 'welcome_1',
       sender: 'ai',
       text:
-        'RLL Sales AI\n\n' +
+        'RLL Sales Agent\n\n' +
         'Ask questions about your sales data.\n\n' +
         'I can help you understand:\n' +
         '• Sales performance\n' +
@@ -69,7 +78,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
     }
   }, [isOpen, messages]);
 
-  const handleSend = async (queryText?: string) => {
+  const handleSend = async (queryText?: string, entityType?: string, entityId?: string) => {
     const textToSend = (queryText || inputQuery).trim();
     if (!textToSend || loading) return;
 
@@ -88,7 +97,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
     setLoading(true);
 
     try {
-      const res = await sendChatMessage(textToSend, period, selectedHq);
+      const res = await sendChatMessage(textToSend, period, selectedHq, entityType, entityId);
 
       const aiMsgId = `ai_${Date.now()}`;
       const aiTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -102,6 +111,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
         table: res.table,
         chart: res.chart,
         suggestedQuestions: res.suggested_questions,
+        quickReplies: res.quick_replies,
       };
 
       setMessages((prev) => [...prev, newAiMessage]);
@@ -124,7 +134,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
         id: `welcome_${Date.now()}`,
         sender: 'ai',
         text:
-          'RLL Sales AI\n\n' +
+          'RLL Sales Agent\n\n' +
           'Ask questions about your sales data.\n\n' +
           'I can help you understand:\n' +
           '• Sales performance\n' +
@@ -163,7 +173,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-base font-bold text-[#0D3B8E]">RLL Sales AI</h2>
+                <h2 className="text-base font-bold text-[#0D3B8E]">RLL Sales Agent</h2>
                 <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-semibold">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-600" />
                   Live
@@ -212,14 +222,94 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
               >
                 <div className="whitespace-pre-wrap leading-relaxed">{msg.text}</div>
 
+                {/* Zomato-style Quick-Reply Selection Chips */}
+                {msg.quickReplies && msg.quickReplies.length > 0 && (
+                  <div className="mt-3.5 space-y-2">
+                    <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">
+                      Select an option:
+                    </p>
+                    <div className="flex flex-col gap-2">
+                      {msg.quickReplies.map((qr, qIdx) => {
+                          const isGroup = qr.entity_type === 'group';
+                          const isMulti = qr.entity_type === 'multi_licensee';
+                          const isAse = qr.entity_type === 'ase' || qr.entity_type === 'tsm_ase';
+                          const isTsm = qr.entity_type === 'tsm';
+                          const cleanLabel = (qr.label || '').replace(/^[🏢🏪📊👔\s]*(Group:\s*|Licensee:\s*|Outlet:\s*|ASE:\s*|TSM:\s*)?/i, '');
+                          return (
+                            <button
+                              key={qIdx}
+                              type="button"
+                              onClick={() => handleSend(qr.value, qr.entity_type, qr.entity_id)}
+                              disabled={loading}
+                              className={`group w-full flex items-center justify-between py-2 px-2.5 rounded-lg border text-left transition-all duration-150 shadow-xs hover:shadow-md cursor-pointer active:scale-[0.99] disabled:opacity-50 ${
+                                isGroup
+                                  ? 'bg-purple-50/70 border-purple-200 border-l-4 border-l-purple-600 hover:border-purple-400 hover:bg-purple-100/60'
+                                  : isMulti
+                                  ? 'bg-blue-50/70 border-blue-200 border-l-4 border-l-blue-600 hover:border-blue-400 hover:bg-blue-100/60'
+                                  : isTsm
+                                  ? 'bg-amber-50/70 border-amber-200 border-l-4 border-l-amber-600 hover:border-amber-400 hover:bg-amber-100/60'
+                                  : isAse
+                                  ? 'bg-emerald-50/70 border-emerald-200 border-l-4 border-l-emerald-600 hover:border-emerald-400 hover:bg-emerald-100/60'
+                                  : 'bg-slate-50/80 border-slate-200 border-l-4 border-l-[#0D3B8E] hover:border-[#0D3B8E] hover:bg-white'
+                              }`}
+                            >
+                              <div className="flex-1 min-w-0 mr-2">
+                                <div className="mb-0.5">
+                                  <span
+                                    className={`inline-block text-[8.5px] font-bold px-1.5 py-0.5 rounded tracking-wider uppercase ${
+                                      isGroup
+                                        ? 'bg-purple-200/70 text-purple-800'
+                                        : isMulti
+                                        ? 'bg-blue-200/70 text-blue-800'
+                                        : isTsm
+                                        ? 'bg-amber-200/70 text-amber-800'
+                                        : isAse
+                                        ? 'bg-emerald-200/70 text-emerald-800'
+                                        : 'bg-slate-200/70 text-slate-700'
+                                    }`}
+                                  >
+                                    {isGroup ? '🏢 Group' : isMulti ? '📊 All Outlets' : isTsm ? '👔 TSM' : isAse ? '👔 ASE' : '🏪 Outlet'}
+                                  </span>
+                                </div>
+                                <span className="block text-xs font-bold text-slate-900 leading-snug">
+                                  {cleanLabel}
+                                </span>
+                                {qr.subtext && (
+                                  <span className="block text-[10.5px] text-slate-500 leading-tight mt-0.5">
+                                    {qr.subtext.replace(/\bLicensee\b/g, 'Outlet')}
+                                  </span>
+                                )}
+                              </div>
+                              <span
+                                className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 border text-sm font-bold transition-transform group-hover:translate-x-0.5 ${
+                                  isGroup
+                                    ? 'bg-purple-100 border-purple-200 text-purple-700'
+                                    : isMulti
+                                    ? 'bg-blue-100 border-blue-200 text-blue-700'
+                                    : isTsm
+                                    ? 'bg-amber-100 border-amber-200 text-amber-700'
+                                    : isAse
+                                    ? 'bg-emerald-100 border-emerald-200 text-emerald-700'
+                                    : 'bg-slate-100 border-slate-200 text-[#0D3B8E]'
+                                }`}
+                              >
+                                →
+                              </span>
+                            </button>
+                          );
+                        })}
+                    </div>
+                  </div>
+                )}
+
                 {/* KPIs rendering */}
                 {msg.kpis && msg.kpis.length > 0 && (
-                  <div className="mt-3 space-y-2">
+                  <div className="mt-2.5 grid grid-cols-2 gap-2">
                     {msg.kpis.map((k, idx) => (
-                      <div key={idx} className="p-3 rounded-lg bg-slate-50 border border-slate-200 border-l-4 border-l-[#0D3B8E]">
-                        <p className="text-[11px] font-semibold text-slate-500 uppercase">{k.title}</p>
-                        <p className="text-lg font-extrabold text-[#0D3B8E] my-0.5">{k.value}</p>
-                        {k.subtext && <p className="text-xs text-slate-500">{k.subtext}</p>}
+                      <div key={idx} className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 border-l-3 border-l-[#0D3B8E]">
+                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">{k.title}</p>
+                        <p className="text-base font-extrabold text-[#0D3B8E] my-0.5">{k.value}</p>
+                        {k.subtext && <p className="text-[10px] text-slate-500">{k.subtext}</p>}
                       </div>
                     ))}
                   </div>
@@ -345,7 +435,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
               <Send className="w-3.5 h-3.5" />
             </button>
           </div>
-          <p className="text-[10px] text-center text-slate-400 mt-2">Powered by Gemini</p>
+          <p className="text-[10px] text-center text-slate-400 mt-2">Powered by Workfloww.ai</p>
         </div>
       </div>
     </div>

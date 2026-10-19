@@ -1,7 +1,7 @@
 import json
 import logging
-from typing import List
-from fastapi import APIRouter, HTTPException, Depends
+from typing import List, Optional
+from fastapi import APIRouter, HTTPException, Depends, Header, Query
 from backend.master_data.service import master_service
 from backend.master_data.schemas import (
     OfficeResponse, CircleResponse, DepotResponse, DepotUpdate, LicenseeResponse,
@@ -10,6 +10,7 @@ from backend.master_data.schemas import (
 from backend.db.redis_client import safe_get, safe_set, safe_delete
 from backend.core.security import get_current_user, RoleChecker, developer_only
 from backend.core.route import EncryptedRoute
+from backend.core.system_lock import check_system_lock_or_raise
 from backend.services.cache_service import invalidate_others_toggle_cache
 from backend.services.tenant_service import get_include_others_setting_async, clear_tenant_cache
 
@@ -81,22 +82,29 @@ async def get_headquarters():
 
 
 @router.get("/depots", response_model=List[DepotResponse])
-async def get_depots():
-    cached = await safe_get("rll:cache:depots_list")
+async def get_depots(
+    current_user: dict = Depends(get_current_user),
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID"),
+    tenant_id: Optional[str] = Query(None),
+):
+    target_tenant_id = x_tenant_id or tenant_id or (current_user.get("tenant_id") if current_user else None)
+    cache_key = f"rll:cache:depots_list:{target_tenant_id or 'all'}"
+    cached = await safe_get(cache_key)
     if cached:
         try:
             return json.loads(cached)
         except Exception as e:
             logger.warning(f"Error parsing cached depots_list: {e}")
 
-    data = master_service.get_depots_with_hq()
+    data = master_service.get_depots_with_hq(tenant_id=target_tenant_id)
     if data:
-        await safe_set("rll:cache:depots_list", json.dumps(data), ttl=86400)
+        await safe_set(cache_key, json.dumps(data), ttl=86400)
     return data
 
 
 @router.put("/depots/{depot_id}")
 async def update_depot(depot_id: str, payload: DepotUpdate, _admin=Depends(admin_only)):
+    check_system_lock_or_raise()
     result = master_service.update_depot(depot_id, payload.model_dump(exclude_unset=True))
     if not result:
         raise HTTPException(status_code=404, detail="Depot not found")
@@ -106,6 +114,7 @@ async def update_depot(depot_id: str, payload: DepotUpdate, _admin=Depends(admin
 
 @router.delete("/depots/{depot_id}")
 async def delete_depot(depot_id: str, _admin=Depends(admin_only)):
+    check_system_lock_or_raise()
     success = master_service.delete_depot(depot_id)
     if not success:
         raise HTTPException(status_code=400, detail="Failed to delete depot")
@@ -182,6 +191,7 @@ async def update_include_others_setting(
     current_user: dict = Depends(developer_only)
 ):
     """Update include_others_in_sales setting value (DEVELOPER ONLY)."""
+    check_system_lock_or_raise()
     new_val_bool = payload.include_others_in_sales
     new_val_str = "true" if new_val_bool else "false"
     old_val_bool = await get_include_others_setting_async()
@@ -235,11 +245,12 @@ async def update_include_others_setting(
 
 @router.get("/settings")
 async def get_system_settings():
-    """Fetch global system settings (e.g. TSM/ASE Data Restriction Toggle, include_others_in_sales)."""
+    """Fetch global system settings (e.g. TSM/ASE Data Restriction Toggle, include_others_in_sales, chatbot_enabled)."""
     client = get_supabase()
     result = {
         "tsm_ase_data_restriction_enabled": "true",
-        "include_others_in_sales": "true"
+        "include_others_in_sales": "true",
+        "chatbot_enabled": "true"
     }
 
     if client:
@@ -248,6 +259,8 @@ async def get_system_settings():
             if res.data:
                 for item in res.data:
                     result[item["setting_key"]] = item["setting_value"]
+                if "chatbot_enabled" not in result:
+                    result["chatbot_enabled"] = "true"
                 return result
         except Exception as e:
             logger.debug(f"Notice fetching system settings from DB: {e}")
@@ -263,51 +276,53 @@ async def update_system_setting(
     current_user: dict = Depends(get_current_user)
 ):
     """Update a global system setting."""
+    check_system_lock_or_raise()
     key = payload.setting_key.strip()
     val = payload.setting_value.strip().lower()
     user_role = (current_user.get("role_name") or current_user.get("role") or "").strip().lower()
 
-    # Developer-Only check for include_others_in_sales
-    if key == "include_others_in_sales":
+    # Developer-Only check for include_others_in_sales and chatbot_enabled
+    if key in {"include_others_in_sales", "chatbot_enabled"}:
         if user_role != "developer":
             raise HTTPException(
                 status_code=403,
                 detail=f"Permission denied: Only Developer role can modify '{key}'. Current role is '{user_role}'."
             )
 
-        old_val_bool = await get_include_others_setting_async()
-        old_val_str = "true" if old_val_bool else "false"
-        user_id = current_user.get("user_id") or current_user.get("sub")
-        user_email = current_user.get("email") or "developer"
+        if key == "include_others_in_sales":
+            old_val_bool = await get_include_others_setting_async()
+            old_val_str = "true" if old_val_bool else "false"
+            user_id = current_user.get("user_id") or current_user.get("sub")
+            user_email = current_user.get("email") or "developer"
 
-        client = get_supabase()
-        if client:
-            try:
-                client.rpc("set_system_setting", {"p_key": key, "p_val": val}).execute()
-            except Exception as e:
-                logger.warning(f"RPC set_system_setting notice: {e}")
+            client = get_supabase()
+            if client:
                 try:
-                    client.table("system_settings").upsert({"setting_key": key, "setting_value": val}).execute()
-                except Exception as e2:
-                    logger.error(f"Error updating system_settings table: {e2}")
+                    client.rpc("set_system_setting", {"p_key": key, "p_val": val}).execute()
+                except Exception as e:
+                    logger.warning(f"RPC set_system_setting notice: {e}")
+                    try:
+                        client.table("system_settings").upsert({"setting_key": key, "setting_value": val}).execute()
+                    except Exception as e2:
+                        logger.error(f"Error updating system_settings table: {e2}")
 
-            try:
-                audit_entry = {
-                    "setting_key": key,
-                    "old_value": old_val_str,
-                    "new_value": val,
-                    "changed_by_user_id": str(user_id) if user_id else None,
-                    "changed_by_email": str(user_email),
-                    "source": "Admin Portal"
-                }
-                client.table("system_settings_audit_log").insert(audit_entry).execute()
-            except Exception as e_audit:
-                logger.warning(f"Failed to record audit log: {e_audit}")
+                try:
+                    audit_entry = {
+                        "setting_key": key,
+                        "old_value": old_val_str,
+                        "new_value": val,
+                        "changed_by_user_id": str(user_id) if user_id else None,
+                        "changed_by_email": str(user_email),
+                        "source": "Admin Portal"
+                    }
+                    client.table("system_settings_audit_log").insert(audit_entry).execute()
+                except Exception as e_audit:
+                    logger.warning(f"Failed to record audit log: {e_audit}")
 
-        await safe_set(f"rll:setting:{key}", val, ttl=86400 * 30)
-        clear_tenant_cache()
-        await invalidate_others_toggle_cache()
-        return {"success": True, "setting_key": key, "setting_value": val}
+            await safe_set(f"rll:setting:{key}", val, ttl=86400 * 30)
+            clear_tenant_cache()
+            await invalidate_others_toggle_cache()
+            return {"success": True, "setting_key": key, "setting_value": val}
 
     # For other system settings (e.g. tsm_ase_data_restriction_enabled), require admin/super_admin or developer
     if user_role not in {"admin", "super_admin", "developer"}:
@@ -329,5 +344,7 @@ async def update_system_setting(
 
     await safe_set(f"rll:setting:{key}", val, ttl=86400 * 30)
     await safe_delete("rll:cache:system_settings_dict")
+    clear_tenant_cache()
     return {"success": True, "setting_key": key, "setting_value": val}
+
 

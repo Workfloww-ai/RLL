@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { formatNumber } from '../lib/utils';
+import { formatNumber, toTitleCase } from '../lib/utils';
 import { ChevronRightIcon, LocationIcon, StarIcon } from './Icons';
 
 export interface MetricItem {
@@ -54,7 +54,7 @@ export function MetricsCard({
             )}
             {titleIcon && <View style={styles.iconWrapper}>{titleIcon}</View>}
             <Text style={[styles.titleText, { fontSize: scaledFontSize(13) }]} numberOfLines={1}>
-              {title}
+              {toTitleCase(title)}
             </Text>
           </View>
 
@@ -73,7 +73,7 @@ export function MetricsCard({
             {!!companyBadge && (
               <View style={styles.companyBadgePill}>
                 <Text style={[styles.companyBadgeText, { fontSize: scaledFontSize(10) }]} numberOfLines={1}>
-                  {companyBadge}
+                  {toTitleCase(companyBadge)}
                 </Text>
               </View>
             )}
@@ -99,7 +99,7 @@ export function MetricsCard({
                 ]}
                 numberOfLines={1}
               >
-                {locationPill.replace(/^(Headquarter|Headquarters|HQ|Depot):\s*/i, '')}
+                {toTitleCase(locationPill.replace(/^(Headquarter|Headquarters|HQ|Depot):\s*/i, ''))}
               </Text>
             </View>
           )}

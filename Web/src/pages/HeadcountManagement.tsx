@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import FileUpload from '../components/FileUpload';
-import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X, RefreshCw, RotateCcw, ChevronUp, ChevronDown, ArrowUpDown, ChevronLeft, ChevronRight, Mail, Phone, ArrowLeft } from 'lucide-react';
+import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X, RefreshCw, RotateCcw, ChevronUp, ChevronDown, ArrowUpDown, ChevronLeft, ChevronRight, Mail, Phone, ArrowLeft, Clock, Lock } from 'lucide-react';
 import { User } from '../types';
 import { API_BASE_URL } from '../config';
 import { useToast } from '../contexts/ToastContext';
+import { useSystemLock } from '../contexts/SystemLockContext';
 
 const INITIAL_USERS: User[] = [];
 
@@ -33,6 +34,8 @@ const normalizeUser = (u: any): User => {
   const depotName = u.depotName || u.depot_name || u.depot || 'Unassigned';
   const circleName = u.circleName || u.circle_name || u.circle || 'Unassigned';
   const headquarters = u.headquarters || u.headquarters_name || u.hq || 'Unassigned';
+  const headquarters_ids = Array.isArray(u.headquarters_ids) ? u.headquarters_ids : [];
+  const headquartersList = Array.isArray(u.headquarters_list) ? u.headquarters_list : [];
   const reportingManager = u.reportingManager || u.reporting_manager || u.manager || 'Unassigned';
   const phoneNumber = u.phoneNumber || u.phone_number || u.phone || '';
   const isActive = u.isActive ?? u.is_active ?? true;
@@ -45,6 +48,8 @@ const normalizeUser = (u: any): User => {
     depotName,
     circleName,
     headquarters,
+    headquarters_ids,
+    headquartersList,
     reportingManager,
     phoneNumber,
     isActive,
@@ -52,6 +57,7 @@ const normalizeUser = (u: any): User => {
 };
 
 export default function HeadcountManagement() {
+  const { isLocked, lockReason, isCooldownActive, formattedCooldown, formattedCooldownLong, cooldownTotalSeconds } = useSystemLock();
   const [users, setUsers] = useState<User[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [showUpload, setShowUpload] = useState(false);
@@ -67,6 +73,7 @@ export default function HeadcountManagement() {
     role: 'ASE', 
     id: '', 
     headquarters: 'Unassigned', 
+    headquarters_ids: [] as string[],
     depotName: 'Unassigned', 
     reportingManager: 'Unassigned', 
     isActive: true 
@@ -79,6 +86,9 @@ export default function HeadcountManagement() {
   const [editRole, setEditRole] = useState<User['role']>('ASE');
   const [editReportingManager, setEditReportingManager] = useState("");
   const [editIsActive, setEditIsActive] = useState(true);
+  const [editHeadquartersIds, setEditHeadquartersIds] = useState<string[]>([]);
+  const [headquartersOptions, setHeadquartersOptions] = useState<{ headquarters_id: string; name: string }[]>([]);
+  const [savingId, setSavingId] = useState<string | null>(null);
 
   type SortField = 'name' | 'phoneNumber' | 'email' | 'role' | 'reportingManager' | 'isActive';
   type SortDirection = 'asc' | 'desc';
@@ -93,6 +103,10 @@ export default function HeadcountManagement() {
   const [availableRoles, setAvailableRoles] = useState<{ role_id: string; role_name: string; description?: string }[]>([]);
 
   const handleToggleUserStatus = async (user: User) => {
+    if (isLocked) {
+      showToast('System is in read-only mode during data upload. Status change locked.', 'warning');
+      return;
+    }
     const newActiveState = !user.isActive;
 
     // Optimistic Update
@@ -166,9 +180,26 @@ export default function HeadcountManagement() {
     }
   };
 
+  const fetchHeadquarters = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+      const res = await fetch(`${API_BASE_URL}/master-data/headquarters`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setHeadquartersOptions(data);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch headquarters from backend API:', err);
+    }
+  };
+
   useEffect(() => {
     fetchUsers();
     fetchRoles();
+    fetchHeadquarters();
   }, []);
 
   const handleSort = (field: SortField) => {
@@ -190,13 +221,21 @@ export default function HeadcountManagement() {
   };
 
   const handleEditClick = (user: User) => {
+    if (isLocked) {
+      showToast('System is in read-only mode during data upload. Editing is locked.', 'warning');
+      return;
+    }
     setEditingId(user.id);
     setEditName(user.name || "");
     setEditPhone(user.phoneNumber || "");
     setEditEmail(user.email || "");
     setEditRole(user.role || 'Territory Executive');
-    setEditReportingManager(user.reportingManager || "");
+    setEditReportingManager(user.reportingManager && user.reportingManager !== 'Unassigned' ? user.reportingManager : '');
     setEditIsActive(user.isActive ?? true);
+    const initialHqIds = (user.headquarters_ids && user.headquarters_ids.length > 0)
+      ? user.headquarters_ids
+      : (user.headquartersList ? user.headquartersList.map((h: any) => h.headquarters_id) : []);
+    setEditHeadquartersIds(initialHqIds);
   };
 
   const validateUserForm = (firstName: string, email: string, phoneNumber: string, role: string) => {
@@ -230,6 +269,10 @@ export default function HeadcountManagement() {
   };
 
   const handleSave = async (userId: string) => {
+    if (isLocked) {
+      showToast('System is in read-only mode during data upload. Edits are locked.', 'warning');
+      return;
+    }
     if (!editName || !editName.trim()) {
       showToast('First Name / Name is mandatory.', 'error');
       return;
@@ -257,18 +300,26 @@ export default function HeadcountManagement() {
       return;
     }
 
+    const selectedMgr = managerOptions.find(
+      (m) => m.name.trim().toLowerCase() === editReportingManager.trim().toLowerCase()
+    );
+
     const updatedPayload = {
       name: editName.trim(),
       phone: cleanPhone,
       phoneNumber: cleanPhone,
       email: editEmail.trim(),
       role: editRole,
+      manager_id: selectedMgr?.id || null,
+      managerId: selectedMgr?.id || null,
       reportingManager: editReportingManager ? editReportingManager.trim() : 'Unassigned',
       reporting_manager: editReportingManager ? editReportingManager.trim() : 'Unassigned',
       isActive: editIsActive,
       is_active: editIsActive,
+      headquarters_ids: editHeadquartersIds,
     };
 
+    setSavingId(userId);
     try {
       const token = localStorage.getItem('token');
       const res = await fetch(`${API_BASE_URL}/users/${userId}`, {
@@ -291,6 +342,8 @@ export default function HeadcountManagement() {
     } catch (err) {
       console.error('Error updating user on backend:', err);
       showToast('Network error while saving.', 'error');
+    } finally {
+      setSavingId(null);
     }
   };
 
@@ -299,24 +352,32 @@ export default function HeadcountManagement() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm("Are you sure you want to delete this user record?")) return;
+    if (isLocked) {
+      showToast('System is in read-only mode during data upload. Deletion is locked.', 'warning');
+      return;
+    }
+    if (!confirm("Are you sure you want to deactivate this user? Their historical sales data and mappings will be preserved, and their status will become Inactive.")) return;
     try {
       const token = localStorage.getItem('token');
       const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
       const res = await fetch(`${API_BASE_URL}/users/${id}`, { method: 'DELETE', headers });
       if (res.ok) {
-        setUsers(users.filter(u => u.id !== id));
-        showToast('User record deleted & active sessions revoked.', 'success');
+        setUsers(prev => prev.map(u => u.id === id ? { ...u, isActive: false, is_active: false } : u));
+        showToast('User deactivated. Historical records and mappings preserved as inactive.', 'info');
       } else {
-        showToast('Failed to delete user.', 'error');
+        showToast('Failed to deactivate user.', 'error');
       }
     } catch (err) {
-      console.error('Error deleting user on backend:', err);
-      showToast('Network error while deleting.', 'error');
+      console.error('Error deactivating user on backend:', err);
+      showToast('Network error while deactivating.', 'error');
     }
   };
 
   const handleAdd = async () => {
+    if (isLocked) {
+      showToast('System is in read-only mode during data upload. Adding users is locked.', 'warning');
+      return;
+    }
     if (!validateUserForm(newUser.firstName, newUser.email, newUser.phoneNumber, newUser.role)) {
       return;
     }
@@ -333,9 +394,12 @@ export default function HeadcountManagement() {
       email: newUser.email.trim(),
       role: newUser.role,
       circleName: 'Unassigned',
-      reportingManager: newUser.reportingManager ? newUser.reportingManager.trim() : 'Unassigned',
-      reporting_manager: newUser.reportingManager ? newUser.reportingManager.trim() : 'Unassigned',
-      is_active: newUser.isActive
+      manager_id: managerOptions.find(m => m.name.trim().toLowerCase() === (newUser.reportingManager || '').trim().toLowerCase())?.id || null,
+      managerId: managerOptions.find(m => m.name.trim().toLowerCase() === (newUser.reportingManager || '').trim().toLowerCase())?.id || null,
+      reportingManager: newUser.reportingManager && newUser.reportingManager !== 'Unassigned' ? newUser.reportingManager.trim() : 'Unassigned',
+      reporting_manager: newUser.reportingManager && newUser.reportingManager !== 'Unassigned' ? newUser.reportingManager.trim() : 'Unassigned',
+      is_active: newUser.isActive,
+      headquarters_ids: newUser.headquarters_ids || [],
     };
 
     try {
@@ -353,7 +417,7 @@ export default function HeadcountManagement() {
         setUsers([normalizeUser(created), ...users]);
         showToast('User created successfully.', 'success');
         setIsAdding(false);
-        setNewUser({ firstName: '', lastName: '', phoneNumber: '', email: '', role: 'ASE', id: '', headquarters: 'Unassigned', depotName: 'Unassigned', reportingManager: 'Unassigned', isActive: true });
+        setNewUser({ firstName: '', lastName: '', phoneNumber: '', email: '', role: 'ASE', id: '', headquarters: 'Unassigned', headquarters_ids: [], depotName: 'Unassigned', reportingManager: 'Unassigned', isActive: true });
       } else {
         const errData = await res.json().catch(() => ({}));
         showToast(errData.detail || 'Failed to create user.', 'error');
@@ -373,6 +437,57 @@ export default function HeadcountManagement() {
       }
     });
     return Array.from(managers).sort();
+  }, [users]);
+
+  // Comprehensive manager options for dropdowns (prioritizes TSMs, Leaders, and Admins)
+  const managerOptions = useMemo(() => {
+    const list: { id: string; name: string; role: string }[] = [];
+    const seen = new Set<string>();
+
+    // 1. All users with managerial or leadership roles
+    users.forEach((u) => {
+      if (!u || !u.name) return;
+      const r = (u.role || '').toUpperCase();
+      const isMgr = r.includes('TSM') || r.includes('LEAD') || r.includes('ADMIN') || r.includes('SUPERVISOR') || r.includes('MANAGER') || r.includes('ASM');
+      if (isMgr && !seen.has(u.name.toLowerCase().trim())) {
+        seen.add(u.name.toLowerCase().trim());
+        list.push({ id: u.id, name: u.name.trim(), role: u.role });
+      }
+    });
+
+    // 2. Any other users currently designated as reportingManager
+    users.forEach((u) => {
+      if (u.reportingManager && u.reportingManager !== 'Unassigned') {
+        const key = u.reportingManager.toLowerCase().trim();
+        if (!seen.has(key)) {
+          seen.add(key);
+          const matched = users.find(x => x.name.toLowerCase().trim() === key);
+          list.push({
+            id: matched ? matched.id : '',
+            name: u.reportingManager.trim(),
+            role: matched ? matched.role : 'Manager'
+          });
+        }
+      }
+    });
+
+    // 3. Any remaining active personnel
+    users.forEach((u) => {
+      if (!u || !u.name) return;
+      const key = u.name.toLowerCase().trim();
+      if (!seen.has(key)) {
+        seen.add(key);
+        list.push({ id: u.id, name: u.name.trim(), role: u.role });
+      }
+    });
+
+    return list.sort((a, b) => {
+      const aIsMgr = /TSM|LEAD|ADMIN|MANAGER/i.test(a.role);
+      const bIsMgr = /TSM|LEAD|ADMIN|MANAGER/i.test(b.role);
+      if (aIsMgr && !bIsMgr) return -1;
+      if (!aIsMgr && bIsMgr) return 1;
+      return a.name.localeCompare(b.name);
+    });
   }, [users]);
 
   const uniqueRoles = useMemo(() => {
@@ -476,6 +591,25 @@ export default function HeadcountManagement() {
 
   return (
     <div className="w-full h-full min-h-0 flex flex-col space-y-2.5">
+      {/* Read-Only Mode Warning Banner */}
+      {isLocked && (
+        <div className="bg-amber-50 border border-amber-300 text-amber-900 rounded-xl px-4 py-2.5 flex items-center justify-between gap-3 text-xs shrink-0 shadow-2xs">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-2.5 w-2.5 relative shrink-0">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500"></span>
+            </span>
+            <span>
+              <strong className="font-bold text-amber-950">Read-Only Mode Active:</strong>{' '}
+              {lockReason || 'Data upload in progress.'} User adjustments, role edits, reporting manager assignments, and bulk uploads are disabled.
+            </span>
+          </div>
+          <span className="px-2 py-0.5 bg-amber-200/90 text-amber-950 font-extrabold text-[10px] uppercase rounded tracking-wider shrink-0">
+            Read-Only
+          </span>
+        </div>
+      )}
+
       {/* Integrated Control Toolbar */}
       <div className="bg-white py-2 px-3 rounded-xl border border-slate-200/80 shadow-2xs flex flex-wrap items-center gap-3 text-xs shrink-0">
         <div className="relative flex-1 min-w-[180px]">
@@ -503,17 +637,41 @@ export default function HeadcountManagement() {
           </select>
         </div>
 
-        <div className="flex items-center gap-1.5">
-          <span className="text-slate-400 font-bold uppercase tracking-wider text-[9px]">Status:</span>
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as any)}
-            className="px-2.5 py-1 bg-slate-50 border border-slate-200/80 rounded-lg font-bold text-slate-700 text-xs focus:outline-none focus:border-[#0D3B8E]"
+        {/* Status Filter Tabs */}
+        <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200/80">
+          <button
+            type="button"
+            onClick={() => setStatusFilter('all')}
+            className={`px-2.5 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
+              statusFilter === 'all'
+                ? 'bg-white text-[#0D3B8E] shadow-2xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
           >
-            <option value="all">All Statuses</option>
-            <option value="active">Active Only</option>
-            <option value="inactive">Inactive Only</option>
-          </select>
+            All <span className="ml-1 text-[10px] px-1.5 py-0.2 rounded-full bg-slate-200 text-slate-700">{users.length}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter('active')}
+            className={`px-2.5 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
+              statusFilter === 'active'
+                ? 'bg-white text-emerald-700 shadow-2xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            Active <span className="ml-1 text-[10px] px-1.5 py-0.2 rounded-full bg-emerald-100 text-emerald-800">{users.filter(u => u.isActive).length}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter('inactive')}
+            className={`px-2.5 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
+              statusFilter === 'inactive'
+                ? 'bg-white text-rose-700 shadow-2xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            Inactive <span className="ml-1 text-[10px] px-1.5 py-0.2 rounded-full bg-rose-100 text-rose-800">{users.filter(u => !u.isActive).length}</span>
+          </button>
         </div>
 
         <div className="flex items-center gap-1.5">
@@ -543,17 +701,32 @@ export default function HeadcountManagement() {
         {/* Action Buttons */}
         <div className="flex items-center gap-2">
           <button 
-            onClick={() => setShowUpload(!showUpload)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-              showUpload 
-                ? 'bg-slate-200 hover:bg-slate-300 text-slate-800 border border-slate-300' 
-                : 'bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700'
+            disabled={isLocked || isCooldownActive}
+            onClick={() => !isLocked && !isCooldownActive && setShowUpload(!showUpload)}
+            title={
+              isLocked 
+                ? "Bulk upload is locked during active data ingestion" 
+                : isCooldownActive 
+                  ? `Bulk upload is paused for ${cooldownTotalSeconds <= 600 ? '10' : '30'} minutes after an upload. Enabled in ${formattedCooldown}` 
+                  : "Bulk Upload"
+            }
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+              (isLocked || isCooldownActive)
+                ? 'opacity-60 cursor-not-allowed bg-amber-50/60 text-amber-800 border border-amber-300' 
+                : showUpload 
+                  ? 'bg-slate-200 hover:bg-slate-300 text-slate-800 border border-slate-300 cursor-pointer' 
+                  : 'bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 cursor-pointer'
             }`}
           >
             {showUpload ? (
               <>
                 <ArrowLeft className="w-3.5 h-3.5 text-slate-700" />
                 Back to User List
+              </>
+            ) : isCooldownActive ? (
+              <>
+                <Clock className="w-3.5 h-3.5 text-amber-600 animate-spin" style={{ animationDuration: '6s' }} />
+                <span>Bulk Upload ({formattedCooldown})</span>
               </>
             ) : (
               <>
@@ -563,8 +736,14 @@ export default function HeadcountManagement() {
             )}
           </button>
           <button 
-            onClick={() => setIsAdding(!isAdding)}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#0D3B8E] hover:bg-[#0A2F73] text-white rounded-lg text-xs font-bold transition-all shadow-md shadow-[#0D3B8E]/15 cursor-pointer"
+            disabled={isLocked}
+            onClick={() => !isLocked && setIsAdding(!isAdding)}
+            title={isLocked ? "Adding users is locked during active data ingestion" : "Add User"}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-md shadow-[#0D3B8E]/15 ${
+              isLocked 
+                ? 'opacity-40 cursor-not-allowed bg-slate-400 text-white' 
+                : 'bg-[#0D3B8E] hover:bg-[#0A2F73] text-white cursor-pointer'
+            }`}
           >
             <UserPlus className="w-3.5 h-3.5" />
             Add User
@@ -577,7 +756,14 @@ export default function HeadcountManagement() {
         <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm transition-all">
           <div className="flex items-center justify-between mb-3">
             <div>
-              <h3 className="text-sm font-bold text-slate-900">Bulk User Roster Upload</h3>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-bold text-slate-900">Bulk User Roster Upload</h3>
+                {isCooldownActive && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                    <Clock size={10} /> Cooldown: {formattedCooldown} remaining
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-slate-500 mt-0.5">Upload an Excel (.xlsx, .xls, .xlsb) or CSV file containing user personnel data to automatically populate the database.</p>
             </div>
             <button 
@@ -676,13 +862,53 @@ export default function HeadcountManagement() {
               <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
                 Reporting Manager <span className="text-slate-400 font-normal lowercase">(optional)</span>
               </label>
-              <input 
-                type="text" 
-                value={newUser.reportingManager}
-                onChange={(e) => setNewUser({...newUser, reportingManager: e.target.value})}
-                placeholder="Manager Name"
+              <select 
+                value={newUser.reportingManager === 'Unassigned' ? '' : newUser.reportingManager}
+                onChange={(e) => setNewUser({...newUser, reportingManager: e.target.value || 'Unassigned'})}
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:border-[#0D3B8E]"
-              />
+              >
+                <option value="">Unassigned (No Manager)</option>
+                {managerOptions.map((m) => (
+                  <option key={m.id || m.name} value={m.name}>
+                    {m.name} ({m.role})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="md:col-span-3">
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                Assigned Headquarters <span className="text-slate-400 font-normal lowercase">(multi-select)</span>
+              </label>
+              <div className="flex flex-wrap gap-1.5 p-2.5 bg-slate-50 border border-slate-200 rounded-xl min-h-[42px] max-h-36 overflow-y-auto">
+                {headquartersOptions.length === 0 ? (
+                  <span className="text-xs text-slate-400 italic">No headquarters available</span>
+                ) : (
+                  headquartersOptions.map((hq) => {
+                    const isSelected = (newUser.headquarters_ids || []).includes(hq.headquarters_id);
+                    return (
+                      <button
+                        key={hq.headquarters_id}
+                        type="button"
+                        onClick={() => {
+                          const current = newUser.headquarters_ids || [];
+                          const next = isSelected
+                            ? current.filter((id) => id !== hq.headquarters_id)
+                            : [...current, hq.headquarters_id];
+                          setNewUser({ ...newUser, headquarters_ids: next });
+                        }}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1 ${
+                          isSelected
+                            ? 'bg-[#0D3B8E] text-white shadow-xs'
+                            : 'bg-white text-slate-600 border border-slate-200 hover:border-slate-300'
+                        }`}
+                      >
+                        {hq.name}
+                        {isSelected && <Check className="w-3 h-3 ml-0.5" />}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
             </div>
           </div>
           <div className="flex gap-2 mt-4 justify-end">
@@ -706,18 +932,18 @@ export default function HeadcountManagement() {
       {!showUpload && (
         <div className="bg-white rounded-2xl shadow-2xs border border-slate-200/80 flex-1 min-h-0 overflow-hidden flex flex-col">
         <div className="overflow-x-auto flex-1">
-          <table className="w-full text-left border-collapse table-fixed min-w-[800px]">
+          <table className="w-full text-left border-collapse table-fixed">
             <thead>
               <tr className="bg-slate-50/80 border-b border-slate-200/80 select-none">
                 {/* S.No Column */}
-                <th className="w-[6%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">
+                <th className="w-[3.5%] px-2 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">
                   #
                 </th>
 
                 {/* Name */}
                 <th 
                   onClick={() => handleSort('name')}
-                  className="w-[20%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[14.5%] px-2.5 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Name</span>
@@ -729,13 +955,13 @@ export default function HeadcountManagement() {
                   </div>
                 </th>
 
-                {/* Phone Number */}
+                {/* Phone */}
                 <th 
                   onClick={() => handleSort('phoneNumber')}
-                  className="w-[15%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[11%] px-2 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
-                    <span>Phone Number</span>
+                    <span>Phone</span>
                     {sortField === 'phoneNumber' ? (
                       sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#0D3B8E]" /> : <ChevronDown className="w-3 h-3 text-[#0D3B8E]" />
                     ) : (
@@ -747,7 +973,7 @@ export default function HeadcountManagement() {
                 {/* Email */}
                 <th 
                   onClick={() => handleSort('email')}
-                  className="w-[22%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[15%] px-2.5 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Email</span>
@@ -762,7 +988,7 @@ export default function HeadcountManagement() {
                 {/* Role */}
                 <th 
                   onClick={() => handleSort('role')}
-                  className="w-[13%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[7.5%] px-2 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Role</span>
@@ -774,13 +1000,18 @@ export default function HeadcountManagement() {
                   </div>
                 </th>
 
+                {/* Headquarters */}
+                <th className="w-[13.5%] px-2.5 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                  Headquarters
+                </th>
+
                 {/* Reporting Manager */}
                 <th 
                   onClick={() => handleSort('reportingManager')}
-                  className="w-[16%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[13%] px-2.5 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
                 >
                   <div className="flex items-center gap-1.5">
-                    <span>Reporting Manager</span>
+                    <span>Manager</span>
                     {sortField === 'reportingManager' ? (
                       sortDirection === 'asc' ? <ChevronUp className="w-3 h-3 text-[#0D3B8E]" /> : <ChevronDown className="w-3 h-3 text-[#0D3B8E]" />
                     ) : (
@@ -792,7 +1023,7 @@ export default function HeadcountManagement() {
                 {/* Status */}
                 <th 
                   onClick={() => handleSort('isActive')}
-                  className="w-[10%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors"
+                  className="w-[10.5%] px-2 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-700 transition-colors whitespace-nowrap"
                 >
                   <div className="flex items-center gap-1.5">
                     <span>Status</span>
@@ -805,7 +1036,7 @@ export default function HeadcountManagement() {
                 </th>
 
                 {/* Actions */}
-                <th className="w-[10%] px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">
+                <th className="w-[11.5%] px-2 py-3 pr-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right whitespace-nowrap">
                   Actions
                 </th>
               </tr>
@@ -813,7 +1044,7 @@ export default function HeadcountManagement() {
             <tbody className="divide-y divide-slate-100">
               {paginatedUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-6 py-12 text-center text-sm font-medium text-slate-500">
+                  <td colSpan={9} className="px-6 py-12 text-center text-sm font-medium text-slate-500">
                     {loading ? (
                       <span className="inline-flex items-center gap-2 text-slate-600 font-semibold">
                         <RefreshCw className="w-4 h-4 animate-spin text-[#0D3B8E]" /> Loading personnel from database...
@@ -830,67 +1061,91 @@ export default function HeadcountManagement() {
                   const serialNumber = (currentPage - 1) * rowsPerPage + idx + 1;
 
                   return (
-                    <tr key={user.id} className="hover:bg-blue-50/20 transition-colors group">
+                    <tr 
+                      key={user.id} 
+                      className={`hover:bg-blue-50/20 transition-colors group ${!user.isActive ? 'bg-slate-50/60' : ''}`}
+                    >
                       {/* S.No */}
-                      <td className="px-4 py-2.5 text-center text-xs font-bold text-slate-400">
+                      <td className="px-2 py-2 text-center text-xs font-bold text-slate-400">
                         {serialNumber}
                       </td>
 
                       {/* Name */}
-                      <td className="px-4 py-2.5">
+                      <td className="px-2.5 py-2">
                         {editingId === user.id ? (
                           <input
                             type="text"
                             value={editName}
                             onChange={(e) => setEditName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleSave(user.id);
+                              if (e.key === 'Escape') handleCancel();
+                            }}
                             className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
                           />
                         ) : (
-                          <div className="flex items-center gap-2.5">
-                            <div className="w-7 h-7 rounded-full bg-[#0D3B8E]/10 flex items-center justify-center text-[#0D3B8E] font-bold text-xs shrink-0">
+                          <div className="flex items-center gap-2">
+                            <div className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-[11px] shrink-0 ${
+                              user.isActive ? 'bg-[#0D3B8E]/10 text-[#0D3B8E]' : 'bg-slate-200 text-slate-500'
+                            }`}>
                               {user.name.charAt(0)}
                             </div>
-                            <p className="font-bold text-slate-900 text-xs truncate">{user.name}</p>
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <p className={`font-bold text-xs truncate ${user.isActive ? 'text-slate-900' : 'text-slate-600'}`}>{user.name}</p>
+                              {!user.isActive && (
+                                <span className="px-1.5 py-0.2 text-[9px] font-extrabold uppercase bg-rose-50 text-rose-700 border border-rose-200 rounded shrink-0">
+                                  Inactive
+                                </span>
+                              )}
+                            </div>
                           </div>
                         )}
                       </td>
 
                       {/* Phone Number */}
-                      <td className="px-4 py-2.5">
+                      <td className="px-2 py-2">
                         {editingId === user.id ? (
                           <input
                             type="text"
                             value={editPhone}
                             onChange={(e) => setEditPhone(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleSave(user.id);
+                              if (e.key === 'Escape') handleCancel();
+                            }}
                             className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
                           />
                         ) : (
-                          <div className="flex items-center gap-2 text-slate-600">
-                            <Phone className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          <div className="flex items-center gap-1.5 text-slate-600">
+                            <Phone className="w-3 h-3 text-slate-400 shrink-0" />
                             <span className="text-xs font-bold truncate">{user.phoneNumber || 'N/A'}</span>
                           </div>
                         )}
                       </td>
 
                       {/* Email */}
-                      <td className="px-4 py-2.5">
+                      <td className="px-2.5 py-2">
                         {editingId === user.id ? (
                           <input
                             type="email"
                             value={editEmail}
                             onChange={(e) => setEditEmail(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleSave(user.id);
+                              if (e.key === 'Escape') handleCancel();
+                            }}
                             className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
                           />
                         ) : (
-                          <div className="flex items-center gap-2 text-slate-600">
-                            <Mail className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                            <span className="text-xs font-medium truncate">{user.email || 'N/A'}</span>
+                          <div className="flex items-center gap-1.5 text-slate-600">
+                            <Mail className="w-3 h-3 text-slate-400 shrink-0" />
+                            <span className="text-xs font-medium truncate" title={user.email}>{user.email || 'N/A'}</span>
                           </div>
                         )}
                       </td>
 
                       {/* Role */}
-                      <td className="px-4 py-2.5">
+                      <td className="px-2 py-2">
                         {editingId === user.id ? (
                           <select
                             value={editRole}
@@ -902,21 +1157,90 @@ export default function HeadcountManagement() {
                             ))}
                           </select>
                         ) : (
-                          <span className={`px-2.5 py-1 rounded border text-[10px] font-bold uppercase tracking-wider ${getRoleColor(user.role)}`}>
+                          <span className={`px-2 py-0.5 rounded border text-[10px] font-bold uppercase tracking-wider ${getRoleColor(user.role)}`}>
                             {user.role}
                           </span>
                         )}
                       </td>
 
-                      {/* Reporting Manager */}
-                      <td className="px-4 py-2.5">
+                      {/* Headquarters */}
+                      <td className="px-2.5 py-2">
                         {editingId === user.id ? (
-                          <input
-                            type="text"
+                          <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto p-1 bg-white border border-slate-300 rounded">
+                            {headquartersOptions.length === 0 ? (
+                              <span className="text-[11px] text-slate-400 italic">No HQs</span>
+                            ) : (
+                              headquartersOptions.map((hq) => {
+                                const isSelected = editHeadquartersIds.includes(hq.headquarters_id);
+                                return (
+                                  <button
+                                    key={hq.headquarters_id}
+                                    type="button"
+                                    onClick={() => {
+                                      setEditHeadquartersIds((prev) =>
+                                        isSelected
+                                          ? prev.filter((id) => id !== hq.headquarters_id)
+                                          : [...prev, hq.headquarters_id]
+                                      );
+                                    }}
+                                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition-all cursor-pointer ${
+                                      isSelected
+                                        ? 'bg-[#0D3B8E] text-white'
+                                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                    }`}
+                                  >
+                                    {hq.name}
+                                  </button>
+                                );
+                              })
+                            )}
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap gap-1 items-center max-w-[220px]">
+                            {user.headquartersList && user.headquartersList.length > 0 ? (
+                              user.headquartersList.map((hq) => (
+                                <span
+                                  key={hq.headquarters_id}
+                                  className="px-2 py-0.5 rounded-md bg-blue-50 text-[#0D3B8E] border border-blue-200/60 text-[10px] font-bold truncate"
+                                  title={hq.name}
+                                >
+                                  {hq.name}
+                                </span>
+                              ))
+                            ) : user.headquarters && user.headquarters !== "Unassigned" ? (
+                              user.headquarters.split(',').map((h, i) => (
+                                <span
+                                  key={i}
+                                  className="px-2 py-0.5 rounded-md bg-blue-50 text-[#0D3B8E] border border-blue-200/60 text-[10px] font-bold truncate"
+                                  title={h.trim()}
+                                >
+                                  {h.trim()}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="text-slate-400 italic text-[11px]">Unassigned</span>
+                            )}
+                          </div>
+                        )}
+                      </td>
+
+                      {/* Reporting Manager */}
+                      <td className="px-2.5 py-2">
+                        {editingId === user.id ? (
+                          <select
                             value={editReportingManager}
                             onChange={(e) => setEditReportingManager(e.target.value)}
-                            className="w-full px-2 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
-                          />
+                            className="w-full px-1.5 py-1 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded focus:outline-none focus:border-[#0D3B8E]"
+                          >
+                            <option value="">Unassigned</option>
+                            {managerOptions
+                              .filter((m) => m.id !== user.id && m.name.toLowerCase() !== user.name.toLowerCase())
+                              .map((m) => (
+                                <option key={m.id || m.name} value={m.name}>
+                                  {m.name} ({m.role})
+                                </option>
+                              ))}
+                          </select>
                         ) : (
                           <p className={`text-xs font-bold truncate ${!user.reportingManager || user.reportingManager === "Unassigned" ? "text-slate-400 italic" : "text-slate-700"}`}>
                             {user.reportingManager || "Unassigned"}
@@ -925,48 +1249,49 @@ export default function HeadcountManagement() {
                       </td>
 
                       {/* Status */}
-                      <td className="px-4 py-2.5">
+                      <td className="px-2 py-2 whitespace-nowrap">
                         {editingId === user.id ? (
                           <button
                             type="button"
                             onClick={() => setEditIsActive(!editIsActive)}
-                            className="flex items-center gap-2 cursor-pointer group select-none"
+                            className="inline-flex items-center gap-1.5 cursor-pointer group select-none whitespace-nowrap"
                             title={`Click to switch to ${editIsActive ? 'Inactive' : 'Active'}`}
                           >
                             <div
-                              className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
+                              className={`relative inline-flex h-4 w-7 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
                                 editIsActive ? 'bg-emerald-500' : 'bg-slate-300'
                               }`}
                             >
                               <span
-                                className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
-                                  editIsActive ? 'translate-x-4' : 'translate-x-0'
+                                className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
+                                  editIsActive ? 'translate-x-3' : 'translate-x-0'
                                 }`}
                               />
                             </div>
-                            <span className={`text-xs font-extrabold ${editIsActive ? 'text-emerald-700' : 'text-slate-500'}`}>
+                            <span className={`text-[11px] font-extrabold ${editIsActive ? 'text-emerald-700' : 'text-slate-500'}`}>
                               {editIsActive ? 'Active' : 'Inactive'}
                             </span>
                           </button>
                         ) : (
                           <button
                             type="button"
-                            onClick={() => handleToggleUserStatus(user)}
-                            className="flex items-center gap-2 cursor-pointer group select-none"
-                            title={`Click to ${user.isActive ? 'deactivate user' : 'reactivate user'}`}
+                            disabled={isLocked}
+                            onClick={() => !isLocked && handleToggleUserStatus(user)}
+                            className={`inline-flex items-center gap-1.5 select-none whitespace-nowrap ${isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer group'}`}
+                            title={isLocked ? 'Status changes are locked during active data ingestion' : `Click to ${user.isActive ? 'deactivate user' : 'reactivate user'}`}
                           >
                             <div
-                              className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
+                              className={`relative inline-flex h-4 w-7 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
                                 user.isActive ? 'bg-emerald-500' : 'bg-slate-300'
                               }`}
                             >
                               <span
-                                className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
-                                  user.isActive ? 'translate-x-4' : 'translate-x-0'
+                                className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
+                                  user.isActive ? 'translate-x-3' : 'translate-x-0'
                                 }`}
                               />
                             </div>
-                            <span className={`text-xs font-bold ${user.isActive ? 'text-emerald-700' : 'text-slate-500'}`}>
+                            <span className={`text-[11px] font-bold ${user.isActive ? 'text-emerald-700' : 'text-slate-500'}`}>
                               {user.isActive ? 'Active' : 'Inactive'}
                             </span>
                           </button>
@@ -974,38 +1299,65 @@ export default function HeadcountManagement() {
                       </td>
 
                       {/* Actions */}
-                      <td className="px-4 py-2.5 text-right">
+                      <td className="px-2 py-2 pr-4 text-right whitespace-nowrap">
                         {editingId === user.id ? (
-                          <div className="flex items-center justify-end gap-1.5">
+                          <div className="inline-flex items-center justify-end gap-1.5 whitespace-nowrap">
                             <button
+                              type="button"
+                              disabled={isLocked || savingId === user.id}
+                              onMouseDown={(e) => e.preventDefault()}
                               onClick={() => handleSave(user.id)}
-                              className="p-1 bg-emerald-50 text-emerald-600 rounded hover:bg-emerald-100 transition-colors"
+                              className={`w-7 h-7 inline-flex items-center justify-center rounded-lg border transition-all select-none ${
+                                savingId === user.id
+                                  ? 'bg-emerald-100 border-emerald-300 text-emerald-700 cursor-wait'
+                                  : isLocked
+                                    ? 'opacity-50 cursor-not-allowed bg-emerald-50 border-emerald-200 text-emerald-400'
+                                    : 'bg-emerald-50 hover:bg-emerald-100 border-emerald-300 hover:border-emerald-500 text-emerald-600 hover:text-emerald-700 shadow-2xs hover:shadow-xs cursor-pointer active:scale-95'
+                              }`}
                               title="Save Changes"
                             >
-                              <Check className="w-4 h-4" />
+                              {savingId === user.id ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-600" />
+                              ) : (
+                                <Check className="w-4 h-4 stroke-[2.5]" />
+                              )}
                             </button>
                             <button
+                              type="button"
+                              disabled={savingId === user.id}
+                              onMouseDown={(e) => e.preventDefault()}
                               onClick={handleCancel}
-                              className="p-1 bg-slate-100 text-slate-600 rounded hover:bg-slate-200 transition-colors"
+                              className="w-7 h-7 inline-flex items-center justify-center rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-500 hover:text-slate-700 transition-all shadow-2xs hover:shadow-xs cursor-pointer active:scale-95"
                               title="Cancel"
                             >
-                              <X className="w-4 h-4" />
+                              <X className="w-4 h-4 stroke-[2.5]" />
                             </button>
                           </div>
                         ) : (
-                          <div className="flex items-center justify-end gap-1.5">
+                          <div className="inline-flex items-center justify-end gap-1.5 whitespace-nowrap">
                             <button
-                              onClick={() => handleEditClick(user)}
-                              className="px-2.5 py-1 border border-slate-200 rounded text-[10px] font-bold text-slate-600 hover:border-[#0D3B8E] hover:text-[#0D3B8E] transition-colors uppercase tracking-wider inline-flex items-center gap-1 cursor-pointer"
+                              disabled={isLocked}
+                              onClick={() => !isLocked && handleEditClick(user)}
+                              title={isLocked ? 'Editing is locked during active data ingestion' : 'Edit'}
+                              className={`px-2 py-0.5 border rounded text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1 transition-colors shrink-0 ${
+                                isLocked 
+                                  ? 'border-slate-200 text-slate-300 cursor-not-allowed opacity-50' 
+                                  : 'border-slate-200 text-slate-600 hover:border-[#0D3B8E] hover:text-[#0D3B8E] cursor-pointer'
+                              }`}
                             >
                               <Edit2 className="w-3 h-3" /> Edit
                             </button>
                             <button 
-                              onClick={() => handleDelete(user.id)}
-                              className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors inline-flex cursor-pointer"
-                              title="Delete Record"
+                              disabled={isLocked}
+                              onClick={() => !isLocked && handleDelete(user.id)}
+                              className={`p-1 rounded transition-colors inline-flex shrink-0 ${
+                                isLocked 
+                                  ? 'text-slate-200 cursor-not-allowed opacity-40' 
+                                  : 'text-slate-400 hover:text-red-500 hover:bg-red-50 cursor-pointer'
+                              }`}
+                              title={isLocked ? 'Deletion is locked during active data ingestion' : 'Delete Record'}
                             >
-                              <Trash2 className="w-4 h-4" />
+                              <Trash2 className="w-3.5 h-3.5" />
                             </button>
                           </div>
                         )}

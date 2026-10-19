@@ -2,6 +2,7 @@ import React from 'react';
 import { Package, Map, Users, LogOut, Settings, Shield } from 'lucide-react';
 import { ViewState } from '../types';
 import { useTenantConfig } from '../hooks/useTenantConfig';
+import { useSystemLock } from '../contexts/SystemLockContext';
 
 interface DashboardLayoutProps {
   currentView: ViewState;
@@ -11,16 +12,46 @@ interface DashboardLayoutProps {
   children: React.ReactNode;
 }
 
+function getUserRoleFromStorage(): string {
+  try {
+    const storedUserStr = localStorage.getItem('user');
+    if (storedUserStr) {
+      const u = JSON.parse(storedUserStr);
+      const r = (u.role_name || u.role || '').toLowerCase();
+      if (r) return r;
+    }
+  } catch (e) {}
+
+  try {
+    const token = localStorage.getItem('token');
+    if (token) {
+      const base64Url = token.split('.')[1];
+      if (base64Url) {
+        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+        const payload = JSON.parse(atob(base64));
+        const r = (payload.role || payload.role_name || '').toLowerCase();
+        if (r) return r;
+      }
+    }
+  } catch (e) {}
+
+  return '';
+}
+
 export default function DashboardLayout({ currentView, onViewChange, onLogout, userName, children }: DashboardLayoutProps) {
   const { config } = useTenantConfig();
+  const { isLocked, lockReason, lockType } = useSystemLock();
   const displayUserName = userName || 'Admin User';
   const userInitial = displayUserName.charAt(0).toUpperCase();
+  const userRole = getUserRoleFromStorage();
+  const isDeveloper = userRole === 'developer';
+
   const navItems = [
     { id: 'stock' as ViewState, label: 'Sales Upload', icon: Package },
     { id: 'territory' as ViewState, label: 'Territory Management', icon: Map },
     { id: 'headcount' as ViewState, label: 'User Management', icon: Users },
     { id: 'roles' as ViewState, label: 'Role Management', icon: Shield },
-    { id: 'settings' as ViewState, label: 'Security & Settings', icon: Settings },
+    ...(isDeveloper ? [{ id: 'settings' as ViewState, label: 'Security & Settings', icon: Settings }] : []),
   ];
 
   return (
@@ -47,18 +78,27 @@ export default function DashboardLayout({ currentView, onViewChange, onLogout, u
           <div className="text-blue-200/60 text-[10px] uppercase font-bold tracking-widest px-3 mb-2">Operations</div>
           {navItems.map(item => {
             const isActive = currentView === item.id;
+            const isItemProcessing = item.id === 'stock' && isLocked && lockType === 'sales_upload';
             return (
               <button
                 key={item.id}
                 onClick={() => onViewChange(item.id)}
-                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs transition-all duration-200 cursor-pointer ${
+                className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs transition-all duration-200 cursor-pointer ${
                   isActive 
                     ? 'bg-[#144DB8] text-white font-bold shadow-sm' 
                     : 'text-blue-100/80 hover:bg-white/10 hover:text-white font-medium'
                 }`}
               >
-                <item.icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-white' : 'text-blue-200/70'}`} />
-                <span className="truncate text-left">{item.label}</span>
+                <div className="flex items-center gap-3 truncate">
+                  <item.icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-white' : 'text-blue-200/70'}`} />
+                  <span className="truncate text-left">{item.label}</span>
+                </div>
+                {isItemProcessing && (
+                  <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[9px] font-bold bg-amber-400/20 text-amber-300 border border-amber-400/40 shrink-0">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
+                    Syncing
+                  </span>
+                )}
               </button>
             );
           })}
@@ -91,13 +131,39 @@ export default function DashboardLayout({ currentView, onViewChange, onLogout, u
           <div className="flex items-center gap-2.5">
             <div className="text-right">
               <p className="text-xs font-bold text-slate-900 leading-none">{displayUserName}</p>
-              <p className="text-[9px] text-[#0D3B8E] font-bold uppercase tracking-wider mt-0.5">Admin</p>
+              <p className="text-[9px] text-[#0D3B8E] font-bold uppercase tracking-wider mt-0.5">
+                {userRole ? userRole.toUpperCase() : 'ADMIN'}
+              </p>
             </div>
             <div className="w-7 h-7 bg-[#0D3B8E] text-white rounded-full font-bold text-xs flex items-center justify-center shadow-xs">
               {userInitial}
             </div>
           </div>
         </header>
+
+        {/* System Ingestion Read-Only Lock Banner */}
+        {isLocked && (
+          <div className="bg-amber-500/10 border-b border-amber-300 px-6 py-2.5 flex items-center justify-between gap-4 text-xs shrink-0 z-10 transition-all">
+            <div className="flex items-center gap-2.5 text-amber-900 font-medium">
+              <span className="flex h-2.5 w-2.5 relative shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500"></span>
+              </span>
+              <span>
+                <strong className="font-bold text-amber-950">System Ingestion Active (Read-Only Mode):</strong>{' '}
+                {lockReason || 'Data upload in progress.'} User adjustments, role edits, and additional uploads are temporarily locked to maintain transactional integrity.
+              </span>
+            </div>
+            {lockType === 'sales_upload' && currentView !== 'stock' && (
+              <button 
+                onClick={() => onViewChange('stock')}
+                className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-md text-[11px] font-bold shadow-xs transition cursor-pointer shrink-0"
+              >
+                View Upload Progress →
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Content Container */}
         <div className="flex-1 overflow-y-auto p-4 max-w-7xl mx-auto w-full flex flex-col min-h-0">

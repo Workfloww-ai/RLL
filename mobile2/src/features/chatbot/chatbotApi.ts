@@ -10,7 +10,9 @@ export async function sendChatMessage(
   period: string = 'Daily',
   selectedHq: string = 'All Headquarters',
   dateFrom?: string,
-  dateTo?: string
+  dateTo?: string,
+  entityType?: string,
+  entityId?: string
 ) {
   const res = await apiFetch('/chatbot/query', {
     method: 'POST',
@@ -21,6 +23,8 @@ export async function sendChatMessage(
       selected_hq: selectedHq,
       date_from: dateFrom,
       date_to: dateTo,
+      entity_type: entityType,
+      entity_id: entityId,
     }),
   });
   if (!res.ok) {

@@ -2,6 +2,7 @@ import uuid
 import logging
 import io
 import re
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 import pandas as pd
 from backend.db.client import get_supabase
@@ -17,18 +18,21 @@ class UserService:
     def __init__(self):
         self.in_memory_users = list(FALLBACK_USERS)
 
-    def list_users(self) -> List[Dict[str, Any]]:
+    def list_users(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
         client = get_supabase()
         if not client:
-            return self.in_memory_users
+            return [u for u in self.in_memory_users if not tenant_id or u.get("tenant_id") == tenant_id]
 
         try:
-            # 1. Fetch users
-            users_res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, created_at").execute()
+            # 1. Fetch users strictly scoped by tenant_id if provided
+            users_query = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, created_at, tenant_id")
+            if tenant_id:
+                users_query = users_query.eq("tenant_id", tenant_id)
+            users_res = users_query.execute()
             raw_users = users_res.data if users_res.data is not None else []
 
             if not raw_users:
-                return self.in_memory_users
+                return []
 
             # 2. Fetch roles map
             roles_res = client.table("roles").select("role_id, role_name").execute()
@@ -38,9 +42,10 @@ class UserService:
             user_roles_res = client.table("user_roles").select("user_id, role_id, is_active").execute()
             role_by_user_id: Dict[str, str] = {}
             for ur in (user_roles_res.data or []):
-                if ur.get("is_active", True):
-                    uid = str(ur["user_id"])
-                    rid = str(ur.get("role_id") or "")
+                uid = str(ur["user_id"])
+                rid = str(ur.get("role_id") or "")
+                # Prioritize active role; fallback to inactive role if none assigned yet
+                if ur.get("is_active", True) or uid not in role_by_user_id:
                     role_by_user_id[uid] = roles_map.get(rid, "ASE")
 
             # 4. Fetch depots & headquarters map
@@ -50,7 +55,25 @@ class UserService:
             hq_res = client.table("headquarters").select("headquarters_id, name").execute()
             hq_map = {str(h["headquarters_id"]): h.get("name", "Unassigned") for h in (hq_res.data or []) if h.get("headquarters_id")}
 
-            # 5. Fetch user_depot mapping
+            # 5. Fetch user_headquarters_mapping (include both active and historical for display)
+            user_hqs_map: Dict[str, List[Dict[str, Any]]] = {}
+            try:
+                uhq_res = client.table("user_headquarters_mapping").select("user_id, headquarters_id, is_active").execute()
+                for uhq in (uhq_res.data or []):
+                    uid = str(uhq.get("user_id") or "")
+                    hid = str(uhq.get("headquarters_id") or "")
+                    if uid and hid in hq_map:
+                        if uid not in user_hqs_map:
+                            user_hqs_map[uid] = []
+                        user_hqs_map[uid].append({
+                            "headquarters_id": hid,
+                            "name": hq_map[hid],
+                            "is_active": uhq.get("is_active", True)
+                        })
+            except Exception as e_uhq:
+                logger.warning(f"Error fetching user_headquarters_mapping in list_users: {e_uhq}")
+
+            # 5b. Fetch user_depot mapping
             user_depot_info: Dict[str, Dict[str, str]] = {}
             try:
                 ud_res = client.table("user_depot").select("user_id, depot_id").execute()
@@ -70,7 +93,20 @@ class UserService:
             except Exception as e_ud:
                 logger.warning(f"Error fetching user_depot: {e_ud}")
 
-            # 6. Build final list
+            # 6. Build final list (preserve manager assignment even if inactive)
+            mapping_manager_by_user: Dict[str, str] = {}
+            try:
+                atm_res = client.table("ase_tsm_mapping").select("ase_user_id, tsm_user_id, is_active").execute()
+                for m in (atm_res.data or []):
+                    a_u = str(m.get("ase_user_id") or "")
+                    t_u = str(m.get("tsm_user_id") or "")
+                    if a_u and t_u:
+                        # Prioritize active mapping, fallback to inactive mapping if none set
+                        if m.get("is_active", True) or a_u not in mapping_manager_by_user:
+                            mapping_manager_by_user[a_u] = t_u
+            except Exception as e_atm:
+                logger.warning(f"Error fetching ase_tsm_mapping in list_users: {e_atm}")
+
             user_dict_by_id = {str(u["user_id"]): u for u in raw_users}
             result = []
             for u in raw_users:
@@ -79,7 +115,7 @@ class UserService:
                 last_name = u.get("last_name") or ""
                 full_name = f"{first_name} {last_name}".strip() or u.get("email") or "Unnamed User"
 
-                manager_id = u.get("manager_id")
+                manager_id = u.get("manager_id") or mapping_manager_by_user.get(uid)
                 manager_name = "Unassigned"
                 if manager_id and str(manager_id) in user_dict_by_id:
                     mgr_obj = user_dict_by_id[str(manager_id)]
@@ -89,8 +125,15 @@ class UserService:
 
                 ud_data = user_depot_info.get(uid, {})
                 depot_name = ud_data.get("depot_name", "Unassigned")
-                headquarters = ud_data.get("headquarters", "Unassigned")
                 circle_name = ud_data.get("circle_name", "Unassigned")
+
+                all_assigned_hqs = user_hqs_map.get(uid, [])
+                # If active HQs exist, use them; otherwise show assigned historical HQs so inactive users aren't unassigned
+                active_hqs = [h for h in all_assigned_hqs if h.get("is_active", True)]
+                display_hqs = active_hqs if active_hqs else all_assigned_hqs
+                hq_names = [h["name"] for h in display_hqs]
+                hq_ids = [h["headquarters_id"] for h in display_hqs]
+                headquarters_str = ", ".join(hq_names) if hq_names else ud_data.get("headquarters", "Unassigned")
 
                 result.append({
                     "id": uid,
@@ -107,7 +150,9 @@ class UserService:
                     "manager_id": str(manager_id) if manager_id else None,
                     "depotName": depot_name,
                     "depot_name": depot_name,
-                    "headquarters": headquarters,
+                    "headquarters": headquarters_str,
+                    "headquarters_ids": hq_ids,
+                    "headquarters_list": display_hqs,
                     "circleName": circle_name,
                     "isActive": u.get("is_active", True),
                     "is_active": u.get("is_active", True)
@@ -326,7 +371,7 @@ class UserService:
 
         return None
 
-    def create_user(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def create_user(self, payload: Dict[str, Any], created_by: Optional[str] = None) -> Dict[str, Any]:
         client = get_supabase()
 
         first_name = str(payload.get("first_name") or payload.get("firstName") or "").strip()
@@ -365,6 +410,9 @@ class UserService:
         if not user_id:
             user_id = payload.get("id") or payload.get("user_id") or str(uuid.uuid4())
 
+        creator_id = created_by or payload.get("created_by") or payload.get("uploaded_by")
+        clean_creator_id = str(creator_id) if (creator_id and len(str(creator_id)) == 36 and str(creator_id) != "00000000-0000-0000-0000-000000000001") else None
+
         user_record = {
             "id": user_id,
             "user_id": user_id,
@@ -382,8 +430,22 @@ class UserService:
             "headquarters": headquarters,
             "circleName": "Unassigned",
             "isActive": is_active,
-            "is_active": is_active
+            "is_active": is_active,
+            "created_by": clean_creator_id,
+            "updated_by": clean_creator_id
         }
+
+        user_tenant_id = payload.get("tenant_id")
+        if not user_tenant_id and clean_creator_id and client:
+            try:
+                c_res = client.table("users").select("tenant_id").eq("user_id", clean_creator_id).limit(1).execute()
+                if c_res.data and c_res.data[0].get("tenant_id"):
+                    user_tenant_id = str(c_res.data[0]["tenant_id"])
+            except Exception as e_t:
+                logger.warning(f"Could not resolve tenant for creator {clean_creator_id}: {e_t}")
+
+        if user_tenant_id:
+            user_record["tenant_id"] = user_tenant_id
 
         if not client:
             self.in_memory_users.insert(0, user_record)
@@ -397,6 +459,11 @@ class UserService:
             "phone": phone,
             "is_active": is_active
         }
+        if user_tenant_id:
+            user_row["tenant_id"] = user_tenant_id
+        if clean_creator_id:
+            user_row["created_by"] = clean_creator_id
+            user_row["updated_by"] = clean_creator_id
 
         # Resolve manager user_id if reporting_manager provided
         manager_user_id = self._resolve_manager_user_id(client, reporting_manager)
@@ -420,22 +487,18 @@ class UserService:
                     ur_res = client.table("user_roles").select("user_role_id").eq("user_id", user_id).eq("role_id", role_id).limit(1).execute()
                     user_role_id = ur_res.data[0]["user_role_id"] if ur_res.data else None
 
-            # 3. If manager exists and is not self, insert/update public.ase_tsm_mapping
-            if manager_user_id and str(manager_user_id) != str(user_id):
+            # 3. If manager exists, insert/update public.ase_tsm_mapping
+            manager_param = payload.get("manager_id") or payload.get("managerId") or payload.get("reportingManager") or payload.get("reporting_manager")
+            if manager_param and str(manager_param).strip().lower() not in ("unassigned", "none", "null", ""):
                 try:
-                    mgr_ur_res = client.table("user_roles").select("user_role_id").eq("user_id", manager_user_id).limit(1).execute()
-                    mgr_role_id = mgr_ur_res.data[0]["user_role_id"] if mgr_ur_res.data else None
-
-                    # Delete any existing stale hierarchy rows for this ASE to prevent multi-TSM overlaps
-                    client.table("ase_tsm_mapping").delete().eq("ase_user_id", user_id).execute()
-                    
-                    client.table("ase_tsm_mapping").insert({
-                        "ase_user_id": user_id,
-                        "tsm_user_id": manager_user_id,
-                        "ase_user_role_id": user_role_id,
-                        "tsm_user_role_id": mgr_role_id,
-                        "is_active": True
-                    }).execute()
+                    manager_user_id = self._resolve_manager_user_id(client, str(manager_param).strip())
+                    if manager_user_id:
+                        client.table("ase_tsm_mapping").delete().eq("ase_user_id", user_id).execute()
+                        client.table("ase_tsm_mapping").insert({
+                            "ase_user_id": user_id,
+                            "tsm_user_id": manager_user_id,
+                            "is_active": True
+                        }).execute()
                 except Exception as mgr_err:
                     logger.warning(f"Could not update ase_tsm_mapping: {mgr_err}")
 
@@ -450,6 +513,13 @@ class UserService:
                 except Exception as d_err:
                     logger.warning(f"Could not update user_depot mapping during create_user: {d_err}")
 
+            # 5. If headquarters_ids provided, map user to headquarters
+            if "headquarters_ids" in payload and payload["headquarters_ids"] is not None:
+                try:
+                    self.set_user_headquarters(user_id, payload["headquarters_ids"], updated_by=clean_creator_id)
+                except Exception as hq_err:
+                    logger.warning(f"Could not set user headquarters during create_user: {hq_err}")
+
         except Exception as e:
             logger.error(f"Error creating user in Supabase: {e}")
 
@@ -458,7 +528,7 @@ class UserService:
         self.in_memory_users.insert(0, user_record)
         return user_record
 
-    def update_user(self, user_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def update_user(self, user_id: str, payload: Dict[str, Any], updated_by: Optional[str] = None) -> Dict[str, Any]:
         client = get_supabase()
 
         first_name = payload.get("first_name") or payload.get("firstName")
@@ -517,18 +587,46 @@ class UserService:
             user_update["phone"] = payload.get("phone", payload.get("phoneNumber"))
         if "email" in payload:
             user_update["email"] = payload["email"]
-        if "is_active" in payload or "isActive" in payload:
-            user_update["is_active"] = payload.get("is_active", payload.get("isActive"))
+        is_active_val = payload.get("is_active", payload.get("isActive"))
+        if is_active_val is not None:
+            user_update["is_active"] = bool(is_active_val)
+            user_update["updated_at"] = datetime.now(timezone.utc).isoformat()
 
-        reporting_manager = payload.get("reportingManager") or payload.get("reporting_manager")
+        updator_id = updated_by or payload.get("updated_by") or payload.get("uploaded_by") or payload.get("created_by")
+        clean_updator_id = str(updator_id) if (updator_id and len(str(updator_id)) == 36 and str(updator_id) != "00000000-0000-0000-0000-000000000001") else None
+        if clean_updator_id:
+            user_update["updated_by"] = clean_updator_id
+
+        manager_param = payload.get("manager_id") or payload.get("managerId") or payload.get("reportingManager") or payload.get("reporting_manager")
+        has_manager_field = any(k in payload for k in ("manager_id", "managerId", "reportingManager", "reporting_manager"))
         manager_user_id = None
-        if reporting_manager:
-            if str(reporting_manager).strip().lower() not in ("unassigned", "none", "null", ""):
-                manager_user_id = self._resolve_manager_user_id(client, reporting_manager)
+        if has_manager_field and manager_param:
+            if str(manager_param).strip().lower() not in ("unassigned", "none", "null", ""):
+                manager_user_id = self._resolve_manager_user_id(client, str(manager_param).strip())
 
         try:
             if user_update:
                 client.table("users").update(user_update).eq("user_id", user_id).execute()
+
+            if is_active_val is not None:
+                new_status = bool(is_active_val)
+                try:
+                    client.table("user_roles").update({"is_active": new_status}).eq("user_id", user_id).execute()
+                except Exception as e_ur:
+                    logger.warning(f"Could not update user_roles is_active to {new_status} for {user_id}: {e_ur}")
+
+                try:
+                    client.table("ase_tsm_mapping").update({"is_active": new_status}).or_(f"ase_user_id.eq.{user_id},tsm_user_id.eq.{user_id}").execute()
+                except Exception as e_atm:
+                    logger.warning(f"Could not update ase_tsm_mapping is_active to {new_status} for {user_id}: {e_atm}")
+
+                try:
+                    client.table("user_headquarters_mapping").update({
+                        "is_active": new_status,
+                        "updated_at": user_update.get("updated_at", datetime.now(timezone.utc).isoformat())
+                    }).eq("user_id", user_id).execute()
+                except Exception as e_uhq:
+                    logger.warning(f"Could not update user_headquarters_mapping is_active to {new_status} for {user_id}: {e_uhq}")
 
             role_name = payload.get("role")
             user_role_id = None
@@ -543,25 +641,19 @@ class UserService:
                     ur_res = client.table("user_roles").upsert({"user_id": user_id, "role_id": role_id, "is_active": True}, on_conflict="user_id,role_id").execute()
                     user_role_id = ur_res.data[0]["user_role_id"] if ur_res.data else None
 
-            # Upsert into public.ase_tsm_mapping if manager resolved
-            if manager_user_id and str(manager_user_id) != str(user_id):
+            # Upsert or clear public.ase_tsm_mapping if manager field was provided
+            if has_manager_field:
                 try:
-                    if not user_role_id:
-                        ur_res = client.table("user_roles").select("user_role_id").eq("user_id", user_id).limit(1).execute()
-                        user_role_id = ur_res.data[0]["user_role_id"] if ur_res.data else None
-
-                    mgr_ur_res = client.table("user_roles").select("user_role_id").eq("user_id", manager_user_id).limit(1).execute()
-                    mgr_ur_id = mgr_ur_res.data[0]["user_role_id"] if mgr_ur_res.data else None
-
-                    # Delete any existing stale hierarchy rows for this ASE to prevent multi-TSM overlaps
-                    client.table("ase_tsm_mapping").delete().eq("ase_user_id", user_id).execute()
-                    
-                    client.table("ase_tsm_mapping").insert({
-                        "ase_user_id": user_id,
-                        "tsm_user_id": manager_user_id,
-                        "ase_user_role_id": user_role_id,
-                        "tsm_user_role_id": mgr_ur_id
-                    }).execute()
+                    if manager_user_id:
+                        client.table("ase_tsm_mapping").delete().eq("ase_user_id", user_id).execute()
+                        client.table("ase_tsm_mapping").insert({
+                            "ase_user_id": user_id,
+                            "tsm_user_id": manager_user_id,
+                            "is_active": True
+                        }).execute()
+                    else:
+                        # Manager explicitly unassigned or cleared
+                        client.table("ase_tsm_mapping").delete().eq("ase_user_id", user_id).execute()
                 except Exception as e:
                     logger.warning(f"Could not update ase_tsm_mapping during update_user: {e}")
 
@@ -580,6 +672,13 @@ class UserService:
                     except Exception as d_err:
                         logger.warning(f"Could not update user_depot during update_user: {d_err}")
 
+            # Update headquarters assignments if headquarters_ids provided in payload
+            if "headquarters_ids" in payload and payload["headquarters_ids"] is not None:
+                try:
+                    self.set_user_headquarters(user_id, payload["headquarters_ids"], updated_by=clean_updator_id)
+                except Exception as hq_err:
+                    logger.warning(f"Could not update user headquarters during update_user: {hq_err}")
+
         except Exception as e:
             logger.error(f"Error updating user {user_id} in Supabase: {e}")
 
@@ -590,42 +689,176 @@ class UserService:
                 return u
         return payload
 
-    def delete_user(self, user_id: str) -> bool:
+    def get_user_headquarters(self, user_id: str) -> Dict[str, Any]:
+        """Fetch all active headquarters assigned to a user."""
+        client = get_supabase()
+        if not client:
+            return {"user_id": user_id, "headquarters_ids": [], "headquarters": [], "headquarters_names": []}
+
+        # Verify user exists
+        user_res = client.table("users").select("user_id, first_name, last_name, tenant_id").eq("user_id", user_id).limit(1).execute()
+        if not user_res.data:
+            raise ValueError(f"User '{user_id}' does not exist.")
+
+        # Fetch HQ lookup
+        hq_res = client.table("headquarters").select("headquarters_id, name").execute()
+        hq_map = {str(h["headquarters_id"]): h.get("name", "Unassigned") for h in (hq_res.data or [])}
+
+        uhq_res = client.table("user_headquarters_mapping").select("mapping_id, headquarters_id, is_active").eq("user_id", user_id).eq("is_active", True).execute()
+        active_mappings = uhq_res.data or []
+
+        hq_ids = [str(m["headquarters_id"]) for m in active_mappings if m.get("headquarters_id")]
+        hqs = [{"headquarters_id": hid, "name": hq_map.get(hid, "Unknown")} for hid in hq_ids]
+        hq_names = [h["name"] for h in hqs]
+
+        return {
+            "user_id": user_id,
+            "headquarters_ids": hq_ids,
+            "headquarters": hqs,
+            "headquarters_names": hq_names,
+            "headquarters_display": ", ".join(hq_names) if hq_names else "Unassigned"
+        }
+
+    def set_user_headquarters(self, user_id: str, headquarters_ids: List[str], updated_by: Optional[str] = None) -> Dict[str, Any]:
+        """Atomically set/replace active headquarters for a user (supports single, multiple, or empty list)."""
+        client = get_supabase()
+        if not client:
+            return {"user_id": user_id, "headquarters_ids": headquarters_ids, "headquarters": []}
+
+        # 1. Verify user exists and retrieve tenant
+        user_res = client.table("users").select("user_id, first_name, last_name, tenant_id, is_active").eq("user_id", user_id).limit(1).execute()
+        if not user_res.data:
+            raise ValueError(f"User '{user_id}' does not exist.")
+        user = user_res.data[0]
+        user_tenant_id = user.get("tenant_id")
+        if not user_tenant_id and updated_by:
+            try:
+                admin_res = client.table("users").select("tenant_id").eq("user_id", str(updated_by)).limit(1).execute()
+                if admin_res.data and admin_res.data[0].get("tenant_id"):
+                    user_tenant_id = admin_res.data[0]["tenant_id"]
+            except Exception:
+                pass
+
+        # 2. De-duplicate requested HQ IDs while preserving order
+        clean_hq_ids = []
+        for hid in (headquarters_ids or []):
+            s_hid = str(hid).strip()
+            if s_hid and s_hid not in clean_hq_ids:
+                clean_hq_ids.append(s_hid)
+
+        # 3. If list not empty, validate each HQ exists, is active, and matches user tenant
+        hq_lookup = {}
+        if clean_hq_ids:
+            hq_res = client.table("headquarters").select("headquarters_id, name, is_active, tenant_id").in_("headquarters_id", clean_hq_ids).execute()
+            found_hqs = hq_res.data or []
+            found_ids = {str(h["headquarters_id"]): h for h in found_hqs}
+
+            for hid in clean_hq_ids:
+                if hid not in found_ids:
+                    raise ValueError(f"Headquarters ID '{hid}' does not exist.")
+                hq_obj = found_ids[hid]
+                if not hq_obj.get("is_active", True):
+                    raise ValueError(f"Headquarters '{hq_obj.get('name', hid)}' is inactive.")
+                hq_tenant = hq_obj.get("tenant_id")
+                if hq_tenant and user_tenant_id and str(hq_tenant) != str(user_tenant_id):
+                    raise ValueError(f"Cross-tenant assignment rejected: Headquarters '{hq_obj.get('name')}' belongs to a different tenant.")
+                hq_lookup[hid] = hq_obj.get("name", "Unknown")
+
+        # 4. Atomic update: delete existing active mappings for user, then insert new ones
+        client.table("user_headquarters_mapping").delete().eq("user_id", user_id).execute()
+
+        if clean_hq_ids:
+            new_rows = []
+            for hid in clean_hq_ids:
+                row_map = {
+                    "user_id": user_id,
+                    "headquarters_id": hid,
+                    "is_active": True,
+                    "created_by": updated_by,
+                    "updated_by": updated_by
+                }
+                if user_tenant_id:
+                    row_map["tenant_id"] = user_tenant_id
+                new_rows.append(row_map)
+            client.table("user_headquarters_mapping").insert(new_rows).execute()
+
+        hq_names = [hq_lookup.get(hid, "Unknown") for hid in clean_hq_ids]
+        return {
+            "user_id": user_id,
+            "headquarters_ids": clean_hq_ids,
+            "headquarters": [{"headquarters_id": hid, "name": hq_lookup.get(hid, "Unknown")} for hid in clean_hq_ids],
+            "headquarters_names": hq_names,
+            "headquarters_display": ", ".join(hq_names) if hq_names else "Unassigned"
+        }
+
+    def delete_user(self, user_id: str, deleted_by: Optional[str] = None) -> bool:
         client = get_supabase()
         
-        # Always remove from in-memory cache
-        self.in_memory_users = [u for u in self.in_memory_users if u.get("id") != user_id and u.get("user_id") != user_id]
+        # Keep user in in-memory cache marked as inactive so it remains visible on web
+        for u in self.in_memory_users:
+            if u.get("id") == user_id or u.get("user_id") == user_id:
+                u["is_active"] = False
+                u["isActive"] = False
 
         if not client:
             return True
 
         try:
-            try:
-                client.table("ase_tsm_mapping").delete().or_(f"ase_user_id.eq.{user_id},tsm_user_id.eq.{user_id}").execute()
-            except Exception as e:
-                logger.warning(f"Could not delete ase_tsm_mapping for {user_id}: {e}")
+            now_iso = datetime.now(timezone.utc).isoformat()
+            user_update_data: Dict[str, Any] = {"is_active": False, "updated_at": now_iso}
+            clean_deleted_by = str(deleted_by) if (deleted_by and len(str(deleted_by)) == 36 and str(deleted_by) != "00000000-0000-0000-0000-000000000001") else None
+            if clean_deleted_by:
+                user_update_data["updated_by"] = clean_deleted_by
 
             try:
-                client.table("user_roles").delete().eq("user_id", user_id).execute()
+                client.table("users").update(user_update_data).eq("user_id", user_id).execute()
             except Exception as e:
-                logger.warning(f"Could not delete user_roles for {user_id}: {e}")
+                logger.warning(f"Could not set users.is_active=False for {user_id}: {e}")
 
             try:
-                client.table("users").update({"is_active": False}).eq("user_id", user_id).execute()
+                client.table("user_roles").update({"is_active": False}).eq("user_id", user_id).execute()
             except Exception as e:
-                client.table("users").delete().eq("user_id", user_id).execute()
+                logger.warning(f"Could not deactivate user_roles for {user_id}: {e}")
 
+            try:
+                client.table("ase_tsm_mapping").update({"is_active": False}).or_(f"ase_user_id.eq.{user_id},tsm_user_id.eq.{user_id}").execute()
+            except Exception as e:
+                logger.warning(f"Could not deactivate ase_tsm_mapping for {user_id}: {e}")
+
+            try:
+                uhq_update = {"is_active": False, "updated_at": now_iso}
+                if clean_deleted_by:
+                    uhq_update["updated_by"] = clean_deleted_by
+                client.table("user_headquarters_mapping").update(uhq_update).eq("user_id", user_id).execute()
+            except Exception as e:
+                logger.warning(f"Could not deactivate user_headquarters_mapping for {user_id}: {e}")
+
+            # Note: user_depot row and users row are preserved intact to retain historical reporting and web details
             return True
         except Exception as e:
-            logger.error(f"Error deleting user {user_id}: {e}")
+            logger.error(f"Error deactivating user {user_id}: {e}")
             return True
 
-    def process_excel_roster(self, file_content: bytes, filename: str) -> Dict[str, Any]:
+    def process_excel_roster(
+        self,
+        file_content: bytes,
+        filename: str,
+        uploaded_by: Optional[str] = None,
+        tenant_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Parses uploaded Excel roster and maps data using a 2-pass pipeline:
-        Pass 1: Insert/Upsert users into public.users and public.user_roles
+        Pass 1: Insert/Upsert users into public.users and public.user_roles (partitioned by admin tenant_id)
         Pass 2: Resolve reporting managers and map hierarchy into public.ase_tsm_mapping
         """
+        client = get_supabase()
+        if not tenant_id and uploaded_by and client:
+            try:
+                u_res = client.table("users").select("tenant_id").eq("user_id", str(uploaded_by)).limit(1).execute()
+                if u_res.data and u_res.data[0].get("tenant_id"):
+                    tenant_id = str(u_res.data[0]["tenant_id"])
+            except Exception as e_tid:
+                logger.warning(f"Could not resolve tenant_id for uploader {uploaded_by}: {e_tid}")
         try:
             filename_lower = filename.lower()
             if filename_lower.endswith('.csv'):
@@ -784,11 +1017,15 @@ class UserService:
                 "reporting_manager": "Unassigned",  # Will map in Pass 2
                 "depot_name": depot_val,
                 "headquarters": hq_val,
-                "is_active": True
+                "is_active": True,
+                "created_by": uploaded_by,
+                "uploaded_by": uploaded_by,
+                "updated_by": uploaded_by,
+                "tenant_id": tenant_id
             }
 
             try:
-                res = self.create_user(payload)
+                res = self.create_user(payload, created_by=uploaded_by)
                 if res:
                     imported_count += 1
                     pass1_records.append({
@@ -809,7 +1046,7 @@ class UserService:
             u_id = user_obj.get("user_id") or user_obj.get("id")
 
             # Update manager hierarchy and trigger public.ase_tsm_mapping update
-            self.update_user(u_id, {"reporting_manager": mgr_target})
+            self.update_user(u_id, {"reporting_manager": mgr_target}, updated_by=uploaded_by)
 
         return {
             "status": "success",
@@ -962,8 +1199,7 @@ class UserService:
                     client.table("ase_tsm_mapping").insert({
                         "ase_user_id": u_id,
                         "tsm_user_id": mgr_id,
-                        "ase_user_role_id": ase_ur_id,
-                        "tsm_user_role_id": tsm_ur_id
+                        "is_active": True
                     }).execute()
                     mappings_count += 1
 
@@ -1008,7 +1244,7 @@ class UserService:
             {"role_id": "4", "role_name": "Admin", "description": "System Administrator with full access"}
         ]
 
-    def create_role(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def create_role(self, payload: Dict[str, Any], created_by: Optional[str] = None) -> Dict[str, Any]:
         client = get_supabase()
         if not client:
             raise ValueError("Database connection unavailable")
@@ -1023,12 +1259,20 @@ class UserService:
         res = client.table("roles").select("role_id").ilike("role_name", role_name).execute()
         if res.data:
             raise ValueError(f"Role '{role_name}' already exists")
-            
-        ins = client.table("roles").insert({
+
+        creator_id = created_by or payload.get("created_by") or payload.get("uploaded_by")
+        clean_creator_id = str(creator_id) if (creator_id and len(str(creator_id)) == 36 and str(creator_id) != "00000000-0000-0000-0000-000000000001") else None
+
+        role_row = {
             "role_name": role_name,
             "description": description or f"{role_name} Role",
             "is_active": is_active
-        }).execute()
+        }
+        if clean_creator_id:
+            role_row["created_by"] = clean_creator_id
+            role_row["updated_by"] = clean_creator_id
+            
+        ins = client.table("roles").insert(role_row).execute()
         
         if ins.data:
             r = ins.data[0]
@@ -1040,7 +1284,7 @@ class UserService:
             }
         return payload
 
-    def update_role(self, role_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def update_role(self, role_id: str, payload: Dict[str, Any], updated_by: Optional[str] = None) -> Dict[str, Any]:
         client = get_supabase()
         if not client:
             raise ValueError("Database connection unavailable")
@@ -1052,6 +1296,11 @@ class UserService:
             update_data["description"] = payload["description"].strip()
         if "is_active" in payload:
             update_data["is_active"] = payload["is_active"]
+
+        updator_id = updated_by or payload.get("updated_by") or payload.get("uploaded_by") or payload.get("created_by")
+        clean_updator_id = str(updator_id) if (updator_id and len(str(updator_id)) == 36 and str(updator_id) != "00000000-0000-0000-0000-000000000001") else None
+        if clean_updator_id:
+            update_data["updated_by"] = clean_updator_id
             
         if not update_data:
             return {"role_id": role_id}

@@ -235,6 +235,25 @@ def _fetch_fresh_master_lookups():
                 user_depots_map[uid] = set()
             user_depots_map[uid].add(did)
 
+        user_hqs_map = {}
+        user_hq_ids_map = {}
+        try:
+            uhq_res = client.table("user_headquarters_mapping").select("user_id, headquarters_id, is_active").eq("is_active", True).execute()
+            for r in (uhq_res.data or []):
+                uid = str(r.get("user_id"))
+                hid = str(r.get("headquarters_id"))
+                h_name = hq_lookup.get(hid)
+                if uid and hid:
+                    if uid not in user_hq_ids_map:
+                        user_hq_ids_map[uid] = []
+                        user_hqs_map[uid] = []
+                    if hid not in user_hq_ids_map[uid]:
+                        user_hq_ids_map[uid].append(hid)
+                    if h_name and h_name not in user_hqs_map[uid]:
+                        user_hqs_map[uid].append(h_name)
+        except Exception as e_uhq:
+            logger.warning(f"Error fetching user_headquarters_mapping in master lookups: {e_uhq}")
+
         atm_res = client.table("ase_tsm_mapping").select("tsm_user_id, ase_user_id").execute()
         for atm in (atm_res.data or []):
             raw_tid = str(atm.get("tsm_user_id"))
@@ -258,6 +277,11 @@ def _fetch_fresh_master_lookups():
                     ase_names_lookup[a_uid] = a_name
             except Exception as e:
                 logger.warning(f"Error fetching ASE names: {e}")
+
+        # Ensure master TSMs are registered in ase_names_lookup for dual-role (TSM acting as ASE) display
+        for tid, t_obj in master_tsms.items():
+            if tid not in ase_names_lookup:
+                ase_names_lookup[tid] = t_obj.get('name', 'TSM')
 
         for tid, t_obj in master_tsms.items():
             for alias_id in t_obj.get("alias_ids", {tid}):
@@ -328,6 +352,8 @@ def _fetch_fresh_master_lookups():
         "tsm_ase_lookup": tsm_ase_lookup,
         "ase_names_lookup": ase_names_lookup,
         "user_alias_map": user_alias_map,
+        "user_hqs_map": user_hqs_map,
+        "user_hq_ids_map": user_hq_ids_map,
     }
 
 def get_cached_master_lookups():
@@ -635,6 +661,19 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
 
     # If test user, return full valid authenticated session immediately
     if is_test_user:
+        dyn_tenant_id = None
+        if client:
+            try:
+                tu_res = client.table("users").select("tenant_id").ilike("email", "manish.chum@workfloww.ai").limit(1).execute()
+                if tu_res.data and tu_res.data[0].get("tenant_id"):
+                    dyn_tenant_id = str(tu_res.data[0]["tenant_id"])
+                if not dyn_tenant_id:
+                    t_res = client.table("tenant_config").select("tenant_id").limit(1).execute()
+                    if t_res.data and t_res.data[0].get("tenant_id"):
+                        dyn_tenant_id = str(t_res.data[0]["tenant_id"])
+            except Exception:
+                pass
+
         user_data = {
             "user_id": "00000000-0000-0000-0000-000000000099",
             "email": "manish.chum@workfloww.ai",
@@ -645,7 +684,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
             "role": "TSM",
             "depot_name": "Jaipur Depot",
             "hq_location": "All Headquarters",
-            "tenant_id": "a0000000-0000-0000-0000-000000000001",
+            "tenant_id": dyn_tenant_id,
             "company_id": None,
             "company_name": "Rajasthan Liquor Limited",
             "company_logo_url": "/images/rll logo.svg",
@@ -724,7 +763,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
                 # Resolve user's company and company logo
                 company_name = db_user.get("company_name")
                 company_id = db_user.get("company_id")
-                tenant_id = str(db_user.get("tenant_id") or "a0000000-0000-0000-0000-000000000001")
+                tenant_id = str(db_user.get("tenant_id") or "")
                 company_logo_url = None
 
                 if company_id:
@@ -812,6 +851,19 @@ def get_mobile_user_profile(
         return current_user
 
     if user_id_val == "00000000-0000-0000-0000-000000000099" or "manish.chum@workfloww.ai" in sub_val:
+        dyn_tenant_id = None
+        if client:
+            try:
+                tu_res = client.table("users").select("tenant_id").ilike("email", "manish.chum@workfloww.ai").limit(1).execute()
+                if tu_res.data and tu_res.data[0].get("tenant_id"):
+                    dyn_tenant_id = str(tu_res.data[0]["tenant_id"])
+                if not dyn_tenant_id:
+                    t_res = client.table("tenant_config").select("tenant_id").limit(1).execute()
+                    if t_res.data and t_res.data[0].get("tenant_id"):
+                        dyn_tenant_id = str(t_res.data[0]["tenant_id"])
+            except Exception:
+                pass
+
         return {
             "user_id": "00000000-0000-0000-0000-000000000099",
             "email": "manish.chum@workfloww.ai",
@@ -822,7 +874,7 @@ def get_mobile_user_profile(
             "role": "TSM",
             "depot_name": "Jaipur Depot",
             "hq_location": "All Headquarters",
-            "tenant_id": "a0000000-0000-0000-0000-000000000001",
+            "tenant_id": dyn_tenant_id,
             "company_id": None,
             "company_name": "Rajasthan Liquor Limited",
             "company_logo_url": "/images/rll logo.svg",
@@ -856,7 +908,7 @@ def get_mobile_user_profile(
 
             company_name = db_user.get("company_name") or current_user.get("company_name")
             company_id = db_user.get("company_id")
-            tenant_id = str(db_user.get("tenant_id") or current_user.get("tenant_id") or "a0000000-0000-0000-0000-000000000001")
+            tenant_id = str(db_user.get("tenant_id") or current_user.get("tenant_id") or "")
             company_logo_url = None
 
             if company_id:
@@ -948,6 +1000,16 @@ def get_mobile_headquarters():
     }
 
 
+_COMPANIES_LOCKS: Dict[str, asyncio.Lock] = {}
+_COMPANIES_LOCKS_GUARD = asyncio.Lock()
+
+async def _get_companies_stampede_lock(key: str) -> asyncio.Lock:
+    async with _COMPANIES_LOCKS_GUARD:
+        if key not in _COMPANIES_LOCKS:
+            _COMPANIES_LOCKS[key] = asyncio.Lock()
+        return _COMPANIES_LOCKS[key]
+
+
 @router.get("/companies")
 async def get_mobile_companies(
     period: str = Query("Daily", description="Sales period: Daily, MTD, YTD"),
@@ -959,10 +1021,13 @@ async def get_mobile_companies(
     """
     Fetches period-specific company sales analytics (Daily, MTD, YTD).
     Excludes Company 'Others' strictly. Scopes to user's assigned company if applicable.
-    Caches response in Redis.
+    Caches response in Redis with single-flight stampede protection.
     """
-    from backend.services.mobile_companies_service import get_companies_summary
+    from backend.services.mobile_companies_service import get_companies_summary_async
     from backend.services.cache_service import get_json_cache, set_json_cache
+    from backend.services.tenant_service import get_include_others_setting_async
+
+    t_start = time.perf_counter()
 
     clean_period = period.strip() if period else "Daily"
     clean_hq = selected_hq.strip() if selected_hq else "All Headquarters"
@@ -973,37 +1038,62 @@ async def get_mobile_companies(
     user_company = current_user.get("company_name")
     effective_company = user_company if (user_company and user_role not in ["admin", "super_admin", "super admin"]) else None
 
-    from backend.services.tenant_service import get_include_others_setting_async
     inc_others_str = "inc1" if await get_include_others_setting_async() else "inc0"
     redis_key = f"rll:mobile:companies:{clean_period}:{clean_hq}:{clean_date}:{effective_company or 'all'}:{inc_others_str}"
+
+    t0 = time.perf_counter()
     if not refresh:
         cached_payload = await get_json_cache(redis_key)
+        t_cache_hit = (time.perf_counter() - t0) * 1000
         if cached_payload is not None:
-            logger.info(f"get_mobile_companies: Redis CACHE HIT for {redis_key}")
+            logger.info(f"get_mobile_companies TELEMETRY: Cache HIT in {t_cache_hit:.2f} ms | Key: {redis_key}")
             return cached_payload
+    else:
+        t_cache_hit = (time.perf_counter() - t0) * 1000
 
-    try:
-        companies_list, resolved_date = get_companies_summary(
-            period=clean_period,
-            date_to=date_to,
-            selected_hq=selected_hq,
-            company_name=effective_company
-        )
-        payload = {
-            "status": "success",
-            "period": clean_period,
-            "count": len(companies_list),
-            "latest_sale_date": resolved_date,
-            "companies": companies_list
-        }
-        if len(companies_list) > 0:
-            await set_json_cache(redis_key, payload, ttl=900)  # 15 minutes TTL
-        else:
-            logger.warning(f"get_mobile_companies: Skipping Redis cache set for {redis_key} due to empty companies list.")
-        return payload
-    except Exception as e:
-        logger.error(f"Error fetching mobile companies analytics: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    # Single-flight stampede lock protection
+    lock = await _get_companies_stampede_lock(redis_key)
+    async with lock:
+        # Re-check cache inside lock in case another request built it while we waited
+        if not refresh:
+            t_lock_recheck = time.perf_counter()
+            cached_payload = await get_json_cache(redis_key)
+            if cached_payload is not None:
+                logger.info(f"get_mobile_companies TELEMETRY: Cache HIT (Stampede Waiter) in {(time.perf_counter()-t_lock_recheck)*1000:.2f} ms | Key: {redis_key}")
+                return cached_payload
+
+        try:
+            t_service_start = time.perf_counter()
+            companies_list, resolved_date = await get_companies_summary_async(
+                period=clean_period,
+                date_to=date_to,
+                selected_hq=selected_hq,
+                company_name=effective_company
+            )
+            t_service_ms = (time.perf_counter() - t_service_start) * 1000
+
+            payload = {
+                "status": "success",
+                "period": clean_period,
+                "count": len(companies_list),
+                "latest_sale_date": resolved_date,
+                "companies": companies_list
+            }
+
+            t_write_start = time.perf_counter()
+            if len(companies_list) > 0:
+                await set_json_cache(redis_key, payload, ttl=900)  # 15 minutes TTL
+            t_write_ms = (time.perf_counter() - t_write_start) * 1000
+
+            t_total_ms = (time.perf_counter() - t_start) * 1000
+            logger.info(
+                f"get_mobile_companies TELEMETRY Cache MISS: Total={t_total_ms:.2f}ms | "
+                f"CacheLookup={t_cache_hit:.2f}ms | Service={t_service_ms:.2f}ms | CacheWrite={t_write_ms:.2f}ms"
+            )
+            return payload
+        except Exception as e:
+            logger.error(f"Error fetching mobile companies analytics: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 
@@ -1053,18 +1143,44 @@ async def get_mobile_sales(
     date_to: Optional[str] = Query(None, description="End Date YYYY-MM-DD"),
     period: str = Query("Daily", description="Daily | MTD | YTD"),
     selected_hq: str = Query("All Headquarters", description="Headquarters filter"),
+    level: Optional[str] = Query(None, description="level filter: companies | depots | tsms"),
+    page: Optional[int] = Query(None, description="Page number for depots pagination (1-indexed)"),
+    page_size: Optional[int] = Query(None, description="Page size for depots pagination (1 to 100)"),
     test_limit: Optional[int] = Query(None, description="Diagnostic payload scaling test limit"),
     current_user: dict = Depends(RoleChecker(['tsm', 'ase', 'leader', 'admin']))
 ):
     """
     Returns real aggregated sales data for Companies, Depots, and TSMs directly calculated from Supabase.
     Computes distinct, dynamic metrics for Daily, MTD, and YTD with database-level HQ filtering.
+    Supports level filtering (companies/depots/tsms), period pruning, and depot pagination.
     Instruments every stage of execution with microsecond timing.
     """
     import json
     import uuid
+    import math
     from fastapi import Response
     from fastapi.responses import JSONResponse
+
+    clean_level = None
+    if level is not None and str(level).strip():
+        clean_level = str(level).strip().lower()
+        if clean_level not in ["companies", "depots", "tsms"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid level parameter '{level}'. Must be one of: companies, depots, tsms"
+            )
+
+    if page is not None and page < 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Page parameter must be an integer >= 1"
+        )
+
+    if page_size is not None and (page_size < 1 or page_size > 100):
+        raise HTTPException(
+            status_code=400,
+            detail="Page size parameter must be between 1 and 100"
+        )
 
     t_api_start = time.perf_counter()
     request_id = request.headers.get("X-Request-ID") or f"req_{uuid.uuid4().hex[:8]}"
@@ -1099,195 +1215,195 @@ async def get_mobile_sales(
         selected_period = "Daily"
 
     from backend.services.tenant_service import get_include_others_setting_async
+    from backend.services.tenant_service import get_include_others_setting_async
     inc_others_str = "inc1" if await get_include_others_setting_async() else "inc0"
-    cache_key = f"{selected_period}:{selected_hq}:{date_from}:{date_to}:{user_role}:{user_id}:{test_limit or 'all'}:{inc_others_str}"
+    cache_key = f"{selected_period}:{clean_level or 'all'}:{page or 'all'}:{page_size or 'all'}:{selected_hq}:{date_from}:{date_to}:{user_role}:{user_id}:{test_limit or 'all'}:{inc_others_str}"
     
     # D. Sales response cache timing
     t_sales_cache_start = time.perf_counter()
     now_ts = time.time()
-    if cache_key in _SALES_RESPONSE_CACHE:
-        entry = _SALES_RESPONSE_CACHE[cache_key]
-        if now_ts - entry["timestamp"] < _SALES_RESPONSE_TTL:
-            t_sales_cache_end = time.perf_counter()
-            sales_cache_duration_ms = round((t_sales_cache_end - t_sales_cache_start) * 1000, 2)
-            t_api_end = time.perf_counter()
-            total_api_ms = round((t_api_end - t_api_start) * 1000, 2)
 
-            cached_data = entry["data"]
-            cached_bytes = len(json.dumps(cached_data).encode("utf-8"))
-            cached_kb = round(cached_bytes / 1024, 2)
-            cached_mb = round(cached_bytes / (1024 * 1024), 2)
+    # ── Stampede Protection (Single-Flight Lock) ─────────────────────────────
+    if not hasattr(get_mobile_sales, "_stampede_locks"):
+        get_mobile_sales._stampede_locks = {}
+        get_mobile_sales._stampede_guard = asyncio.Lock()
 
-            logger.info(
-                f"\n==================================================\n"
-                f"RLL PERFORMANCE TRACE (CACHE HIT)\n"
-                f"==================================================\n"
-                f"Request ID: {request_id}\n"
-                f"Endpoint: /mobile/sales\n"
-                f"Filters: HQ: {selected_hq} | Date: {date_from} to {date_to} | Period: {selected_period}\n"
-                f"--------------------------------------------------\n"
-                f"BACKEND\n"
-                f"--------------------------------------------------\n"
-                f"Authentication:         {auth_duration_ms:.1f} ms\n"
-                f"Master cache:          0.0 ms (CACHED)\n"
-                f"Sales cache:           {sales_cache_duration_ms:.1f} ms (HIT)\n"
-                f"Supabase RPC:          0.0 ms (CACHED)\n"
-                f"RPC payload:           0.0 KB / 0.00 MB\n"
-                f"RPC deserialization:   0.0 ms\n"
-                f"Python transformation: 0.0 ms\n"
-                f"JSON serialization:    0.1 ms\n"
-                f"Final API response:    {cached_kb} KB / {cached_mb:.2f} MB\n"
-                f"Total FastAPI time:    {total_api_ms:.1f} ms\n"
-                f"=================================================="
-            )
+    async with get_mobile_sales._stampede_guard:
+        if cache_key not in get_mobile_sales._stampede_locks:
+            get_mobile_sales._stampede_locks[cache_key] = asyncio.Lock()
+        stampede_lock = get_mobile_sales._stampede_locks[cache_key]
 
-            return JSONResponse(
-                content=cached_data,
-                headers={
-                    "X-Request-ID": request_id,
-                    "X-Backend-Duration-Ms": str(total_api_ms),
-                    "X-Response-Size-Bytes": str(cached_bytes),
-                    "X-Sales-Cache-Status": "HIT"
+    async with stampede_lock:
+        now_ts = time.time()
+        if cache_key in _SALES_RESPONSE_CACHE:
+            entry = _SALES_RESPONSE_CACHE[cache_key]
+            if now_ts - entry["timestamp"] < _SALES_RESPONSE_TTL:
+                t_sales_cache_end = time.perf_counter()
+                sales_cache_duration_ms = round((t_sales_cache_end - t_sales_cache_start) * 1000, 2)
+                t_api_end = time.perf_counter()
+                total_api_ms = round((t_api_end - t_api_start) * 1000, 2)
+
+                cached_data = entry["data"]
+                cached_bytes = len(json.dumps(cached_data).encode("utf-8"))
+                cached_kb = round(cached_bytes / 1024, 2)
+                cached_mb = round(cached_bytes / (1024 * 1024), 2)
+
+                return JSONResponse(
+                    content=cached_data,
+                    headers={
+                        "X-Request-ID": request_id,
+                        "X-Backend-Duration-Ms": str(total_api_ms),
+                        "X-Response-Size-Bytes": str(cached_bytes),
+                        "X-Sales-Cache-Status": "HIT"
+                    }
+                )
+
+        redis_key = f"rll:mobile:sales:{cache_key}"
+        try:
+            from backend.services.cache_service import get_json_cache
+            redis_cached_data = await get_json_cache(redis_key)
+            if redis_cached_data:
+                if isinstance(redis_cached_data, dict):
+                    redis_cached_data["process_time_ms"] = 0.0
+                _SALES_RESPONSE_CACHE[cache_key] = {
+                    "timestamp": time.time(),
+                    "data": redis_cached_data
                 }
-            )
+                t_api_end = time.perf_counter()
+                total_api_ms = round((t_api_end - t_api_start) * 1000, 2)
+                raw_str = json.dumps(redis_cached_data) if isinstance(redis_cached_data, (dict, list)) else str(redis_cached_data)
+                return Response(
+                    content=raw_str,
+                    media_type="application/json",
+                    headers={
+                        "X-Request-ID": request_id,
+                        "X-Backend-Duration-Ms": str(total_api_ms),
+                        "X-Response-Size-Bytes": str(len(raw_str.encode('utf-8'))),
+                        "X-Sales-Cache-Status": "REDIS_HIT"
+                    }
+                )
+        except Exception as e_redis:
+            logger.warning(f"Redis cache check failed: {e_redis}")
 
-    redis_key = f"rll:mobile:sales:{cache_key}"
-    try:
-        from backend.services.cache_service import get_json_cache
-        redis_cached_data = await get_json_cache(redis_key)
-        if redis_cached_data:
-            if isinstance(redis_cached_data, dict):
-                redis_cached_data["process_time_ms"] = 0.0
-            _SALES_RESPONSE_CACHE[cache_key] = {
-                "timestamp": time.time(),
-                "data": redis_cached_data
-            }
-            t_api_end = time.perf_counter()
-            total_api_ms = round((t_api_end - t_api_start) * 1000, 2)
-            raw_str = json.dumps(redis_cached_data) if isinstance(redis_cached_data, (dict, list)) else str(redis_cached_data)
-            return Response(
-                content=raw_str,
-                media_type="application/json",
-                headers={
-                    "X-Request-ID": request_id,
-                    "X-Backend-Duration-Ms": str(total_api_ms),
-                    "X-Response-Size-Bytes": str(len(raw_str.encode('utf-8'))),
-                    "X-Sales-Cache-Status": "REDIS_HIT"
-                }
-            )
-    except Exception as e_redis:
-        logger.warning(f"Redis cache check failed: {e_redis}")
+        t_sales_cache_end = time.perf_counter()
+        sales_cache_duration_ms = round((t_sales_cache_end - t_sales_cache_start) * 1000, 2)
 
-    t_sales_cache_end = time.perf_counter()
-    sales_cache_duration_ms = round((t_sales_cache_end - t_sales_cache_start) * 1000, 2)
+        # C. Master cache lookup timing
+        t_master_start = time.perf_counter()
+        master_cache_hit = _MASTER_CACHE["data"] is not None and (time.time() - _MASTER_CACHE["timestamp"]) < _MASTER_CACHE_TTL
+        master_cache = get_cached_master_lookups()
+        t_master_end = time.perf_counter()
+        master_cache_duration_ms = round((t_master_end - t_master_start) * 1000, 2)
 
-    # C. Master cache lookup timing
-    t_master_start = time.perf_counter()
-    master_cache_hit = _MASTER_CACHE["data"] is not None and (time.time() - _MASTER_CACHE["timestamp"]) < _MASTER_CACHE_TTL
-    master_cache = get_cached_master_lookups()
-    t_master_end = time.perf_counter()
-    master_cache_duration_ms = round((t_master_end - t_master_start) * 1000, 2)
+        companies_lookup = master_cache["companies_lookup"]
+        brands_lookup = master_cache["brands_lookup"]
+        hq_lookup = master_cache["hq_lookup"]
+        master_companies = master_cache["master_companies"]
+        master_depots = master_cache["master_depots"]
+        master_tsms = master_cache["master_tsms"]
+        tsm_depot_lookup = master_cache["tsm_depot_lookup"]
+        user_depots_map = master_cache["user_depots_map"]
+        tsm_ase_lookup = master_cache["tsm_ase_lookup"]
+        ase_names_lookup = master_cache["ase_names_lookup"]
+        user_hqs_map = master_cache.get("user_hqs_map", {})
 
-    companies_lookup = master_cache["companies_lookup"]
-    brands_lookup = master_cache["brands_lookup"]
-    hq_lookup = master_cache["hq_lookup"]
-    master_companies = master_cache["master_companies"]
-    master_depots = master_cache["master_depots"]
-    master_tsms = master_cache["master_tsms"]
-    tsm_depot_lookup = master_cache["tsm_depot_lookup"]
-    user_depots_map = master_cache["user_depots_map"]
-    tsm_ase_lookup = master_cache["tsm_ase_lookup"]
-    ase_names_lookup = master_cache["ase_names_lookup"]
+        allowed_depots = set()
+        if user_role == "tsm":
+            if user_id in master_tsms:
+                allowed_depots.update(master_tsms[user_id]["depot_ids"])
+            else:
+                single_tsm = _fetch_single_tsm_lookup(user_id)
+                if single_tsm:
+                    allowed_depots.update(single_tsm.get("depot_ids", set()))
+        elif user_role == "ase":
+            allowed_depots = set(user_depots_map.get(user_id, []))
 
-    allowed_depots = set()
-    if user_role == "tsm":
-        if user_id in master_tsms:
-            allowed_depots.update(master_tsms[user_id]["depot_ids"])
-        else:
-            single_tsm = _fetch_single_tsm_lookup(user_id)
-            if single_tsm:
-                allowed_depots.update(single_tsm.get("depot_ids", set()))
-    elif user_role == "ase":
-        allowed_depots = set(user_depots_map.get(user_id, []))
-
-
-    latest_sale_date = None
-    try:
-        max_res = client.table("sales_daily_summary").select("sale_date").order("sale_date", desc=True).limit(1).execute()
-        if max_res.data and max_res.data[0].get("sale_date"):
-            latest_sale_date = max_res.data[0]["sale_date"]
-    except Exception as e:
-        logger.warning(f"Error fetching latest sale date from sales_daily_summary: {e}")
-
-
-    if not latest_sale_date:
-        latest_sale_date = datetime.utcnow().strftime("%Y-%m-%d")
-
-    end_date = latest_sale_date
-    if date_to and date_to.strip():
-        end_date = date_to.strip()
-    elif date_from and date_from.strip():
-        end_date = date_from.strip()
-
-    try:
-        end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
-    except Exception:
-        end_dt = datetime.utcnow().date()
-        end_date = end_dt.strftime("%Y-%m-%d")
-
-    daily_start = end_date
-    if selected_period == "Daily":
-        mtd_start = end_date
-        ytd_start = end_date
-    elif selected_period == "MTD":
-        mtd_start = end_dt.replace(day=1).strftime("%Y-%m-%d")
-        ytd_start = mtd_start
-    else:
-        mtd_start = end_dt.replace(day=1).strftime("%Y-%m-%d")
-        fy_year = end_dt.year if end_dt.month >= 4 else end_dt.year - 1
-        ytd_start = f"{fy_year}-04-01"
-
-    target_hq_id = None
-    if selected_hq and selected_hq.strip() and selected_hq.strip() != "All Headquarters":
-        clean_hq_target = selected_hq.strip().lower()
-        target_hq_id = master_cache.get("hq_name_to_id", {}).get(clean_hq_target)
-        if not target_hq_id:
+        # Cached latest sale date resolution (0ms DB calls on cache hit)
+        latest_sale_date = _MASTER_CACHE.get("latest_sale_date")
+        if not latest_sale_date or (time.time() - _MASTER_CACHE["timestamp"]) >= _MASTER_CACHE_TTL:
             try:
-                hq_res = client.table("headquarters").select("headquarters_id, name").execute()
-                for h in (hq_res.data or []):
-                    h_name = (h.get("name") or "").strip().lower()
-                    if h_name == clean_hq_target or clean_hq_target in h_name or h_name in clean_hq_target:
-                        target_hq_id = str(h["headquarters_id"])
-                        break
+                max_res = client.table("sales_daily_summary").select("sale_date").order("sale_date", desc=True).limit(1).execute()
+                if max_res.data and max_res.data[0].get("sale_date"):
+                    latest_sale_date = max_res.data[0]["sale_date"]
+                    _MASTER_CACHE["latest_sale_date"] = latest_sale_date
             except Exception as e:
-                logger.warning(f"HQ lookup error for {selected_hq}: {e}")
+                logger.warning(f"Error fetching latest sale date from sales_daily_summary: {e}")
 
-    # E, F, G, H. Supabase RPC timing and byte measurement
-    rpc_trace_info: Dict[str, Any] = {}
-    comp_rpc_params = {
-        "p_target_date": end_date,
-        "p_mtd_start": mtd_start,
-        "p_ytd_start": ytd_start,
-    }
-    if target_hq_id:
-        comp_rpc_params["p_hq_id"] = target_hq_id
+        if not latest_sale_date:
+            latest_sale_date = datetime.utcnow().strftime("%Y-%m-%d")
 
-    t0 = time.perf_counter()
-    try:
-        comp_res = client.rpc("get_mobile_companies_summary", comp_rpc_params).execute()
-        company_records = comp_res.data or []
-    except Exception as e_comp:
-        logger.error(f"Error calling get_mobile_companies_summary RPC: {e_comp}")
+        end_date = latest_sale_date
+        if date_to and date_to.strip():
+            end_date = date_to.strip()
+        elif date_from and date_from.strip():
+            end_date = date_from.strip()
+
+        try:
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+        except Exception:
+            end_dt = datetime.utcnow().date()
+            end_date = end_dt.strftime("%Y-%m-%d")
+
+        daily_start = end_date
+        if selected_period == "Daily":
+            mtd_start = end_date
+            ytd_start = end_date
+        elif selected_period == "MTD":
+            mtd_start = end_dt.replace(day=1).strftime("%Y-%m-%d")
+            ytd_start = mtd_start
+        else:
+            mtd_start = end_dt.replace(day=1).strftime("%Y-%m-%d")
+            fy_year = end_dt.year if end_dt.month >= 4 else end_dt.year - 1
+            ytd_start = f"{fy_year}-04-01"
+
+        target_hq_id = None
+        if selected_hq and selected_hq.strip() and selected_hq.strip() != "All Headquarters":
+            clean_hq_target = selected_hq.strip().lower()
+            target_hq_id = master_cache.get("hq_name_to_id", {}).get(clean_hq_target)
+
+        # ── Early Level Slicing & Parallel RPC Execution ───────────────────────
+        comp_rpc_params = {
+            "p_target_date": end_date,
+            "p_mtd_start": mtd_start,
+            "p_ytd_start": ytd_start,
+        }
+        if target_hq_id:
+            comp_rpc_params["p_hq_id"] = target_hq_id
+
         company_records = []
-    t1 = time.perf_counter()
-    rpc_trace_info["sales_rpc_duration_ms"] = round((t1 - t0) * 1000, 2)
+        depot_records = []
+        rpc_trace_info: Dict[str, Any] = {}
 
-    sales_payload = call_mobile_sales_json_rpc(end_date, mtd_start, ytd_start, target_hq_id)
-    depot_records = sales_payload.get("depots") or []
-    total_records_processed = len(company_records) + len(depot_records)
+        t_rpc_start = time.perf_counter()
 
-    # I. Python transformation timing
-    t_transform_start = time.perf_counter()
+        def _exec_companies_rpc():
+            res = client.rpc("get_mobile_companies_summary", comp_rpc_params).execute()
+            return res.data or []
+
+        def _exec_sales_json_rpc():
+            return call_mobile_sales_json_rpc(end_date, mtd_start, ytd_start, target_hq_id)
+
+        if clean_level == "companies":
+            company_records = await asyncio.to_thread(_exec_companies_rpc)
+        elif clean_level in ["depots", "tsms"]:
+            sales_payload = await asyncio.to_thread(_exec_sales_json_rpc)
+            depot_records = sales_payload.get("depots") or []
+        else:  # Full response (clean_level is None)
+            comp_res, sales_payload = await asyncio.gather(
+                asyncio.to_thread(_exec_companies_rpc),
+                asyncio.to_thread(_exec_sales_json_rpc)
+            )
+            company_records = comp_res
+            depot_records = sales_payload.get("depots") or []
+
+        t_rpc_end = time.perf_counter()
+        rpc_duration_ms = round((t_rpc_end - t_rpc_start) * 1000, 2)
+        rpc_trace_info["sales_rpc_duration_ms"] = rpc_duration_ms
+
+        total_records_processed = len(company_records) + len(depot_records)
+
+        # ── Python Transformation Timing (Strictly separate from RPC wait!) ───
+        t_transform_start = time.perf_counter()
 
 
 
@@ -1358,19 +1474,23 @@ async def get_mobile_sales(
     raw_to_comp_id = {}
     for comp_id, g in grouped_comp_rows.items():
         for cid in g["company_ids"]:
-            all_company_ids.append(cid)
-            raw_to_comp_id[cid] = comp_id
+            cid_clean = str(cid).strip().lower()
+            if cid_clean and cid_clean not in all_company_ids:
+                all_company_ids.append(cid_clean)
+            if cid_clean:
+                raw_to_comp_id[cid_clean] = comp_id
 
     # Pre-populate brands_map with ALL master registered brands for each company (so 0-sale brands are counted and listed)
     for bid, binfo in brands_lookup.items():
-        b_comp_id = binfo.get("company_id")
+        b_comp_id = str(binfo.get("company_id") or "").strip().lower()
         if b_comp_id and b_comp_id in raw_to_comp_id:
             comp_id = raw_to_comp_id[b_comp_id]
             if comp_id in grouped_comp_rows:
                 g = grouped_comp_rows[comp_id]
-                if bid not in g["brands_map"]:
-                    g["brands_map"][bid] = {
-                        "id": bid,
+                bid_str = str(bid).strip().lower()
+                if bid_str not in g["brands_map"]:
+                    g["brands_map"][bid_str] = {
+                        "id": bid_str,
                         "name": binfo.get("name") or "Generic Brand",
                         "data": {
                             "Daily": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
@@ -1397,7 +1517,7 @@ async def get_mobile_sales(
             brands_data = []
 
         for b in brands_data:
-            raw_cid = str(b.get("company_id") or "")
+            raw_cid = str(b.get("company_id") or "").strip().lower()
             comp_id = raw_to_comp_id.get(raw_cid)
             if not comp_id or comp_id not in grouped_comp_rows:
                 continue
@@ -1555,6 +1675,9 @@ async def get_mobile_sales(
             member_to_tsms[inactive_id].update(member_to_tsms[active_id])
 
     all_known_ase_ids = {aid for aids in tsm_ase_lookup.values() for aid in aids}
+    # Also track direct sales made by TSMs acting as ASEs
+    for tid in master_tsms.keys():
+        all_known_ase_ids.add(tid)
     ase_sales = {
         aid: {
             "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
@@ -1573,7 +1696,10 @@ async def get_mobile_sales(
         master_tsms[tid]["companies_map"] = {}
 
     tsm_rpc_trace: Dict[str, Any] = {}
-    all_usf_records = call_mobile_tsm_sales_json_rpc(end_date, mtd_start, ytd_start, trace_info=tsm_rpc_trace)
+    if clean_level in [None, "tsms"]:
+        all_usf_records = call_mobile_tsm_sales_json_rpc(end_date, mtd_start, ytd_start, trace_info=tsm_rpc_trace)
+    else:
+        all_usf_records = []
 
     for row in all_usf_records:
         c_id_raw = str(row.get("company_id") or "")
@@ -1701,11 +1827,12 @@ async def get_mobile_sales(
     formatted_companies = []
     for c_id, c_data in master_companies.items():
         all_b = list(c_data.pop("brands_map", {}).values())
-        c_data["brands"] = [
+        active_b = [
             b for b in all_b
             if (b.get("data", {}).get(selected_period, {}).get("cases", 0) > 0 or
                 b.get("data", {}).get(selected_period, {}).get("bottles", 0) > 0)
         ]
+        c_data["brands"] = active_b if active_b else all_b
         if selected_hq != "All Headquarters" and c_data.get("hqLocation") and c_data["hqLocation"] != "All Headquarters":
             if c_data["hqLocation"].lower() != selected_hq.lower():
                 continue
@@ -1747,30 +1874,46 @@ async def get_mobile_sales(
         t_data.pop("brands_map", None)
 
         assigned_hq_names = []
-        for did in depot_ids_list:
-            d_obj = master_depots.get(did)
-            if d_obj and d_obj.get("hqName"):
-                assigned_hq_names.append(d_obj["hqName"])
+        for alias_id in raw_t_data.get("alias_ids", {t_id}):
+            for h in user_hqs_map.get(alias_id, []):
+                if h not in assigned_hq_names:
+                    assigned_hq_names.append(h)
 
         if assigned_hq_names:
-            from collections import Counter
-            hq_counts = Counter(assigned_hq_names)
-            t_data["hqLocation"] = hq_counts.most_common(1)[0][0]
+            t_data["hqLocation"] = ", ".join(assigned_hq_names)
+            t_data["assignedHqs"] = assigned_hq_names
         else:
-            t_data["hqLocation"] = "All Headquarters"
+            t_data["hqLocation"] = "Unassigned"
+            t_data["assignedHqs"] = []
 
         if selected_hq and selected_hq != "All Headquarters":
             clean_sel_hq = selected_hq.strip().lower()
-            matches_hq = any(hq.strip().lower() == clean_sel_hq for hq in assigned_hq_names)
-            if not matches_hq and len(assigned_hq_names) > 0:
+            matches_hq = any(h.strip().lower() == clean_sel_hq for h in assigned_hq_names)
+            if not matches_hq:
                 continue
-            t_data["hqLocation"] = selected_hq
 
         raw_ase_ids = t_data.pop("ase_ids", [])
+        # If the TSM directly made sales as an ASE (dual-role), ensure they are shown in their ASE breakdown
+        t_alias_ids = raw_t_data.get("alias_ids") or {t_id}
+        has_direct_sales = False
+        direct_aid = t_id
+        for cand_id in [t_id] + [aid for aid in t_alias_ids if aid != t_id]:
+            cand_sales = ase_sales.get(cand_id)
+            if cand_sales and any(
+                cand_sales.get(p, {}).get("cases", 0) > 0 or cand_sales.get(p, {}).get("bottles", 0) > 0
+                for p in ["Daily", "MTD", "YTD"]
+            ):
+                has_direct_sales = True
+                direct_aid = cand_id
+                break
+        if has_direct_sales and not any(aid in raw_ase_ids for aid in t_alias_ids):
+            raw_ase_ids = [direct_aid] + list(raw_ase_ids)
         t_data["ases"] = [
             {
                 "id": aid,
                 "name": ase_names_lookup.get(aid, "ASE"),
+                "hqLocation": ", ".join(user_hqs_map.get(aid, [])) if user_hqs_map.get(aid) else "Unassigned",
+                "assignedHqs": user_hqs_map.get(aid, []),
                 "data": ase_sales.get(aid, {
                     "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
                     "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
@@ -1786,12 +1929,6 @@ async def get_mobile_sales(
             }
             for aid in raw_ase_ids
         ]
-
-        if selected_hq and selected_hq != "All Headquarters":
-            clean_sel_hq = selected_hq.strip().lower()
-            matches_hq = any(hq.strip().lower() == clean_sel_hq for hq in assigned_hq_names) or (t_data.get("hqLocation") and clean_sel_hq in t_data["hqLocation"].strip().lower())
-            if not matches_hq and len(assigned_hq_names) > 0:
-                continue
 
         # Filter out TSM cards with 0 cases and 0 bottles for the active period
         tsm_period_cases = t_data.get("data", {}).get(selected_period, {}).get("cases", 0)
@@ -1814,16 +1951,103 @@ async def get_mobile_sales(
     total_cases = sum(comp.get("data", {}).get(selected_period, {}).get("cases", 0) for comp in formatted_companies)
     total_bottles = sum(comp.get("data", {}).get(selected_period, {}).get("bottles", 0) for comp in formatted_companies)
 
+    def _prune_period_dict(data_dict: dict, active_period: str) -> dict:
+        if not isinstance(data_dict, dict):
+            return data_dict
+        target_key = "Daily"
+        if active_period == "MTD":
+            target_key = "MTD"
+        elif active_period == "YTD":
+            target_key = "YTD"
+
+        if target_key in data_dict:
+            return {target_key: data_dict[target_key]}
+        return data_dict
+
+    # Apply period pruning to formatted entities & nested leaf brands
+    if clean_level in [None, "companies"]:
+        for comp in formatted_companies:
+            if "data" in comp:
+                comp["data"] = _prune_period_dict(comp["data"], selected_period)
+            for b in comp.get("brands", []):
+                if "data" in b:
+                    b["data"] = _prune_period_dict(b["data"], selected_period)
+
+    # Apply pagination to depots if requested
+    paginated_depots = formatted_depots
+    pagination_meta = None
+    if page is not None or page_size is not None:
+        eff_page = page if page is not None else 1
+        eff_page_size = page_size if page_size is not None else 15
+        total_depots = len(formatted_depots)
+        total_pages = math.ceil(total_depots / eff_page_size) if total_depots > 0 else 0
+        start_idx = (eff_page - 1) * eff_page_size
+        end_idx = start_idx + eff_page_size
+        paginated_depots = formatted_depots[start_idx:end_idx]
+        pagination_meta = {
+            "page": eff_page,
+            "page_size": eff_page_size,
+            "total": total_depots,
+            "total_pages": total_pages,
+            "has_next": eff_page < total_pages,
+            "has_previous": eff_page > 1
+        }
+
+    depot_list_for_pruning = paginated_depots if (page is not None or page_size is not None) else formatted_depots
+    if clean_level in [None, "depots"]:
+        for depot in depot_list_for_pruning:
+            if "data" in depot:
+                depot["data"] = _prune_period_dict(depot["data"], selected_period)
+            for b in depot.get("brands", []):
+                if "data" in b:
+                    b["data"] = _prune_period_dict(b["data"], selected_period)
+
+    if clean_level in [None, "tsms"]:
+        for tsm in formatted_tsms:
+            if "data" in tsm:
+                tsm["data"] = _prune_period_dict(tsm["data"], selected_period)
+            if "companyCount" in tsm:
+                tsm["companyCount"] = _prune_period_dict(tsm["companyCount"], selected_period)
+            for tc in tsm.get("companies", []):
+                if "data" in tc:
+                    tc["data"] = _prune_period_dict(tc["data"], selected_period)
+            for tb in tsm.get("brands", []):
+                if "data" in tb:
+                    tb["data"] = _prune_period_dict(tb["data"], selected_period)
+            for ase in tsm.get("ases", []):
+                if "data" in ase:
+                    ase["data"] = _prune_period_dict(ase["data"], selected_period)
+                if "companyCount" in ase:
+                    ase["companyCount"] = _prune_period_dict(ase["companyCount"], selected_period)
+                for ac in ase.get("companies", []):
+                    if "data" in ac:
+                        ac["data"] = _prune_period_dict(ac["data"], selected_period)
+                for ab in ase.get("brands", []):
+                    if "data" in ab:
+                        ab["data"] = _prune_period_dict(ab["data"], selected_period)
+
     payload = {
         "status": "success",
         "latest_sale_date": latest_sale_date,
         "record_count": total_records_processed,
         "process_time_ms": transform_duration_ms,
         "period": selected_period,
-        "companies": formatted_companies,
-        "depots": formatted_depots,
-        "tsms": formatted_tsms
     }
+
+    if clean_level == "companies":
+        payload["companies"] = formatted_companies
+    elif clean_level == "depots":
+        payload["depots"] = paginated_depots
+        if pagination_meta:
+            payload["pagination"] = pagination_meta
+    elif clean_level == "tsms":
+        payload["tsms"] = formatted_tsms
+    else:  # clean_level is None (full response for backward compatibility)
+        payload["companies"] = formatted_companies
+        payload["depots"] = paginated_depots
+        payload["tsms"] = formatted_tsms
+        if pagination_meta:
+            payload["pagination"] = pagination_meta
 
     _SALES_RESPONSE_CACHE[cache_key] = {
         "timestamp": time.time(),
@@ -1921,7 +2145,7 @@ async def get_cascading_groups_endpoint(
     Mobile endpoint: Fetch active groups with total licensees, linked depots, and sales summaries using optimized JSON RPC.
     """
     from backend.services.mobile_cascading_service import get_cascading_groups
-    return get_cascading_groups(date_from=date_from, date_to=date_to, period=period, selected_hq=selected_hq)
+    return await get_cascading_groups(date_from=date_from, date_to=date_to, period=period, selected_hq=selected_hq)
 
 
 @router.get("/cascading/groups/{group_id}/brands")
@@ -1937,7 +2161,7 @@ async def get_group_brands_endpoint(
     Mobile endpoint: Fetch aggregated brand-wise sales for all licensees in a group.
     """
     from backend.services.mobile_cascading_service import get_group_brand_sales
-    return get_group_brand_sales(
+    return await get_group_brand_sales(
         group_id=group_id,
         date_from=date_from,
         date_to=date_to,
@@ -1960,7 +2184,7 @@ async def get_group_licensees_endpoint(
     Mobile endpoint: Fetch licensees for a group with specific depot breakdown and sales stats.
     """
     from backend.services.mobile_cascading_service import get_group_licensees
-    return get_group_licensees(
+    return await get_group_licensees(
         group_id=group_id,
         date_from=date_from,
         date_to=date_to,
@@ -1983,7 +2207,7 @@ async def get_licensee_brand_sales_endpoint(
     Mobile endpoint: Fetch brand-wise sales breakdown for a licensee.
     """
     from backend.services.mobile_cascading_service import get_licensee_brand_sales
-    return get_licensee_brand_sales(
+    return await get_licensee_brand_sales(
         licensee_id=licensee_id,
         date_from=date_from,
         date_to=date_to,
@@ -1995,19 +2219,28 @@ async def get_licensee_brand_sales_endpoint(
 
 @router.get("/cascading/company-brands")
 def get_company_brands_endpoint(
-    company_id: str = Query(..., description="Target Company UUID"),
-    date_from: str = Query(..., description="Start date (YYYY-MM-DD)"),
-    date_to: str = Query(..., description="End date (YYYY-MM-DD)"),
+    company_id: str = Query(..., description="Target Company UUID or slug"),
+    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     hq_name: Optional[str] = Query(None, description="Optional Headquarter filter"),
 ):
     """
     Mobile endpoint: Fetch brand sales breakdown for a selected company.
     """
     from backend.services.company_cascading_service import get_company_brands_sales_service
+    from backend.services.mobile_companies_service import _get_latest_sale_date
+
+    clean_to = date_to.strip() if date_to and date_to.strip() else ""
+    clean_from = date_from.strip() if date_from and date_from.strip() else ""
+    if not clean_to:
+        clean_to = _get_latest_sale_date()
+    if not clean_from:
+        clean_from = clean_to
+
     return get_company_brands_sales_service(
         company_id=company_id,
-        date_from=date_from,
-        date_to=date_to,
+        date_from=clean_from,
+        date_to=clean_to,
         hq_name=hq_name,
     )
 
@@ -2015,18 +2248,27 @@ def get_company_brands_endpoint(
 @router.get("/cascading/brand-licensees")
 def get_brand_licensees_endpoint(
     brand_id: str = Query(..., description="Target Brand UUID"),
-    date_from: str = Query(..., description="Start date (YYYY-MM-DD)"),
-    date_to: str = Query(..., description="End date (YYYY-MM-DD)"),
+    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     hq_name: Optional[str] = Query(None, description="Optional Headquarter filter"),
 ):
     """
     Mobile endpoint: Fetch licensee sales breakdown for a selected brand.
     """
     from backend.services.company_cascading_service import get_brand_licensees_sales_service
+    from backend.services.mobile_companies_service import _get_latest_sale_date
+
+    clean_to = date_to.strip() if date_to and date_to.strip() else ""
+    clean_from = date_from.strip() if date_from and date_from.strip() else ""
+    if not clean_to:
+        clean_to = _get_latest_sale_date()
+    if not clean_from:
+        clean_from = clean_to
+
     return get_brand_licensees_sales_service(
         brand_id=brand_id,
-        date_from=date_from,
-        date_to=date_to,
+        date_from=clean_from,
+        date_to=clean_to,
         hq_name=hq_name,
     )
 

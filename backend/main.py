@@ -9,17 +9,25 @@ import uvicorn
 backend_dir = Path(__file__).resolve().parent
 root_dir = backend_dir.parent
 
-if str(backend_dir) not in sys.path:
-    sys.path.insert(0, str(backend_dir))
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
+if str(backend_dir) not in sys.path:
+    sys.path.insert(1, str(backend_dir))
 
-# Handle virtual 'backend' namespace when running inside container root
-if "backend" not in sys.modules and (backend_dir / "main.py").exists():
-    import types
-    backend_module = types.ModuleType("backend")
-    backend_module.__path__ = [str(backend_dir)]
-    sys.modules["backend"] = backend_module
+# Export PYTHONPATH so uvicorn reloader and subprocesses inherit root_dir in sys.path
+existing_pythonpath = os.environ.get("PYTHONPATH", "")
+if str(root_dir) not in existing_pythonpath.split(os.pathsep):
+    os.environ["PYTHONPATH"] = f"{root_dir}{os.pathsep}{existing_pythonpath}" if existing_pythonpath else str(root_dir)
+
+# Fallback virtual 'backend' namespace module if not loaded
+if "backend" not in sys.modules:
+    try:
+        import backend
+    except ImportError:
+        import types
+        backend_module = types.ModuleType("backend")
+        backend_module.__path__ = [str(backend_dir)]
+        sys.modules["backend"] = backend_module
 
 from backend.core.logging_config import setup_logging
 
@@ -272,4 +280,5 @@ if __name__ == "__main__":
     host = os.environ.get("HOST", "0.0.0.0")
     is_dev = os.environ.get("ENVIRONMENT", "development") == "development"
     
-    uvicorn.run("main:app", host=host, port=port, reload=is_dev)
+    app_str = "backend.main:app" if (root_dir / "backend").exists() else "main:app"
+    uvicorn.run(app_str, host=host, port=port, reload=is_dev)

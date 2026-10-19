@@ -5,7 +5,13 @@
 
 import { API_BASE_URL } from '../../config';
 
-export async function sendChatMessage(message: string, period?: string, selectedHq?: string) {
+export async function sendChatMessage(
+  message: string,
+  period?: string,
+  selectedHq?: string,
+  entityType?: string,
+  entityId?: string
+) {
   const token = localStorage.getItem('token');
   const res = await fetch(`${API_BASE_URL}/chatbot/query`, {
     method: 'POST',
@@ -13,7 +19,13 @@ export async function sendChatMessage(message: string, period?: string, selected
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify({ message, period, selected_hq: selectedHq }),
+    body: JSON.stringify({
+      message,
+      period,
+      selected_hq: selectedHq,
+      entity_type: entityType,
+      entity_id: entityId,
+    }),
   });
   return res.json();
 }

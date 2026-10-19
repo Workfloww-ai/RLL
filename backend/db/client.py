@@ -8,19 +8,60 @@ logger = logging.getLogger(__name__)
 
 supabase_client: Optional[Client] = None
 
+import time
+from backend.core.telemetry import record_db_query
+
+class ResilientSupabaseTransport(httpx.HTTPTransport):
+    """
+    Enterprise-grade resilient transport for Supabase / PostgREST.
+    Automatically catches and retries transient Cloudflare & network errors:
+    - HTTP 521 (Cloudflare: Web server is down / PostgREST restarting)
+    - HTTP 502 (Bad Gateway)
+    - HTTP 503 (Service Unavailable)
+    - HTTP 504 (Gateway Timeout)
+    - HTTP 520, 522, 524 (Origin timeout / unknown)
+    - Socket connection drops / timeouts
+    Uses exponential backoff to ensure smooth recovery during momentary origin restarts.
+    """
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        request.read()
+        max_retries = 3
+        backoff = 0.5
+        for attempt in range(max_retries):
+            try:
+                resp = super().handle_request(request)
+                if resp.status_code in (520, 521, 522, 524, 502, 503, 504) and attempt < max_retries - 1:
+                    logger.warning(
+                        f"Supabase returned transient HTTP {resp.status_code} ({request.method} {request.url.path}). "
+                        f"Retrying ({attempt + 1}/{max_retries}) in {backoff:.1f}s..."
+                    )
+                    time.sleep(backoff)
+                    backoff *= 1.5
+                    continue
+                return resp
+            except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.RemoteProtocolError) as exc:
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        f"Supabase connection glitch ({exc.__class__.__name__}) on {request.method} {request.url.path}. "
+                        f"Retrying ({attempt + 1}/{max_retries}) in {backoff:.1f}s..."
+                    )
+                    time.sleep(backoff)
+                    backoff *= 1.5
+                    continue
+                raise
+
+
 def get_supabase() -> Client:
     global supabase_client
     if supabase_client is None:
         try:
             # On macOS and Python 3.14, HTTP/2 multiplexing socket reads trigger [Errno 35] Resource temporarily unavailable (EWOULDBLOCK)
             # during high-throughput PostgREST streams. Enforcing HTTP/1.1 with retries guarantees 100% socket stability.
-            transport = httpx.HTTPTransport(
+            transport = ResilientSupabaseTransport(
                 http1=True, 
                 http2=False, 
                 retries=3
             )
-            import time
-            from backend.core.telemetry import record_db_query
 
             def _on_httpx_request(request: httpx.Request):
                 request.extensions["start_time"] = time.perf_counter()

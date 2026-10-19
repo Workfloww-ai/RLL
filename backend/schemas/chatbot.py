@@ -14,6 +14,16 @@ class ChatMessageRequest(BaseModel):
     date_from: Optional[str] = Field(None, description="Optional start date (YYYY-MM-DD)")
     date_to: Optional[str] = Field(None, description="Optional end date (YYYY-MM-DD)")
     selected_hq: Optional[str] = Field("All Headquarters", description="Selected Headquarters filter")
+    entity_type: Optional[str] = Field(None, description="Optional explicit entity type: licensee, ase, brand, company, group, tsm, depot")
+    entity_id: Optional[str] = Field(None, description="Optional explicit entity ID")
+
+
+class ChatbotQuickReply(BaseModel):
+    label: str
+    value: str
+    entity_type: Optional[str] = None
+    entity_id: Optional[str] = None
+    subtext: Optional[str] = None
 
 
 class ChatbotKPI(BaseModel):
@@ -61,6 +71,7 @@ class ChatMessageResponse(BaseModel):
     comparison: Optional[Dict[str, Any]] = None
     movers: Optional[Dict[str, Any]] = None
     suggested_questions: Optional[List[str]] = None
+    quick_replies: Optional[List[ChatbotQuickReply]] = None
     clarification_needed: bool = False
     execution_time_ms: float = 0.0
     cache_hit: bool = False

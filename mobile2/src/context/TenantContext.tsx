@@ -11,6 +11,7 @@ export interface TenantConfig {
   splashScreenUrl: string;
   pinnedCompanyName: string;
   excludedCompanies: string[];
+  chatbotEnabled: boolean;
 }
 
 const defaultTenantConfig: TenantConfig = {
@@ -22,6 +23,7 @@ const defaultTenantConfig: TenantConfig = {
   splashScreenUrl: '',
   pinnedCompanyName: 'Rajasthan Liquor Limited',
   excludedCompanies: [],
+  chatbotEnabled: true,
 };
 
 function getInitialTenantConfig(): TenantConfig {
@@ -33,6 +35,7 @@ function getInitialTenantConfig(): TenantConfig {
         ...cached,
         appName: (cached.appName && cached.appName !== 'LucidX360') ? cached.appName : 'Rajasthan Liquor Limited',
         pinnedCompanyName: cached.pinnedCompanyName || 'Rajasthan Liquor Limited',
+        chatbotEnabled: cached.chatbotEnabled !== false,
       };
     }
     const cachedUser = FastStorage.getObject<any>('rll_user_session');
@@ -43,6 +46,7 @@ function getInitialTenantConfig(): TenantConfig {
         tenantId: cachedUser.tenant_id || defaultTenantConfig.tenantId,
         appName: cachedUser.company_name || 'Rajasthan Liquor Limited',
         pinnedCompanyName: cachedUser.company_name || 'Rajasthan Liquor Limited',
+        chatbotEnabled: true,
       };
     }
   } catch (e) {
@@ -120,6 +124,7 @@ export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             splashScreenUrl: data.splash_screen_url || '',
             pinnedCompanyName: data.pinned_company_name || (prev.pinnedCompanyName !== defaultTenantConfig.pinnedCompanyName ? prev.pinnedCompanyName : 'Rajasthan Liquor Limited'),
             excludedCompanies: Array.isArray(data.excluded_companies) ? data.excluded_companies : [],
+            chatbotEnabled: data.chatbot_enabled !== false,
           };
           FastStorage.setObject('rll_tenant_config', nextConfig);
           return nextConfig;

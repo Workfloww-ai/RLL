@@ -19,19 +19,19 @@ COMPANY_ALIASES: Dict[str, str] = {
     "rajasthan liquors ltd": "Rajasthan Liquor Limited",
     "rajasthan liquors ltd.": "Rajasthan Liquor Limited",
 
-    # Diageo / Inbrew conventions
-    "diageo/in brew": "Diageo/In brew",
-    "diageo/inbrew": "Diageo/In brew",
-    "diageo / inbrew": "Diageo/In brew",
-    "diageo / in brew": "Diageo/In brew",
-    "diageo inbrew": "Diageo/In brew",
-    "diageo in brew": "Diageo/In brew",
-    "diageo": "Diageo/In brew",
-    "in brew": "Diageo/In brew",
-    "inbrew": "Diageo/In brew",
-    "in-brew": "Diageo/In brew",
-    "diageo-inbrew": "Diageo/In brew",
-    "diageo-in-brew": "Diageo/In brew",
+    # Diageo conventions
+    "diageo": "Diageo",
+    "diageo india": "Diageo",
+    "united spirits": "Diageo",
+    "united spirits limited": "Diageo",
+    "usl": "Diageo",
+
+    # Inbrew conventions
+    "in brew": "Inbrew",
+    "inbrew": "Inbrew",
+    "in-brew": "Inbrew",
+    "in brew beverages": "Inbrew",
+    "inbrew beverages": "Inbrew",
 
     # William Grants conventions
     "willam grants": "William Grants",
@@ -46,7 +46,8 @@ def normalize_company_name(cname: str) -> str:
     """
     Normalizes company names handling typos, acronyms, and aliases.
     E.g. 'rll', 'rajasthan liquors', 'Rajasthan Liquor Limited' -> 'Rajasthan Liquor Limited'
-         'Diageo', 'In brew', 'Diageo/In brew' -> 'Diageo/In brew'
+         'Diageo' -> 'Diageo'
+         'Inbrew', 'In brew' -> 'Inbrew'
          'willam grants' -> 'William Grants'
     """
     if not cname:
@@ -69,8 +70,10 @@ def normalize_company_name(cname: str) -> str:
         return "Rajasthan Liquor Limited"
     if lowered in ("rll", "r.l.l."):
         return "Rajasthan Liquor Limited"
-    if "diageo" in lowered or "inbrew" in lowered or ("in" in lowered and "brew" in lowered):
-        return "Diageo/In brew"
+    if "diageo" in lowered:
+        return "Diageo"
+    if "inbrew" in lowered or ("in" in lowered and "brew" in lowered):
+        return "Inbrew"
     if "willam" in lowered and "grant" in lowered:
         return "William Grants"
 
@@ -79,18 +82,18 @@ def normalize_company_name(cname: str) -> str:
 
 def is_pinned_company(company_name: str, norm_key: str = "") -> bool:
     """
-    Checks if a company should be pinned to top in lists (RLL & Diageo/In brew).
+    Checks if a company should be pinned to top in lists (RLL & Diageo).
     """
     name_upper = (company_name or "").strip().upper()
     key_lower = (norm_key or "").strip().lower()
 
     pinned_keys = {
         "rll", "rajasthan-liquor-limited", "rajasthan-liquors",
-        "diageo-inbrew", "diageo-in-brew", "diageo/in-brew", "diageo/inbrew"
+        "diageo"
     }
     pinned_names = {
         "RLL", "RAJASTHAN LIQUOR LIMITED", "RAJASTHAN LIQUORS",
-        "DIAGEO/IN BREW", "DIAGEO/INBREW", "DIAGEO", "INBREW", "IN BREW"
+        "DIAGEO"
     }
 
     return (

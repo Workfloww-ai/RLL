@@ -1,5 +1,6 @@
 import logging
 import time
+import asyncio
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from backend.db.supabase_client import (
@@ -9,12 +10,26 @@ from backend.db.supabase_client import (
     fetch_group_licensees_json_db,
     fetch_licensee_brand_sales_json_db,
 )
+from backend.services.cache_service import get_json_cache, set_json_cache
 
 logger = logging.getLogger(__name__)
 
 # Fast In-Memory TTL Cache Store (Fallback)
 _CACHE_STORE: Dict[str, tuple[float, Any]] = {}
-CACHE_TTL_SECONDS = 60  # 60 seconds
+CACHE_TTL_SECONDS = 300  # 5 minutes
+
+# Single-Flight Stampede Lock per cache key
+_CASCADING_LOCKS: Dict[str, asyncio.Lock] = {}
+_LOCKS_GUARD = asyncio.Lock()
+
+_LATEST_DATE_CACHE: Optional[str] = None
+_LATEST_DATE_CACHE_TIME: float = 0.0
+
+async def _get_stampede_lock(key: str) -> asyncio.Lock:
+    async with _LOCKS_GUARD:
+        if key not in _CASCADING_LOCKS:
+            _CASCADING_LOCKS[key] = asyncio.Lock()
+        return _CASCADING_LOCKS[key]
 
 
 def _get_from_cache(cache_key: str) -> Optional[Any]:
@@ -31,11 +46,18 @@ def _set_in_cache(cache_key: str, data: Any):
 
 
 def _get_latest_sale_date(client) -> str:
-    """Helper to fetch the latest available sale date dynamically from sales_fact."""
+    """Helper to fetch the latest available sale date dynamically with 5-minute caching."""
+    global _LATEST_DATE_CACHE, _LATEST_DATE_CACHE_TIME
+    now = time.time()
+    if _LATEST_DATE_CACHE and (now - _LATEST_DATE_CACHE_TIME) < 300.0:
+        return _LATEST_DATE_CACHE
+
     try:
-        res = client.table("sales_fact").select("sale_date").order("sale_date", desc=True).limit(1).execute()
+        res = client.table("sales_daily_summary").select("sale_date").order("sale_date", desc=True).limit(1).execute()
         if res.data and len(res.data) > 0 and res.data[0].get("sale_date"):
-            return str(res.data[0].get("sale_date"))
+            _LATEST_DATE_CACHE = str(res.data[0].get("sale_date"))
+            _LATEST_DATE_CACHE_TIME = now
+            return _LATEST_DATE_CACHE
     except Exception as e:
         logger.warning(f"Error fetching latest sale date: {e}")
     return datetime.now().strftime("%Y-%m-%d")
@@ -47,7 +69,11 @@ def _resolve_multi_period_dates(
     date_to: Optional[str] = None,
     period: Optional[str] = None
 ) -> tuple[str, str, str]:
-    """Resolves target_date, mtd_start, and ytd_start dates for single-pass multi-period queries."""
+    """
+    Resolves target_date, mtd_start, and ytd_start dates for single-pass multi-period queries.
+    MTD start is ALWAYS the 1st day of the target month.
+    YTD start is ALWAYS April 1 of the target financial year.
+    """
     target_date_str = date_to or date_from or _get_latest_sale_date(client)
 
     try:
@@ -57,11 +83,10 @@ def _resolve_multi_period_dates(
         dt = datetime.strptime(latest, "%Y-%m-%d")
         target_date_str = latest
 
-    if date_from and date_from.strip():
-        mtd_start = date_from.strip()
-    else:
-        mtd_start = f"{dt.year:04d}-{dt.month:02d}-01"
+    # MTD start is strictly 1st day of target month
+    mtd_start = f"{dt.year:04d}-{dt.month:02d}-01"
 
+    # YTD start is strictly April 1 of target financial year
     fy_year = dt.year if dt.month >= 4 else dt.year - 1
     ytd_start = f"{fy_year:04d}-04-01"
 
@@ -114,7 +139,7 @@ def _map_period_metrics(records: List[Dict[str, Any]], selected_period: Optional
     return mapped
 
 
-def get_cascading_groups(
+async def get_cascading_groups(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     period: Optional[str] = None,
@@ -127,25 +152,45 @@ def get_cascading_groups(
     try:
         target_date, mtd_start, ytd_start = _resolve_multi_period_dates(client, date_from, date_to, period)
         cache_key = f"groups_json_{target_date}_{period or 'MTD'}_{selected_hq or 'All'}"
+
+        # 1. Fast Redis Lookup
+        redis_cached = await get_json_cache(f"rll:cascading:{cache_key}")
+        if redis_cached is not None:
+            return redis_cached
+
+        # 2. In-Memory Cache Lookup
         cached = _get_from_cache(cache_key)
         if cached is not None:
             return cached
 
-        raw_groups = fetch_cascading_groups_json_db(
-            target_date=target_date,
-            mtd_start=mtd_start,
-            ytd_start=ytd_start,
-            hq_name=selected_hq
-        )
-        res = _map_period_metrics(raw_groups, period)
-        _set_in_cache(cache_key, res)
-        return res
+        # 3. Single-Flight Lock for Stampede Protection
+        lock = await _get_stampede_lock(cache_key)
+        async with lock:
+            # Re-check cache inside lock
+            redis_cached = await get_json_cache(f"rll:cascading:{cache_key}")
+            if redis_cached is not None:
+                return redis_cached
+            cached = _get_from_cache(cache_key)
+            if cached is not None:
+                return cached
+
+            raw_groups = await asyncio.to_thread(
+                fetch_cascading_groups_json_db,
+                target_date=target_date,
+                mtd_start=mtd_start,
+                ytd_start=ytd_start,
+                hq_name=selected_hq
+            )
+            res = _map_period_metrics(raw_groups, period)
+            _set_in_cache(cache_key, res)
+            await set_json_cache(f"rll:cascading:{cache_key}", res, ttl=300)
+            return res
     except Exception as e:
         logger.error(f"Error in get_cascading_groups: {e}", exc_info=True)
         return []
 
 
-def get_group_brand_sales(
+async def get_group_brand_sales(
     group_id: str,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
@@ -161,26 +206,42 @@ def get_group_brand_sales(
     try:
         target_date, mtd_start, ytd_start = _resolve_multi_period_dates(client, date_from, date_to, period)
         cache_key = f"group_brands_json_{group_id}_{target_date}_{period or 'MTD'}_{hq or ''}"
+
+        redis_cached = await get_json_cache(f"rll:cascading:{cache_key}")
+        if redis_cached is not None:
+            return redis_cached
+
         cached = _get_from_cache(cache_key)
         if cached is not None:
             return cached
 
-        raw_brands = fetch_group_brand_sales_json_db(
-            group_id=group_id,
-            target_date=target_date,
-            mtd_start=mtd_start,
-            ytd_start=ytd_start,
-            depot_name=hq
-        )
-        res = _map_period_metrics(raw_brands, period)
-        _set_in_cache(cache_key, res)
-        return res
+        lock = await _get_stampede_lock(cache_key)
+        async with lock:
+            redis_cached = await get_json_cache(f"rll:cascading:{cache_key}")
+            if redis_cached is not None:
+                return redis_cached
+            cached = _get_from_cache(cache_key)
+            if cached is not None:
+                return cached
+
+            raw_brands = await asyncio.to_thread(
+                fetch_group_brand_sales_json_db,
+                group_id=group_id,
+                target_date=target_date,
+                mtd_start=mtd_start,
+                ytd_start=ytd_start,
+                depot_name=hq
+            )
+            res = _map_period_metrics(raw_brands, period)
+            _set_in_cache(cache_key, res)
+            await set_json_cache(f"rll:cascading:{cache_key}", res, ttl=300)
+            return res
     except Exception as e:
         logger.error(f"Error in get_group_brand_sales: {e}", exc_info=True)
         return []
 
 
-def get_group_licensees(
+async def get_group_licensees(
     group_id: str,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
@@ -196,26 +257,42 @@ def get_group_licensees(
     try:
         target_date, mtd_start, ytd_start = _resolve_multi_period_dates(client, date_from, date_to, period)
         cache_key = f"group_lics_json_{group_id}_{target_date}_{period or 'MTD'}_{hq or ''}"
+
+        redis_cached = await get_json_cache(f"rll:cascading:{cache_key}")
+        if redis_cached is not None:
+            return redis_cached
+
         cached = _get_from_cache(cache_key)
         if cached is not None:
             return cached
 
-        raw_lics = fetch_group_licensees_json_db(
-            group_id=group_id,
-            target_date=target_date,
-            mtd_start=mtd_start,
-            ytd_start=ytd_start,
-            depot_name=hq
-        )
-        res = _map_period_metrics(raw_lics, period)
-        _set_in_cache(cache_key, res)
-        return res
+        lock = await _get_stampede_lock(cache_key)
+        async with lock:
+            redis_cached = await get_json_cache(f"rll:cascading:{cache_key}")
+            if redis_cached is not None:
+                return redis_cached
+            cached = _get_from_cache(cache_key)
+            if cached is not None:
+                return cached
+
+            raw_lics = await asyncio.to_thread(
+                fetch_group_licensees_json_db,
+                group_id=group_id,
+                target_date=target_date,
+                mtd_start=mtd_start,
+                ytd_start=ytd_start,
+                depot_name=hq
+            )
+            res = _map_period_metrics(raw_lics, period)
+            _set_in_cache(cache_key, res)
+            await set_json_cache(f"rll:cascading:{cache_key}", res, ttl=300)
+            return res
     except Exception as e:
         logger.error(f"Error in get_group_licensees: {e}", exc_info=True)
         return []
 
 
-def get_licensee_brand_sales(
+async def get_licensee_brand_sales(
     licensee_id: str,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
@@ -231,20 +308,37 @@ def get_licensee_brand_sales(
     try:
         target_date, mtd_start, ytd_start = _resolve_multi_period_dates(client, date_from, date_to, period)
         cache_key = f"licensee_brands_json_{licensee_id}_{target_date}_{period or 'MTD'}_{hq or ''}"
+
+        redis_cached = await get_json_cache(f"rll:cascading:{cache_key}")
+        if redis_cached is not None:
+            return redis_cached
+
         cached = _get_from_cache(cache_key)
         if cached is not None:
             return cached
 
-        raw_brands = fetch_licensee_brand_sales_json_db(
-            licensee_id=licensee_id,
-            target_date=target_date,
-            mtd_start=mtd_start,
-            ytd_start=ytd_start,
-            depot_name=hq
-        )
-        res = _map_period_metrics(raw_brands, period)
-        _set_in_cache(cache_key, res)
-        return res
+        lock = await _get_stampede_lock(cache_key)
+        async with lock:
+            redis_cached = await get_json_cache(f"rll:cascading:{cache_key}")
+            if redis_cached is not None:
+                return redis_cached
+            cached = _get_from_cache(cache_key)
+            if cached is not None:
+                return cached
+
+            raw_brands = await asyncio.to_thread(
+                fetch_licensee_brand_sales_json_db,
+                licensee_id=licensee_id,
+                target_date=target_date,
+                mtd_start=mtd_start,
+                ytd_start=ytd_start,
+                depot_name=hq
+            )
+            res = _map_period_metrics(raw_brands, period)
+            _set_in_cache(cache_key, res)
+            await set_json_cache(f"rll:cascading:{cache_key}", res, ttl=300)
+            return res
     except Exception as e:
         logger.error(f"Error in get_licensee_brand_sales: {e}", exc_info=True)
         return []
+

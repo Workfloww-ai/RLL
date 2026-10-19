@@ -1,11 +1,12 @@
 import json
 import logging
-from typing import List, Dict, Any
-from fastapi import APIRouter, File, UploadFile, HTTPException, Depends
+from typing import List, Dict, Any, Optional
+from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, Header, Query
 from backend.users.service import user_service
-from backend.db.redis_client import safe_get, safe_set, safe_delete
+from backend.db.redis_client import safe_get, safe_set, safe_delete, safe_delete_pattern
 from backend.core.security import RoleChecker, get_current_user
 from backend.core.route import EncryptedRoute
+from backend.core.system_lock import check_system_lock_or_raise, roster_upload_lock, check_upload_cooldown_or_raise, record_upload_completion
 
 logger = logging.getLogger(__name__)
 
@@ -24,27 +25,37 @@ async def invalidate_user_and_territory_caches():
     await safe_delete("rll:cache:depots_list")
     await safe_delete("rll:cache:headquarters_list")
     await safe_delete("rll:cache:roles_list")
+    await safe_delete("rll:cache:master_lookups")
+    await safe_delete_pattern("rll:mobile:sales:*")
 
 
 @router.get("/")
-async def list_users():
-    cached = await safe_get("rll:cache:users_list")
+async def list_users(
+    current_user: dict = Depends(get_current_user),
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID"),
+    tenant_id: Optional[str] = Query(None),
+):
+    target_tenant_id = x_tenant_id or tenant_id or (current_user.get("tenant_id") if current_user else None)
+    cache_key = f"rll:cache:users_list:{target_tenant_id or 'all'}"
+    cached = await safe_get(cache_key)
     if cached:
         try:
             return json.loads(cached)
         except Exception as e:
             logger.warning(f"Error parsing cached users_list: {e}")
 
-    data = user_service.list_users()
+    data = user_service.list_users(tenant_id=target_tenant_id)
     if data:
-        await safe_set("rll:cache:users_list", json.dumps(data), ttl=86400)
+        await safe_set(cache_key, json.dumps(data), ttl=86400)
     return data
 
 
 @router.post("/")
-async def create_user(payload: Dict[str, Any]):
+async def create_user(payload: Dict[str, Any], current_user: dict = Depends(get_current_user)):
+    check_system_lock_or_raise()
     try:
-        res = user_service.create_user(payload)
+        acting_user_id = current_user.get("user_id") if current_user else None
+        res = user_service.create_user(payload, created_by=acting_user_id)
         await invalidate_user_and_territory_caches()
         return res
     except ValueError as ve:
@@ -70,9 +81,11 @@ async def list_roles():
 
 
 @router.post("/roles")
-async def create_role(payload: Dict[str, Any]):
+async def create_role(payload: Dict[str, Any], current_user: dict = Depends(get_current_user)):
+    check_system_lock_or_raise()
     try:
-        res = user_service.create_role(payload)
+        acting_user_id = current_user.get("user_id") if current_user else None
+        res = user_service.create_role(payload, created_by=acting_user_id)
         await invalidate_user_and_territory_caches()
         return res
     except Exception as e:
@@ -80,9 +93,11 @@ async def create_role(payload: Dict[str, Any]):
 
 
 @router.put("/roles/{role_id}")
-async def update_role(role_id: str, payload: Dict[str, Any]):
+async def update_role(role_id: str, payload: Dict[str, Any], current_user: dict = Depends(get_current_user)):
+    check_system_lock_or_raise()
     try:
-        res = user_service.update_role(role_id, payload)
+        acting_user_id = current_user.get("user_id") if current_user else None
+        res = user_service.update_role(role_id, payload, updated_by=acting_user_id)
         await invalidate_user_and_territory_caches()
         return res
     except Exception as e:
@@ -91,6 +106,7 @@ async def update_role(role_id: str, payload: Dict[str, Any]):
 
 @router.delete("/roles/{role_id}")
 async def delete_role(role_id: str):
+    check_system_lock_or_raise()
     success = user_service.delete_role(role_id)
     if not success:
         raise HTTPException(status_code=400, detail="Failed to delete role.")
@@ -104,21 +120,38 @@ async def get_hierarchy():
 
 
 @router.post("/upload-roster")
-async def upload_roster(file: UploadFile = File(...)):
+async def upload_roster(file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
+    check_system_lock_or_raise()
+    check_upload_cooldown_or_raise()
     if not file.filename.endswith(('.xlsx', '.xls', '.csv', '.xlsb')):
         raise HTTPException(status_code=400, detail="Only .xlsx, .xls, .xlsb, or .csv files are supported.")
     
-    contents = await file.read()
-    try:
-        res = user_service.process_excel_roster(contents, file.filename)
-        await invalidate_user_and_territory_caches()
-        return res
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    with roster_upload_lock(file.filename):
+        contents = await file.read()
+        try:
+            acting_user_id = current_user.get("user_id") if current_user else None
+            acting_tenant_id = current_user.get("tenant_id") if current_user else None
+            if not acting_tenant_id and acting_user_id:
+                try:
+                    from backend.db.supabase_client import get_supabase_client
+                    client = get_supabase_client()
+                    if client:
+                        u_res = client.table("users").select("tenant_id").eq("user_id", str(acting_user_id)).limit(1).execute()
+                        if u_res.data and u_res.data[0].get("tenant_id"):
+                            acting_tenant_id = str(u_res.data[0]["tenant_id"])
+                except Exception:
+                    pass
+            res = user_service.process_excel_roster(contents, file.filename, uploaded_by=acting_user_id, tenant_id=acting_tenant_id)
+            await invalidate_user_and_territory_caches()
+            record_upload_completion("roster_upload", file.filename)
+            return res
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.put("/{user_id}")
 async def update_user(user_id: str, payload: Dict[str, Any], current_user: dict = Depends(get_current_user)):
+    check_system_lock_or_raise()
     is_active_val = payload.get("is_active", payload.get("isActive"))
     
     # Prevent self-deactivation
@@ -126,7 +159,8 @@ async def update_user(user_id: str, payload: Dict[str, Any], current_user: dict 
         raise HTTPException(status_code=400, detail="You cannot deactivate your own account.")
 
     try:
-        res = user_service.update_user(user_id, payload)
+        acting_user_id = current_user.get("user_id") if current_user else None
+        res = user_service.update_user(user_id, payload, updated_by=acting_user_id)
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
@@ -150,10 +184,12 @@ async def update_user(user_id: str, payload: Dict[str, Any], current_user: dict 
 
 @router.delete("/{user_id}")
 async def delete_user(user_id: str, current_user: dict = Depends(get_current_user)):
+    check_system_lock_or_raise()
     if str(current_user.get("user_id")) == str(user_id):
         raise HTTPException(status_code=400, detail="You cannot delete your own account.")
 
-    success = user_service.delete_user(user_id)
+    acting_user_id = current_user.get("user_id") if current_user else None
+    success = user_service.delete_user(user_id, deleted_by=acting_user_id)
     if not success:
         raise HTTPException(status_code=400, detail="Failed to delete user.")
     
@@ -164,4 +200,33 @@ async def delete_user(user_id: str, current_user: dict = Depends(get_current_use
     return {"message": "User deleted successfully", "user_id": user_id}
 
 
+@router.get("/{user_id}/headquarters")
+async def get_user_headquarters(user_id: str):
+    try:
+        return user_service.get_user_headquarters(user_id)
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Error fetching user headquarters: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.put("/{user_id}/headquarters")
+async def set_user_headquarters(user_id: str, payload: Dict[str, Any], current_user: dict = Depends(get_current_user)):
+    check_system_lock_or_raise()
+    hq_ids = payload.get("headquarters_ids")
+    if hq_ids is None and "headquarters" in payload:
+        hq_ids = payload.get("headquarters")
+    if not isinstance(hq_ids, list):
+        raise HTTPException(status_code=400, detail="'headquarters_ids' must be a list of headquarters UUIDs.")
+
+    admin_user_id = str(current_user.get("user_id") or "")
+    try:
+        res = user_service.set_user_headquarters(user_id, hq_ids, updated_by=admin_user_id)
+        await invalidate_user_and_territory_caches()
+        return res
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Error updating user headquarters: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

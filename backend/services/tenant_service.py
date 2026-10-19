@@ -15,7 +15,11 @@ _TENANT_CACHE: Dict[str, Any] = {}
 _TENANT_CACHE_TTL = 300.0  # 5 minutes
 
 _INCLUDE_OTHERS_LOCAL_CACHE: Optional[bool] = None
-_INCLUDE_OTHERS_CACHE_TIME: float = 0.0 
+_INCLUDE_OTHERS_CACHE_TIME: float = 0.0
+
+_CHATBOT_ENABLED_LOCAL_CACHE: Optional[bool] = None
+_CHATBOT_ENABLED_CACHE_TIME: float = 0.0
+
 def get_include_others_setting_sync() -> bool:
     """
     Synchronous helper returning whether company Others is included in sales calculations (default: True).
@@ -57,12 +61,55 @@ async def get_include_others_setting_async() -> bool:
     return val
 
 
+def get_chatbot_enabled_setting_sync() -> bool:
+    """
+    Synchronous helper returning whether AI Chatbot is enabled (default: True).
+    Reads system_settings table from Supabase PostgreSQL with 60-second in-memory caching.
+    """
+    global _CHATBOT_ENABLED_LOCAL_CACHE, _CHATBOT_ENABLED_CACHE_TIME
+    now = time.time()
+    if _CHATBOT_ENABLED_LOCAL_CACHE is not None and (now - _CHATBOT_ENABLED_CACHE_TIME) < 60.0:
+        return _CHATBOT_ENABLED_LOCAL_CACHE
+
+    val = True
+    client = get_supabase_client()
+    if client:
+        try:
+            res = client.table("system_settings").select("setting_value").eq("setting_key", "chatbot_enabled").limit(1).execute()
+            if res.data and len(res.data) > 0:
+                val_str = str(res.data[0].get("setting_value", "true")).strip().lower()
+                val = (val_str == "true")
+        except Exception as e:
+            logger.debug(f"Notice reading chatbot_enabled setting (using default True): {e}")
+
+    _CHATBOT_ENABLED_LOCAL_CACHE = val
+    _CHATBOT_ENABLED_CACHE_TIME = now
+    return val
+
+
+async def get_chatbot_enabled_setting_async() -> bool:
+    """
+    Async helper returning whether AI Chatbot is enabled (default: True).
+    Checks Redis cache first then Supabase PostgreSQL.
+    """
+    from backend.db.redis_client import safe_get, safe_set
+    cached = await safe_get("rll:setting:chatbot_enabled")
+    if cached is not None:
+        return str(cached).strip().lower() == "true"
+
+    val = get_chatbot_enabled_setting_sync()
+    await safe_set("rll:setting:chatbot_enabled", "true" if val else "false", ttl=86400 * 30)
+    return val
+
+
 def clear_tenant_cache():
     """Clear local tenant cache entries."""
-    global _TENANT_CACHE, _INCLUDE_OTHERS_LOCAL_CACHE, _INCLUDE_OTHERS_CACHE_TIME
+    global _TENANT_CACHE, _INCLUDE_OTHERS_LOCAL_CACHE, _INCLUDE_OTHERS_CACHE_TIME, _CHATBOT_ENABLED_LOCAL_CACHE, _CHATBOT_ENABLED_CACHE_TIME
     _TENANT_CACHE.clear()
     _INCLUDE_OTHERS_LOCAL_CACHE = None
     _INCLUDE_OTHERS_CACHE_TIME = 0.0
+    _CHATBOT_ENABLED_LOCAL_CACHE = None
+    _CHATBOT_ENABLED_CACHE_TIME = 0.0
 
 
 def get_tenant_config_service(
@@ -84,11 +131,12 @@ def get_tenant_config_service(
 
     client = get_supabase_client()
     include_others = get_include_others_setting_sync()
+    chatbot_enabled = get_chatbot_enabled_setting_sync()
     excluded = [] if include_others else ["Others"]
 
     default_config = {
         "status": "success",
-        "tenant_id": "a0000000-0000-0000-0000-000000000001",
+        "tenant_id": tenant_id or "",
         "tenant_slug": tenant_slug or "rll",
         "app_name": "LucidX360",
         "logo_url": "/images/rll logo.svg",
@@ -96,6 +144,7 @@ def get_tenant_config_service(
         "splash_screen_url": "",
         "pinned_company_name": "Rajasthan Liquor Limited",
         "excluded_companies": excluded,
+        "chatbot_enabled": chatbot_enabled,
     }
 
     if not client:
@@ -103,6 +152,32 @@ def get_tenant_config_service(
         return default_config
 
     try:
+        # 1. Direct table query by tenant_id or tenant_slug in public.tenant_config
+        t_query = client.table("tenant_config").select("tenant_id, tenant_slug, app_name, logo_url, favicon_url, splash_screen_url, pinned_company_name")
+        t_res = None
+        if tenant_id and len(str(tenant_id)) == 36 and "-" in str(tenant_id):
+            t_res = t_query.eq("tenant_id", str(tenant_id)).limit(1).execute()
+        elif tenant_slug:
+            t_res = t_query.eq("tenant_slug", str(tenant_slug)).limit(1).execute()
+
+        if t_res and t_res.data and len(t_res.data) > 0:
+            row = t_res.data[0]
+            config_data = {
+                "status": "success",
+                "tenant_id": str(row.get("tenant_id") or tenant_id or ""),
+                "tenant_slug": str(row.get("tenant_slug") or tenant_slug or "rll"),
+                "app_name": str(row.get("app_name") or "LucidX360"),
+                "logo_url": str(row.get("logo_url") or "/images/rll logo.svg"),
+                "favicon_url": str(row.get("favicon_url") or ""),
+                "splash_screen_url": str(row.get("splash_screen_url") or ""),
+                "pinned_company_name": str(row.get("pinned_company_name") or ""),
+                "excluded_companies": excluded,
+                "chatbot_enabled": chatbot_enabled,
+            }
+            _TENANT_CACHE[cache_key] = {"timestamp": now, "data": config_data}
+            return config_data
+
+        # 2. Fallback to get_tenant_config RPC
         rpc_params: Dict[str, Any] = {
             "p_tenant_slug": tenant_slug or None,
             "p_tenant_id": tenant_id if (tenant_id and len(str(tenant_id)) == 36 and "-" in str(tenant_id)) else None,
@@ -111,7 +186,7 @@ def get_tenant_config_service(
         if res.data and isinstance(res.data, dict):
             config_data = {
                 "status": "success",
-                "tenant_id": str(res.data.get("tenant_id") or "a0000000-0000-0000-0000-000000000001"),
+                "tenant_id": str(res.data.get("tenant_id") or tenant_id or ""),
                 "tenant_slug": str(res.data.get("tenant_slug") or tenant_slug or "rll"),
                 "app_name": str(res.data.get("app_name") or "LucidX360"),
                 "logo_url": str(res.data.get("logo_url") or "/images/rll logo.svg"),
@@ -119,12 +194,14 @@ def get_tenant_config_service(
                 "splash_screen_url": str(res.data.get("splash_screen_url") or ""),
                 "pinned_company_name": str(res.data.get("pinned_company_name") or "Rajasthan Liquor Limited"),
                 "excluded_companies": excluded,
+                "chatbot_enabled": chatbot_enabled,
             }
             _TENANT_CACHE[cache_key] = {"timestamp": now, "data": config_data}
             return config_data
     except Exception as e:
-        logger.warning(f"get_tenant_config_service: RPC notice: {e}. Falling back to default settings.")
+        logger.warning(f"get_tenant_config_service: notice: {e}. Falling back to default settings.")
 
     _TENANT_CACHE[cache_key] = {"timestamp": now, "data": default_config}
     return default_config
+
 
