@@ -8,6 +8,7 @@ from backend.uploads.service import import_pipeline, upload_batches_db, upload_l
 from backend.core.security import RoleChecker, get_current_user
 from backend.core.system_lock import check_system_lock_or_raise, check_upload_cooldown_or_raise
 from backend.db.client import get_supabase
+from backend.db.supabase_client import _clean_error_msg
 from backend.uploads.schemas import UploadBatchResponse, UploadLogResponse
 
 logger = logging.getLogger(__name__)
@@ -187,7 +188,7 @@ async def list_upload_batches(
             if res.data is not None:
                 return res.data
         except Exception as e:
-            logger.warning(f"Failed to query upload_batches from DB for tenant {target_tenant_id}: {e}")
+            logger.warning(f"Failed to query upload_batches from DB for tenant {target_tenant_id}: {_clean_error_msg(e)}")
 
     filtered_memory_batches = [
         b for b in upload_batches_db.values()
@@ -243,7 +244,7 @@ async def get_latest_upload_batch(
                         batch["status"] = "success"
                         batch["upload_status"] = "success"
         except Exception as e:
-            logger.warning(f"Failed to fetch latest batch from Supabase: {e}")
+            logger.warning(f"Failed to fetch latest batch from Supabase: {_clean_error_msg(e)}")
 
     if not batch:
         batches = [
@@ -298,7 +299,7 @@ async def get_upload_batch(batch_id: str):
             if res.data:
                 return res.data[0]
         except Exception as e:
-            logger.warning(f"Failed to fetch batch {batch_id} status from Supabase: {e}")
+            logger.warning(f"Failed to fetch batch {batch_id} status from Supabase: {_clean_error_msg(e)}")
 
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -653,7 +654,7 @@ async def get_batch_logs(batch_id: str):
                     })
                 return formatted
         except Exception as e:
-            logger.warning(f"Failed to fetch logs from Supabase for batch {batch_id}: {e}")
+            logger.warning(f"Failed to fetch logs from Supabase for batch {batch_id}: {_clean_error_msg(e)}")
     return logs
 
 
@@ -703,7 +704,7 @@ async def get_upload_errors(
                         "created_at": b.get("created_at")
                     })
         except Exception as eb:
-            logger.warning(f"Could not load available batches for tenant {target_tenant_id}: {eb}")
+            logger.warning(f"Could not load available batches for tenant {target_tenant_id}: {_clean_error_msg(eb)}")
 
     # Check in-memory batches for tenant
     if upload_batches_db:
@@ -789,7 +790,7 @@ async def get_upload_errors(
                             "created_at": item.get("created_at"),
                         })
         except Exception as e:
-            logger.warning(f"Error querying error_logs / upload_validation_errors: {e}")
+            logger.warning(f"Error querying error_logs / upload_validation_errors: {_clean_error_msg(e)}")
 
     # Also pull from in-memory upload_logs_db if DB yielded nothing
     if not raw_errors and upload_logs_db:

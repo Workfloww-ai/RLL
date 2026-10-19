@@ -12,22 +12,33 @@ def get_supabase_client() -> Optional[Client]:
 
 def _clean_error_msg(e: Any) -> str:
     """Safely extracts a readable string message from any exception or Supabase error object, truncating raw HTML responses if needed."""
+    raw_str = ""
     if isinstance(e, dict):
-        msg = e.get("message") or e.get("details") or str(e)
+        details = str(e.get("details") or "")
+        message = str(e.get("message") or "")
+        code = str(e.get("code") or "")
+        raw_str = f"{code} {message} {details}"
     else:
-        msg = str(e)
-    msg_lower = msg.lower()
-    if "<html>" in msg_lower or "<!doctype html>" in msg_lower:
-        if "521" in msg or "web server is down" in msg_lower:
-            return "Supabase HTTP 521: Web server is down (Cloudflare connection failure)"
-        elif "520" in msg:
-            return "Supabase HTTP 520: Web server returned an unknown response"
-        elif "502" in msg or "bad gateway" in msg_lower:
-            return "Supabase HTTP 502: Bad Gateway"
-        elif "504" in msg or "gateway timeout" in msg_lower:
+        raw_str = str(e)
+
+    raw_lower = raw_str.lower()
+    if "<html" in raw_lower or "<!doctype" in raw_lower:
+        if "521" in raw_str or "web server is down" in raw_lower:
+            return "Supabase HTTP 521: Web server is temporarily down or restarting (Cloudflare origin connection refused)"
+        elif "502" in raw_str or "bad gateway" in raw_lower:
+            return "Supabase HTTP 502: Bad Gateway (PostgREST origin unavailable)"
+        elif "503" in raw_str or "service unavailable" in raw_lower:
+            return "Supabase HTTP 503: Service Unavailable"
+        elif "504" in raw_str or "gateway timeout" in raw_lower:
             return "Supabase HTTP 504: Gateway Timeout"
-        return msg[:200] + "... [HTML response truncated]"
-    return msg
+        elif "520" in raw_str:
+            return "Supabase HTTP 520: Origin Server Unknown Error"
+        elif "522" in raw_str or "connection timed out" in raw_lower:
+            return "Supabase HTTP 522: Connection Timed Out"
+        elif "524" in raw_str or "a timeout occurred" in raw_lower:
+            return "Supabase HTTP 524: Cloudflare Origin Timeout"
+        return f"Supabase Gateway Error: [HTML response truncated] ({raw_str[:120]})"
+    return str(e)
 
 # ---------------------------------------------------------------------------
 # Database Advisory Lock & Concurrency Control Helpers
@@ -121,7 +132,7 @@ def get_active_upload_batch() -> Optional[Dict[str, Any]]:
                 else:
                     return b
     except Exception as e:
-        logger.warning(f"get_active_upload_batch error: {e}")
+        logger.warning(f"get_active_upload_batch error: {_clean_error_msg(e)}")
     return None
 
 def reset_orphaned_upload_batches() -> int:
