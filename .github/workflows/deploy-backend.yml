@@ -39,3 +39,4 @@ jobs:
           flags: '--allow-unauthenticated'
           env_vars: |
             ENVIRONMENT=production
+            PYTHONUNBUFFERED=1

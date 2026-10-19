@@ -114,6 +114,11 @@ async def upload_excel(
     MAX_FILE_SIZE = 250 * 1024 * 1024  # 250 MB
     try:
         contents = await file.read()
+        file_mb = len(contents) / (1024 * 1024)
+        logger.info(
+            f"[UPLOAD-ENDPOINT] Received file '{filename}' ({file_mb:.2f} MB) | "
+            f"User ID: {user_id} | Tenant ID: {resolved_tenant_id}"
+        )
         if len(contents) > MAX_FILE_SIZE:
             err_msg = f"File size exceeds maximum allowed limit of 250 MB (Received: {len(contents) / (1024*1024):.2f} MB)."
             from backend.db.supabase_client import log_upload_validation_error
@@ -127,9 +132,10 @@ async def upload_excel(
 
         # Phase 2 Idempotent Retry: If returning existing active batch, do not add duplicate background task
         if batch_record.get("is_existing_active"):
-            logger.info(f"Idempotent upload endpoint call: returning active batch #{batch_record.get('batch_id')} without duplicate queue.")
+            logger.info(f"[UPLOAD-ENDPOINT] Idempotent call: returning active batch #{batch_record.get('batch_id')} without duplicate queue.")
             return batch_record
 
+        logger.info(f"[UPLOAD-ENDPOINT] Dispatching Batch #{batch_record['upload_batch_id']} to background processing task...")
         background_tasks.add_task(
             import_pipeline.process_file_upload_async,
             filename,
@@ -139,7 +145,7 @@ async def upload_excel(
             resolved_tenant_id
         )
 
-        logger.info(f"Excel file {filename} queued successfully for asynchronous processing (Batch ID: {batch_record['upload_batch_id']})")
+        logger.info(f"[UPLOAD-ENDPOINT] File '{filename}' successfully queued (Batch ID: {batch_record['upload_batch_id']})")
         return batch_record
     except ValueError as ve:
         logger.warning(f"Excel upload failed validation for file {filename} by user {user_id}: {str(ve)}")

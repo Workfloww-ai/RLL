@@ -864,10 +864,14 @@ class ImportPipelineEngine:
             if dataframe.empty:
                 raise ValueError("Uploaded file contains no data rows.")
 
-            column_map = self._build_column_map(dataframe)
-            logger.info("Excel column mapping for batch %s: %s", batch_id, column_map)
-
             total_rows = len(dataframe)
+            logger.info(
+                f"[INGESTION #{batch_id}] [PARSE-COMPLETE] Total rows extracted: {total_rows:,} | "
+                f"Columns detected: {len(dataframe.columns)} ({list(dataframe.columns)[:8]}...)"
+            )
+            column_map = self._build_column_map(dataframe)
+            logger.info(f"[INGESTION #{batch_id}] [COLUMN-MAPPING] Resolved mapping: {column_map}")
+
             self._update_batch(batch_id=batch_id, row_count=total_rows, status="running")
 
             if local_batch:
@@ -880,7 +884,10 @@ class ImportPipelineEngine:
             if self.is_batch_cancelled(batch_id):
                 raise UploadCancelledException(f"Batch {batch_id} cancelled by user after file parsing.")
 
+            t_cache = time.time()
+            logger.info(f"[INGESTION #{batch_id}] [PREFETCH-START] Prefetching master caches (brands, depots, licensees, personnel)...")
             master_service.prefetch_all_caches()
+            logger.info(f"[INGESTION #{batch_id}] [PREFETCH-DONE] Master caches loaded in {time.time() - t_cache:.2f}s")
 
             # Vectorized Series Extraction & Cleaning
             def get_series(col_key, default=""):
@@ -1964,6 +1971,16 @@ class ImportPipelineEngine:
                 imported_rows=imported_rows,
             )
 
+            total_elapsed = time.time() - start_time
+            logger.info(
+                f"=== [INGESTION #{batch_id}] SUCCESSFUL FINISH ===\n"
+                f"  File: '{filename}'\n"
+                f"  Total Rows Extracted: {total_rows:,}\n"
+                f"  Imported to sales_fact: {imported_rows:,}\n"
+                f"  Total Duration: {total_elapsed:.1f}s ({total_elapsed/60:.2f} mins)\n"
+                f"  Final Status: {final_status}"
+            )
+
             if final_status in ("loaded", "completed", "success"):
                 try:
                     from backend.core.system_lock import record_upload_completion
@@ -1980,7 +1997,7 @@ class ImportPipelineEngine:
 
         except UploadCancelledException as exc:
             logger.warning(
-                "Upload batch %s cancelled by user: %s. Executing atomic rollback to 0.",
+                "[INGESTION #%s] CANCELLED BY USER: %s. Executing atomic rollback to 0.",
                 batch_id,
                 exc,
             )
@@ -2022,11 +2039,14 @@ class ImportPipelineEngine:
             return local_batch
 
         except Exception as exc:
-
-            logger.exception(
-                "Upload batch %s failed: %s",
-                batch_id,
-                exc,
+            total_elapsed = time.time() - start_time
+            logger.error(
+                f"=== [INGESTION #{batch_id}] FAILED AT CRITICAL FAILURE POINT ===\n"
+                f"  File: '{filename}'\n"
+                f"  Elapsed Time: {total_elapsed:.1f}s\n"
+                f"  Error Type: {type(exc).__name__}\n"
+                f"  Error Details: {str(exc)}\n",
+                exc_info=True
             )
 
             # Record error in upload_validation_errors table
@@ -2417,28 +2437,37 @@ class ImportPipelineEngine:
 
         raw_dataframe = None
 
+        t_parse_start = time.time()
+        logger.info(f"[PARSE-START] Parsing file '{filename}' ({len(contents) / (1024 * 1024):.2f} MB)...")
+
         # ----------------------------------------------------
         # 1. EXCEL PARSING (.xlsx, .xls, .xlsb, etc.)
         # ----------------------------------------------------
         # Direct Calamine fast Rust engine parser for Excel files (.xlsb, .xlsx, .xls)
         if filename_lower.endswith((".xlsb", ".xlsx", ".xls")):
             try:
+                logger.info(f"[PARSE-ENGINE] Attempting fast Rust Calamine engine for '{filename}'...")
+                t_cal = time.time()
                 from python_calamine import CalamineWorkbook
                 workbook = CalamineWorkbook.from_object(io.BytesIO(contents))
                 sheet_name = workbook.sheet_names[0]
                 rows = workbook.get_sheet_by_name(sheet_name).to_python()
                 if rows:
                     raw_dataframe = pd.DataFrame(rows)
-                    logger.info(f"Successfully parsed '{filename}' using CalamineWorkbook ({len(rows)} rows).")
+                    logger.info(f"[PARSE-SUCCESS] Calamine parsed '{filename}' in {time.time() - t_cal:.2f}s ({len(rows):,} rows).")
+            except ModuleNotFoundError:
+                logger.warning(f"[PARSE-WARN] 'python_calamine' library NOT installed in this environment. Falling back to pyxlsb/pandas...")
             except Exception as e_calamine:
-                logger.warning(f"Direct CalamineWorkbook parsing failed for '{filename}': {e_calamine}")
+                logger.warning(f"[PARSE-WARN] Direct CalamineWorkbook parsing failed for '{filename}': {e_calamine}")
 
         if raw_dataframe is None or raw_dataframe.empty:
             excel_engines = ["calamine", "pyxlsb", "openpyxl", "xlrd"]
             for engine in excel_engines:
                 try:
+                    logger.info(f"[PARSE-ENGINE] Trying pandas read_excel with engine='{engine}'...")
                     raw_dataframe = pd.read_excel(io.BytesIO(contents), header=None, engine=engine)
                     if raw_dataframe is not None and not raw_dataframe.empty and len(raw_dataframe) > 0:
+                        logger.info(f"[PARSE-SUCCESS] pandas with engine='{engine}' parsed {len(raw_dataframe):,} rows.")
                         break
                 except Exception:
                     continue
@@ -2446,6 +2475,8 @@ class ImportPipelineEngine:
         # Dedicated pyxlsb engine fallback for binary files (.xlsb)
         if (raw_dataframe is None or raw_dataframe.empty) and filename_lower.endswith(".xlsb"):
             try:
+                logger.info(f"[PARSE-ENGINE] Falling back to dedicated pure-Python pyxlsb engine for '{filename}' (iterating cells)...")
+                t_xlsb = time.time()
                 # pyrefly: ignore [missing-import]
                 import pyxlsb
                 rows = []
@@ -2456,8 +2487,9 @@ class ImportPipelineEngine:
                             rows.append([cell.v for cell in row])
                 if rows:
                     raw_dataframe = pd.DataFrame(rows)
+                    logger.info(f"[PARSE-SUCCESS] Dedicated pyxlsb parsed '{filename}' in {time.time() - t_xlsb:.2f}s ({len(rows):,} rows).")
             except Exception as e_xlsb:
-                logger.warning(f"Dedicated pyxlsb workbook parsing failed: {e_xlsb}")
+                logger.warning(f"[PARSE-ERROR] Dedicated pyxlsb workbook parsing failed: {e_xlsb}")
 
         # ----------------------------------------------------
         # 2. CSV / TSV / DELIMITED TEXT PARSING
@@ -3000,6 +3032,12 @@ class ImportPipelineEngine:
         else:
             friendly_stage = "Saving records"
 
+        t_bulk_start = time.time()
+        logger.info(
+            f"[BULK-INSERT START] Table: '{table}' | Records: {len(records):,} | "
+            f"Total Chunks: {total_chunks} (Chunk Size: {chunk_size}) | Batch ID: {batch_id}"
+        )
+
         if batch_id:
             msg_init = f"{friendly_stage} ({len(records):,} rows in {total_chunks} parts)..."
             self._pipeline_log(
@@ -3022,6 +3060,7 @@ class ImportPipelineEngine:
             end_row = min(start_index + chunk_size, len(records))
             chunk_num = chunk_number_offset + idx
             start_time_iso = datetime.now().isoformat()
+            t_chunk_start = time.time()
 
             pct = int((idx / total_chunks) * 100)
             msg_progress = f"{friendly_stage} ({idx}/{total_chunks}) • {pct}% complete..."
@@ -3060,16 +3099,22 @@ class ImportPipelineEngine:
                             client.table(table).insert(chunk, returning="minimal").execute()
                         success = True
                         inserted_count = len(chunk)
+                        chunk_dur = time.time() - t_chunk_start
+                        if is_milestone or (idx % 5 == 0):
+                            logger.info(
+                                f"[BULK-INSERT PROGRESS] [{table}] Chunk {idx}/{total_chunks} "
+                                f"({len(chunk)} rows) inserted in {chunk_dur:.2f}s [{pct}% complete]"
+                            )
                         break
                     except Exception as exc:
                         err_msg = str(exc)
                         if attempt < max_retries:
                             import time
                             sleep_sec = attempt * 1.5
-                            logger.warning(f"Chunk {idx}/{total_chunks} ({table}) attempt {attempt} failed: {err_msg}. Retrying in {sleep_sec}s...")
+                            logger.warning(f"[BULK-INSERT RETRY] Chunk {idx}/{total_chunks} ({table}) attempt {attempt} failed: {err_msg}. Retrying in {sleep_sec}s...")
                             time.sleep(sleep_sec)
                         else:
-                            logger.warning(f"Chunk {idx}/{total_chunks} ({table}) failed all {max_retries} full retries: {err_msg}. Initiating sub-chunk self-healing recovery...")
+                            logger.warning(f"[BULK-INSERT FAILED] Chunk {idx}/{total_chunks} ({table}) failed all {max_retries} retries: {err_msg}. Initiating sub-chunk recovery...")
 
                 if not success:
                     # Sub-chunk retry recovery (divide chunk into sub-chunks of 500)

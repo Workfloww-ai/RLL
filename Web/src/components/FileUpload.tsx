@@ -171,7 +171,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
     }
 
     let pollAttempts = 0;
-    const maxPollAttempts = 1200; // Allow up to 20 minutes polling for 500k+ row files
+    const maxPollAttempts = 4800; // Allow up to 60 minutes polling for 500k+ row files
 
     pollTimerRef.current = setInterval(async () => {
       pollAttempts += 1;
@@ -532,6 +532,42 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
             });
             startPollingBatchStatus(stored.batchId, fName, timeFormatted, startMs);
             return;
+          }
+        }
+        // If no active upload in localStorage, check /uploads/latest to see if a recent upload succeeded
+        if (!uploadEndpoint && isMounted) {
+          const token = localStorage.getItem('token');
+          const headers: Record<string, string> = {};
+          if (token) headers['Authorization'] = `Bearer ${token}`;
+          try {
+            const resLatest = await fetch(`${API_BASE_URL}/uploads/latest`, { headers });
+            if (resLatest.ok) {
+              const latestData = await resLatest.json();
+              const stMain = (latestData?.status || '').toLowerCase();
+              const isSucc = ['loaded', 'completed', 'success'].includes(stMain);
+              if (isSucc && latestData.created_at) {
+                const diffMs = Date.now() - new Date(latestData.created_at).getTime();
+                // If created or finished within the last 60 minutes, display success state
+                if (diffMs < 60 * 60 * 1000) {
+                  const imported = latestData.imported_rows ?? latestData.row_count ?? 0;
+                  setUploadState({
+                    status: 'success',
+                    progress: 100,
+                    fileName: latestData.source_file || latestData.file_name || 'IMFL Data May-26.xlsb',
+                    batchId: latestData.batch_id,
+                    importedRows: imported,
+                    failedRows: latestData.failed_rows ?? 0,
+                    duplicateRows: latestData.duplicate_rows ?? 0,
+                    processingTimeSeconds: latestData.processing_time_seconds,
+                    uploadStartTime: new Date(latestData.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }),
+                    statusMessage: latestData.remarks || 'All Records Successfully Verified & Saved!'
+                  });
+                  return;
+                }
+              }
+            }
+          } catch (eLatest) {
+            console.warn('Notice checking latest upload batch on mount:', eLatest);
           }
         }
       } catch (err) {
@@ -1186,6 +1222,47 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                 )}
 
                 <div className="flex flex-wrap items-center justify-center gap-2.5 mt-4">
+                  <button 
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      const bId = uploadState.batchId;
+                      try {
+                        const token = localStorage.getItem('token');
+                        const headers: Record<string, string> = {};
+                        if (token) headers['Authorization'] = `Bearer ${token}`;
+                        const endpoint = bId ? `${API_BASE_URL}/uploads/batches/${bId}` : `${API_BASE_URL}/uploads/latest`;
+                        const res = await fetch(endpoint, { headers });
+                        if (res.ok) {
+                          const data = await res.json();
+                          const stMain = (data?.status || '').toLowerCase();
+                          if (['loaded', 'completed', 'success'].includes(stMain)) {
+                            const imported = data.imported_rows ?? data.row_count ?? 0;
+                            setUploadState({
+                              status: 'success',
+                              progress: 100,
+                              fileName: data.source_file || uploadState.fileName || 'IMFL Data May-26.xlsb',
+                              batchId: data.batch_id || bId,
+                              importedRows: imported,
+                              failedRows: data.failed_rows ?? 0,
+                              duplicateRows: data.duplicate_rows ?? 0,
+                              processingTimeSeconds: data.processing_time_seconds || uploadState.elapsedSeconds,
+                              uploadStartTime: uploadState.uploadStartTime || 'Recently',
+                              statusMessage: data.remarks || 'All Records Successfully Verified & Saved!'
+                            });
+                            startCooldownManually(1800, 'Upload completed successfully. 30-minute verification cooldown active.');
+                            return;
+                          }
+                        }
+                      } catch (errCheck) {
+                        console.error('Failed to check live DB status:', errCheck);
+                      }
+                      resetUpload();
+                    }}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition-colors text-xs font-bold cursor-pointer shadow-xs flex items-center gap-1.5"
+                  >
+                    <CheckCircle2 size={13} />
+                    Check Live DB Status
+                  </button>
                   <button 
                     onClick={(e) => { e.stopPropagation(); resetUpload(); }}
                     className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl transition-colors text-xs font-bold cursor-pointer"
