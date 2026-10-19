@@ -3267,7 +3267,9 @@ class ImportPipelineEngine:
             logger.info("Supabase client unavailable; in-memory batch %s updated.", batch_id)
             return
 
-        payload = {}
+        payload = {
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
 
         if row_count is not None:
             payload["row_count"] = row_count

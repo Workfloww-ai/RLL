@@ -200,45 +200,76 @@ def get_upload_cooldown_status() -> Dict[str, Any]:
         client = get_supabase()
         if client:
             res = client.table("upload_batches").select(
-                "batch_id, source_file, created_at, updated_at, status"
+                "batch_id, source_file, created_at, updated_at, status, processing_time_seconds"
             ).order("created_at", desc=True).limit(5).execute()
 
             if res.data:
                 for b in res.data:
                     b_status = str(b.get("status") or "").lower()
                     if b_status in ("loaded", "completed", "success"):
-                        b_cd_target = UPLOAD_COOLDOWN_SECONDS  # 1800s
+                        b_cd_target = UPLOAD_COOLDOWN_SECONDS  # 1800s (30m)
                         b_type = "sales_upload"
                     elif b_status in ("failed", "error", "interrupted"):
-                        b_cd_target = 600  # 10 minutes
+                        b_cd_target = 600  # 600s (10m)
                         b_type = "validation_error"
                     else:
                         continue
 
-                    ts_str = b.get("updated_at") or b.get("created_at")
-                    if ts_str:
-                        clean_dt_str = ts_str.replace("Z", "+00:00")
-                        c_dt = datetime.fromisoformat(clean_dt_str)
-                        if c_dt.tzinfo is None:
-                            c_dt = c_dt.replace(tzinfo=timezone.utc)
-                        db_ts = c_dt.timestamp()
-                        if db_ts > latest_ts:
-                            latest_ts = db_ts
-                            latest_type = b_type
-                            latest_file = b.get("source_file") or b.get("file_name")
-                            cooldown_target = b_cd_target
-                            _LAST_UPLOAD_COMPLETION = {
-                                "timestamp": latest_ts,
-                                "upload_type": latest_type,
-                                "filename": latest_file,
-                                "cooldown_seconds": cooldown_target,
-                                "reason": (
-                                    "Upload completed successfully. 30-minute verification cooldown active."
-                                    if cooldown_target > 600
-                                    else "Validation issue detected. 10-minute rollback & purge buffer active."
-                                )
-                            }
-                            break
+                    created_str = b.get("created_at")
+                    updated_str = b.get("updated_at")
+                    proc_sec = float(b.get("processing_time_seconds") or 0.0)
+
+                    c_ts = 0.0
+                    if created_str:
+                        try:
+                            clean_c = created_str.replace("Z", "+00:00")
+                            c_dt = datetime.fromisoformat(clean_c)
+                            if c_dt.tzinfo is None:
+                                c_dt = c_dt.replace(tzinfo=timezone.utc)
+                            c_ts = c_dt.timestamp()
+                        except Exception:
+                            pass
+
+                    u_ts = 0.0
+                    if updated_str:
+                        try:
+                            clean_u = updated_str.replace("Z", "+00:00")
+                            u_dt = datetime.fromisoformat(clean_u)
+                            if u_dt.tzinfo is None:
+                                u_dt = u_dt.replace(tzinfo=timezone.utc)
+                            u_ts = u_dt.timestamp()
+                        except Exception:
+                            pass
+
+                    # True completion timestamp: If processing took X seconds, completion is c_ts + proc_sec
+                    if c_ts > 0 and proc_sec > 0:
+                        completion_ts = c_ts + proc_sec
+                    elif u_ts > c_ts:
+                        completion_ts = u_ts
+                    elif u_ts > 0:
+                        completion_ts = u_ts
+                    elif c_ts > 0:
+                        completion_ts = c_ts
+                    else:
+                        completion_ts = 0.0
+
+                    if completion_ts > latest_ts:
+                        latest_ts = completion_ts
+                        latest_type = b_type
+                        latest_file = b.get("source_file") or b.get("file_name")
+                        cooldown_target = b_cd_target
+                        _LAST_UPLOAD_COMPLETION = {
+                            "timestamp": latest_ts,
+                            "upload_type": latest_type,
+                            "filename": latest_file,
+                            "cooldown_seconds": cooldown_target,
+                            "reason": (
+                                "Upload completed successfully. 30-minute verification cooldown active."
+                                if cooldown_target > 600
+                                else "Validation issue detected. 10-minute rollback & purge buffer active."
+                            )
+                        }
+                        break
     except Exception as e_db:
         logger.debug(f"Notice querying latest upload batch for cooldown: {e_db}")
 
