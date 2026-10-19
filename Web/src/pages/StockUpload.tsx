@@ -140,11 +140,13 @@ export default function StockUpload() {
                 </span>
               </div>
               <p className="text-xs text-slate-600 mt-1 font-medium leading-relaxed">
-                {cooldownMessage || (
-                  cooldownTotalSeconds <= 600
-                    ? 'A 10-minute rollback & purge buffer is active following a file validation issue. Next upload will be enabled once the timer completes.'
-                    : 'A 30-minute buffer is active after the last upload to ensure complete background database indexing and accuracy. Next upload and system updates will be enabled once the timer completes.'
-                )}
+                {cooldownTotalSeconds > 600
+                  ? (cooldownMessage && !cooldownMessage.includes('10-minute') && !cooldownMessage.includes('rollback')
+                      ? cooldownMessage
+                      : 'A 30-minute buffer is active after the last upload to ensure complete background database indexing and accuracy. Next upload and system updates will be enabled once the timer completes.')
+                  : (cooldownMessage && !cooldownMessage.includes('30-minute')
+                      ? cooldownMessage
+                      : 'A 10-minute rollback & purge buffer is active following a file validation issue. Next upload will be enabled once the timer completes.')}
               </p>
             </div>
           </div>

@@ -57,7 +57,7 @@ const normalizeUser = (u: any): User => {
 };
 
 export default function HeadcountManagement() {
-  const { isLocked, lockReason, isCooldownActive, formattedCooldown, formattedCooldownLong } = useSystemLock();
+  const { isLocked, lockReason, isCooldownActive, formattedCooldown, formattedCooldownLong, cooldownTotalSeconds } = useSystemLock();
   const [users, setUsers] = useState<User[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [showUpload, setShowUpload] = useState(false);
@@ -707,7 +707,7 @@ export default function HeadcountManagement() {
               isLocked 
                 ? "Bulk upload is locked during active data ingestion" 
                 : isCooldownActive 
-                  ? `Bulk upload is paused for 30 minutes after an upload. Enabled in ${formattedCooldown}` 
+                  ? `Bulk upload is paused for ${cooldownTotalSeconds <= 600 ? '10' : '30'} minutes after an upload. Enabled in ${formattedCooldown}` 
                   : "Bulk Upload"
             }
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${

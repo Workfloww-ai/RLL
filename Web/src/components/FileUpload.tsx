@@ -239,7 +239,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
           // Backend has confirmed all data is completely saved in database!
           if (pollTimerRef.current) clearInterval(pollTimerRef.current);
           if (!uploadEndpoint) localStorage.removeItem('rll_active_sales_upload');
-          startCooldownManually(1800);
+          startCooldownManually(1800, 'Upload completed successfully. 30-minute verification cooldown active.');
           const finalTimeSec = batchInfo.processing_time_seconds && batchInfo.processing_time_seconds > 0 
             ? batchInfo.processing_time_seconds 
             : elapsed;
@@ -487,7 +487,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
               statusMessage: batchInfo.remarks || 'All Records Successfully Verified & Saved!'
             });
             localStorage.removeItem('rll_active_sales_upload');
-            startCooldownManually(1800);
+            startCooldownManually(1800, 'Upload completed successfully. 30-minute verification cooldown active.');
             if (onUploadComplete) onUploadComplete(stored.fileName);
             return;
           } else if (isFailed) {
@@ -592,7 +592,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
       const isSuccess = ['loaded', 'completed', 'success'].includes(statusMain) || ['loaded', 'completed', 'success'].includes(statusUpload);
 
       if (isSuccess) {
-        startCooldownManually(1800);
+        startCooldownManually(1800, 'Upload completed successfully. 30-minute verification cooldown active.');
         const imported = batchInfo.imported_rows ?? batchInfo.row_count ?? 0;
         setUploadState({
           status: 'success',
@@ -680,7 +680,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
       const data = await response.json();
 
       if (uploadEndpoint) {
-        startCooldownManually(1800);
+        startCooldownManually(1800, 'Upload completed successfully. 30-minute verification cooldown active.');
         setUploadState({
           status: 'success',
           progress: 100,
@@ -912,9 +912,9 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                       </div>
 
                       <p className="text-xs text-slate-500 mt-2 max-w-sm font-medium leading-relaxed">
-                        {cooldownMessage || (isCleanupCd 
-                          ? 'A validation issue occurred. Database rollback and record purge are running in the background. Next upload will be unlocked in 10 minutes.' 
-                          : 'All sales uploads, roster imports, and user modifications are locked in Read-Only mode for 30 minutes following an upload to protect database integrity.')}
+                        {isCleanupCd 
+                          ? (cooldownMessage && !cooldownMessage.includes('30-minute') ? cooldownMessage : 'A validation issue occurred. Database rollback and record purge are running in the background. Next upload will be unlocked in 10 minutes.') 
+                          : (cooldownMessage && !cooldownMessage.includes('10-minute') && !cooldownMessage.includes('rollback') ? cooldownMessage : 'All sales uploads, roster imports, and user modifications are locked in Read-Only mode for 30 minutes following an upload to protect database integrity.')}
                       </p>
 
                       {/* Disabled "Click here to upload" button */}
@@ -1110,7 +1110,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                     </button>
                     <span className="text-[11px] text-amber-700 font-semibold flex items-center gap-1">
                       <Clock size={12} className="text-amber-600" /> 
-                      30-Minute cooldown active • Next upload enabled in {formattedCooldownLong}
+                      {cooldownTotalSeconds <= 600 ? '10-Minute' : '30-Minute'} cooldown active • Next upload enabled in {formattedCooldownLong}
                     </span>
                   </div>
                 ) : (

@@ -84,17 +84,25 @@ def record_upload_cooldown(
     _COOLDOWN_OVERRIDE_RESET = False
     now = time.time()
     rem_m = cooldown_seconds // 60
-    default_msg = (
-        f"Validation issue detected. 10-minute rollback & purge buffer active. Next upload enabled in {rem_m} minutes."
-        if cooldown_seconds <= 600 else
-        f"Upload completed. 30-minute verification cooldown active."
-    )
+    is_success = cooldown_seconds > 600
+
+    if is_success:
+        default_msg = f"Upload completed successfully. 30-minute verification cooldown active."
+        clean_reason = reason or default_msg
+        if "10-minute" in clean_reason or "rollback" in clean_reason:
+            clean_reason = default_msg
+    else:
+        default_msg = f"Validation issue detected. 10-minute rollback & purge buffer active. Next upload enabled in {rem_m} minutes."
+        clean_reason = reason or default_msg
+        if "30-minute" in clean_reason:
+            clean_reason = default_msg
+
     _LAST_UPLOAD_COMPLETION = {
         "timestamp": now,
         "upload_type": upload_type,
         "filename": filename,
         "cooldown_seconds": cooldown_seconds,
-        "reason": reason or default_msg
+        "reason": clean_reason
     }
     try:
         with open(COOLDOWN_STATE_FILE, "w", encoding="utf-8") as f:
@@ -114,7 +122,7 @@ def record_upload_completion(upload_type: str, filename: str):
         upload_type=upload_type,
         filename=filename,
         cooldown_seconds=UPLOAD_COOLDOWN_SECONDS,
-        reason=f"Sales data ingestion successfully verified. 30-minute post-upload verification cooldown active."
+        reason="Sales data ingestion successfully verified. 30-minute post-upload verification cooldown active."
     )
 
 
@@ -219,6 +227,17 @@ def get_upload_cooldown_status() -> Dict[str, Any]:
                             latest_type = b_type
                             latest_file = b.get("source_file") or b.get("file_name")
                             cooldown_target = b_cd_target
+                            _LAST_UPLOAD_COMPLETION = {
+                                "timestamp": latest_ts,
+                                "upload_type": latest_type,
+                                "filename": latest_file,
+                                "cooldown_seconds": cooldown_target,
+                                "reason": (
+                                    "Upload completed successfully. 30-minute verification cooldown active."
+                                    if cooldown_target > 600
+                                    else "Validation issue detected. 10-minute rollback & purge buffer active."
+                                )
+                            }
                             break
     except Exception as e_db:
         logger.debug(f"Notice querying latest upload batch for cooldown: {e_db}")
@@ -232,12 +251,16 @@ def get_upload_cooldown_status() -> Dict[str, Any]:
             rem_m = remaining // 60
             rem_s = remaining % 60
             is_val_err = (latest_type == "validation_error" or cooldown_target <= 600)
-            default_msg = (
-                f"Validation issue detected: 10-minute rollback & purge buffer active. Next upload enabled in {rem_m}m {rem_s:02d}s."
-                if is_val_err
-                else f"Upload cooldown active. Next upload enabled in {rem_m}m {rem_s:02d}s."
-            )
-            msg = _LAST_UPLOAD_COMPLETION.get("reason") or default_msg
+
+            if is_val_err:
+                default_msg = f"Validation issue detected: 10-minute rollback & purge buffer active. Next upload enabled in {rem_m}m {rem_s:02d}s."
+                raw_msg = _LAST_UPLOAD_COMPLETION.get("reason") or default_msg
+                msg = default_msg if ("30-minute" in raw_msg or not raw_msg) else raw_msg
+            else:
+                default_msg = f"Upload completed successfully. 30-minute verification cooldown active. Next upload enabled in {rem_m}m {rem_s:02d}s."
+                raw_msg = _LAST_UPLOAD_COMPLETION.get("reason") or default_msg
+                msg = default_msg if ("10-minute" in raw_msg or "rollback" in raw_msg or not raw_msg) else raw_msg
+
             return {
                 "is_active": True,
                 "remaining_seconds": remaining,
@@ -297,9 +320,13 @@ def get_system_lock_status() -> Dict[str, Any]:
             rem_m = rem // 60
             rem_s = rem % 60
             cd_target_m = cd_target // 60
-            is_clean = (cd_target_m <= 10 or cd.get("last_upload_type") == "validation_error")
-            desc_label = f"{cd_target_m}-minute rollback & purge buffer" if is_clean else f"{cd_target_m}-minute post-upload cooldown buffer"
-            cd["message"] = f"Upload cooldown active. Next upload enabled in {rem_m}m {rem_s:02d}s."
+            is_clean = (cd_target <= 600 or cd_target_m <= 10 or cd.get("last_upload_type") == "validation_error")
+            desc_label = "10-minute rollback & purge buffer" if is_clean else "30-minute post-upload verification cooldown buffer"
+            cd["message"] = (
+                f"Validation issue detected: 10-minute rollback & purge buffer active. Next upload enabled in {rem_m}m {rem_s:02d}s."
+                if is_clean else
+                f"Upload completed successfully. 30-minute verification cooldown active. Next upload enabled in {rem_m}m {rem_s:02d}s."
+            )
             if rem == 0:
                 cd["is_active"] = False
                 # Cooldown expired: system unlocked
@@ -375,9 +402,10 @@ def get_system_lock_status() -> Dict[str, Any]:
         rem_s = rem % 60
         lf = cooldown_info.get("last_upload_file")
         file_desc = f" ({lf})" if lf else ""
-        cd_target_m = (cooldown_info.get("cooldown_seconds") or 1800) // 60
-        is_clean = (cd_target_m <= 10 or cooldown_info.get("last_upload_type") == "validation_error")
-        desc_label = f"{cd_target_m}-minute rollback & purge cleanup buffer" if is_clean else f"{cd_target_m}-minute post-upload cooldown buffer"
+        cd_target = cooldown_info.get("cooldown_seconds") or 1800
+        cd_target_m = cd_target // 60
+        is_clean = (cd_target <= 600 or cd_target_m <= 10 or cooldown_info.get("last_upload_type") == "validation_error")
+        desc_label = "10-minute rollback & purge buffer" if is_clean else "30-minute post-upload verification cooldown buffer"
         locked_res = {
             "is_locked": True,
             "lock_type": "cooldown",

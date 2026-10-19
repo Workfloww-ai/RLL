@@ -144,14 +144,25 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(timer);
   }, [cooldownRemaining > 0]);
 
-  const startCooldownManually = useCallback((seconds: number = 600, message?: string) => {
+  const startCooldownManually = useCallback((seconds: number = 1800, message?: string) => {
+    const isSuccess = seconds > 600;
+    const defaultMsg = isSuccess
+      ? 'Upload completed successfully. 30-minute verification cooldown active.'
+      : 'Validation issue detected. 10-minute rollback & purge buffer active.';
+    let finalMsg = message || defaultMsg;
+    if (isSuccess && (finalMsg.includes('10-minute') || finalMsg.includes('rollback'))) {
+      finalMsg = defaultMsg;
+    } else if (!isSuccess && finalMsg.includes('30-minute')) {
+      finalMsg = defaultMsg;
+    }
+
     setCooldownRemaining(seconds);
     setCooldownTotalSeconds(seconds);
-    if (message) setCooldownMessage(message);
+    setCooldownMessage(finalMsg);
     try {
       localStorage.setItem('rll_cooldown_expiry_ms', String(Date.now() + seconds * 1000));
       localStorage.setItem('rll_cooldown_total_seconds', String(seconds));
-      if (message) localStorage.setItem('rll_cooldown_message', message);
+      localStorage.setItem('rll_cooldown_message', finalMsg);
     } catch (e) {}
   }, []);
 
@@ -187,7 +198,15 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
           effectiveTotalSec = totalSec;
           setCooldownRemaining(rem);
           setCooldownTotalSeconds(totalSec);
-          const msg = cooldownData.message || 'Upload cooldown active.';
+
+          const isSuccess = totalSec > 600;
+          let msg = cooldownData.message;
+          if (!msg || (isSuccess && (msg.includes('10-minute') || msg.includes('rollback')))) {
+            msg = 'Upload completed successfully. 30-minute verification cooldown active.';
+          } else if (!isSuccess && msg.includes('30-minute')) {
+            msg = 'Validation issue detected. 10-minute rollback & purge buffer active.';
+          }
+
           setCooldownMessage(msg);
           try {
             localStorage.setItem('rll_cooldown_expiry_ms', String(Date.now() + rem * 1000));
