@@ -114,14 +114,14 @@ def get_active_upload_batch() -> Optional[Dict[str, Any]]:
                         c_dt = datetime.fromisoformat(clean_dt_str)
                         if c_dt.tzinfo is None:
                             c_dt = c_dt.replace(tzinfo=timezone.utc)
-                        if (now_utc - c_dt).total_seconds() > 1200:  # 20 minutes optimal threshold for large uploads
+                        if (now_utc - c_dt).total_seconds() > 3600:  # 60 minutes threshold for large uploads
                             is_stale = True
                     except Exception:
                         pass
 
                 if is_stale:
                     b_id = str(b.get("batch_id"))
-                    logger.warning(f"Resetting stale orphaned upload batch #{b_id} created > 20 mins ago.")
+                    logger.warning(f"Resetting stale orphaned upload batch #{b_id} created > 60 mins ago.")
                     try:
                         client.table("upload_batches").update({
                             "status": "failed",

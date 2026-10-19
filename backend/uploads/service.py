@@ -551,7 +551,7 @@ class ImportPipelineEngine:
                 if c_iso:
                     try:
                         c_dt = datetime.fromisoformat(c_iso.replace("Z", "+00:00"))
-                        if (now_ts - c_dt.timestamp()) > 1200:
+                        if (now_ts - c_dt.timestamp()) > 3600:
                             upload_batches_db.pop(b_id, None)
                             continue
                     except Exception:
@@ -3055,9 +3055,9 @@ class ImportPipelineEngine:
                 for attempt in range(1, max_retries + 1):
                     try:
                         if table == "dashboard_summary_daily":
-                            client.table(table).upsert(chunk, on_conflict="sale_date,depot_id,brand_id").execute()
+                            client.table(table).upsert(chunk, on_conflict="sale_date,depot_id,brand_id", returning="minimal").execute()
                         else:
-                            client.table(table).insert(chunk).execute()
+                            client.table(table).insert(chunk, returning="minimal").execute()
                         success = True
                         inserted_count = len(chunk)
                         break
@@ -3081,9 +3081,9 @@ class ImportPipelineEngine:
                         sub_chunk = chunk[sub_start : sub_start + sub_chunk_size]
                         try:
                             if table == "dashboard_summary_daily":
-                                client.table(table).upsert(sub_chunk, on_conflict="sale_date,depot_id,brand_id").execute()
+                                client.table(table).upsert(sub_chunk, on_conflict="sale_date,depot_id,brand_id", returning="minimal").execute()
                             else:
-                                client.table(table).insert(sub_chunk).execute()
+                                client.table(table).insert(sub_chunk, returning="minimal").execute()
                             sub_inserted += len(sub_chunk)
                         except Exception as sub_exc:
                             sub_err = str(sub_exc)
@@ -3092,9 +3092,9 @@ class ImportPipelineEngine:
                             for item_idx, single_item in enumerate(sub_chunk):
                                 try:
                                     if table == "dashboard_summary_daily":
-                                        client.table(table).upsert([single_item], on_conflict="sale_date,depot_id,brand_id").execute()
+                                        client.table(table).upsert([single_item], on_conflict="sale_date,depot_id,brand_id", returning="minimal").execute()
                                     else:
-                                        client.table(table).insert([single_item]).execute()
+                                        client.table(table).insert([single_item], returning="minimal").execute()
                                     sub_inserted += 1
                                 except Exception as single_exc:
                                     actual_row_num = start_row + sub_start + item_idx
