@@ -1260,7 +1260,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                     }}
                     className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition-colors text-xs font-bold cursor-pointer shadow-xs flex items-center gap-1.5"
                   >
-                    <CheckCircle2 size={13} />
+                    <CheckCircle size={13} />
                     Check Live DB Status
                   </button>
                   <button 
