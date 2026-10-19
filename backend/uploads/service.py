@@ -5,8 +5,8 @@ import time
 import logging
 import tempfile
 import asyncio
-from datetime import datetime
-from typing import Dict, Any, List, Optional
+from datetime import datetime, timezone
+from typing import Dict, Any, List, Optional, Set
 import re
 # pyrefly: ignore [missing-import]
 from fastapi import UploadFile
@@ -3109,7 +3109,6 @@ class ImportPipelineEngine:
                     except Exception as exc:
                         err_msg = str(exc)
                         if attempt < max_retries:
-                            import time
                             sleep_sec = attempt * 1.5
                             logger.warning(f"[BULK-INSERT RETRY] Chunk {idx}/{total_chunks} ({table}) attempt {attempt} failed: {err_msg}. Retrying in {sleep_sec}s...")
                             time.sleep(sleep_sec)
