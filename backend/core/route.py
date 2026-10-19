@@ -27,8 +27,9 @@ class EncryptedRoute(APIRoute):
                         if isinstance(payload, dict) and "encrypted_data" in payload:
                             was_encrypted = True
                             decrypted_str = decrypt_payload(payload["encrypted_data"], settings.PAYLOAD_ENCRYPTION_KEY)
-                            # Overwrite the cached body so FastAPI parses the decrypted payload
+                            # Overwrite the cached body and json so FastAPI parses the decrypted payload
                             request._body = decrypted_str.encode('utf-8')
+                            request._json = json.loads(decrypted_str)
                 except Exception as e:
                     logger.error(f"Failed to decrypt payload: {str(e)}")
                     return JSONResponse(status_code=400, content={"detail": "Failed to decrypt request payload."})
