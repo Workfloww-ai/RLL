@@ -133,75 +133,104 @@ async def get_current_user(
         except Exception:
             pass
 
-    # 4. Authoritative Database Lookup (Strict Fail-Closed)
+    # 4. Authoritative Database Lookup (Strict Fail-Closed with Stable Identity)
     client = get_supabase()
     if not client:
-        logger.error(f"Authentication failed: Supabase client unavailable during lookup for '{email}'")
+        logger.error("Authentication failed: Supabase client unavailable during lookup")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Authentication service temporarily unavailable: database connection could not be established"
         )
 
     try:
-        res = client.table("users").select(
-            "user_id, email, first_name, last_name, phone, is_active, tenant_id"
-        ).ilike("email", email).execute()
+        # Prefer immutable user_id for lookup if present in token/session claims
+        if user_id:
+            res = client.table("users").select(
+                "user_id, email, first_name, last_name, phone, is_active, tenant_id"
+            ).eq("user_id", str(user_id)).execute()
+        else:
+            res = client.table("users").select(
+                "user_id, email, first_name, last_name, phone, is_active, tenant_id"
+            ).ilike("email", email.strip()).execute()
     except Exception as e_db:
-        logger.error(f"Authentication failed: Database query exception for user '{email}': {e_db}")
+        logger.error("Authentication failed: Database query exception: %s", type(e_db).__name__)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Authentication service temporarily unavailable: database lookup failed"
         )
 
     if not res.data or len(res.data) == 0:
-        logger.warning(f"Authentication rejected: User '{email}' not found in database")
+        logger.warning("Authentication rejected: User not found in database")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or not authorized",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    db_user = res.data[0]
-    if not db_user.get("is_active", True):
-        logger.warning(f"Authentication rejected: Account for user '{email}' is deactivated")
+    # Detect ambiguous identity when querying by email
+    if len(res.data) > 1:
+        logger.error("Authentication rejected: Multiple user records match identity")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User account is deactivated",
+            detail="Ambiguous user identity: multiple user accounts matched",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # 5. Authoritative Role Resolution from public.user_roles (Never default to admin)
-    active_roles = []
+    db_user = res.data[0]
+
+    # Verify claim consistency: if email was in token/session, it must match db_user email
+    if email and db_user.get("email") and db_user["email"].strip().lower() != email.strip().lower():
+        logger.warning("Authentication rejected: Identity claim mismatch between token and database record")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Identity claim mismatch",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Validate explicit, valid active status (reject missing, None, False, or malformed non-True)
+    if db_user.get("is_active") is not True:
+        logger.warning("Authentication rejected: Account is inactive or invalid")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account is deactivated or invalid",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # 5. Authoritative Role Resolution from public.user_roles (Fail Closed on Error)
+    active_roles: List[str] = []
     authoritative_role = "unassigned"
     try:
         ur_res = client.table("user_roles").select(
             "user_id, role_id, is_active, roles(role_id, role_name)"
         ).eq("user_id", db_user["user_id"]).execute()
-        if ur_res.data:
-            for ur in ur_res.data:
-                if ur.get("is_active", True):
-                    role_obj = ur.get("roles") or {}
-                    rname = role_obj.get("role_name")
-                    if rname:
-                        active_roles.append(rname.strip())
-
-            # Priority resolution among the user's verified database roles
-            role_priority = [
-                "super_admin", "superadmin", "super admin",
-                "admin", "developer", "leader", "team_leader", "team leader",
-                "tsm", "ase", "territory executive"
-            ]
-            for prio in role_priority:
-                matched = next((r for r in active_roles if r.lower() == prio), None)
-                if matched:
-                    authoritative_role = matched
-                    break
-            if authoritative_role == "unassigned" and active_roles:
-                authoritative_role = active_roles[0]
     except Exception as e_role:
-        logger.error(f"Error querying user_roles for user '{email}': {e_role}")
-        # Fail closed: Do NOT default to admin on role query failure
-        authoritative_role = "unassigned"
+        logger.error("Authentication failed: Exception during user_roles query: %s", type(e_role).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service temporarily unavailable: role verification failed"
+        )
+
+    if ur_res.data:
+        for ur in ur_res.data:
+            if ur.get("is_active") is True:
+                role_obj = ur.get("roles") or {}
+                rname = role_obj.get("role_name")
+                if rname and isinstance(rname, str) and rname.strip():
+                    active_roles.append(rname.strip())
+
+        # Priority resolution among the user's verified database roles
+        role_priority = [
+            "super_admin", "superadmin", "super admin",
+            "admin", "developer", "leader", "team_leader", "team leader",
+            "tsm", "ase", "territory executive", "viewer"
+        ]
+        for prio in role_priority:
+            matched = next((r for r in active_roles if r.lower() == prio), None)
+            if matched:
+                authoritative_role = matched
+                break
+        if authoritative_role == "unassigned" and active_roles:
+            authoritative_role = active_roles[0]
 
     user_info = {
         "user_id": str(db_user.get("user_id")),
@@ -232,13 +261,24 @@ async def get_current_user(
 
 class RoleChecker:
     def __init__(self, allowed_roles: List[str]):
-        self.allowed_roles = allowed_roles
+        self.allowed_roles = [r.lower() for r in allowed_roles]
 
     def __call__(self, current_user: dict = Depends(get_current_user)):
-        user_role = (current_user.get("role_name") or current_user.get("role") or "").lower()
-        allowed = {r.lower() for r in self.allowed_roles}
-        if "admin" in allowed or "super_admin" in allowed or user_role in allowed or user_role in {"admin", "super_admin"}:
+        user_role = (current_user.get("role_name") or current_user.get("role") or "").strip().lower()
+        user_roles = {r.strip().lower() for r in current_user.get("roles", []) if isinstance(r, str)}
+        if user_role:
+            user_roles.add(user_role)
+
+        allowed = set(self.allowed_roles)
+        admin_roles = {"admin", "super_admin", "superadmin", "super admin"}
+
+        # User is authorized if any assigned role matches an allowed role,
+        # or if user holds an administrator role.
+        # "unassigned", unknown roles, or missing roles NEVER match admin_roles or allowed.
+        has_permission = bool(user_roles.intersection(allowed)) or bool(user_roles.intersection(admin_roles))
+        if has_permission:
             return current_user
+
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Permission denied: user role '{user_role}' is not authorized for this operation"
