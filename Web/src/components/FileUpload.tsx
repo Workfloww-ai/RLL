@@ -171,7 +171,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
     }
 
     let pollAttempts = 0;
-    const maxPollAttempts = 4800; // Allow up to 60 minutes polling for 500k+ row files
+    const maxPollAttempts = 9000; // Allow up to 150 minutes polling for massive monthly files (500k+ rows)
 
     pollTimerRef.current = setInterval(async () => {
       pollAttempts += 1;

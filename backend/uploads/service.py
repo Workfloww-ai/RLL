@@ -250,9 +250,37 @@ class ImportPipelineEngine:
         if b_str in self._cancelled_batches or (b_str.isdigit() and int(b_str) in self._cancelled_batches):
             return True
         batch = upload_batches_db.get(b_str) or upload_batches_db.get(int(b_str) if b_str.isdigit() else -1)
-        if batch and str(batch.get("status", "")).lower() == "cancelled":
-            return True
+        if batch:
+            st = str(batch.get("status", "")).lower()
+            if st in ("cancelled", "failed", "interrupted"):
+                return True
         return False
+
+    def is_batch_aborted_in_db(self, batch_id: Any) -> bool:
+        """
+        Authoritative DB check: Returns True if upload_batches status in Supabase 
+        has been marked 'failed', 'cancelled', or 'interrupted' by a timeout, admin, or user.
+        """
+        if not batch_id:
+            return False
+        try:
+            client = get_supabase()
+            if not client:
+                return False
+            b_str = str(batch_id).strip()
+            res = client.table("upload_batches").select("status").eq("batch_id", b_str).limit(1).execute()
+            if res and res.data:
+                st = str(res.data[0].get("status") or "").lower()
+                if st in ("failed", "cancelled", "interrupted"):
+                    self._cancelled_batches.add(b_str)
+                    local_batch = upload_batches_db.get(b_str)
+                    if local_batch:
+                        local_batch["status"] = st
+                    return True
+        except Exception as e_chk:
+            logger.debug(f"is_batch_aborted_in_db notice for batch {batch_id}: {e_chk}")
+        return False
+
 
     # ========================================================
     # BASIC HELPERS
@@ -3052,9 +3080,19 @@ class ImportPipelineEngine:
         milestone_step = max(1, total_chunks // 5)
 
         for idx, start_index in enumerate(range(0, len(records), chunk_size), start=1):
-            if batch_id and self.is_batch_cancelled(batch_id):
-                logger.warning(f"Upload batch {batch_id} cancellation detected in _bulk_insert ({table}) at chunk {idx}/{total_chunks}.")
-                raise UploadCancelledException(f"Batch {batch_id} cancelled by user during {table} chunk {idx}/{total_chunks}.")
+            is_milestone = (idx == 1 or idx == total_chunks or (idx % milestone_step == 0))
+            if batch_id:
+                # 1. Fast in-memory cancellation/failure check
+                if self.is_batch_cancelled(batch_id):
+                    logger.warning(f"Upload batch {batch_id} cancellation/halt detected in _bulk_insert ({table}) at chunk {idx}/{total_chunks}.")
+                    raise UploadCancelledException(f"Batch {batch_id} cancelled or marked failed during {table} chunk {idx}/{total_chunks}.")
+
+                # 2. Authoritative Database abort check on milestones/intervals (every 5 chunks or milestone)
+                if is_milestone or (idx % 5 == 0):
+                    if self.is_batch_aborted_in_db(batch_id):
+                        logger.warning(f"Upload batch {batch_id} marked failed/cancelled in database. Terminating background worker for {table} at chunk {idx}/{total_chunks}.")
+                        raise UploadCancelledException(f"Batch {batch_id} terminated due to DB status change (failed/cancelled) during {table} chunk {idx}/{total_chunks}.")
+
             chunk = records[start_index : start_index + chunk_size]
             start_row = start_index + 1
             end_row = min(start_index + chunk_size, len(records))
@@ -3070,8 +3108,6 @@ class ImportPipelineEngine:
             if local_batch:
                 local_batch["remarks"] = msg_progress
                 local_batch["chunk_count"] = total_chunks
-
-            is_milestone = (idx == 1 or idx == total_chunks or (idx % milestone_step == 0))
 
             if batch_id and is_milestone:
                 self._update_batch_progress(batch_id, remarks=msg_progress)

@@ -114,14 +114,14 @@ def get_active_upload_batch() -> Optional[Dict[str, Any]]:
                         c_dt = datetime.fromisoformat(clean_dt_str)
                         if c_dt.tzinfo is None:
                             c_dt = c_dt.replace(tzinfo=timezone.utc)
-                        if (now_utc - c_dt).total_seconds() > 3600:  # 60 minutes threshold for large uploads
+                        if (now_utc - c_dt).total_seconds() > 9000:  # 150 minutes threshold for large uploads
                             is_stale = True
                     except Exception:
                         pass
 
                 if is_stale:
                     b_id = str(b.get("batch_id"))
-                    logger.warning(f"Resetting stale orphaned upload batch #{b_id} created > 60 mins ago.")
+                    logger.warning(f"Resetting stale orphaned upload batch #{b_id} created > 150 mins ago.")
                     try:
                         client.table("upload_batches").update({
                             "status": "failed",
@@ -129,6 +129,12 @@ def get_active_upload_batch() -> Optional[Dict[str, Any]]:
                         }).eq("batch_id", b.get("batch_id")).execute()
                     except Exception:
                         pass
+                    # Purge any partial unaggregated records for stale batch
+                    try:
+                        for tbl in ["sales_fact", "user_sales_fact", "raw_sales_upload", "batch_chunks"]:
+                            client.table(tbl).delete().eq("batch_id", b_id).execute()
+                    except Exception as e_purge_stale:
+                        logger.warning(f"Notice purging partial data for stale batch {b_id}: {e_purge_stale}")
                 else:
                     return b
     except Exception as e:
@@ -165,6 +171,12 @@ def reset_orphaned_upload_batches() -> int:
                         error_message=err_msg,
                         column_name="PIPELINE_INTERRUPTED"
                     )
+                    # Purge any partial unaggregated records left by interrupted process
+                    try:
+                        for tbl in ["sales_fact", "user_sales_fact", "raw_sales_upload", "batch_chunks"]:
+                            client.table(tbl).delete().eq("batch_id", b_id).execute()
+                    except Exception as e_clean_orph:
+                        logger.warning(f"Notice cleaning partial records for orphaned batch {b_id}: {e_clean_orph}")
         return count
     except Exception as e:
         logger.warning(f"reset_orphaned_upload_batches notice: {e}")
