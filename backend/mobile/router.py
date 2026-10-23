@@ -421,7 +421,7 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
                         detail="User account is deactivated"
                     )
 
-                role_name = "admin"
+                role_name = "unassigned"
                 try:
                     ur_res = client.table("user_roles").select("user_id, role_id, is_active, roles(role_id, role_name)").eq("user_id", db_user["user_id"]).execute()
                     if ur_res.data:
