@@ -259,29 +259,95 @@ async def get_current_user(
     return user_info
 
 
+def normalize_role_name(role: Optional[str]) -> str:
+    """
+    Normalizes role names for consistent, secure comparison.
+    Handles case variations, whitespace, and known database alias conventions
+    (e.g., 'Super Admin' -> 'super_admin', 'Team Leader' -> 'team_leader').
+    Unknown, empty, or unassigned roles are normalized cleanly without privilege escalation.
+    """
+    if not role or not isinstance(role, str):
+        return ""
+    cleaned = role.strip().lower()
+    cleaned = cleaned.replace(" ", "_")
+    if cleaned in ("superadmin", "super_admin"):
+        return "super_admin"
+    if cleaned in ("teamleader", "team_leader"):
+        return "team_leader"
+    if cleaned in ("territoryexecutive", "territory_executive"):
+        return "territory_executive"
+    return cleaned
+
+
 class RoleChecker:
+    """
+    Explicit, fail-closed Role-Based Access Control (RBAC) dependency.
+    
+    Authorization Policy:
+    1. A user is authorized if and only if at least one of their active, verified database roles
+       matches the endpoint's allowed roles.
+    2. No user gains permission simply because 'admin' appears in allowed_roles.
+    3. No implicit global admin bypass: routes must explicitly declare the roles they authorize.
+    4. Multiple assigned roles are evaluated via set intersection.
+    5. Unknown, malformed, empty, or unassigned roles are strictly denied (HTTP 403 Forbidden).
+    6. Empty allowed_roles list denies all requests (fails closed).
+    """
     def __init__(self, allowed_roles: List[str]):
-        self.allowed_roles = [r.lower() for r in allowed_roles]
+        if not allowed_roles:
+            self.allowed_roles = set()
+        else:
+            self.allowed_roles = {
+                normalize_role_name(r) for r in allowed_roles if isinstance(r, str) and normalize_role_name(r)
+            }
 
-    def __call__(self, current_user: dict = Depends(get_current_user)):
-        user_role = (current_user.get("role_name") or current_user.get("role") or "").strip().lower()
-        user_roles = {r.strip().lower() for r in current_user.get("roles", []) if isinstance(r, str)}
-        if user_role:
-            user_roles.add(user_role)
+    def __call__(self, current_user: dict = Depends(get_current_user)) -> dict:
+        if not self.allowed_roles:
+            logger.warning("Access denied: Endpoint configured with empty allowed_roles")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Permission denied: endpoint has no authorized roles configured"
+            )
 
-        allowed = set(self.allowed_roles)
-        admin_roles = {"admin", "super_admin", "superadmin", "super admin"}
+        # Extract authoritative database roles from current_user
+        user_roles_raw = current_user.get("roles", [])
+        user_role_primary = current_user.get("role_name") or current_user.get("role") or ""
 
-        # User is authorized if any assigned role matches an allowed role,
-        # or if user holds an administrator role.
-        # "unassigned", unknown roles, or missing roles NEVER match admin_roles or allowed.
-        has_permission = bool(user_roles.intersection(allowed)) or bool(user_roles.intersection(admin_roles))
-        if has_permission:
+        user_roles = set()
+        if isinstance(user_roles_raw, list):
+            for r in user_roles_raw:
+                norm = normalize_role_name(r)
+                if norm and norm != "unassigned":
+                    user_roles.add(norm)
+        
+        primary_norm = normalize_role_name(user_role_primary)
+        if primary_norm and primary_norm != "unassigned":
+            user_roles.add(primary_norm)
+
+        # Deny access if user has no valid, assigned roles
+        if not user_roles:
+            logger.warning(
+                "Access denied: User '%s' has no assigned or verified roles",
+                current_user.get("user_id") or "unknown"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Permission denied: user has no authorized roles assigned"
+            )
+
+        # Check intersection between user's active database roles and endpoint's allowed roles
+        matching_roles = user_roles.intersection(self.allowed_roles)
+        if matching_roles:
             return current_user
 
+        logger.warning(
+            "Access denied: User '%s' with roles %s not authorized for required roles %s",
+            current_user.get("user_id") or "unknown",
+            list(user_roles),
+            list(self.allowed_roles)
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Permission denied: user role '{user_role}' is not authorized for this operation"
+            detail=f"Permission denied: operation requires one of {sorted(list(self.allowed_roles))}. Current role(s) {sorted(list(user_roles))} not authorized."
         )
 
 
