@@ -109,6 +109,33 @@ async def get_current_user(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+    # 1b. Dedicated App Review Account Recognition (Strict Fail-Closed Isolation)
+    if str(user_id) == settings.APP_REVIEW_USER_ID or email.lower().strip() == settings.APP_REVIEW_EMAIL.lower().strip():
+        if not settings.APP_REVIEW_MODE_ENABLED:
+            logger.warning("Authentication rejected: App review mode is disabled")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="App review mode is disabled",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        review_profile = {
+            "user_id": settings.APP_REVIEW_USER_ID,
+            "email": settings.APP_REVIEW_EMAIL,
+            "first_name": "Demo",
+            "last_name": "Reviewer",
+            "phone": f"+91{settings.APP_REVIEW_PHONE}",
+            "role_name": "tsm",
+            "role": "tsm",
+            "roles": ["tsm"],
+            "tenant_id": settings.APP_REVIEW_DEMO_TENANT_ID,
+            "company_name": "Rajasthan Liquor Limited (Demo)",
+            "is_active": True,
+            "is_review_user": True
+        }
+        if payload and isinstance(payload, dict) and payload.get("allowed_hqs"):
+            review_profile["allowed_hqs"] = payload["allowed_hqs"]
+        return review_profile
+
     email_key = email.lower()
     now_t = time.time()
 

@@ -60,7 +60,20 @@ class Settings(BaseSettings):
 
     # AI & Chatbot LLM Credentials
     GEMINI_API_KEY: str = ""
+
+    # OTP Cryptographic Keyed-HMAC Configuration
+    OTP_HMAC_SECRET: str = ""
     
+    # Dedicated App Store & Google Play Review Configuration
+    # Explicitly enabled in production only when APP_REVIEW_MODE_ENABLED is set to true
+    APP_REVIEW_MODE_ENABLED: bool = True
+    APP_REVIEW_PHONE: str = "9999999999"
+    APP_REVIEW_OTP: str = "123456"
+    APP_REVIEW_USER_ID: str = "00000000-0000-0000-0000-000000000099"
+    APP_REVIEW_EMAIL: str = "manish.chum@workfloww.ai"
+    APP_REVIEW_DEMO_TENANT_ID: str = "00000000-0000-0000-0000-000000000000"
+    APP_REVIEW_TOKEN_EXPIRE_HOURS: int = 2
+
     # Redis Cloud Configuration (loaded from .env or environment variables)
     REDIS_URL: str = ""
     REDIS_HOST: str = "localhost"
@@ -150,6 +163,32 @@ class Settings(BaseSettings):
                     "DO NOT USE IN PRODUCTION."
                 )
                 self.JWT_SECRET = DEV_DEFAULT_JWT_SECRET
+
+        # -------------------------------------------------------------
+        # 3. APP REVIEW MODE: Fail-Closed Production Configuration
+        # -------------------------------------------------------------
+        if not self.APP_REVIEW_PHONE or not self.APP_REVIEW_OTP:
+            self.APP_REVIEW_MODE_ENABLED = False
+            logger.warning("App review mode disabled: missing required review phone or OTP configuration.")
+
+        if is_production:
+            import os
+            env_review_val = os.getenv("APP_REVIEW_MODE_ENABLED", "").strip().lower()
+            if env_review_val not in ("true", "1", "yes"):
+                self.APP_REVIEW_MODE_ENABLED = False
+            else:
+                self.APP_REVIEW_MODE_ENABLED = True
+                logger.warning(
+                    "NOTICE: Dedicated App Review Mode explicitly enabled in %s for review phone %s.",
+                    self.ENVIRONMENT,
+                    self.APP_REVIEW_PHONE
+                )
+
+        # -------------------------------------------------------------
+        # 4. OTP HMAC SECRET: Resolve Secret for Cryptographic Hashing
+        # -------------------------------------------------------------
+        if not self.OTP_HMAC_SECRET:
+            self.OTP_HMAC_SECRET = self.JWT_SECRET
 
         # NOTE: Under NO circumstances should Supabase credentials
         # (SUPABASE_SECRET_KEY, SUPABASE_KEY, etc.) be reused as JWT_SECRET.

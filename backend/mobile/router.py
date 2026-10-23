@@ -530,20 +530,54 @@ async def send_mobile_otp(req: SendOTPRequest):
     if len(clean_phone_10) >= 10:
         clean_phone_10 = clean_phone_10[-10:]
 
-    # 1. Immediate Test User Handling (9999999999 / Google Play Review / Local Testing)
-    if clean_phone_10 == "9999999999" or email == "manish.chum@workfloww.ai":
-        store_otp_in_db("9999999999", "000000")
-        store_otp_in_db("+919999999999", "000000")
-        store_otp_in_db("9999999999", "123456")
-        store_otp_in_db("+919999999999", "123456")
-        logger.info("Test user 9999999999 OTP 000000 / 123456 registered.")
+    # 1. Dedicated App Review Flow (Google Play Store & Apple App Store review)
+    if clean_phone_10 == settings.APP_REVIEW_PHONE:
+        if not settings.APP_REVIEW_MODE_ENABLED:
+            logger.warning("App review OTP request rejected: review mode is disabled")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="App review mode is disabled"
+            )
+        logger.info(f"App review OTP requested for dedicated review phone {settings.APP_REVIEW_PHONE}")
         return {
             "success": True,
             "message": "OTP verification code sent successfully.",
-            "phone": "+919999999999",
-            "company_name": "Lucidx360",
+            "phone": f"+91{settings.APP_REVIEW_PHONE}",
+            "company_name": "Rajasthan Liquor Limited (Demo)",
             "company_logo_url": None
         }
+
+    # 2. Check if user is currently locked out before allowing another OTP to be sent
+    from backend.db.redis_client import safe_set_nx, safe_get, safe_delete
+    attempt_key = f"rll:mobile_otp_attempts:{clean_phone_10}"
+    existing_attempts_raw = await safe_get(attempt_key, security_sensitive=True)
+    try:
+        existing_attempts = int(existing_attempts_raw or "0")
+    except (ValueError, TypeError):
+        existing_attempts = 0
+
+    if existing_attempts >= 5:
+        logger.warning(f"OTP send rejected for {clean_phone_10}: account currently locked out")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Account is temporarily locked out due to multiple failed verification attempts. Please try again in 5 minutes."
+        )
+
+    # 3. Enforce atomic resend cooldown (30 seconds) across workers
+    cooldown_key = f"rll:otp_cooldown:{clean_phone_10}"
+    cooldown_acquired = await safe_set_nx(cooldown_key, "active", ttl=30, security_sensitive=True)
+    if cooldown_acquired is None:
+        logger.error(f"Cannot acquire resend cooldown lock: shared Redis store unavailable in {settings.ENVIRONMENT}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="SMS verification service temporarily unavailable. Please try again later."
+        )
+    if not cooldown_acquired:
+        logger.warning(f"OTP resend cooldown active for phone {clean_phone_10}")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Please wait 30 seconds before requesting another OTP code."
+        )
 
     db_user = None
     if client:
@@ -573,6 +607,7 @@ async def send_mobile_otp(req: SendOTPRequest):
 
     # Enforce registered user requirement
     if not db_user:
+        await safe_delete(cooldown_key)
         logger.warning(f"Mobile OTP request failed: Phone/Email not registered (Phone: {phone}, Email: {email})")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -580,6 +615,7 @@ async def send_mobile_otp(req: SendOTPRequest):
         )
 
     if not db_user.get("is_active", True):
+        await safe_delete(cooldown_key)
         logger.warning(f"Mobile OTP request failed: Account is deactivated (Phone: {phone}, Email: {email})")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -646,60 +682,55 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
     clean_in = ''.join(c for c in phone if c.isdigit())
     clean_10 = clean_in[-10:] if len(clean_in) >= 10 else clean_in
 
-    # Google Play Review / test user bypass
-    is_test_user = (clean_10 == "9999999999" or email == "manish.chum@workfloww.ai")
-    if is_test_user and otp_code in ("000000", "123456"):
-        is_valid = True
-    else:
-        is_valid = verify_otp_from_db(phone, otp_code)
+    # Dedicated Google Play & Apple App Store review flow (Explicitly Isolated)
+    is_review_phone = (clean_10 == settings.APP_REVIEW_PHONE)
+    if is_review_phone:
+        if not settings.APP_REVIEW_MODE_ENABLED:
+            logger.warning("App review verification rejected: review mode is disabled")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="App review mode is disabled"
+            )
+        if otp_code != settings.APP_REVIEW_OTP:
+            logger.warning(f"App review verification failed for phone {clean_10}: invalid review code")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired 6-digit OTP code"
+            )
 
-    if not is_valid:
-        logger.warning(f"Mobile OTP verification failed for phone: {phone} - Invalid or expired OTP code")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired 6-digit OTP code")
-
-    client = get_supabase()
-
-    # If test user, return full valid authenticated session immediately
-    if is_test_user:
-        dyn_tenant_id = None
-        if client:
-            try:
-                tu_res = client.table("users").select("tenant_id").ilike("email", "manish.chum@workfloww.ai").limit(1).execute()
-                if tu_res.data and tu_res.data[0].get("tenant_id"):
-                    dyn_tenant_id = str(tu_res.data[0]["tenant_id"])
-                if not dyn_tenant_id:
-                    t_res = client.table("tenant_config").select("tenant_id").limit(1).execute()
-                    if t_res.data and t_res.data[0].get("tenant_id"):
-                        dyn_tenant_id = str(t_res.data[0]["tenant_id"])
-            except Exception:
-                pass
-
+        # Isolated Demo Review Identity
         user_data = {
-            "user_id": "00000000-0000-0000-0000-000000000099",
-            "email": "manish.chum@workfloww.ai",
-            "first_name": "Manish",
-            "last_name": "Chum",
-            "phone": "+919999999999",
+            "user_id": settings.APP_REVIEW_USER_ID,
+            "email": settings.APP_REVIEW_EMAIL,
+            "first_name": "Demo",
+            "last_name": "Reviewer",
+            "phone": f"+91{settings.APP_REVIEW_PHONE}",
             "role_name": "TSM",
             "role": "TSM",
-            "depot_name": "Jaipur Depot",
+            "depot_name": "Jaipur Demo Depot",
             "hq_location": "All Headquarters",
-            "tenant_id": dyn_tenant_id,
+            "tenant_id": settings.APP_REVIEW_DEMO_TENANT_ID,
             "company_id": None,
-            "company_name": "Rajasthan Liquor Limited",
+            "company_name": "Rajasthan Liquor Limited (Demo)",
             "company_logo_url": "/images/rll logo.svg",
             "is_active": True
         }
 
+        # Issue short-lived review session (consistent with token architecture, no 30-day default)
         token = create_access_token(
             data={
                 "sub": user_data["email"],
                 "role": user_data["role_name"],
                 "user_id": user_data["user_id"],
                 "tenant_id": user_data["tenant_id"],
-                "company_name": user_data["company_name"]
+                "company_name": user_data["company_name"],
+                "is_review_user": True
             },
-            expires_delta=timedelta(days=30)
+            expires_delta=timedelta(hours=settings.APP_REVIEW_TOKEN_EXPIRE_HOURS)
+        )
+        logger.info(
+            f"Dedicated review session generated for {settings.APP_REVIEW_PHONE} "
+            f"(expires in {settings.APP_REVIEW_TOKEN_EXPIRE_HOURS}h, tenant: {settings.APP_REVIEW_DEMO_TENANT_ID})"
         )
         return {
             "access_token": token,
@@ -707,12 +738,39 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
             "user": user_data,
             "tenant_config": {
                 "tenant_id": user_data["tenant_id"],
-                "app_name": "LucidX360",
+                "app_name": "LucidX360 Demo",
                 "logo_url": user_data["company_logo_url"],
-                "pinned_company_name": "Rajasthan Liquor Limited",
+                "pinned_company_name": "Rajasthan Liquor Limited (Demo)",
             }
         }
 
+    # Distributed attempt counter across workers for normal users
+    from backend.db.redis_client import safe_incr, safe_delete
+    attempt_key = f"rll:mobile_otp_attempts:{clean_10}"
+    attempts = await safe_incr(attempt_key, ttl=300, security_sensitive=True)
+    if attempts is None:
+        logger.error(f"Mobile OTP verification failed: shared rate-limit store unavailable in {settings.ENVIRONMENT}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service temporarily unavailable. Please try again later."
+        )
+    if attempts > 5:
+        logger.warning(f"Maximum OTP verification attempts exceeded for phone {clean_10} ({attempts} attempts)")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Maximum OTP verification attempts exceeded. Please try again in 5 minutes."
+        )
+
+    # Standard database OTP verification for all other numbers
+    is_valid = verify_otp_from_db(phone, otp_code)
+    if not is_valid:
+        logger.warning(f"Mobile OTP verification failed for phone: {phone} - Invalid or expired OTP code")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired 6-digit OTP code")
+
+    # Verification succeeded: clear distributed attempt counter
+    await safe_delete(attempt_key)
+
+    client = get_supabase()
     user_data = None
     if client:
         try:
@@ -850,36 +908,30 @@ def get_mobile_user_profile(
     if not client:
         return current_user
 
-    if user_id_val == "00000000-0000-0000-0000-000000000099" or "manish.chum@workfloww.ai" in sub_val:
-        dyn_tenant_id = None
-        if client:
-            try:
-                tu_res = client.table("users").select("tenant_id").ilike("email", "manish.chum@workfloww.ai").limit(1).execute()
-                if tu_res.data and tu_res.data[0].get("tenant_id"):
-                    dyn_tenant_id = str(tu_res.data[0]["tenant_id"])
-                if not dyn_tenant_id:
-                    t_res = client.table("tenant_config").select("tenant_id").limit(1).execute()
-                    if t_res.data and t_res.data[0].get("tenant_id"):
-                        dyn_tenant_id = str(t_res.data[0]["tenant_id"])
-            except Exception:
-                pass
-
+    if user_id_val == settings.APP_REVIEW_USER_ID or current_user.get("is_review_user") or (sub_val == settings.APP_REVIEW_EMAIL and user_id_val == settings.APP_REVIEW_USER_ID):
+        if not settings.APP_REVIEW_MODE_ENABLED:
+            logger.warning("Profile request rejected: App review mode is disabled")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="App review mode is disabled"
+            )
         return {
-            "user_id": "00000000-0000-0000-0000-000000000099",
-            "email": "manish.chum@workfloww.ai",
-            "first_name": "Manish",
-            "last_name": "Chum",
-            "phone": "+919999999999",
+            "user_id": settings.APP_REVIEW_USER_ID,
+            "email": settings.APP_REVIEW_EMAIL,
+            "first_name": "Demo",
+            "last_name": "Reviewer",
+            "phone": f"+91{settings.APP_REVIEW_PHONE}",
             "role_name": "TSM",
             "role": "TSM",
-            "depot_name": "Jaipur Depot",
+            "depot_name": "Jaipur Demo Depot",
             "hq_location": "All Headquarters",
-            "tenant_id": dyn_tenant_id,
+            "tenant_id": settings.APP_REVIEW_DEMO_TENANT_ID,
             "company_id": None,
-            "company_name": "Rajasthan Liquor Limited",
+            "company_name": "Rajasthan Liquor Limited (Demo)",
             "company_logo_url": "/images/rll logo.svg",
             "is_active": True
         }
+
 
     try:
         db_user = None
