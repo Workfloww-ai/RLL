@@ -350,6 +350,22 @@ class MasterService:
         return re.sub(r'[\s\-_.]+', '', val)
 
     @staticmethod
+    def normalize_hq_key(value: Any) -> str:
+        """
+        Returns uppercase space-and-punctuation-stripped key for uniform headquarters matching.
+        Example:
+            'SRI GANGANAGAR'  -> 'SRIGANGANAGAR'
+            'sriganganagar'   -> 'SRIGANGANAGAR'
+            'Sri Ganga Nagar' -> 'SRIGANGANAGAR'
+        """
+        if value is None:
+            return ""
+        val = str(value).strip().upper()
+        if val in {"NAN", "NONE", "NULL", "UNASSIGNED", ""}:
+            return ""
+        return re.sub(r'[\s\-_.]+', '', val)
+
+    @staticmethod
     def _clean_company(value) -> str:
         """
         Aggressive normalization specifically for company names.
