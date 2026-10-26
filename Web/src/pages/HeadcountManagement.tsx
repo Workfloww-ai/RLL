@@ -877,7 +877,7 @@ export default function HeadcountManagement() {
             </div>
             <div className="md:col-span-3">
               <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
-                Assigned Headquarters <span className="text-slate-400 font-normal lowercase">(multi-select)</span>
+                Assigned Headquarters <span className="text-slate-400 font-normal lowercase">(1 HQ per ASE / TSM)</span>
               </label>
               <div className="flex flex-wrap gap-1.5 p-2.5 bg-slate-50 border border-slate-200 rounded-xl min-h-[42px] max-h-36 overflow-y-auto">
                 {headquartersOptions.length === 0 ? (
@@ -890,10 +890,8 @@ export default function HeadcountManagement() {
                         key={hq.headquarters_id}
                         type="button"
                         onClick={() => {
-                          const current = newUser.headquarters_ids || [];
-                          const next = isSelected
-                            ? current.filter((id) => id !== hq.headquarters_id)
-                            : [...current, hq.headquarters_id];
+                          // Strict single-select: select clicked HQ or deselect if already selected
+                          const next = isSelected ? [] : [hq.headquarters_id];
                           setNewUser({ ...newUser, headquarters_ids: next });
                         }}
                         className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1 ${
@@ -1177,10 +1175,9 @@ export default function HeadcountManagement() {
                                     key={hq.headquarters_id}
                                     type="button"
                                     onClick={() => {
+                                      // Strict single-select: select clicked HQ or deselect if already selected
                                       setEditHeadquartersIds((prev) =>
-                                        isSelected
-                                          ? prev.filter((id) => id !== hq.headquarters_id)
-                                          : [...prev, hq.headquarters_id]
+                                        isSelected ? [] : [hq.headquarters_id]
                                       );
                                     }}
                                     className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition-all cursor-pointer ${
