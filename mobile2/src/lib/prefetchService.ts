@@ -27,8 +27,9 @@ export async function preloadAllHeadquartersData(forceRefresh: boolean = false):
       return;
     }
 
-    const hqList = hqs.filter((h: string) => h && h !== 'All Headquarters');
-    logger.info(`preloadAllHeadquartersData: Found ${hqList.length} distinct Headquarters to prefetch.`);
+    // Only prefetch 'All Headquarters' and top active HQs to stay safely under AsyncStorage SQLite limit (6MB)
+    const hqList = ['All Headquarters', ...hqs.filter((h: string) => h && h !== 'All Headquarters').slice(0, 2)];
+    logger.info(`preloadAllHeadquartersData: Prefetching ${hqList.length} primary Headquarters into FastStorage.`);
 
     const periods: ('Daily' | 'MTD' | 'YTD')[] = ['MTD', 'Daily', 'YTD'];
 
@@ -39,7 +40,8 @@ export async function preloadAllHeadquartersData(forceRefresh: boolean = false):
 
       for (const period of periods) {
         try {
-          const compKey = `companies_${hq}_${period}_latest`;
+          const cleanHq = (hq || 'All Headquarters').trim();
+          const compKey = `rll_fast_companies_${period}_${cleanHq}_latest`;
           const existing = FastStorage.getObject(compKey);
 
           if (!existing || forceRefresh) {

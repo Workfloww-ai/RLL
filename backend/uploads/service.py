@@ -250,9 +250,37 @@ class ImportPipelineEngine:
         if b_str in self._cancelled_batches or (b_str.isdigit() and int(b_str) in self._cancelled_batches):
             return True
         batch = upload_batches_db.get(b_str) or upload_batches_db.get(int(b_str) if b_str.isdigit() else -1)
-        if batch and str(batch.get("status", "")).lower() == "cancelled":
-            return True
+        if batch:
+            st = str(batch.get("status", "")).lower()
+            if st in ("cancelled", "failed", "interrupted"):
+                return True
         return False
+
+    def is_batch_aborted_in_db(self, batch_id: Any) -> bool:
+        """
+        Authoritative DB check: Returns True if upload_batches status in Supabase 
+        has been marked 'failed', 'cancelled', or 'interrupted' by a timeout, admin, or user.
+        """
+        if not batch_id:
+            return False
+        try:
+            client = get_supabase()
+            if not client:
+                return False
+            b_str = str(batch_id).strip()
+            res = client.table("upload_batches").select("status").eq("batch_id", b_str).limit(1).execute()
+            if res and res.data:
+                st = str(res.data[0].get("status") or "").lower()
+                if st in ("failed", "cancelled", "interrupted"):
+                    self._cancelled_batches.add(b_str)
+                    local_batch = upload_batches_db.get(b_str)
+                    if local_batch:
+                        local_batch["status"] = st
+                    return True
+        except Exception as e_chk:
+            logger.debug(f"is_batch_aborted_in_db notice for batch {batch_id}: {e_chk}")
+        return False
+
 
     # ========================================================
     # BASIC HELPERS
@@ -1122,6 +1150,7 @@ class ImportPipelineEngine:
                                     user_manager_id_by_id[a_uid] = t_uid
 
                     # Fetch registered user headquarters supporting M:N assignments
+                    hq_no_space_to_canonical: Dict[str, str] = {}
                     hq_res = client.table("headquarters").select("headquarters_id, name").execute()
                     if hq_res and hq_res.data:
                         for h in hq_res.data:
@@ -1129,6 +1158,9 @@ class ImportPipelineEngine:
                             hname = str(h.get("name") or "").strip().upper()
                             if hid and hname:
                                 hq_id_to_name[hid] = hname
+                                no_sp = re.sub(r'[\s\-_.]+', '', hname).upper()
+                                if no_sp:
+                                    hq_no_space_to_canonical[no_sp] = hname
 
                     uhq_res = client.table("user_headquarters_mapping").select("user_id, headquarters_id, is_active").execute()
                     if uhq_res and uhq_res.data:
@@ -1140,6 +1172,29 @@ class ImportPipelineEngine:
                                     user_approved_hq_names_by_id.setdefault(uid, set()).add(hq_id_to_name[hid])
                 except Exception as e_um:
                     logger.warning(f"Batch {batch_id}: Exception fetching User Management hierarchy: {e_um}")
+
+            def _canonicalize_hq(val: str) -> str:
+                if not val or str(val).strip().lower() in ("unassigned", "none", "null", "nan", ""):
+                    return ""
+                clean_v = re.sub(r'\s+', ' ', str(val)).strip().upper()
+                no_sp = re.sub(r'[\s\-_.]+', '', clean_v).upper()
+                if no_sp in hq_no_space_to_canonical:
+                    return hq_no_space_to_canonical[no_sp]
+                # Also resolve via hq_cache
+                res_hid = hq_cache.get(clean_fn(val)) or hq_cache.get(clean_no_space(val))
+                if res_hid and str(res_hid) in hq_id_to_name:
+                    canonical_name = hq_id_to_name[str(res_hid)]
+                    hq_no_space_to_canonical[no_sp] = canonical_name
+                    return canonical_name
+                return clean_v
+
+            def _is_hq_matching_approved(target_hq: str, approved_set: Set[str]) -> bool:
+                if not target_hq or not approved_set:
+                    return False
+                if target_hq in approved_set:
+                    return True
+                target_no_sp = re.sub(r'[\s\-_.]+', '', target_hq).upper()
+                return any(re.sub(r'[\s\-_.]+', '', a).upper() == target_no_sp for a in approved_set)
 
             def _resolve_user_id(name_str: str) -> Optional[str]:
                 if not name_str or name_str.lower() in ("unassigned", "none", "null", "nan"):
@@ -1191,7 +1246,7 @@ class ImportPipelineEngine:
 
                 clean_ase = re.sub(r'\s+', ' ', raw_ase).strip()
                 clean_asm = re.sub(r'\s+', ' ', raw_asm).strip()
-                clean_hq_norm = re.sub(r'\s+', ' ', raw_hq).strip().upper()
+                clean_hq_norm = _canonicalize_hq(raw_hq)
 
                 # Collect for 1:1 integrity verification (1 ASE -> 1 HQ, 1 TSM -> 1 HQ, 1 ASE -> 1 TSM)
                 # Note: 1 ASE/TSM can have multiple depots, and 1 depot can have multiple ASEs (no restriction)
@@ -1221,12 +1276,12 @@ class ImportPipelineEngine:
                                 if app_tsm_u:
                                     approved_tsm_name_curr = user_name_by_id.get(app_tsm_u)
 
-                # Check registered DB Headquarters mismatch for ASE
+                # Check registered DB Headquarters mismatch for ASE (space/punctuation resilient)
                 if raw_ase and raw_ase.lower() not in ("unassigned", "none", "null", "nan", ""):
                     ase_uid = _resolve_user_id(raw_ase)
                     if ase_uid and ase_uid in user_approved_hq_names_by_id:
                         reg_hqs = user_approved_hq_names_by_id[ase_uid]
-                        if clean_hq_norm and clean_hq_norm not in reg_hqs:
+                        if clean_hq_norm and not _is_hq_matching_approved(clean_hq_norm, reg_hqs):
                             expected_str = ", ".join(sorted(list(reg_hqs)))
                             validation_error_records.append({
                                 "upload_batch_id": str(batch_id),
@@ -1252,12 +1307,12 @@ class ImportPipelineEngine:
                                 "resolution": f"Update sales record to specify an approved HQ ({expected_str}) or reassign Headquarters in User Management."
                             })
 
-                # Check registered DB Headquarters mismatch for TSM
+                # Check registered DB Headquarters mismatch for TSM (space/punctuation resilient)
                 if raw_asm and raw_asm.lower() not in ("unassigned", "none", "null", "nan", ""):
                     tsm_uid = _resolve_user_id(raw_asm)
                     if tsm_uid and tsm_uid in user_approved_hq_names_by_id:
                         reg_hqs = user_approved_hq_names_by_id[tsm_uid]
-                        if clean_hq_norm and clean_hq_norm not in reg_hqs:
+                        if clean_hq_norm and not _is_hq_matching_approved(clean_hq_norm, reg_hqs):
                             expected_str = ", ".join(sorted(list(reg_hqs)))
                             validation_error_records.append({
                                 "upload_batch_id": str(batch_id),
@@ -1633,8 +1688,13 @@ class ImportPipelineEngine:
             for ase_name, hq_dict in sheet_ase_hqs.items():
                 ase_uid = _resolve_user_id(ase_name)
                 approved_hqs = user_approved_hq_names_by_id.get(ase_uid, set()) if ase_uid else set()
-                # If ASE is mapped to multiple HQs, verify they are within their approved HQs
+                # If ASE is mapped to multiple HQs, verify they are distinct after canonicalization and outside approved HQs
                 if len(hq_dict) > 1 and len(approved_hqs) <= 1:
+                    unique_canonical_hqs = {_canonicalize_hq(h) for h in hq_dict.keys()}
+                    if len(unique_canonical_hqs) <= 1:
+                        continue
+                    if all(_is_hq_matching_approved(h, approved_hqs) for h in hq_dict.keys()):
+                        continue
                     sorted_hqs = sorted(list(hq_dict.keys()))
                     sample_details = ", ".join([f"Row #{rows[0]} ({h})" for h, rows in hq_dict.items()][:5])
                     for hq_val, row_nums in hq_dict.items():
@@ -1670,6 +1730,11 @@ class ImportPipelineEngine:
                 tsm_uid = _resolve_user_id(tsm_name)
                 approved_hqs = user_approved_hq_names_by_id.get(tsm_uid, set()) if tsm_uid else set()
                 if len(hq_dict) > 1:
+                    unique_canonical_hqs = {_canonicalize_hq(h) for h in hq_dict.keys()}
+                    if len(unique_canonical_hqs) <= 1:
+                        continue
+                    if all(_is_hq_matching_approved(h, approved_hqs) for h in hq_dict.keys()):
+                        continue
                     sorted_hqs = sorted(list(hq_dict.keys()))
                     sample_details = ", ".join([f"Row #{rows[0]} ({h})" for h, rows in hq_dict.items()][:5])
                     for hq_val, row_nums in hq_dict.items():
@@ -3052,9 +3117,19 @@ class ImportPipelineEngine:
         milestone_step = max(1, total_chunks // 5)
 
         for idx, start_index in enumerate(range(0, len(records), chunk_size), start=1):
-            if batch_id and self.is_batch_cancelled(batch_id):
-                logger.warning(f"Upload batch {batch_id} cancellation detected in _bulk_insert ({table}) at chunk {idx}/{total_chunks}.")
-                raise UploadCancelledException(f"Batch {batch_id} cancelled by user during {table} chunk {idx}/{total_chunks}.")
+            is_milestone = (idx == 1 or idx == total_chunks or (idx % milestone_step == 0))
+            if batch_id:
+                # 1. Fast in-memory cancellation/failure check
+                if self.is_batch_cancelled(batch_id):
+                    logger.warning(f"Upload batch {batch_id} cancellation/halt detected in _bulk_insert ({table}) at chunk {idx}/{total_chunks}.")
+                    raise UploadCancelledException(f"Batch {batch_id} cancelled or marked failed during {table} chunk {idx}/{total_chunks}.")
+
+                # 2. Authoritative Database abort check on milestones/intervals (every 5 chunks or milestone)
+                if is_milestone or (idx % 5 == 0):
+                    if self.is_batch_aborted_in_db(batch_id):
+                        logger.warning(f"Upload batch {batch_id} marked failed/cancelled in database. Terminating background worker for {table} at chunk {idx}/{total_chunks}.")
+                        raise UploadCancelledException(f"Batch {batch_id} terminated due to DB status change (failed/cancelled) during {table} chunk {idx}/{total_chunks}.")
+
             chunk = records[start_index : start_index + chunk_size]
             start_row = start_index + 1
             end_row = min(start_index + chunk_size, len(records))
@@ -3070,8 +3145,6 @@ class ImportPipelineEngine:
             if local_batch:
                 local_batch["remarks"] = msg_progress
                 local_batch["chunk_count"] = total_chunks
-
-            is_milestone = (idx == 1 or idx == total_chunks or (idx % milestone_step == 0))
 
             if batch_id and is_milestone:
                 self._update_batch_progress(batch_id, remarks=msg_progress)

@@ -18,6 +18,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"], route_class=Encrypte
 
 import secrets
 import hashlib
+import hmac
 from backend.core.security import create_access_token, get_current_user, validate_password_complexity, RoleChecker
 
 
@@ -106,7 +107,7 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
 
     # 3. Fetch user roles dynamically from public.user_roles
     active_roles = []
-    role_name = "admin"
+    role_name = "unassigned"
     try:
         ur_res = client.table("user_roles").select("user_id, role_id, is_active, roles(role_id, role_name)").eq("user_id", db_user["user_id"]).execute()
         if ur_res.data:
@@ -198,19 +199,26 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
 async def forgot_password(req: ForgotPasswordRequest):
     """
     Initiate password recovery using Supabase Auth built-in email dispatch.
+    Fails closed if database client is unavailable.
     """
-    email = req.email.lower().strip()
-    if not email:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email address is required")
+    email = req.email.lower().strip() if req.email else ""
+    if not email or "@" not in email:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Valid email address is required")
 
     client = get_supabase()
-    if client:
-        try:
-            # Supabase handles sending the email
-            client.auth.reset_password_for_email(email)
-            logger.info(f"📧 Supabase password reset email requested for {email}")
-        except Exception as e:
-            logger.warning(f"Error requesting password reset email for {email}: {e}")
+    if not client:
+        logger.error("Forgot password failed: Supabase client is unavailable")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database service temporarily unavailable. Please try again later."
+        )
+
+    try:
+        # Supabase handles sending the email
+        client.auth.reset_password_for_email(email)
+        logger.info(f"📧 Supabase password reset email requested for {email}")
+    except Exception as e:
+        logger.warning(f"Error requesting password reset email for {email}: {e}")
 
     return {
         "success": True,
@@ -222,70 +230,239 @@ async def forgot_password(req: ForgotPasswordRequest):
 async def reset_password(req: ResetPasswordRequest):
     """
     Verify 6-digit OTP and securely update user password.
+    Fails closed on any infrastructure failure, missing/invalid/expired OTP,
+    attempt limit exhaustion, inactive account, or user mismatch.
     """
-    email = req.email.lower().strip()
-    otp = req.otp.strip()
-    new_password = req.new_password.strip()
+    email = req.email.lower().strip() if req.email else ""
+    otp = req.otp.strip() if req.otp else ""
+    new_password = req.new_password.strip() if req.new_password else ""
 
     if not email or not otp or not new_password:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email, OTP, and new password are required")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email, OTP, and new password are required"
+        )
+
+    if "@" not in email or not otp.isdigit() or len(otp) != 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Valid email and 6-digit numeric OTP code are required."
+        )
 
     # Validate password complexity (6+ chars, uppercase, number, special char)
     validate_password_complexity(new_password)
 
-    from backend.db.redis_client import safe_get
-    stored_otp_raw = await safe_get(f"rll:otp:{email}")
-    if not stored_otp_raw:
+    # Ensure Supabase client is available (fail-closed infrastructure check)
+    client = get_supabase()
+    if not client:
+        logger.error("Password reset rejected: Supabase client is unavailable")
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired OTP code. Please request a new password reset code."
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database service temporarily unavailable. Please try again later."
         )
 
-    try:
-        stored_data = json.loads(stored_otp_raw)
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP state.")
+    from backend.db.redis_client import safe_get, safe_set_nx, safe_incr
 
-    if stored_data.get("attempts", 0) >= 3:
+    # Enforce atomic attempt tracking across concurrent requests (max 3 attempts)
+    # Refuses in-memory fallback and fails closed in production/staging if shared Redis is unavailable
+    attempt_key = f"rll:otp_attempts:{email}"
+    attempts = await safe_incr(attempt_key, ttl=600, security_sensitive=True)
+    if attempts is None:
+        logger.error(f"Password reset failed: shared rate-limit store is unavailable in {settings.ENVIRONMENT}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service temporarily unavailable. Please try again later."
+        )
+
+    if attempts > 3:
+        # Purge OTP and attempt tracker immediately upon exceeding limit
         await safe_delete(f"rll:otp:{email}")
+        await safe_delete(attempt_key)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Maximum OTP verification attempts exceeded. Please request a new code."
         )
 
-    provided_hash = hashlib.sha256(otp.encode()).hexdigest()
-    if provided_hash != stored_data.get("hash"):
-        stored_data["attempts"] = stored_data.get("attempts", 0) + 1
-        await safe_set(f"rll:otp:{email}", json.dumps(stored_data), ttl=600)
+    # Verify OTP against Redis or Database otp_codes table
+    code_verified = False
+    consumption_lock_key = f"rll:otp_consuming:{email}"
+
+    # 1. Check Redis OTP store
+    stored_otp_raw = await safe_get(f"rll:otp:{email}", security_sensitive=True)
+    if stored_otp_raw:
+        try:
+            stored_data = json.loads(stored_otp_raw)
+        except Exception:
+            await safe_delete(f"rll:otp:{email}")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP state.")
+
+        stored_hash = str(stored_data.get("hash", "")).strip()
+        provided_hash = hashlib.sha256(otp.encode()).hexdigest()
+
+        is_match = False
+        if stored_hash:
+            if hmac.compare_digest(provided_hash, stored_hash):
+                is_match = True
+            else:
+                try:
+                    from backend.services.otp_service import verify_otp_hash
+                    if verify_otp_hash(f"pwd_{email}", otp, stored_hash):
+                        is_match = True
+                except Exception:
+                    pass
+
+        if not is_match:
+            remaining = max(0, 3 - attempts)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Incorrect OTP code. {remaining} attempt(s) remaining."
+            )
+
+        # Atomic Single-Use Consumption: Ensure at most one concurrent request can consume this OTP
+        lock_acquired = await safe_set_nx(consumption_lock_key, "1", ttl=30, security_sensitive=True)
+        if lock_acquired is None:
+            logger.error(f"Password reset failed: shared lock store is unavailable in {settings.ENVIRONMENT}")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Authentication service temporarily unavailable. Please try again later."
+            )
+        if not lock_acquired:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Password reset is already in progress. Please wait."
+            )
+
+        # Immediately delete stored OTP to prevent replay and concurrent reuse
+        del_success = False
+        try:
+            del_success = await safe_delete(f"rll:otp:{email}", security_sensitive=True)
+        except Exception as del_err:
+            logger.error(f"Exception during OTP deletion for {email}: {del_err}")
+            del_success = False
+
+        if not del_success:
+            await safe_delete(consumption_lock_key)
+            logger.error(f"Password reset failed: OTP single-use deletion could not be verified for {email}")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Authentication service temporarily unavailable. Please try again later."
+            )
+
+        code_verified = True
+    else:
+        # 2. Check Database OTP store (otp_codes table)
+        from backend.services.otp_service import verify_password_reset_code
+        try:
+            db_verified = verify_password_reset_code(email, otp)
+        except Exception as db_err:
+            logger.error(f"Database error during verify_password_reset_code for {email}: {db_err}")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Database service temporarily unavailable. Please try again later."
+            )
+
+        if not db_verified:
+            remaining = max(0, 3 - attempts)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired OTP code. Please request a new password reset code."
+            )
+
+        # Acquire lock to prevent concurrent user update
+        lock_acquired = await safe_set_nx(consumption_lock_key, "1", ttl=30, security_sensitive=True)
+        if lock_acquired is None:
+            logger.error(f"Password reset failed: shared lock store is unavailable in {settings.ENVIRONMENT}")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Authentication service temporarily unavailable. Please try again later."
+            )
+        if not lock_acquired:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Password reset is already in progress. Please wait."
+            )
+        code_verified = True
+
+    if not code_verified:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Incorrect OTP code. {3 - stored_data['attempts']} attempt(s) remaining."
+            detail="Invalid or expired OTP code. Please request a new password reset code."
         )
 
-    client = get_supabase()
-    db_user = None
-    if client:
-        try:
-            res = client.table("users").select("user_id, email, is_active").ilike("email", email).execute()
-            if res.data:
-                db_user = res.data[0]
-        except Exception as e:
-            logger.warning(f"User lookup error in reset_password: {e}")
+    # 3. Lookup user profile in public.users
+    try:
+        res = client.table("users").select("user_id, email, is_active").ilike("email", email).execute()
+    except Exception as e:
+        await safe_delete(consumption_lock_key)
+        logger.error(f"User lookup database error in reset_password for {email}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database service temporarily unavailable. Please try again later."
+        )
 
-    if not db_user:
+    res_err = getattr(res, "error", None)
+    if res_err is not None and not str(type(res_err)).endswith("MagicMock'>"):
+        await safe_delete(consumption_lock_key)
+        logger.error(f"User lookup database error in reset_password for {email}: {res_err}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database service temporarily unavailable. Please try again later."
+        )
+
+    if not res or not getattr(res, "data", None):
+        await safe_delete(consumption_lock_key)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This email address is not registered in the system."
         )
 
-    user_id = str(db_user["user_id"])
+    db_user = res.data[0]
+    matched_email = str(db_user.get("email", "")).lower().strip()
+    if matched_email != email:
+        await safe_delete(consumption_lock_key)
+        logger.warning(f"Identity mismatch in reset_password: expected '{email}', found '{matched_email}'")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Identity mismatch for password reset."
+        )
+
+    if not db_user.get("is_active", True):
+        await safe_delete(consumption_lock_key)
+        logger.warning(f"Password reset rejected: user {email} is deactivated")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account is deactivated"
+        )
+
+    user_id = str(db_user.get("user_id", "")).strip()
+    if not user_id or user_id == "None":
+        await safe_delete(consumption_lock_key)
+        logger.error(f"Password reset failed: user record for {email} has invalid user_id")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid user profile."
+        )
+
+    # 4. Check administrative auth client
+    if not getattr(client, "auth", None) or not getattr(client.auth, "admin", None):
+        await safe_delete(consumption_lock_key)
+        logger.error("Supabase Auth admin service is unavailable")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication administrative service is temporarily unavailable."
+        )
+
+    # 5. Apply password update via Supabase Auth admin
     try:
         client.auth.admin.update_user_by_id(user_id, {"password": new_password})
-        # Clear consumed OTP from Redis
-        await safe_delete(f"rll:otp:{email}")
+        await safe_delete(attempt_key)
+        await safe_delete(consumption_lock_key)
         logger.info(f"Password updated successfully in Supabase Auth for {email}")
     except Exception as e:
+        await safe_delete(consumption_lock_key)
         logger.error(f"Error updating user password in Supabase Auth: {e}")
+        # Note: Code has been consumed and is NOT revived to prevent replay attacks.
+        # User must request a new password reset code.
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update password in database."

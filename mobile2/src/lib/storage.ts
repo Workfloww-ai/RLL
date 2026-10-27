@@ -62,14 +62,42 @@ class FastStorageEngine {
   }
 
   /**
+   * Purges older prefetch/cache keys from AsyncStorage to recover space when SQLite database quota is exceeded.
+   */
+  public async purgeStaleDiskCache(): Promise<void> {
+    try {
+      const keys = await AsyncStorage.getAllKeys();
+      const prunable = keys.filter(
+        (k) =>
+          k.startsWith(this.FAST_STORAGE_PREFIX + 'rll_fast_companies_') ||
+          k.startsWith('rll_disk_cache::')
+      );
+      if (prunable.length > 4) {
+        // Keep only 4 most recent prefetch entries on disk, prune the rest
+        const toRemove = prunable.slice(0, prunable.length - 4);
+        await AsyncStorage.multiRemove(toRemove);
+        logger.info(`FastStorage: Auto-purged ${toRemove.length} stale disk cache keys to recover AsyncStorage quota.`);
+      }
+    } catch (err) {
+      logger.warn(`FastStorage: Error during disk purge: ${err}`);
+    }
+  }
+
+  /**
    * Synchronous memory write + background non-blocking disk sync.
    */
   public setString(key: string, value: string): void {
     if (!key || value === undefined || value === null) return;
     this.memoryMap.set(key, value);
     const diskKey = `${this.FAST_STORAGE_PREFIX}${key}`;
-    AsyncStorage.setItem(diskKey, value).catch((e) => {
-      logger.warn(`FastStorage setString disk sync error for '${key}': ${e}`);
+    AsyncStorage.setItem(diskKey, value).catch(async (e) => {
+      const errStr = String(e || '');
+      if (errStr.includes('SQLITE_FULL') || errStr.includes('disk is full')) {
+        logger.warn(`FastStorage: SQLite storage quota reached (SQLITE_FULL). Pruning stale disk cache.`);
+        await this.purgeStaleDiskCache();
+      } else {
+        logger.warn(`FastStorage setString disk sync error for '${key}': ${e}`);
+      }
     });
   }
 

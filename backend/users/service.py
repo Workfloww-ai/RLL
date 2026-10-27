@@ -746,6 +746,20 @@ class UserService:
             if s_hid and s_hid not in clean_hq_ids:
                 clean_hq_ids.append(s_hid)
 
+        # 2b. Strict Business Rule: ASE and TSM / ASM can have AT MOST 1 Headquarters
+        try:
+            ur_res = client.table("user_roles").select("role_id").eq("user_id", user_id).limit(1).execute()
+            if ur_res and ur_res.data:
+                r_id = ur_res.data[0].get("role_id")
+                r_res = client.table("roles").select("role_name").eq("role_id", r_id).limit(1).execute()
+                if r_res and r_res.data:
+                    u_role = str(r_res.data[0].get("role_name") or "ASE").strip().upper()
+                    if u_role in ("ASE", "TSM", "ASM") and len(clean_hq_ids) > 1:
+                        logger.info(f"User {user_id} ({u_role}): Enforcing strictly 1 HQ rule. Retaining latest selection {clean_hq_ids[-1:]}.")
+                        clean_hq_ids = clean_hq_ids[-1:]
+        except Exception as e_role_chk:
+            logger.warning(f"Notice during role check in set_user_headquarters: {e_role_chk}")
+
         # 3. If list not empty, validate each HQ exists, is active, and matches user tenant
         hq_lookup = {}
         if clean_hq_ids:

@@ -2,14 +2,76 @@ import logging
 import asyncio
 import time
 import copy
+import re
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, Depends, Query, Request, status, Header
 from pydantic import BaseModel
-from backend.core.security import create_access_token, get_current_user, RoleChecker
+from backend.core.security import create_access_token, get_current_user, RoleChecker, normalize_role_name
 from backend.db.client import get_supabase
 from backend.db.company_aliases import normalize_company_name, is_pinned_company
 from backend.services.company_cascading_service import is_others_company
+
+# Centralized Mobile Access Authorization Policies
+MOBILE_ACCESS_ROLES = [
+    "tsm",
+    "ase",
+    "leader",
+    "territory_executive",
+    "admin",
+    "super_admin",
+    "developer",
+]
+MOBILE_ACCESS_ROLES_NORMALIZED = {normalize_role_name(r) for r in MOBILE_ACCESS_ROLES}
+
+MOBILE_ADMIN_ROLES = [
+    "admin",
+    "super_admin",
+    "developer",
+]
+MOBILE_ADMIN_ROLES_NORMALIZED = {normalize_role_name(r) for r in MOBILE_ADMIN_ROLES}
+
+mobile_access_checker = RoleChecker(MOBILE_ACCESS_ROLES)
+mobile_admin_checker = RoleChecker(MOBILE_ADMIN_ROLES)
+
+
+def resolve_user_mobile_roles(client, user_id: str) -> tuple[str, List[str]]:
+    """
+    Authoritatively resolves active user roles from Supabase `user_roles`.
+    Applies deterministic priority ordering and strict active-status filtering.
+    Returns (authoritative_role_name, active_roles_list).
+    """
+    active_roles: List[str] = []
+    authoritative_role = "unassigned"
+    try:
+        ur_res = client.table("user_roles").select(
+            "user_id, role_id, is_active, roles(role_id, role_name)"
+        ).eq("user_id", str(user_id)).execute()
+        if ur_res.data:
+            for ur in ur_res.data:
+                if ur.get("is_active") is True:
+                    role_obj = ur.get("roles") or {}
+                    rname = role_obj.get("role_name")
+                    if rname and isinstance(rname, str) and rname.strip():
+                        active_roles.append(rname.strip())
+
+            role_priority = [
+                "super_admin", "superadmin", "super admin",
+                "admin", "developer", "leader", "team_leader", "team leader",
+                "tsm", "ase", "territory_executive", "territory executive", "viewer"
+            ]
+            for prio in role_priority:
+                matched = next((r for r in active_roles if r.lower() == prio or normalize_role_name(r) == prio), None)
+                if matched:
+                    authoritative_role = matched
+                    break
+            if authoritative_role == "unassigned" and active_roles:
+                authoritative_role = active_roles[0]
+    except Exception as e_role:
+        logger.warning(f"Failed to query active roles for user {user_id}: {e_role}")
+
+    return authoritative_role, active_roles
+
 from backend.db.supabase_client import (
     call_mobile_sales_rpc,
     call_mobile_tsm_sales_rpc,
@@ -24,7 +86,9 @@ from backend.services.otp_service import (
     send_dovesoft_sms,
     send_otp_sms,
     store_otp_in_db,
-    verify_otp_from_db
+    verify_otp_from_db,
+    mask_phone,
+    mask_email
 )
 from supabase import create_client
 
@@ -337,7 +401,14 @@ def _fetch_fresh_master_lookups():
     except Exception as e_alias:
         logger.warning(f"Error building user_alias_map: {e_alias}")
 
-    hq_name_to_id = {v.lower(): k for k, v in hq_lookup.items() if v}
+    hq_name_to_id = {}
+    for k, v in hq_lookup.items():
+        if v:
+            clean_v = v.strip().lower()
+            hq_name_to_id[clean_v] = k
+            no_sp_v = re.sub(r'[\s\-_.]+', '', clean_v)
+            if no_sp_v:
+                hq_name_to_id[no_sp_v] = k
 
     return {
         "companies_lookup": companies_lookup,
@@ -421,33 +492,16 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
                         detail="User account is deactivated"
                     )
 
-                role_name = "admin"
-                try:
-                    ur_res = client.table("user_roles").select("user_id, role_id, is_active, roles(role_id, role_name)").eq("user_id", db_user["user_id"]).execute()
-                    if ur_res.data:
-                        active_roles = []
-                        for ur in ur_res.data:
-                            if ur.get("is_active", True):
-                                role_obj = ur.get("roles") or {}
-                                rname = role_obj.get("role_name")
-                                if rname:
-                                    active_roles.append(rname)
-                        
-                        # Prioritize valid mobile roles if user has multiple roles
-                        valid_mobile = next((r for r in active_roles if r.lower() in ["tsm", "ase", "leader", "admin", "territory executive"]), None)
-                        if valid_mobile:
-                            role_name = valid_mobile
-                        elif active_roles:
-                            role_name = active_roles[0]
-                except Exception:
-                    pass
+                # 2. Resolve Active Roles and Deterministic Priority
+                role_name, active_roles = resolve_user_mobile_roles(client, db_user["user_id"])
 
                 # 3. Guardrail: Enforce Mobile roles
-                if role_name.lower() not in ["tsm", "ase", "leader", "admin", "territory executive"]:
-                    logger.warning(f"Mobile login access denied for user {email} (role '{role_name}' lacks Mobile permissions)")
+                normalized_active = {normalize_role_name(r) for r in active_roles}
+                if not normalized_active.intersection(MOBILE_ACCESS_ROLES_NORMALIZED):
+                    logger.warning(f"Mobile login access denied for user {mask_email(email)} (roles {active_roles} lack Mobile permissions)")
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Access Denied: Mobile app is restricted to field personnel and administrators."
+                        detail="Access Denied: Mobile app is restricted to field personnel, administrators, and developers."
                     )
 
                 # 4. Resolve Depot Name
@@ -468,11 +522,15 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
                     "last_name": db_user.get("last_name", ""),
                     "phone": db_user.get("phone", ""),
                     "role_name": role_name,
+                    "roles": active_roles,
                     "depot_name": depot_name,
                     "hq_location": "All Headquarters",
+                    "tenant_id": str(db_user.get("tenant_id") or ""),
+                    "company_id": str(db_user.get("company_id")) if db_user.get("company_id") else None,
+                    "company_name": db_user.get("company_name"),
                     "is_active": bool(db_user.get("is_active", True))
                 }
-                logger.info(f"Mobile login successful for user: {email} with role: {role_name}")
+                logger.info(f"Mobile login successful for user: {mask_email(email)} with role: {role_name}")
         except HTTPException:
             raise
         except Exception as e:
@@ -501,7 +559,14 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
 
     # 3. Create Access Token valid for 30 days for mobile application
     token = create_access_token(
-        data={"sub": user_data["email"], "role": user_data["role_name"], "user_id": user_data["user_id"]},
+        data={
+            "sub": user_data["email"],
+            "role": user_data["role_name"],
+            "roles": user_data["roles"],
+            "user_id": user_data["user_id"],
+            "tenant_id": user_data["tenant_id"],
+            "company_name": user_data["company_name"]
+        },
         expires_delta=timedelta(days=30)
     )
 
@@ -520,7 +585,7 @@ async def send_mobile_otp(req: SendOTPRequest):
     """
     email = (req.email or "").lower().strip()
     phone = (req.phone or "").strip()
-    logger.info(f"Mobile OTP request initiated for phone: {phone}, email: {email}")
+    logger.info(f"Mobile OTP request initiated for phone: {mask_phone(phone)}, email: {mask_email(email)}")
 
     if not email and not phone:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email address or phone number is required")
@@ -530,20 +595,54 @@ async def send_mobile_otp(req: SendOTPRequest):
     if len(clean_phone_10) >= 10:
         clean_phone_10 = clean_phone_10[-10:]
 
-    # 1. Immediate Test User Handling (9999999999 / Google Play Review / Local Testing)
-    if clean_phone_10 == "9999999999" or email == "manish.chum@workfloww.ai":
-        store_otp_in_db("9999999999", "000000")
-        store_otp_in_db("+919999999999", "000000")
-        store_otp_in_db("9999999999", "123456")
-        store_otp_in_db("+919999999999", "123456")
-        logger.info("Test user 9999999999 OTP 000000 / 123456 registered.")
+    # 1. Dedicated App Review Flow (Google Play Store & Apple App Store review)
+    if clean_phone_10 == settings.APP_REVIEW_PHONE:
+        if not settings.APP_REVIEW_MODE_ENABLED:
+            logger.warning("App review OTP request rejected: review mode is disabled")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="App review mode is disabled"
+            )
+        logger.info(f"App review OTP requested for dedicated review phone {mask_phone(settings.APP_REVIEW_PHONE)}")
         return {
             "success": True,
             "message": "OTP verification code sent successfully.",
-            "phone": "+919999999999",
-            "company_name": "Lucidx360",
+            "phone": f"+91{settings.APP_REVIEW_PHONE}",
+            "company_name": "Rajasthan Liquor Limited (Demo)",
             "company_logo_url": None
         }
+
+    # 2. Check if user is currently locked out before allowing another OTP to be sent
+    from backend.db.redis_client import safe_set_nx, safe_get, safe_delete
+    attempt_key = f"rll:mobile_otp_attempts:{clean_phone_10}"
+    existing_attempts_raw = await safe_get(attempt_key, security_sensitive=True)
+    try:
+        existing_attempts = int(existing_attempts_raw or "0")
+    except (ValueError, TypeError):
+        existing_attempts = 0
+
+    if existing_attempts >= 5:
+        logger.warning(f"OTP send rejected for {mask_phone(clean_phone_10)}: account currently locked out")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Account is temporarily locked out due to multiple failed verification attempts. Please try again in 5 minutes."
+        )
+
+    # 3. Enforce atomic resend cooldown (30 seconds) across workers
+    cooldown_key = f"rll:otp_cooldown:{clean_phone_10}"
+    cooldown_acquired = await safe_set_nx(cooldown_key, "active", ttl=30, security_sensitive=True)
+    if cooldown_acquired is None:
+        logger.error(f"Cannot acquire resend cooldown lock: shared Redis store unavailable in {settings.ENVIRONMENT}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="SMS verification service temporarily unavailable. Please try again later."
+        )
+    if not cooldown_acquired:
+        logger.warning(f"OTP resend cooldown active for phone {mask_phone(clean_phone_10)}")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Please wait 30 seconds before requesting another OTP code."
+        )
 
     db_user = None
     if client:
@@ -573,14 +672,16 @@ async def send_mobile_otp(req: SendOTPRequest):
 
     # Enforce registered user requirement
     if not db_user:
-        logger.warning(f"Mobile OTP request failed: Phone/Email not registered (Phone: {phone}, Email: {email})")
+        await safe_delete(cooldown_key)
+        logger.warning(f"Mobile OTP request failed: Phone/Email not registered (Phone: {mask_phone(phone)}, Email: {mask_email(email)})")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This mobile number is not registered."
         )
 
     if not db_user.get("is_active", True):
-        logger.warning(f"Mobile OTP request failed: Account is deactivated (Phone: {phone}, Email: {email})")
+        await safe_delete(cooldown_key)
+        logger.warning(f"Mobile OTP request failed: Account is deactivated (Phone: {mask_phone(phone)}, Email: {mask_email(email)})")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="This user account is deactivated."
@@ -598,7 +699,7 @@ async def send_mobile_otp(req: SendOTPRequest):
 
     # Directly await SMS dispatch via Dovesoft API
     sms_sent = await send_otp_sms(target_phone, otp_code)
-    logger.info(f"Mobile OTP successfully generated and sent via SMS to {target_phone} (SMS sent status: {sms_sent})")
+    logger.info(f"Mobile OTP successfully generated and sent via SMS to {mask_phone(target_phone)} (SMS sent status: {sms_sent})")
 
     # Resolve user company name and logo for dynamic branding
     company_name = db_user.get("company_name")
@@ -638,7 +739,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
     email = (req.email or "").lower().strip()
     phone = (req.phone or "").strip()
     otp_code = (req.otp or "").strip()
-    logger.info(f"Mobile OTP verification attempt initiated for phone: {phone}")
+    logger.info(f"Mobile OTP verification attempt initiated for phone: {mask_phone(phone)}")
 
     if not phone or not otp_code:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Phone number and 6-digit OTP code are required")
@@ -646,60 +747,57 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
     clean_in = ''.join(c for c in phone if c.isdigit())
     clean_10 = clean_in[-10:] if len(clean_in) >= 10 else clean_in
 
-    # Google Play Review / test user bypass
-    is_test_user = (clean_10 == "9999999999" or email == "manish.chum@workfloww.ai")
-    if is_test_user and otp_code in ("000000", "123456"):
-        is_valid = True
-    else:
-        is_valid = verify_otp_from_db(phone, otp_code)
+    # Dedicated Google Play & Apple App Store review flow (Explicitly Isolated)
+    is_review_phone = (clean_10 == settings.APP_REVIEW_PHONE)
+    if is_review_phone:
+        if not settings.APP_REVIEW_MODE_ENABLED:
+            logger.warning("App review verification rejected: review mode is disabled")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="App review mode is disabled"
+            )
+        if otp_code != settings.APP_REVIEW_OTP:
+            logger.warning(f"App review verification failed for phone {mask_phone(clean_10)}: invalid review code")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired 6-digit OTP code"
+            )
 
-    if not is_valid:
-        logger.warning(f"Mobile OTP verification failed for phone: {phone} - Invalid or expired OTP code")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired 6-digit OTP code")
-
-    client = get_supabase()
-
-    # If test user, return full valid authenticated session immediately
-    if is_test_user:
-        dyn_tenant_id = None
-        if client:
-            try:
-                tu_res = client.table("users").select("tenant_id").ilike("email", "manish.chum@workfloww.ai").limit(1).execute()
-                if tu_res.data and tu_res.data[0].get("tenant_id"):
-                    dyn_tenant_id = str(tu_res.data[0]["tenant_id"])
-                if not dyn_tenant_id:
-                    t_res = client.table("tenant_config").select("tenant_id").limit(1).execute()
-                    if t_res.data and t_res.data[0].get("tenant_id"):
-                        dyn_tenant_id = str(t_res.data[0]["tenant_id"])
-            except Exception:
-                pass
-
+        # Isolated Demo Review Identity
         user_data = {
-            "user_id": "00000000-0000-0000-0000-000000000099",
-            "email": "manish.chum@workfloww.ai",
-            "first_name": "Manish",
-            "last_name": "Chum",
-            "phone": "+919999999999",
+            "user_id": settings.APP_REVIEW_USER_ID,
+            "email": settings.APP_REVIEW_EMAIL,
+            "first_name": "Demo",
+            "last_name": "Reviewer",
+            "phone": f"+91{settings.APP_REVIEW_PHONE}",
             "role_name": "TSM",
             "role": "TSM",
-            "depot_name": "Jaipur Depot",
+            "roles": ["tsm"],
+            "depot_name": "Jaipur Demo Depot",
             "hq_location": "All Headquarters",
-            "tenant_id": dyn_tenant_id,
+            "tenant_id": settings.APP_REVIEW_DEMO_TENANT_ID,
             "company_id": None,
-            "company_name": "Rajasthan Liquor Limited",
+            "company_name": "Rajasthan Liquor Limited (Demo)",
             "company_logo_url": "/images/rll logo.svg",
             "is_active": True
         }
 
+        # Issue short-lived review session (consistent with token architecture, no 30-day default)
         token = create_access_token(
             data={
                 "sub": user_data["email"],
                 "role": user_data["role_name"],
+                "roles": user_data["roles"],
                 "user_id": user_data["user_id"],
                 "tenant_id": user_data["tenant_id"],
-                "company_name": user_data["company_name"]
+                "company_name": user_data["company_name"],
+                "is_review_user": True
             },
-            expires_delta=timedelta(days=30)
+            expires_delta=timedelta(hours=settings.APP_REVIEW_TOKEN_EXPIRE_HOURS)
+        )
+        logger.info(
+            f"Dedicated review session generated for {mask_phone(settings.APP_REVIEW_PHONE)} "
+            f"(expires in {settings.APP_REVIEW_TOKEN_EXPIRE_HOURS}h, tenant: {settings.APP_REVIEW_DEMO_TENANT_ID})"
         )
         return {
             "access_token": token,
@@ -707,12 +805,39 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
             "user": user_data,
             "tenant_config": {
                 "tenant_id": user_data["tenant_id"],
-                "app_name": "LucidX360",
+                "app_name": "LucidX360 Demo",
                 "logo_url": user_data["company_logo_url"],
-                "pinned_company_name": "Rajasthan Liquor Limited",
+                "pinned_company_name": "Rajasthan Liquor Limited (Demo)",
             }
         }
 
+    # Distributed attempt counter across workers for normal users
+    from backend.db.redis_client import safe_incr, safe_delete
+    attempt_key = f"rll:mobile_otp_attempts:{clean_10}"
+    attempts = await safe_incr(attempt_key, ttl=300, security_sensitive=True)
+    if attempts is None:
+        logger.error(f"Mobile OTP verification failed: shared rate-limit store unavailable in {settings.ENVIRONMENT}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service temporarily unavailable. Please try again later."
+        )
+    if attempts > 5:
+        logger.warning(f"Maximum OTP verification attempts exceeded for phone {mask_phone(clean_10)} ({attempts} attempts)")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Maximum OTP verification attempts exceeded. Please try again in 5 minutes."
+        )
+
+    # Standard database OTP verification for all other numbers
+    is_valid = verify_otp_from_db(phone, otp_code)
+    if not is_valid:
+        logger.warning(f"Mobile OTP verification failed for phone: {mask_phone(phone)} - Invalid or expired OTP code")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired 6-digit OTP code")
+
+    # Verification succeeded: clear distributed attempt counter
+    await safe_delete(attempt_key)
+
+    client = get_supabase()
     user_data = None
     if client:
         try:
@@ -733,21 +858,23 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
 
             if db_user:
                 if not db_user.get("is_active", True):
-                    logger.warning(f"Mobile OTP verification failed for phone: {phone} - Account deactivated")
+                    logger.warning(f"Mobile OTP verification failed for phone: {mask_phone(phone)} - Account deactivated")
                     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User account is deactivated")
 
-                role_name = "TSM"
-                try:
-                    ur_res = client.table("user_roles").select("user_id, role_id, is_active").eq("user_id", db_user["user_id"]).execute()
-                    if ur_res.data:
-                        active_ur = [ur for ur in ur_res.data if ur.get("is_active", True)]
-                        if active_ur:
-                            r_id = active_ur[0].get("role_id")
-                            r_res = client.table("roles").select("role_name").eq("role_id", r_id).limit(1).execute()
-                            if r_res.data:
-                                role_name = r_res.data[0].get("role_name", "TSM")
-                except Exception as e_role:
-                    logger.warning(f"Could not fetch role: {e_role}")
+                # 2. Resolve Active Roles and Deterministic Priority
+                role_name, active_roles = resolve_user_mobile_roles(client, db_user["user_id"])
+
+                # 3. Guardrail: Enforce Mobile roles
+                normalized_active = {normalize_role_name(r) for r in active_roles}
+                if not normalized_active.intersection(MOBILE_ACCESS_ROLES_NORMALIZED):
+                    logger.warning(
+                        f"Mobile OTP access denied for user {mask_email(db_user.get('email'))}: "
+                        f"active roles {active_roles} lack Mobile permissions"
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Access Denied: Mobile app is restricted to field personnel, administrators, and developers."
+                    )
 
                 depot_name = "Jaipur Depot"
                 try:
@@ -790,6 +917,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
                     "last_name": db_user.get("last_name", ""),
                     "phone": db_user.get("phone") or phone,
                     "role_name": role_name,
+                    "roles": active_roles,
                     "depot_name": depot_name,
                     "hq_location": "All Headquarters",
                     "tenant_id": tenant_id,
@@ -805,7 +933,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
             logger.warning(f"Error resolving user profile on OTP verify: {e}")
 
     if not user_data:
-        logger.warning(f"Mobile OTP verification failed for phone: {phone} - User profile not registered")
+        logger.warning(f"Mobile OTP verification failed for phone: {mask_phone(phone)} - User profile not registered")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This mobile number is not registered."
@@ -816,13 +944,14 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
         data={
             "sub": user_data["email"],
             "role": user_data["role_name"],
+            "roles": user_data["roles"],
             "user_id": user_data["user_id"],
             "tenant_id": user_data["tenant_id"],
             "company_name": user_data["company_name"]
         },
         expires_delta=timedelta(days=30)
     )
-    logger.info(f"Mobile OTP verification successful for phone: {phone} (User: {user_data['email']}, Company: {user_data['company_name']}, Role: {user_data['role_name']})")
+    logger.info(f"Mobile OTP verification successful for phone: {mask_phone(phone)} (User: {mask_email(user_data['email'])}, Company: {user_data['company_name']}, Role: {user_data['role_name']})")
 
     return {
         "access_token": token,
@@ -839,7 +968,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
 
 @router.get("/me")
 def get_mobile_user_profile(
-    current_user: dict = Depends(RoleChecker(['tsm', 'ase', 'leader', 'territory executive', 'admin']))
+    current_user: dict = Depends(mobile_access_checker)
 ):
     """
     Fetch current logged-in user profile with depot and company details.
@@ -850,36 +979,31 @@ def get_mobile_user_profile(
     if not client:
         return current_user
 
-    if user_id_val == "00000000-0000-0000-0000-000000000099" or "manish.chum@workfloww.ai" in sub_val:
-        dyn_tenant_id = None
-        if client:
-            try:
-                tu_res = client.table("users").select("tenant_id").ilike("email", "manish.chum@workfloww.ai").limit(1).execute()
-                if tu_res.data and tu_res.data[0].get("tenant_id"):
-                    dyn_tenant_id = str(tu_res.data[0]["tenant_id"])
-                if not dyn_tenant_id:
-                    t_res = client.table("tenant_config").select("tenant_id").limit(1).execute()
-                    if t_res.data and t_res.data[0].get("tenant_id"):
-                        dyn_tenant_id = str(t_res.data[0]["tenant_id"])
-            except Exception:
-                pass
-
+    if user_id_val == settings.APP_REVIEW_USER_ID or current_user.get("is_review_user") or (sub_val == settings.APP_REVIEW_EMAIL and user_id_val == settings.APP_REVIEW_USER_ID):
+        if not settings.APP_REVIEW_MODE_ENABLED:
+            logger.warning("Profile request rejected: App review mode is disabled")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="App review mode is disabled"
+            )
         return {
-            "user_id": "00000000-0000-0000-0000-000000000099",
-            "email": "manish.chum@workfloww.ai",
-            "first_name": "Manish",
-            "last_name": "Chum",
-            "phone": "+919999999999",
+            "user_id": settings.APP_REVIEW_USER_ID,
+            "email": settings.APP_REVIEW_EMAIL,
+            "first_name": "Demo",
+            "last_name": "Reviewer",
+            "phone": f"+91{settings.APP_REVIEW_PHONE}",
             "role_name": "TSM",
             "role": "TSM",
-            "depot_name": "Jaipur Depot",
+            "roles": ["tsm"],
+            "depot_name": "Jaipur Demo Depot",
             "hq_location": "All Headquarters",
-            "tenant_id": dyn_tenant_id,
+            "tenant_id": settings.APP_REVIEW_DEMO_TENANT_ID,
             "company_id": None,
-            "company_name": "Rajasthan Liquor Limited",
+            "company_name": "Rajasthan Liquor Limited (Demo)",
             "company_logo_url": "/images/rll logo.svg",
             "is_active": True
         }
+
 
     try:
         db_user = None
@@ -935,6 +1059,7 @@ def get_mobile_user_profile(
                 "last_name": db_user.get("last_name", ""),
                 "phone": db_user.get("phone", ""),
                 "role_name": role_name,
+                "roles": current_user.get("roles") or ([role_name] if role_name != "unassigned" else []),
                 "depot_name": depot_name,
                 "hq_location": "All Headquarters",
                 "tenant_id": tenant_id,
@@ -1036,7 +1161,7 @@ async def get_mobile_companies(
     # User company scoping: if user has assigned company, scope sales data strictly to that company
     user_role = (current_user.get("role_name") or current_user.get("role") or "").lower()
     user_company = current_user.get("company_name")
-    effective_company = user_company if (user_company and user_role not in ["admin", "super_admin", "super admin"]) else None
+    effective_company = user_company if (user_company and user_role not in ["admin", "super_admin", "super admin", "developer"]) else None
 
     inc_others_str = "inc1" if await get_include_others_setting_async() else "inc0"
     redis_key = f"rll:mobile:companies:{clean_period}:{clean_hq}:{clean_date}:{effective_company or 'all'}:{inc_others_str}"
@@ -1147,7 +1272,7 @@ async def get_mobile_sales(
     page: Optional[int] = Query(None, description="Page number for depots pagination (1-indexed)"),
     page_size: Optional[int] = Query(None, description="Page size for depots pagination (1 to 100)"),
     test_limit: Optional[int] = Query(None, description="Diagnostic payload scaling test limit"),
-    current_user: dict = Depends(RoleChecker(['tsm', 'ase', 'leader', 'admin']))
+    current_user: dict = Depends(mobile_access_checker)
 ):
     """
     Returns real aggregated sales data for Companies, Depots, and TSMs directly calculated from Supabase.
@@ -1359,7 +1484,8 @@ async def get_mobile_sales(
         target_hq_id = None
         if selected_hq and selected_hq.strip() and selected_hq.strip() != "All Headquarters":
             clean_hq_target = selected_hq.strip().lower()
-            target_hq_id = master_cache.get("hq_name_to_id", {}).get(clean_hq_target)
+            no_sp_target = re.sub(r'[\s\-_.]+', '', clean_hq_target)
+            target_hq_id = master_cache.get("hq_name_to_id", {}).get(clean_hq_target) or master_cache.get("hq_name_to_id", {}).get(no_sp_target)
 
         # ── Early Level Slicing & Parallel RPC Execution ───────────────────────
         comp_rpc_params = {
@@ -1370,9 +1496,38 @@ async def get_mobile_sales(
         if target_hq_id:
             comp_rpc_params["p_hq_id"] = target_hq_id
 
+        # Pre-resolve active company UUIDs for brand RPC
+        brand_company_ids = [
+            str(cid_raw).strip().lower()
+            for cid_raw, cname_raw in companies_lookup.items()
+            if cname_raw and not is_others_company(cname_raw)
+        ]
+        brand_params = {
+            "p_company_ids": brand_company_ids,
+            "p_target_date": end_date,
+            "p_mtd_start": mtd_start,
+            "p_ytd_start": ytd_start,
+        }
+        if target_hq_id:
+            brand_params["p_hq_id"] = target_hq_id
+
         company_records = []
         depot_records = []
+        brands_data = []
+        all_usf_records = []
         rpc_trace_info: Dict[str, Any] = {}
+        tsm_rpc_trace: Dict[str, Any] = {}
+
+        scoped_user_ids = None
+        if selected_hq and selected_hq != "All Headquarters":
+            clean_sel_hq = selected_hq.strip().lower()
+            clean_sel_no_space = re.sub(r'[\s\-_.]+', '', clean_sel_hq)
+            matched_uids = [
+                uid for uid, hq_list in user_hqs_map.items()
+                if any(h.strip().lower() == clean_sel_hq or re.sub(r'[\s\-_.]+', '', h).lower() == clean_sel_no_space for h in hq_list)
+            ]
+            if matched_uids:
+                scoped_user_ids = matched_uids
 
         t_rpc_start = time.perf_counter()
 
@@ -1381,26 +1536,53 @@ async def get_mobile_sales(
             return res.data or []
 
         def _exec_sales_json_rpc():
-            return call_mobile_sales_json_rpc(end_date, mtd_start, ytd_start, target_hq_id)
+            return call_mobile_sales_json_rpc(end_date, mtd_start, ytd_start, target_hq_id, trace_info=rpc_trace_info)
+
+        def _exec_brands_rpc():
+            if not brand_company_ids:
+                return []
+            try:
+                res = client.rpc("get_mobile_company_brands_summary", brand_params).execute()
+                return res.data or []
+            except Exception as e_brands:
+                logger.error(f"Error calling get_mobile_company_brands_summary RPC: {e_brands}")
+                rpc_trace_info["brands_rpc_error"] = str(e_brands)
+                return []
+
+        def _exec_tsm_rpc():
+            return call_mobile_tsm_sales_json_rpc(end_date, mtd_start, ytd_start, user_ids=scoped_user_ids, trace_info=tsm_rpc_trace)
 
         if clean_level == "companies":
-            company_records = await asyncio.to_thread(_exec_companies_rpc)
-        elif clean_level in ["depots", "tsms"]:
+            comp_res, b_res = await asyncio.gather(
+                asyncio.to_thread(_exec_companies_rpc),
+                asyncio.to_thread(_exec_brands_rpc)
+            )
+            company_records = comp_res
+            brands_data = b_res
+        elif clean_level == "depots":
             sales_payload = await asyncio.to_thread(_exec_sales_json_rpc)
             depot_records = sales_payload.get("depots") or []
+        elif clean_level == "tsms":
+            all_usf_records = await asyncio.to_thread(_exec_tsm_rpc)
         else:  # Full response (clean_level is None)
-            comp_res, sales_payload = await asyncio.gather(
+            comp_res, sales_payload, b_res, usf_res = await asyncio.gather(
                 asyncio.to_thread(_exec_companies_rpc),
-                asyncio.to_thread(_exec_sales_json_rpc)
+                asyncio.to_thread(_exec_sales_json_rpc),
+                asyncio.to_thread(_exec_brands_rpc),
+                asyncio.to_thread(_exec_tsm_rpc)
             )
             company_records = comp_res
             depot_records = sales_payload.get("depots") or []
+            brands_data = b_res
+            all_usf_records = usf_res
 
         t_rpc_end = time.perf_counter()
         rpc_duration_ms = round((t_rpc_end - t_rpc_start) * 1000, 2)
         rpc_trace_info["sales_rpc_duration_ms"] = rpc_duration_ms
+        if tsm_rpc_trace.get("tsm_rpc_error"):
+            rpc_trace_info["tsm_rpc_error"] = tsm_rpc_trace["tsm_rpc_error"]
 
-        total_records_processed = len(company_records) + len(depot_records)
+        total_records_processed = len(company_records) + len(depot_records) + len(brands_data) + len(all_usf_records)
 
         # ── Python Transformation Timing (Strictly separate from RPC wait!) ───
         t_transform_start = time.perf_counter()
@@ -1498,23 +1680,6 @@ async def get_mobile_sales(
                             "YTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
                         }
                     }
-
-    if all_company_ids:
-        brand_params = {
-            "p_company_ids": all_company_ids,
-            "p_target_date": end_date,
-            "p_mtd_start": mtd_start,
-            "p_ytd_start": ytd_start,
-        }
-        if target_hq_id:
-            brand_params["p_hq_id"] = target_hq_id
-
-        try:
-            brand_res = client.rpc("get_mobile_company_brands_summary", brand_params).execute()
-            brands_data = brand_res.data or []
-        except Exception as e_brands:
-            logger.error(f"Error calling get_mobile_company_brands_summary RPC: {e_brands}")
-            brands_data = []
 
         for b in brands_data:
             raw_cid = str(b.get("company_id") or "").strip().lower()
@@ -1695,11 +1860,7 @@ async def get_mobile_sales(
     for tid in master_tsms.keys():
         master_tsms[tid]["companies_map"] = {}
 
-    tsm_rpc_trace: Dict[str, Any] = {}
-    if clean_level in [None, "tsms"]:
-        all_usf_records = call_mobile_tsm_sales_json_rpc(end_date, mtd_start, ytd_start, trace_info=tsm_rpc_trace)
-    else:
-        all_usf_records = []
+
 
     for row in all_usf_records:
         c_id_raw = str(row.get("company_id") or "")
@@ -1833,8 +1994,10 @@ async def get_mobile_sales(
                 b.get("data", {}).get(selected_period, {}).get("bottles", 0) > 0)
         ]
         c_data["brands"] = active_b if active_b else all_b
+        clean_sel_no_space = re.sub(r'[\s\-_.]+', '', selected_hq).lower() if selected_hq else ""
         if selected_hq != "All Headquarters" and c_data.get("hqLocation") and c_data["hqLocation"] != "All Headquarters":
-            if c_data["hqLocation"].lower() != selected_hq.lower():
+            c_loc_no_space = re.sub(r'[\s\-_.]+', '', c_data["hqLocation"]).lower()
+            if c_data["hqLocation"].lower() != selected_hq.lower() and c_loc_no_space != clean_sel_no_space:
                 continue
         formatted_companies.append(c_data)
 
@@ -1847,7 +2010,8 @@ async def get_mobile_sales(
                 b.get("data", {}).get(selected_period, {}).get("bottles", 0) > 0)
         ]
         if selected_hq != "All Headquarters" and d_data.get("hqName"):
-            if d_data["hqName"].lower() != selected_hq.lower():
+            d_name_no_space = re.sub(r'[\s\-_.]+', '', d_data["hqName"]).lower()
+            if d_data["hqName"].lower() != selected_hq.lower() and d_name_no_space != clean_sel_no_space:
                 continue
         formatted_depots.append(d_data)
 
@@ -1888,7 +2052,11 @@ async def get_mobile_sales(
 
         if selected_hq and selected_hq != "All Headquarters":
             clean_sel_hq = selected_hq.strip().lower()
-            matches_hq = any(h.strip().lower() == clean_sel_hq for h in assigned_hq_names)
+            clean_sel_no_space = re.sub(r'[\s\-_.]+', '', clean_sel_hq)
+            matches_hq = any(
+                h.strip().lower() == clean_sel_hq or re.sub(r'[\s\-_.]+', '', h).lower() == clean_sel_no_space
+                for h in assigned_hq_names
+            )
             if not matches_hq:
                 continue
 
@@ -2049,18 +2217,22 @@ async def get_mobile_sales(
         if pagination_meta:
             payload["pagination"] = pagination_meta
 
-    _SALES_RESPONSE_CACHE[cache_key] = {
-        "timestamp": time.time(),
-        "data": payload
-    }
+    # Guardrail: Do NOT cache if primary RPCs experienced read timeouts or errors
+    rpc_had_error = bool(rpc_trace_info.get("sales_rpc_error") or tsm_rpc_trace.get("tsm_rpc_error"))
+    has_valid_sales = (len(formatted_companies) > 0 and (total_cases > 0 or total_bottles > 0)) or len(formatted_tsms) > 0 or len(formatted_depots) > 0
 
-    # Guardrail: Do NOT cache empty TSM payload in Redis if raw SQL RPC returned active sales records
-    if len(formatted_tsms) > 0 or len(all_usf_records) == 0:
+    if not rpc_had_error and has_valid_sales:
+        _SALES_RESPONSE_CACHE[cache_key] = {
+            "timestamp": time.time(),
+            "data": payload
+        }
         try:
             from backend.services.cache_service import set_json_cache
             await set_json_cache(f"rll:mobile:sales:{cache_key}", payload, ttl=900)
         except Exception as e_redis_set:
             logger.warning(f"Failed to store sales payload in Redis: {e_redis_set}")
+    else:
+        logger.warning(f"⚠️ [CACHE_BYPASS] Skipping sales cache for {cache_key} (rpc_had_error={rpc_had_error}, has_valid_sales={has_valid_sales})")
 
     # J, K, L. Serialization & Response timing
     t_serialize_start = time.perf_counter()
@@ -2298,9 +2470,12 @@ async def warm_master_cache():
 
 
 @router.api_route("/cache/clear", methods=["GET", "POST"])
-async def clear_mobile_cache_endpoint():
+async def clear_mobile_cache_endpoint(
+    current_user: dict = Depends(mobile_admin_checker)
+):
     """
-    Clear all in-memory backend caches (master lookups, sales payload cache).
+    Clear all in-memory and Redis sales/analytics caches (Admin only).
+    Does NOT flush database or delete any security/session state.
     """
     clear_sales_response_cache()
     from backend.services.cache_service import invalidate_analytics_cache
@@ -2309,10 +2484,10 @@ async def clear_mobile_cache_endpoint():
     except Exception as e:
         logger.warning(f"Notice purging Redis cache via endpoint: {e}")
 
-    logger.info("🧹 All in-memory and Redis backend sales & master caches cleared successfully.")
+    logger.info(f"🧹 Sales & analytics caches cleared by admin {current_user.get('email')}.")
     return {
         "status": "success",
-        "message": "All backend caches flushed."
+        "message": "Sales and analytics caches cleared successfully."
     }
 
 

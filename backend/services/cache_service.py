@@ -89,8 +89,9 @@ async def invalidate_analytics_cache() -> int:
     """
     analytics_count = await safe_delete_pattern("rll:analytics:*")
     dashboard_count = await safe_delete_pattern("rll:dashboard:*")
-    mobile_count = await safe_delete_pattern("rll:mobile:*")
-    total_purged = analytics_count + dashboard_count + mobile_count
+    mobile_sales_count = await safe_delete_pattern("rll:mobile:sales:*")
+    mobile_comp_count = await safe_delete_pattern("rll:mobile:companies:*")
+    total_purged = analytics_count + dashboard_count + mobile_sales_count + mobile_comp_count
     
     # Also invalidate in-memory mobile sales cache
     try:
