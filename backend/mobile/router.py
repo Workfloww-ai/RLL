@@ -1496,9 +1496,27 @@ async def get_mobile_sales(
         if target_hq_id:
             comp_rpc_params["p_hq_id"] = target_hq_id
 
+        # Pre-resolve active company UUIDs for brand RPC
+        brand_company_ids = [
+            str(cid_raw).strip().lower()
+            for cid_raw, cname_raw in companies_lookup.items()
+            if cname_raw and not is_others_company(cname_raw)
+        ]
+        brand_params = {
+            "p_company_ids": brand_company_ids,
+            "p_target_date": end_date,
+            "p_mtd_start": mtd_start,
+            "p_ytd_start": ytd_start,
+        }
+        if target_hq_id:
+            brand_params["p_hq_id"] = target_hq_id
+
         company_records = []
         depot_records = []
+        brands_data = []
+        all_usf_records = []
         rpc_trace_info: Dict[str, Any] = {}
+        tsm_rpc_trace: Dict[str, Any] = {}
 
         t_rpc_start = time.perf_counter()
 
@@ -1507,26 +1525,53 @@ async def get_mobile_sales(
             return res.data or []
 
         def _exec_sales_json_rpc():
-            return call_mobile_sales_json_rpc(end_date, mtd_start, ytd_start, target_hq_id)
+            return call_mobile_sales_json_rpc(end_date, mtd_start, ytd_start, target_hq_id, trace_info=rpc_trace_info)
+
+        def _exec_brands_rpc():
+            if not brand_company_ids:
+                return []
+            try:
+                res = client.rpc("get_mobile_company_brands_summary", brand_params).execute()
+                return res.data or []
+            except Exception as e_brands:
+                logger.error(f"Error calling get_mobile_company_brands_summary RPC: {e_brands}")
+                rpc_trace_info["brands_rpc_error"] = str(e_brands)
+                return []
+
+        def _exec_tsm_rpc():
+            return call_mobile_tsm_sales_json_rpc(end_date, mtd_start, ytd_start, tsm_rpc_trace)
 
         if clean_level == "companies":
-            company_records = await asyncio.to_thread(_exec_companies_rpc)
-        elif clean_level in ["depots", "tsms"]:
+            comp_res, b_res = await asyncio.gather(
+                asyncio.to_thread(_exec_companies_rpc),
+                asyncio.to_thread(_exec_brands_rpc)
+            )
+            company_records = comp_res
+            brands_data = b_res
+        elif clean_level == "depots":
             sales_payload = await asyncio.to_thread(_exec_sales_json_rpc)
             depot_records = sales_payload.get("depots") or []
+        elif clean_level == "tsms":
+            all_usf_records = await asyncio.to_thread(_exec_tsm_rpc)
         else:  # Full response (clean_level is None)
-            comp_res, sales_payload = await asyncio.gather(
+            comp_res, sales_payload, b_res, usf_res = await asyncio.gather(
                 asyncio.to_thread(_exec_companies_rpc),
-                asyncio.to_thread(_exec_sales_json_rpc)
+                asyncio.to_thread(_exec_sales_json_rpc),
+                asyncio.to_thread(_exec_brands_rpc),
+                asyncio.to_thread(_exec_tsm_rpc)
             )
             company_records = comp_res
             depot_records = sales_payload.get("depots") or []
+            brands_data = b_res
+            all_usf_records = usf_res
 
         t_rpc_end = time.perf_counter()
         rpc_duration_ms = round((t_rpc_end - t_rpc_start) * 1000, 2)
         rpc_trace_info["sales_rpc_duration_ms"] = rpc_duration_ms
+        if tsm_rpc_trace.get("tsm_rpc_error"):
+            rpc_trace_info["tsm_rpc_error"] = tsm_rpc_trace["tsm_rpc_error"]
 
-        total_records_processed = len(company_records) + len(depot_records)
+        total_records_processed = len(company_records) + len(depot_records) + len(brands_data) + len(all_usf_records)
 
         # ── Python Transformation Timing (Strictly separate from RPC wait!) ───
         t_transform_start = time.perf_counter()
@@ -1624,23 +1669,6 @@ async def get_mobile_sales(
                             "YTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
                         }
                     }
-
-    if all_company_ids:
-        brand_params = {
-            "p_company_ids": all_company_ids,
-            "p_target_date": end_date,
-            "p_mtd_start": mtd_start,
-            "p_ytd_start": ytd_start,
-        }
-        if target_hq_id:
-            brand_params["p_hq_id"] = target_hq_id
-
-        try:
-            brand_res = client.rpc("get_mobile_company_brands_summary", brand_params).execute()
-            brands_data = brand_res.data or []
-        except Exception as e_brands:
-            logger.error(f"Error calling get_mobile_company_brands_summary RPC: {e_brands}")
-            brands_data = []
 
         for b in brands_data:
             raw_cid = str(b.get("company_id") or "").strip().lower()
@@ -1821,11 +1849,7 @@ async def get_mobile_sales(
     for tid in master_tsms.keys():
         master_tsms[tid]["companies_map"] = {}
 
-    tsm_rpc_trace: Dict[str, Any] = {}
-    if clean_level in [None, "tsms"]:
-        all_usf_records = call_mobile_tsm_sales_json_rpc(end_date, mtd_start, ytd_start, trace_info=tsm_rpc_trace)
-    else:
-        all_usf_records = []
+
 
     for row in all_usf_records:
         c_id_raw = str(row.get("company_id") or "")
@@ -2182,18 +2206,22 @@ async def get_mobile_sales(
         if pagination_meta:
             payload["pagination"] = pagination_meta
 
-    _SALES_RESPONSE_CACHE[cache_key] = {
-        "timestamp": time.time(),
-        "data": payload
-    }
+    # Guardrail: Do NOT cache if primary RPCs experienced read timeouts or errors
+    rpc_had_error = bool(rpc_trace_info.get("sales_rpc_error") or tsm_rpc_trace.get("tsm_rpc_error"))
+    has_valid_sales = (len(formatted_companies) > 0 and (total_cases > 0 or total_bottles > 0)) or len(formatted_tsms) > 0 or len(formatted_depots) > 0
 
-    # Guardrail: Do NOT cache empty TSM payload in Redis if raw SQL RPC returned active sales records
-    if len(formatted_tsms) > 0 or len(all_usf_records) == 0:
+    if not rpc_had_error and has_valid_sales:
+        _SALES_RESPONSE_CACHE[cache_key] = {
+            "timestamp": time.time(),
+            "data": payload
+        }
         try:
             from backend.services.cache_service import set_json_cache
             await set_json_cache(f"rll:mobile:sales:{cache_key}", payload, ttl=900)
         except Exception as e_redis_set:
             logger.warning(f"Failed to store sales payload in Redis: {e_redis_set}")
+    else:
+        logger.warning(f"⚠️ [CACHE_BYPASS] Skipping sales cache for {cache_key} (rpc_had_error={rpc_had_error}, has_valid_sales={has_valid_sales})")
 
     # J, K, L. Serialization & Response timing
     t_serialize_start = time.perf_counter()

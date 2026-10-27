@@ -1292,6 +1292,8 @@ def call_mobile_sales_json_rpc(
         return data
     except Exception as e:
         logger.error(f"call_mobile_sales_json_rpc notice (target={target_date}): {_clean_error_msg(e)}")
+        if trace_info is not None:
+            trace_info["sales_rpc_error"] = str(e)
         return {"companies": [], "depots": []}
 
 
@@ -1330,6 +1332,8 @@ def call_mobile_tsm_sales_json_rpc(
         return data
     except Exception as e:
         logger.error(f"call_mobile_tsm_sales_json_rpc error (target={target_date}, mtd={mtd_start}, ytd={ytd_start}): {e}")
+        if trace_info is not None:
+            trace_info["tsm_rpc_error"] = str(e)
         return []
 
 

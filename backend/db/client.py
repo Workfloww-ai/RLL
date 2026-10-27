@@ -79,7 +79,7 @@ def get_supabase() -> Client:
 
             custom_http_client = httpx.Client(
                 transport=transport,
-                timeout=httpx.Timeout(90.0, connect=10.0),
+                timeout=httpx.Timeout(120.0, connect=10.0),
                 limits=httpx.Limits(max_connections=100, max_keepalive_connections=30, keepalive_expiry=30.0),
                 event_hooks={
                     "request": [_on_httpx_request],
@@ -88,7 +88,7 @@ def get_supabase() -> Client:
             )
             options = ClientOptions(
                 httpx_client=custom_http_client,
-                postgrest_client_timeout=90
+                postgrest_client_timeout=120
             )
             supabase_client = create_client(
                 settings.SUPABASE_URL, 
