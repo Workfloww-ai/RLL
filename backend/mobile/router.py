@@ -444,7 +444,7 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
                                     active_roles.append(rname)
                         
                         # Prioritize valid mobile roles if user has multiple roles
-                        valid_mobile = next((r for r in active_roles if r.lower() in ["tsm", "ase", "leader", "admin", "territory executive"]), None)
+                        valid_mobile = next((r for r in active_roles if r.lower() in ["tsm", "ase", "leader", "admin", "territory executive", "developer", "super_admin"]), None)
                         if valid_mobile:
                             role_name = valid_mobile
                         elif active_roles:
@@ -453,11 +453,11 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
                     pass
 
                 # 3. Guardrail: Enforce Mobile roles
-                if role_name.lower() not in ["tsm", "ase", "leader", "admin", "territory executive"]:
+                if role_name.lower() not in ["tsm", "ase", "leader", "admin", "territory executive", "developer", "super_admin"]:
                     logger.warning(f"Mobile login access denied for user {email} (role '{role_name}' lacks Mobile permissions)")
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Access Denied: Mobile app is restricted to field personnel and administrators."
+                        detail="Access Denied: Mobile app is restricted to field personnel, administrators, and developers."
                     )
 
                 # 4. Resolve Depot Name
@@ -907,7 +907,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
 
 @router.get("/me")
 def get_mobile_user_profile(
-    current_user: dict = Depends(RoleChecker(['tsm', 'ase', 'leader', 'territory executive', 'admin']))
+    current_user: dict = Depends(RoleChecker(['tsm', 'ase', 'leader', 'territory executive', 'admin', 'developer', 'super_admin']))
 ):
     """
     Fetch current logged-in user profile with depot and company details.
@@ -1098,7 +1098,7 @@ async def get_mobile_companies(
     # User company scoping: if user has assigned company, scope sales data strictly to that company
     user_role = (current_user.get("role_name") or current_user.get("role") or "").lower()
     user_company = current_user.get("company_name")
-    effective_company = user_company if (user_company and user_role not in ["admin", "super_admin", "super admin"]) else None
+    effective_company = user_company if (user_company and user_role not in ["admin", "super_admin", "super admin", "developer"]) else None
 
     inc_others_str = "inc1" if await get_include_others_setting_async() else "inc0"
     redis_key = f"rll:mobile:companies:{clean_period}:{clean_hq}:{clean_date}:{effective_company or 'all'}:{inc_others_str}"
@@ -1209,7 +1209,7 @@ async def get_mobile_sales(
     page: Optional[int] = Query(None, description="Page number for depots pagination (1-indexed)"),
     page_size: Optional[int] = Query(None, description="Page size for depots pagination (1 to 100)"),
     test_limit: Optional[int] = Query(None, description="Diagnostic payload scaling test limit"),
-    current_user: dict = Depends(RoleChecker(['tsm', 'ase', 'leader', 'admin']))
+    current_user: dict = Depends(RoleChecker(['tsm', 'ase', 'leader', 'admin', 'developer', 'super_admin']))
 ):
     """
     Returns real aggregated sales data for Companies, Depots, and TSMs directly calculated from Supabase.
@@ -2369,7 +2369,7 @@ async def warm_master_cache():
 
 @router.api_route("/cache/clear", methods=["GET", "POST"])
 async def clear_mobile_cache_endpoint(
-    current_user: dict = Depends(RoleChecker(["admin", "super_admin"]))
+    current_user: dict = Depends(RoleChecker(["admin", "super_admin", "developer"]))
 ):
     """
     Clear all in-memory and Redis sales/analytics caches (Admin only).

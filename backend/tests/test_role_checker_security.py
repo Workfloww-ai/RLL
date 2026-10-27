@@ -212,13 +212,16 @@ class TestRoleCheckerSecurity:
         with pytest.raises(HTTPException):
             users_admin_only(current_user=tsm_user)
 
-        # Mobile router policy: ['tsm', 'ase', 'leader', 'admin']
-        mobile_checker = RoleChecker(['tsm', 'ase', 'leader', 'admin'])
+        # Mobile router policy: ['tsm', 'ase', 'leader', 'admin', 'developer', 'super_admin']
+        mobile_checker = RoleChecker(['tsm', 'ase', 'leader', 'admin', 'developer', 'super_admin'])
         ase_user = {"user_id": "4", "roles": ["ase"], "role_name": "ase"}
+        dev_user = {"user_id": "6", "roles": ["developer"], "role_name": "developer"}
         viewer_user = {"user_id": "5", "roles": ["viewer"], "role_name": "viewer"}
 
         assert mobile_checker(current_user=tsm_user) == tsm_user
         assert mobile_checker(current_user=ase_user) == ase_user
         assert mobile_checker(current_user=admin_user) == admin_user
+        assert mobile_checker(current_user=dev_user) == dev_user
+        assert mobile_checker(current_user=sa_user) == sa_user
         with pytest.raises(HTTPException):
             mobile_checker(current_user=viewer_user)
