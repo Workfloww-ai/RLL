@@ -1518,6 +1518,17 @@ async def get_mobile_sales(
         rpc_trace_info: Dict[str, Any] = {}
         tsm_rpc_trace: Dict[str, Any] = {}
 
+        scoped_user_ids = None
+        if selected_hq and selected_hq != "All Headquarters":
+            clean_sel_hq = selected_hq.strip().lower()
+            clean_sel_no_space = re.sub(r'[\s\-_.]+', '', clean_sel_hq)
+            matched_uids = [
+                uid for uid, hq_list in user_hqs_map.items()
+                if any(h.strip().lower() == clean_sel_hq or re.sub(r'[\s\-_.]+', '', h).lower() == clean_sel_no_space for h in hq_list)
+            ]
+            if matched_uids:
+                scoped_user_ids = matched_uids
+
         t_rpc_start = time.perf_counter()
 
         def _exec_companies_rpc():
@@ -1539,7 +1550,7 @@ async def get_mobile_sales(
                 return []
 
         def _exec_tsm_rpc():
-            return call_mobile_tsm_sales_json_rpc(end_date, mtd_start, ytd_start, tsm_rpc_trace)
+            return call_mobile_tsm_sales_json_rpc(end_date, mtd_start, ytd_start, user_ids=scoped_user_ids, trace_info=tsm_rpc_trace)
 
         if clean_level == "companies":
             comp_res, b_res = await asyncio.gather(

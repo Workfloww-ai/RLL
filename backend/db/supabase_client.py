@@ -1301,6 +1301,7 @@ def call_mobile_tsm_sales_json_rpc(
     target_date: str,
     mtd_start: str,
     ytd_start: str,
+    user_ids: Optional[List[str]] = None,
     trace_info: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
@@ -1309,6 +1310,9 @@ def call_mobile_tsm_sales_json_rpc(
     """
     import time
     import json
+    if isinstance(user_ids, dict) and trace_info is None:
+        trace_info = user_ids
+        user_ids = None
     client = get_supabase_client()
     if not client:
         logger.warning("call_mobile_tsm_sales_json_rpc: No Supabase client available.")
@@ -1319,6 +1323,8 @@ def call_mobile_tsm_sales_json_rpc(
             "p_mtd_start": mtd_start,
             "p_ytd_start": ytd_start,
         }
+        if user_ids:
+            params["p_user_ids"] = user_ids
         t0 = time.perf_counter()
         res = client.rpc("get_mobile_tsm_sales_summary_json", params).execute()
         t1 = time.perf_counter()
