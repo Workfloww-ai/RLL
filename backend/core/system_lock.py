@@ -69,6 +69,9 @@ _LAST_UPLOAD_COMPLETION = {
 
 _COOLDOWN_OVERRIDE_RESET = False
 
+REDIS_COOLDOWN_KEY = "rll:system:cooldown"
+REDIS_COOLDOWN_OVERRIDE_KEY = "rll:system:cooldown:override_reset"
+
 def record_upload_cooldown(
     upload_type: str = "validation_error",
     filename: Optional[str] = None,
@@ -78,6 +81,7 @@ def record_upload_cooldown(
     """
     Enforces a cooldown buffer (10 minutes for validation errors/rollbacks, 30 minutes for successful uploads).
     During this period, any partial records are purged safely and new uploads are locked.
+    Persists to Redis Cloud for cross-container and cross-instance synchronization.
     """
     global _LAST_UPLOAD_COMPLETION, _COOLDOWN_OVERRIDE_RESET
     invalidate_system_lock_cache()
@@ -104,6 +108,17 @@ def record_upload_cooldown(
         "cooldown_seconds": cooldown_seconds,
         "reason": clean_reason
     }
+
+    # 1. Centralized Redis Persistence (Shared across all Cloud Run containers)
+    try:
+        from backend.db.redis_client import sync_set, sync_delete
+        sync_delete(REDIS_COOLDOWN_OVERRIDE_KEY)
+        sync_set(REDIS_COOLDOWN_KEY, json.dumps(_LAST_UPLOAD_COMPLETION), ttl=cooldown_seconds)
+        logger.info(f"[REDIS COOLDOWN] Saved cooldown state to Redis for '{filename}' ({cooldown_seconds}s TTL).")
+    except Exception as e_red:
+        logger.warning(f"Notice saving cooldown to Redis: {e_red}")
+
+    # 2. Local File & Memory Persistence (Local fallback)
     try:
         with open(COOLDOWN_STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(_LAST_UPLOAD_COMPLETION, f)
@@ -129,6 +144,7 @@ def record_upload_completion(upload_type: str, filename: str):
 def reset_upload_cooldown():
     """
     Resets post-upload cooldown (for testing and administrative purposes).
+    Clears cooldown from Redis Cloud and local state.
     """
     global _LAST_UPLOAD_COMPLETION, _COOLDOWN_OVERRIDE_RESET
     invalidate_system_lock_cache()
@@ -140,6 +156,16 @@ def reset_upload_cooldown():
         "cooldown_seconds": UPLOAD_COOLDOWN_SECONDS,
         "reason": None
     }
+    # 1. Clear Redis Centralized State
+    try:
+        from backend.db.redis_client import sync_delete, sync_set
+        sync_delete(REDIS_COOLDOWN_KEY)
+        sync_set(REDIS_COOLDOWN_OVERRIDE_KEY, "1", ttl=300)
+        logger.info("[REDIS COOLDOWN] Cleared cooldown key from Redis.")
+    except Exception as e_red:
+        logger.warning(f"Notice clearing cooldown in Redis: {e_red}")
+
+    # 2. Clear Local File State
     try:
         if os.path.exists(COOLDOWN_STATE_FILE):
             os.remove(COOLDOWN_STATE_FILE)
@@ -166,6 +192,57 @@ def get_upload_cooldown_status() -> Dict[str, Any]:
         }
 
     now = time.time()
+
+    # 1. Check Redis for explicit administrative override reset
+    try:
+        from backend.db.redis_client import sync_get
+        if sync_get(REDIS_COOLDOWN_OVERRIDE_KEY):
+            return {
+                "is_active": False,
+                "remaining_seconds": 0,
+                "cooldown_seconds": UPLOAD_COOLDOWN_SECONDS,
+                "last_upload_time": None,
+                "last_upload_type": None,
+                "last_upload_file": None,
+                "message": "Upload is enabled (cooldown reset)."
+            }
+    except Exception as e_red_ovr:
+        logger.debug(f"Notice checking Redis cooldown override: {e_red_ovr}")
+
+    # 2. Check Redis centralized active cooldown
+    try:
+        from backend.db.redis_client import sync_get, sync_ttl
+        raw_cd = sync_get(REDIS_COOLDOWN_KEY)
+        if raw_cd:
+            cd_data = json.loads(raw_cd)
+            r_ts = float(cd_data.get("timestamp", 0.0))
+            r_cd = int(cd_data.get("cooldown_seconds", UPLOAD_COOLDOWN_SECONDS))
+            r_ttl = sync_ttl(REDIS_COOLDOWN_KEY)
+            remaining = r_ttl if r_ttl > 0 else max(0, int(r_cd - (now - r_ts)))
+
+            if remaining > 0:
+                _LAST_UPLOAD_COMPLETION = cd_data
+                rem_m = remaining // 60
+                rem_s = remaining % 60
+                is_val_err = (cd_data.get("upload_type") == "validation_error" or r_cd <= 600)
+                if is_val_err:
+                    msg = cd_data.get("reason") or f"Validation issue detected: 10-minute rollback & purge buffer active. Next upload enabled in {rem_m}m {rem_s:02d}s."
+                else:
+                    msg = cd_data.get("reason") or f"Upload completed successfully. 30-minute verification cooldown active. Next upload enabled in {rem_m}m {rem_s:02d}s."
+
+                return {
+                    "is_active": True,
+                    "remaining_seconds": remaining,
+                    "cooldown_seconds": r_cd,
+                    "last_upload_time": r_ts,
+                    "last_upload_type": cd_data.get("upload_type"),
+                    "last_upload_file": cd_data.get("filename"),
+                    "reason": cd_data.get("reason"),
+                    "message": msg
+                }
+    except Exception as e_red_cd:
+        logger.debug(f"Notice checking Redis active cooldown: {e_red_cd}")
+
     latest_ts = _LAST_UPLOAD_COMPLETION.get("timestamp", 0.0)
     latest_type = _LAST_UPLOAD_COMPLETION.get("upload_type")
     latest_file = _LAST_UPLOAD_COMPLETION.get("filename")

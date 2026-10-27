@@ -214,21 +214,14 @@ export function SystemLockProvider({ children }: { children: ReactNode }) {
             localStorage.setItem('rll_cooldown_message', msg);
           } catch (e) {}
         } else if (cooldownData && !cooldownData.is_active) {
-          // Check if local cooldown is still active before blindly wiping it
-          const expiryStr = localStorage.getItem('rll_cooldown_expiry_ms');
-          const localRem = expiryStr ? Math.max(0, Math.ceil((parseInt(expiryStr, 10) - Date.now()) / 1000)) : 0;
-          if (localRem <= 5) {
-            setCooldownRemaining(0);
-            newCooldownSec = 0;
-            try {
-              localStorage.removeItem('rll_cooldown_expiry_ms');
-              localStorage.removeItem('rll_cooldown_total_seconds');
-              localStorage.removeItem('rll_cooldown_message');
-            } catch (e) {}
-          } else {
-            // Keep local countdown going without zeroing out!
-            newCooldownSec = localRem;
-          }
+          // Server explicitly confirms no cooldown active (or cooldown was reset)
+          setCooldownRemaining(0);
+          newCooldownSec = 0;
+          try {
+            localStorage.removeItem('rll_cooldown_expiry_ms');
+            localStorage.removeItem('rll_cooldown_total_seconds');
+            localStorage.removeItem('rll_cooldown_message');
+          } catch (e) {}
         } else {
           // Fallback if cooldownData was not provided in response
           const expiryStr = localStorage.getItem('rll_cooldown_expiry_ms');

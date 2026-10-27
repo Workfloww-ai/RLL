@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { UploadCloud, FileText, CheckCircle, AlertCircle, Database, RefreshCw, Server, X, Check, Clock, Lock } from 'lucide-react';
+import { UploadCloud, FileText, CheckCircle2, AlertCircle, Database, RefreshCw, Server, X, Check, Clock, Lock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { FileUploadState } from '../types';
 import { API_BASE_URL } from '../config';
@@ -1102,7 +1102,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                 className="flex flex-col items-center w-full max-w-xl mx-auto text-center"
               >
                 <div className="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mb-3">
-                  <CheckCircle size={28} />
+                  <CheckCircle2 size={28} />
                 </div>
                 <h3 className="text-sm font-bold text-slate-900">Database Confirmation Received!</h3>
                 <p className="text-xs text-slate-500 mt-0.5 font-medium">{uploadState.fileName} is fully saved in database.</p>
@@ -1260,7 +1260,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                     }}
                     className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition-colors text-xs font-bold cursor-pointer shadow-xs flex items-center gap-1.5"
                   >
-                    <CheckCircle size={13} />
+                    <CheckCircle2 size={13} />
                     Check Live DB Status
                   </button>
                   <button 

@@ -2,6 +2,7 @@ import logging
 import asyncio
 import time
 import copy
+import re
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, Depends, Query, Request, status, Header
@@ -339,7 +340,14 @@ def _fetch_fresh_master_lookups():
     except Exception as e_alias:
         logger.warning(f"Error building user_alias_map: {e_alias}")
 
-    hq_name_to_id = {v.lower(): k for k, v in hq_lookup.items() if v}
+    hq_name_to_id = {}
+    for k, v in hq_lookup.items():
+        if v:
+            clean_v = v.strip().lower()
+            hq_name_to_id[clean_v] = k
+            no_sp_v = re.sub(r'[\s\-_.]+', '', clean_v)
+            if no_sp_v:
+                hq_name_to_id[no_sp_v] = k
 
     return {
         "companies_lookup": companies_lookup,
@@ -1413,7 +1421,8 @@ async def get_mobile_sales(
         target_hq_id = None
         if selected_hq and selected_hq.strip() and selected_hq.strip() != "All Headquarters":
             clean_hq_target = selected_hq.strip().lower()
-            target_hq_id = master_cache.get("hq_name_to_id", {}).get(clean_hq_target)
+            no_sp_target = re.sub(r'[\s\-_.]+', '', clean_hq_target)
+            target_hq_id = master_cache.get("hq_name_to_id", {}).get(clean_hq_target) or master_cache.get("hq_name_to_id", {}).get(no_sp_target)
 
         # ── Early Level Slicing & Parallel RPC Execution ───────────────────────
         comp_rpc_params = {
@@ -1887,8 +1896,10 @@ async def get_mobile_sales(
                 b.get("data", {}).get(selected_period, {}).get("bottles", 0) > 0)
         ]
         c_data["brands"] = active_b if active_b else all_b
+        clean_sel_no_space = re.sub(r'[\s\-_.]+', '', selected_hq).lower() if selected_hq else ""
         if selected_hq != "All Headquarters" and c_data.get("hqLocation") and c_data["hqLocation"] != "All Headquarters":
-            if c_data["hqLocation"].lower() != selected_hq.lower():
+            c_loc_no_space = re.sub(r'[\s\-_.]+', '', c_data["hqLocation"]).lower()
+            if c_data["hqLocation"].lower() != selected_hq.lower() and c_loc_no_space != clean_sel_no_space:
                 continue
         formatted_companies.append(c_data)
 
@@ -1901,7 +1912,8 @@ async def get_mobile_sales(
                 b.get("data", {}).get(selected_period, {}).get("bottles", 0) > 0)
         ]
         if selected_hq != "All Headquarters" and d_data.get("hqName"):
-            if d_data["hqName"].lower() != selected_hq.lower():
+            d_name_no_space = re.sub(r'[\s\-_.]+', '', d_data["hqName"]).lower()
+            if d_data["hqName"].lower() != selected_hq.lower() and d_name_no_space != clean_sel_no_space:
                 continue
         formatted_depots.append(d_data)
 
@@ -1942,7 +1954,11 @@ async def get_mobile_sales(
 
         if selected_hq and selected_hq != "All Headquarters":
             clean_sel_hq = selected_hq.strip().lower()
-            matches_hq = any(h.strip().lower() == clean_sel_hq for h in assigned_hq_names)
+            clean_sel_no_space = re.sub(r'[\s\-_.]+', '', clean_sel_hq)
+            matches_hq = any(
+                h.strip().lower() == clean_sel_hq or re.sub(r'[\s\-_.]+', '', h).lower() == clean_sel_no_space
+                for h in assigned_hq_names
+            )
             if not matches_hq:
                 continue
 
