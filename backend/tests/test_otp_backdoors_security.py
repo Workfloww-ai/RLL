@@ -272,6 +272,12 @@ class TestOTPBackdoorsSecurity:
             "tenant_id": "tenant-real-12345",
             "company_name": "Rajasthan Liquor Limited"
         })
+        mock_db.user_roles.append({
+            "user_id": "11111111-2222-3333-4444-555555555555",
+            "role_id": "role-tsm-uuid",
+            "is_active": True,
+            "roles": {"role_id": "role-tsm-uuid", "role_name": "TSM"}
+        })
 
         with patch("backend.mobile.router.get_supabase", return_value=mock_db), \
              patch("backend.services.otp_service.get_supabase", return_value=mock_db), \

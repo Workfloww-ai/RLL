@@ -7,10 +7,71 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, Depends, Query, Request, status, Header
 from pydantic import BaseModel
-from backend.core.security import create_access_token, get_current_user, RoleChecker
+from backend.core.security import create_access_token, get_current_user, RoleChecker, normalize_role_name
 from backend.db.client import get_supabase
 from backend.db.company_aliases import normalize_company_name, is_pinned_company
 from backend.services.company_cascading_service import is_others_company
+
+# Centralized Mobile Access Authorization Policies
+MOBILE_ACCESS_ROLES = [
+    "tsm",
+    "ase",
+    "leader",
+    "territory_executive",
+    "admin",
+    "super_admin",
+    "developer",
+]
+MOBILE_ACCESS_ROLES_NORMALIZED = {normalize_role_name(r) for r in MOBILE_ACCESS_ROLES}
+
+MOBILE_ADMIN_ROLES = [
+    "admin",
+    "super_admin",
+    "developer",
+]
+MOBILE_ADMIN_ROLES_NORMALIZED = {normalize_role_name(r) for r in MOBILE_ADMIN_ROLES}
+
+mobile_access_checker = RoleChecker(MOBILE_ACCESS_ROLES)
+mobile_admin_checker = RoleChecker(MOBILE_ADMIN_ROLES)
+
+
+def resolve_user_mobile_roles(client, user_id: str) -> tuple[str, List[str]]:
+    """
+    Authoritatively resolves active user roles from Supabase `user_roles`.
+    Applies deterministic priority ordering and strict active-status filtering.
+    Returns (authoritative_role_name, active_roles_list).
+    """
+    active_roles: List[str] = []
+    authoritative_role = "unassigned"
+    try:
+        ur_res = client.table("user_roles").select(
+            "user_id, role_id, is_active, roles(role_id, role_name)"
+        ).eq("user_id", str(user_id)).execute()
+        if ur_res.data:
+            for ur in ur_res.data:
+                if ur.get("is_active") is True:
+                    role_obj = ur.get("roles") or {}
+                    rname = role_obj.get("role_name")
+                    if rname and isinstance(rname, str) and rname.strip():
+                        active_roles.append(rname.strip())
+
+            role_priority = [
+                "super_admin", "superadmin", "super admin",
+                "admin", "developer", "leader", "team_leader", "team leader",
+                "tsm", "ase", "territory_executive", "territory executive", "viewer"
+            ]
+            for prio in role_priority:
+                matched = next((r for r in active_roles if r.lower() == prio or normalize_role_name(r) == prio), None)
+                if matched:
+                    authoritative_role = matched
+                    break
+            if authoritative_role == "unassigned" and active_roles:
+                authoritative_role = active_roles[0]
+    except Exception as e_role:
+        logger.warning(f"Failed to query active roles for user {user_id}: {e_role}")
+
+    return authoritative_role, active_roles
+
 from backend.db.supabase_client import (
     call_mobile_sales_rpc,
     call_mobile_tsm_sales_rpc,
@@ -431,30 +492,13 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
                         detail="User account is deactivated"
                     )
 
-                role_name = "unassigned"
-                try:
-                    ur_res = client.table("user_roles").select("user_id, role_id, is_active, roles(role_id, role_name)").eq("user_id", db_user["user_id"]).execute()
-                    if ur_res.data:
-                        active_roles = []
-                        for ur in ur_res.data:
-                            if ur.get("is_active", True):
-                                role_obj = ur.get("roles") or {}
-                                rname = role_obj.get("role_name")
-                                if rname:
-                                    active_roles.append(rname)
-                        
-                        # Prioritize valid mobile roles if user has multiple roles
-                        valid_mobile = next((r for r in active_roles if r.lower() in ["tsm", "ase", "leader", "admin", "territory executive", "developer", "super_admin"]), None)
-                        if valid_mobile:
-                            role_name = valid_mobile
-                        elif active_roles:
-                            role_name = active_roles[0]
-                except Exception:
-                    pass
+                # 2. Resolve Active Roles and Deterministic Priority
+                role_name, active_roles = resolve_user_mobile_roles(client, db_user["user_id"])
 
                 # 3. Guardrail: Enforce Mobile roles
-                if role_name.lower() not in ["tsm", "ase", "leader", "admin", "territory executive", "developer", "super_admin"]:
-                    logger.warning(f"Mobile login access denied for user {email} (role '{role_name}' lacks Mobile permissions)")
+                normalized_active = {normalize_role_name(r) for r in active_roles}
+                if not normalized_active.intersection(MOBILE_ACCESS_ROLES_NORMALIZED):
+                    logger.warning(f"Mobile login access denied for user {mask_email(email)} (roles {active_roles} lack Mobile permissions)")
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="Access Denied: Mobile app is restricted to field personnel, administrators, and developers."
@@ -478,11 +522,15 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
                     "last_name": db_user.get("last_name", ""),
                     "phone": db_user.get("phone", ""),
                     "role_name": role_name,
+                    "roles": active_roles,
                     "depot_name": depot_name,
                     "hq_location": "All Headquarters",
+                    "tenant_id": str(db_user.get("tenant_id") or ""),
+                    "company_id": str(db_user.get("company_id")) if db_user.get("company_id") else None,
+                    "company_name": db_user.get("company_name"),
                     "is_active": bool(db_user.get("is_active", True))
                 }
-                logger.info(f"Mobile login successful for user: {email} with role: {role_name}")
+                logger.info(f"Mobile login successful for user: {mask_email(email)} with role: {role_name}")
         except HTTPException:
             raise
         except Exception as e:
@@ -511,7 +559,14 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
 
     # 3. Create Access Token valid for 30 days for mobile application
     token = create_access_token(
-        data={"sub": user_data["email"], "role": user_data["role_name"], "user_id": user_data["user_id"]},
+        data={
+            "sub": user_data["email"],
+            "role": user_data["role_name"],
+            "roles": user_data["roles"],
+            "user_id": user_data["user_id"],
+            "tenant_id": user_data["tenant_id"],
+            "company_name": user_data["company_name"]
+        },
         expires_delta=timedelta(days=30)
     )
 
@@ -717,6 +772,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
             "phone": f"+91{settings.APP_REVIEW_PHONE}",
             "role_name": "TSM",
             "role": "TSM",
+            "roles": ["tsm"],
             "depot_name": "Jaipur Demo Depot",
             "hq_location": "All Headquarters",
             "tenant_id": settings.APP_REVIEW_DEMO_TENANT_ID,
@@ -731,6 +787,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
             data={
                 "sub": user_data["email"],
                 "role": user_data["role_name"],
+                "roles": user_data["roles"],
                 "user_id": user_data["user_id"],
                 "tenant_id": user_data["tenant_id"],
                 "company_name": user_data["company_name"],
@@ -804,18 +861,20 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
                     logger.warning(f"Mobile OTP verification failed for phone: {mask_phone(phone)} - Account deactivated")
                     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User account is deactivated")
 
-                role_name = "TSM"
-                try:
-                    ur_res = client.table("user_roles").select("user_id, role_id, is_active").eq("user_id", db_user["user_id"]).execute()
-                    if ur_res.data:
-                        active_ur = [ur for ur in ur_res.data if ur.get("is_active", True)]
-                        if active_ur:
-                            r_id = active_ur[0].get("role_id")
-                            r_res = client.table("roles").select("role_name").eq("role_id", r_id).limit(1).execute()
-                            if r_res.data:
-                                role_name = r_res.data[0].get("role_name", "TSM")
-                except Exception as e_role:
-                    logger.warning(f"Could not fetch role: {e_role}")
+                # 2. Resolve Active Roles and Deterministic Priority
+                role_name, active_roles = resolve_user_mobile_roles(client, db_user["user_id"])
+
+                # 3. Guardrail: Enforce Mobile roles
+                normalized_active = {normalize_role_name(r) for r in active_roles}
+                if not normalized_active.intersection(MOBILE_ACCESS_ROLES_NORMALIZED):
+                    logger.warning(
+                        f"Mobile OTP access denied for user {mask_email(db_user.get('email'))}: "
+                        f"active roles {active_roles} lack Mobile permissions"
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Access Denied: Mobile app is restricted to field personnel, administrators, and developers."
+                    )
 
                 depot_name = "Jaipur Depot"
                 try:
@@ -858,6 +917,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
                     "last_name": db_user.get("last_name", ""),
                     "phone": db_user.get("phone") or phone,
                     "role_name": role_name,
+                    "roles": active_roles,
                     "depot_name": depot_name,
                     "hq_location": "All Headquarters",
                     "tenant_id": tenant_id,
@@ -884,6 +944,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
         data={
             "sub": user_data["email"],
             "role": user_data["role_name"],
+            "roles": user_data["roles"],
             "user_id": user_data["user_id"],
             "tenant_id": user_data["tenant_id"],
             "company_name": user_data["company_name"]
@@ -907,7 +968,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
 
 @router.get("/me")
 def get_mobile_user_profile(
-    current_user: dict = Depends(RoleChecker(['tsm', 'ase', 'leader', 'territory executive', 'admin', 'developer', 'super_admin']))
+    current_user: dict = Depends(mobile_access_checker)
 ):
     """
     Fetch current logged-in user profile with depot and company details.
@@ -933,6 +994,7 @@ def get_mobile_user_profile(
             "phone": f"+91{settings.APP_REVIEW_PHONE}",
             "role_name": "TSM",
             "role": "TSM",
+            "roles": ["tsm"],
             "depot_name": "Jaipur Demo Depot",
             "hq_location": "All Headquarters",
             "tenant_id": settings.APP_REVIEW_DEMO_TENANT_ID,
@@ -997,6 +1059,7 @@ def get_mobile_user_profile(
                 "last_name": db_user.get("last_name", ""),
                 "phone": db_user.get("phone", ""),
                 "role_name": role_name,
+                "roles": current_user.get("roles") or ([role_name] if role_name != "unassigned" else []),
                 "depot_name": depot_name,
                 "hq_location": "All Headquarters",
                 "tenant_id": tenant_id,
@@ -1209,7 +1272,7 @@ async def get_mobile_sales(
     page: Optional[int] = Query(None, description="Page number for depots pagination (1-indexed)"),
     page_size: Optional[int] = Query(None, description="Page size for depots pagination (1 to 100)"),
     test_limit: Optional[int] = Query(None, description="Diagnostic payload scaling test limit"),
-    current_user: dict = Depends(RoleChecker(['tsm', 'ase', 'leader', 'admin', 'developer', 'super_admin']))
+    current_user: dict = Depends(mobile_access_checker)
 ):
     """
     Returns real aggregated sales data for Companies, Depots, and TSMs directly calculated from Supabase.
@@ -2369,7 +2432,7 @@ async def warm_master_cache():
 
 @router.api_route("/cache/clear", methods=["GET", "POST"])
 async def clear_mobile_cache_endpoint(
-    current_user: dict = Depends(RoleChecker(["admin", "super_admin", "developer"]))
+    current_user: dict = Depends(mobile_admin_checker)
 ):
     """
     Clear all in-memory and Redis sales/analytics caches (Admin only).
