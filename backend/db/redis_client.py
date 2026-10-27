@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import fnmatch
 from typing import Optional, Dict, Any, Callable
 import redis.asyncio as aioredis
 import redis
@@ -56,14 +57,8 @@ async def init_redis() -> Optional[aioredis.Redis]:
             # Ping Redis to verify connection health
             await _redis_client.ping()
             logger.info("Successfully connected to Redis Cloud server.")
-            
-            # Flush existing stale uncompressed cache keys on startup as requested
-            try:
-                await _redis_client.flushdb(asynchronous=True)
-                logger.info("🧹 Flushed all legacy Redis cache keys on server startup.")
-            except Exception as e_flush:
-                logger.warning(f"Flush Redis on startup notice: {e_flush}")
-                
+            # Note: Database-wide flushes (FLUSHDB/FLUSHALL) are strictly forbidden
+            # in application lifecycle to preserve sessions, OTPs, locks, and security state.
             return _redis_client
 
             
@@ -169,12 +164,11 @@ return val
 def is_production_or_staging() -> bool:
     """
     Check if the current application environment is production or staging.
-    In production and staging, security-sensitive operations (authentication rate limits,
-    lockout counters, and resend cooldowns) strictly require the shared Redis store.
-    Per-process in-memory fallback is refused for security-sensitive operations in these environments.
+    Fails closed: Any environment that is not explicitly an allowed non-production
+    development or test environment is treated as production/staging.
     """
     env = (getattr(settings, "ENVIRONMENT", "") or "").strip().lower()
-    return env in ["production", "prod", "staging"]
+    return env not in ("dev", "development", "test", "testing", "local")
 
 
 async def safe_get(key: str, security_sensitive: bool = False) -> Optional[str]:
@@ -378,34 +372,94 @@ async def safe_delete(key: str, security_sensitive: bool = False) -> bool:
         return True
 
 
+# Whitelist of safe, feature-scoped cache key prefixes permitted for pattern deletion.
+ALLOWED_CACHE_PREFIXES = (
+    "rll:analytics:",
+    "rll:dashboard:",
+    "rll:mobile:sales:",
+    "rll:mobile:companies:",
+    "rll:cache:",
+)
+
+# Protected security-sensitive prefixes that MUST NEVER be matched or deleted by pattern deletion.
+PROTECTED_SECURITY_PREFIXES = (
+    "rll:session:",
+    "rll:revoked:",
+    "rll:otp:",
+    "rll:otp_attempts:",
+    "rll:otp_consuming:",
+    "rll:mobile_otp_attempts:",
+    "rll:cooldown:",
+    "rll:syslock:",
+)
+
+
 async def safe_delete_pattern(pattern: str) -> int:
     """
-    Safely delete all keys matching pattern (e.g. 'rll:analytics:*').
+    Safely delete keys matching a validated, feature-scoped cache prefix (e.g. 'rll:analytics:*').
+    Strictly forbids broad, wildcard, or security-sensitive pattern deletions (e.g. '*', 'rll:*').
+    Preserves all security state (OTPs, rate limits, sessions, locks).
     Returns total count of deleted keys.
     """
+    if not pattern or not isinstance(pattern, str):
+        logger.warning("safe_delete_pattern rejected: empty or non-string pattern")
+        return 0
+
+    clean_pattern = pattern.strip()
+
+    # Reject broad/destructive wildcards
+    if clean_pattern in ("*", "rll:*", "rll*", "?", ""):
+        logger.error(f"Security rejection: broad Redis deletion pattern '{clean_pattern}' is strictly prohibited.")
+        return 0
+
+    # Ensure pattern targets an allowed cache prefix
+    if not any(clean_pattern.startswith(prefix) for prefix in ALLOWED_CACHE_PREFIXES):
+        logger.error(f"Security rejection: pattern '{clean_pattern}' does not match any allowed cache prefix.")
+        return 0
+
+    # Ensure pattern does not target any protected security prefix
+    clean_prefix = clean_pattern.rstrip("*").rstrip(":")
+    if any(clean_pattern.startswith(sec) or sec.startswith(f"{clean_prefix}:") for sec in PROTECTED_SECURITY_PREFIXES):
+        logger.critical(f"CRITICAL: Refusing pattern deletion targeting protected security prefix: '{clean_pattern}'")
+        return 0
+
+    # In-memory store cleanup (preserves security keys)
+    with _in_memory_lock:
+        to_remove = [
+            k for k in _in_memory_store.keys()
+            if fnmatch.fnmatch(k, clean_pattern) and not any(k.startswith(p) for p in PROTECTED_SECURITY_PREFIXES)
+        ]
+        for k in to_remove:
+            _in_memory_store.pop(k, None)
+            _in_memory_expiry.pop(k, None)
+
     client = get_redis()
     if client is None:
-        return 0
+        return len(to_remove)
 
     async def _do_delete_pattern(r: aioredis.Redis) -> int:
         count = 0
-        keys = []
-        async for key in r.scan_iter(match=pattern, count=100):
-            keys.append(key)
-            if len(keys) >= 100:
-                count += await r.delete(*keys)
-                keys = []
-        if keys:
-            count += await r.delete(*keys)
-        logger.info(f"Deleted {count} Redis keys matching pattern '{pattern}'")
+        keys_to_delete = []
+        async for key in r.scan_iter(match=clean_pattern, count=100):
+            # Defense-in-depth: Never delete any key matching a protected security prefix
+            if any(key.startswith(p) for p in PROTECTED_SECURITY_PREFIXES):
+                logger.warning(f"Skipping deletion of protected key matching pattern: {key}")
+                continue
+            keys_to_delete.append(key)
+            if len(keys_to_delete) >= 100:
+                count += await r.delete(*keys_to_delete)
+                keys_to_delete = []
+        if keys_to_delete:
+            count += await r.delete(*keys_to_delete)
+        logger.info(f"Deleted {count} Redis keys matching pattern '{clean_pattern}'")
         return count
 
     try:
         res = await _execute_redis(_do_delete_pattern)
         return int(res or 0)
     except Exception as e:
-        logger.warning(f"Redis delete_pattern failed for '{pattern}': {e}")
-        return 0
+        logger.warning(f"Redis delete_pattern failed for '{clean_pattern}': {e}")
+        return len(to_remove)
 
 
 # ============================================================
@@ -501,3 +555,94 @@ def sync_ttl(key: str) -> int:
             pass
     return -2
 
+
+PERMITTED_TEST_ENVIRONMENTS = ("test", "testing")
+
+
+def is_safe_test_redis_target() -> bool:
+    """
+    Verify that the configured Redis instance is a dedicated, explicitly configured
+    disposable test instance before allowing destructive test operations (flush).
+    Rejects remote or production Redis targets unless explicitly approved via TEST_REDIS_URL.
+    """
+    test_url = (getattr(settings, "TEST_REDIS_URL", "") or "").strip()
+    redis_url = (getattr(settings, "REDIS_URL", "") or "").strip()
+    redis_host = (getattr(settings, "REDIS_HOST", "") or "").strip().lower()
+
+    # Reject known production or cloud host indicators unconditionally
+    combined_target = f"{redis_url} {redis_host}".lower()
+    for ind in ("redis-cloud", "redislabs", "elasticache", "upstash", "production", "prod", "supabase"):
+        if ind in combined_target:
+            return False
+
+    # Scenario A: Dedicated TEST_REDIS_URL explicitly configured matching REDIS_URL
+    if test_url:
+        if redis_url and redis_url == test_url:
+            return True
+        if not redis_url and test_url.endswith(f":{settings.REDIS_PORT}/{settings.REDIS_DB}"):
+            return True
+
+    # Scenario B: Local loopback disposable instance with no remote REDIS_URL
+    if not redis_url:
+        if redis_host in ("localhost", "127.0.0.1", "::1"):
+            return True
+
+    if redis_url:
+        import urllib.parse
+        try:
+            parsed = urllib.parse.urlparse(redis_url)
+            hostname = (parsed.hostname or "").lower()
+            if hostname in ("localhost", "127.0.0.1", "::1"):
+                return True
+        except Exception:
+            return False
+
+    return False
+
+
+async def flush_redis_for_testing() -> bool:
+    """
+    Test-only helper to reset state in dedicated, disposable test environments.
+    Strictly forbidden and blocked in production, staging, development, or unverified environments.
+    Requires:
+      1. ENVIRONMENT must be explicitly 'test' or 'testing'.
+      2. ALLOW_TEST_REDIS_FLUSH must be set to True.
+      3. Redis target must be an approved, isolated test instance (never remote/production).
+    """
+    env = (getattr(settings, "ENVIRONMENT", "") or "").strip().lower()
+    if env not in PERMITTED_TEST_ENVIRONMENTS:
+        logger.critical(f"Security violation: flush_redis_for_testing called in non-test environment '{env}'! Refusing.")
+        raise RuntimeError(
+            f"flush_redis_for_testing is strictly prohibited in environment '{env}'. "
+            f"Permitted test environments: {PERMITTED_TEST_ENVIRONMENTS}."
+        )
+
+    allow_flush = getattr(settings, "ALLOW_TEST_REDIS_FLUSH", False)
+    if not allow_flush:
+        logger.critical("Security violation: flush_redis_for_testing called without ALLOW_TEST_REDIS_FLUSH=True! Refusing.")
+        raise RuntimeError(
+            "flush_redis_for_testing requires explicit test isolation authorization: "
+            "ALLOW_TEST_REDIS_FLUSH must be explicitly set to True."
+        )
+
+    if not is_safe_test_redis_target():
+        logger.critical("Security violation: flush_redis_for_testing attempted against unapproved or remote Redis target! Refusing.")
+        raise RuntimeError(
+            "flush_redis_for_testing cannot target unapproved, remote, or production Redis instances. "
+            "A dedicated, explicitly isolated test Redis instance is required."
+        )
+
+    with _in_memory_lock:
+        _in_memory_store.clear()
+        _in_memory_expiry.clear()
+
+    client = get_redis()
+    if client is not None:
+        try:
+            await _execute_redis(lambda r: r.flushdb(asynchronous=False))
+            logger.info("Test-only Redis flush completed on verified disposable test instance.")
+            return True
+        except Exception as e:
+            logger.warning(f"flush_redis_for_testing failed: {e}")
+            return False
+    return True

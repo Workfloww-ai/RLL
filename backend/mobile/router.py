@@ -2368,9 +2368,12 @@ async def warm_master_cache():
 
 
 @router.api_route("/cache/clear", methods=["GET", "POST"])
-async def clear_mobile_cache_endpoint():
+async def clear_mobile_cache_endpoint(
+    current_user: dict = Depends(RoleChecker(["admin", "super_admin"]))
+):
     """
-    Clear all in-memory backend caches (master lookups, sales payload cache).
+    Clear all in-memory and Redis sales/analytics caches (Admin only).
+    Does NOT flush database or delete any security/session state.
     """
     clear_sales_response_cache()
     from backend.services.cache_service import invalidate_analytics_cache
@@ -2379,10 +2382,10 @@ async def clear_mobile_cache_endpoint():
     except Exception as e:
         logger.warning(f"Notice purging Redis cache via endpoint: {e}")
 
-    logger.info("🧹 All in-memory and Redis backend sales & master caches cleared successfully.")
+    logger.info(f"🧹 Sales & analytics caches cleared by admin {current_user.get('email')}.")
     return {
         "status": "success",
-        "message": "All backend caches flushed."
+        "message": "Sales and analytics caches cleared successfully."
     }
 
 

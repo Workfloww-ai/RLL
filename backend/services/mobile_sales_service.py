@@ -44,7 +44,7 @@ def invalidate_sales_cache() -> None:
         from backend.db.redis_client import safe_delete_pattern
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(safe_delete_pattern("rll:mobile:*"))
+            loop.create_task(safe_delete_pattern("rll:mobile:sales:*"))
         except RuntimeError:
             pass
     except Exception as e:

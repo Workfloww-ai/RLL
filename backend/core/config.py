@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     REDIS_ENABLED: bool = True
     CACHE_DEFAULT_TTL: int = 300  # 5 minutes default
 
+    # Dedicated Test Redis Isolation Configuration
+    # Strictly required to authorize flush_redis_for_testing() in disposable test environments.
+    ALLOW_TEST_REDIS_FLUSH: bool = False
+    TEST_REDIS_URL: str = ""
+
     model_config = SettingsConfigDict(
         env_file=str(BASE_DIR / ".env"),
         env_file_encoding="utf-8",
