@@ -24,7 +24,9 @@ from backend.services.otp_service import (
     send_dovesoft_sms,
     send_otp_sms,
     store_otp_in_db,
-    verify_otp_from_db
+    verify_otp_from_db,
+    mask_phone,
+    mask_email
 )
 from supabase import create_client
 
@@ -520,7 +522,7 @@ async def send_mobile_otp(req: SendOTPRequest):
     """
     email = (req.email or "").lower().strip()
     phone = (req.phone or "").strip()
-    logger.info(f"Mobile OTP request initiated for phone: {phone}, email: {email}")
+    logger.info(f"Mobile OTP request initiated for phone: {mask_phone(phone)}, email: {mask_email(email)}")
 
     if not email and not phone:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email address or phone number is required")
@@ -538,7 +540,7 @@ async def send_mobile_otp(req: SendOTPRequest):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="App review mode is disabled"
             )
-        logger.info(f"App review OTP requested for dedicated review phone {settings.APP_REVIEW_PHONE}")
+        logger.info(f"App review OTP requested for dedicated review phone {mask_phone(settings.APP_REVIEW_PHONE)}")
         return {
             "success": True,
             "message": "OTP verification code sent successfully.",
@@ -557,7 +559,7 @@ async def send_mobile_otp(req: SendOTPRequest):
         existing_attempts = 0
 
     if existing_attempts >= 5:
-        logger.warning(f"OTP send rejected for {clean_phone_10}: account currently locked out")
+        logger.warning(f"OTP send rejected for {mask_phone(clean_phone_10)}: account currently locked out")
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Account is temporarily locked out due to multiple failed verification attempts. Please try again in 5 minutes."
@@ -573,7 +575,7 @@ async def send_mobile_otp(req: SendOTPRequest):
             detail="SMS verification service temporarily unavailable. Please try again later."
         )
     if not cooldown_acquired:
-        logger.warning(f"OTP resend cooldown active for phone {clean_phone_10}")
+        logger.warning(f"OTP resend cooldown active for phone {mask_phone(clean_phone_10)}")
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Please wait 30 seconds before requesting another OTP code."
@@ -608,7 +610,7 @@ async def send_mobile_otp(req: SendOTPRequest):
     # Enforce registered user requirement
     if not db_user:
         await safe_delete(cooldown_key)
-        logger.warning(f"Mobile OTP request failed: Phone/Email not registered (Phone: {phone}, Email: {email})")
+        logger.warning(f"Mobile OTP request failed: Phone/Email not registered (Phone: {mask_phone(phone)}, Email: {mask_email(email)})")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This mobile number is not registered."
@@ -616,7 +618,7 @@ async def send_mobile_otp(req: SendOTPRequest):
 
     if not db_user.get("is_active", True):
         await safe_delete(cooldown_key)
-        logger.warning(f"Mobile OTP request failed: Account is deactivated (Phone: {phone}, Email: {email})")
+        logger.warning(f"Mobile OTP request failed: Account is deactivated (Phone: {mask_phone(phone)}, Email: {mask_email(email)})")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="This user account is deactivated."
@@ -634,7 +636,7 @@ async def send_mobile_otp(req: SendOTPRequest):
 
     # Directly await SMS dispatch via Dovesoft API
     sms_sent = await send_otp_sms(target_phone, otp_code)
-    logger.info(f"Mobile OTP successfully generated and sent via SMS to {target_phone} (SMS sent status: {sms_sent})")
+    logger.info(f"Mobile OTP successfully generated and sent via SMS to {mask_phone(target_phone)} (SMS sent status: {sms_sent})")
 
     # Resolve user company name and logo for dynamic branding
     company_name = db_user.get("company_name")
@@ -674,7 +676,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
     email = (req.email or "").lower().strip()
     phone = (req.phone or "").strip()
     otp_code = (req.otp or "").strip()
-    logger.info(f"Mobile OTP verification attempt initiated for phone: {phone}")
+    logger.info(f"Mobile OTP verification attempt initiated for phone: {mask_phone(phone)}")
 
     if not phone or not otp_code:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Phone number and 6-digit OTP code are required")
@@ -692,7 +694,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
                 detail="App review mode is disabled"
             )
         if otp_code != settings.APP_REVIEW_OTP:
-            logger.warning(f"App review verification failed for phone {clean_10}: invalid review code")
+            logger.warning(f"App review verification failed for phone {mask_phone(clean_10)}: invalid review code")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid or expired 6-digit OTP code"
@@ -729,7 +731,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
             expires_delta=timedelta(hours=settings.APP_REVIEW_TOKEN_EXPIRE_HOURS)
         )
         logger.info(
-            f"Dedicated review session generated for {settings.APP_REVIEW_PHONE} "
+            f"Dedicated review session generated for {mask_phone(settings.APP_REVIEW_PHONE)} "
             f"(expires in {settings.APP_REVIEW_TOKEN_EXPIRE_HOURS}h, tenant: {settings.APP_REVIEW_DEMO_TENANT_ID})"
         )
         return {
@@ -755,7 +757,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
             detail="Authentication service temporarily unavailable. Please try again later."
         )
     if attempts > 5:
-        logger.warning(f"Maximum OTP verification attempts exceeded for phone {clean_10} ({attempts} attempts)")
+        logger.warning(f"Maximum OTP verification attempts exceeded for phone {mask_phone(clean_10)} ({attempts} attempts)")
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Maximum OTP verification attempts exceeded. Please try again in 5 minutes."
@@ -764,7 +766,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
     # Standard database OTP verification for all other numbers
     is_valid = verify_otp_from_db(phone, otp_code)
     if not is_valid:
-        logger.warning(f"Mobile OTP verification failed for phone: {phone} - Invalid or expired OTP code")
+        logger.warning(f"Mobile OTP verification failed for phone: {mask_phone(phone)} - Invalid or expired OTP code")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired 6-digit OTP code")
 
     # Verification succeeded: clear distributed attempt counter
@@ -791,7 +793,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
 
             if db_user:
                 if not db_user.get("is_active", True):
-                    logger.warning(f"Mobile OTP verification failed for phone: {phone} - Account deactivated")
+                    logger.warning(f"Mobile OTP verification failed for phone: {mask_phone(phone)} - Account deactivated")
                     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User account is deactivated")
 
                 role_name = "TSM"
@@ -863,7 +865,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
             logger.warning(f"Error resolving user profile on OTP verify: {e}")
 
     if not user_data:
-        logger.warning(f"Mobile OTP verification failed for phone: {phone} - User profile not registered")
+        logger.warning(f"Mobile OTP verification failed for phone: {mask_phone(phone)} - User profile not registered")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This mobile number is not registered."
@@ -880,7 +882,7 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
         },
         expires_delta=timedelta(days=30)
     )
-    logger.info(f"Mobile OTP verification successful for phone: {phone} (User: {user_data['email']}, Company: {user_data['company_name']}, Role: {user_data['role_name']})")
+    logger.info(f"Mobile OTP verification successful for phone: {mask_phone(phone)} (User: {mask_email(user_data['email'])}, Company: {user_data['company_name']}, Role: {user_data['role_name']})")
 
     return {
         "access_token": token,

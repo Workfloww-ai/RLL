@@ -39,7 +39,7 @@ class ResilientSupabaseTransport(httpx.HTTPTransport):
                     backoff *= 1.5
                     continue
                 return resp
-            except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.RemoteProtocolError) as exc:
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as exc:
                 if attempt < max_retries - 1:
                     logger.warning(
                         f"Supabase connection glitch ({exc.__class__.__name__}) on {request.method} {request.url.path}. "

@@ -19,10 +19,34 @@ ENTITY_ID = os.environ.get("DOVESOFT_ENTITY_ID") or getattr(settings, "DOVESOFT_
 TEMP_ID = os.environ.get("DOVESOFT_TEMP_ID") or getattr(settings, "DOVESOFT_TEMP_ID", "")
 
 
+def mask_phone(phone: Any) -> str:
+    """Masks phone number for privacy in logs (e.g., '9711101492' -> '******1492')."""
+    if not phone:
+        return "[EMPTY]"
+    clean = ''.join(c for c in str(phone) if c.isdigit())
+    if len(clean) >= 4:
+        return f"{'*' * (len(clean) - 4)}{clean[-4:]}"
+    return "****"
+
+
+def mask_email(email: Any) -> str:
+    """Masks email address for privacy in logs (e.g., 'user@rll.co.in' -> 'u***@rll.co.in')."""
+    if not email or "@" not in str(email):
+        return "[MASKED_EMAIL]"
+    parts = str(email).strip().lower().split("@", 1)
+    user_part = parts[0]
+    domain_part = parts[1]
+    if len(user_part) <= 2:
+        masked_user = user_part[0] + "*"
+    else:
+        masked_user = user_part[0] + ("*" * (len(user_part) - 2)) + user_part[-1]
+    return f"{masked_user}@{domain_part}"
+
+
 def _redact_digits(data: Any) -> str:
-    """Mask any 4-8 digit numbers in data representations to prevent accidental OTP leakage in logs."""
+    """Mask any 4+ digit numbers in data representations to prevent accidental OTP or phone leakage in logs."""
     text = str(data)
-    return re.sub(r'\b\d{4,8}\b', '[REDACTED]', text)
+    return re.sub(r'\b\d{4,}\b', '[REDACTED]', text)
 
 
 def hash_otp(identifier: str, otp_code: str) -> str:
@@ -78,7 +102,7 @@ def sanitize_phone(phone: str) -> str:
 async def send_otp_sms(mobile_number: str, otp_code: str) -> bool:
     """
     Send 6-digit OTP SMS via Dovesoft API consuming environment configuration.
-    Prints verbose diagnostic logs for troubleshooting SMS delivery.
+    Prints safe diagnostic logs without exposing confidential phone numbers or OTP codes.
     """
     api_url = os.environ.get("DOVESOFT_API_URL") or getattr(settings, "DOVESOFT_API_URL", "https://api.dovesoft.io/api/json/sendsms/")
     api_key = os.environ.get("DOVESOFT_API_KEY") or getattr(settings, "DOVESOFT_API_KEY", "")
@@ -87,6 +111,7 @@ async def send_otp_sms(mobile_number: str, otp_code: str) -> bool:
     temp_id = os.environ.get("DOVESOFT_TEMP_ID") or getattr(settings, "DOVESOFT_TEMP_ID", "")
 
     clean_phone = sanitize_phone(mobile_number)
+    masked_target = mask_phone(clean_phone)
 
     template_env = os.environ.get("DOVESOFT_MESSAGE_TEMPLATE") or getattr(settings, "DOVESOFT_MESSAGE_TEMPLATE", "")
     if template_env:
@@ -98,7 +123,7 @@ async def send_otp_sms(mobile_number: str, otp_code: str) -> bool:
         sms_content = f"The verification code for your Lucid account login is {otp_code}. The code is valid for 5 minutes. Please do not share it with anyone. - Equinox Corp"
 
     logger.info("================ DOVESOFT SMS DISPATCH START ================")
-    logger.info(f"Target Mobile: {clean_phone} (Original input: {mobile_number})")
+    logger.info(f"Target Mobile: {masked_target}")
     logger.info("OTP Code: [REDACTED]")
     logger.info(f"API URL: {api_url}")
     logger.info(f"API Key Configured: {'YES (len=' + str(len(api_key)) + ')' if api_key else 'NO (EMPTY)'}")
@@ -106,7 +131,7 @@ async def send_otp_sms(mobile_number: str, otp_code: str) -> bool:
 
     if not api_key or not api_url:
         logger.warning("⚠️ DOVESOFT_API_KEY or DOVESOFT_API_URL is NOT configured in environment/settings.")
-        logger.warning(f"⚠️ OTP generated locally for {clean_phone}. SMS was NOT dispatched to gateway.")
+        logger.warning(f"⚠️ OTP generated locally for {masked_target}. SMS was NOT dispatched to gateway.")
         logger.info("================ DOVESOFT SMS DISPATCH END ================")
         return False
 
@@ -127,7 +152,7 @@ async def send_otp_sms(mobile_number: str, otp_code: str) -> bool:
         "key": api_key
     }
 
-    logger.info(f"Request Payload configured for mobile {clean_phone} (senderid={sender_id}, entityid={entity_id})")
+    logger.info(f"Request payload configured for mobile {masked_target} (senderid={sender_id}, entityid={entity_id})")
 
     try:
         async with httpx.AsyncClient() as client:
@@ -139,26 +164,17 @@ async def send_otp_sms(mobile_number: str, otp_code: str) -> bool:
             )
             
             logger.info(f"Dovesoft HTTP Response Status: {response.status_code}")
-            logger.info(f"Dovesoft HTTP Response Body: {_redact_digits(response.text)}")
-            
             response.raise_for_status()
 
-            try:
-                resp_data = response.json()
-                logger.info(f"Dovesoft JSON Parsed: {_redact_digits(resp_data)}")
-            except Exception:
-                logger.info(f"Dovesoft Raw Text Response: {_redact_digits(response.text)}")
-
+            logger.info(f"Dovesoft SMS dispatch confirmed for target {masked_target}.")
             logger.info("================ DOVESOFT SMS DISPATCH SUCCESS ================")
             return True
     except httpx.HTTPStatusError as http_err:
-        logger.error(f"❌ Dovesoft HTTP Status Error {http_err.response.status_code}: {_redact_digits(http_err.response.text)}")
+        logger.error(f"❌ Dovesoft HTTP Status Error {http_err.response.status_code} for target {masked_target}")
         logger.info("================ DOVESOFT SMS DISPATCH FAILED ================")
         return False
     except Exception as e:
-        logger.error(f"❌ Failed to dispatch SMS to {clean_phone}: {str(e)}")
-        if hasattr(e, 'response') and e.response is not None:
-            logger.error(f"❌ Error Response Body: {_redact_digits(e.response.text)}")
+        logger.error(f"❌ Failed to dispatch SMS to {masked_target}: {type(e).__name__}")
         logger.info("================ DOVESOFT SMS DISPATCH FAILED ================")
         return False
 
@@ -218,7 +234,7 @@ def store_otp_in_db(phone: str, otp_code: str) -> bool:
         return False
 
     if clean_phone == settings.APP_REVIEW_PHONE:
-        logger.info(f"Phone {clean_phone} configured for dedicated app review testing. Preserving record.")
+        logger.info(f"Phone {mask_phone(clean_phone)} configured for dedicated app review testing. Preserving record.")
         return True
 
     now = datetime.now(timezone.utc)
@@ -231,7 +247,7 @@ def store_otp_in_db(phone: str, otp_code: str) -> bool:
             if now > attempt_info["expires_at"]:
                 _failed_attempts.pop(clean_phone, None)
             elif attempt_info.get("count", 0) >= MAX_OTP_ATTEMPTS:
-                logger.warning(f"Rejecting store_otp_in_db for {clean_phone}: phone is locked out ({attempt_info['count']} failed attempts)")
+                logger.warning(f"Rejecting store_otp_in_db for {mask_phone(clean_phone)}: phone is locked out ({attempt_info['count']} failed attempts)")
                 return False
         # Do NOT reset existing failed attempts on resend: preserves sliding lockout window
 
@@ -273,9 +289,9 @@ def verify_otp_from_db(phone: str, input_otp: str) -> bool:
             logger.warning("Review OTP verification rejected: review mode is disabled")
             return False
         if input_code == settings.APP_REVIEW_OTP:
-            logger.info(f"Dedicated review phone {clean_phone} verified with approved review credentials")
+            logger.info(f"Dedicated review phone {mask_phone(clean_phone)} verified with approved review credentials")
             return True
-        logger.warning(f"Dedicated review phone {clean_phone} verification failed: invalid review OTP")
+        logger.warning(f"Dedicated review phone {mask_phone(clean_phone)} verification failed: invalid review OTP")
         return False
 
     client = get_supabase()
@@ -294,7 +310,7 @@ def verify_otp_from_db(phone: str, input_otp: str) -> bool:
             if now_dt > attempt_info["expires_at"]:
                 _failed_attempts.pop(clean_phone, None)
             elif attempt_info["count"] >= MAX_OTP_ATTEMPTS:
-                logger.warning(f"Maximum OTP verification attempts ({MAX_OTP_ATTEMPTS}) exceeded for phone {clean_phone}.")
+                logger.warning(f"Maximum OTP verification attempts ({MAX_OTP_ATTEMPTS}) exceeded for phone {mask_phone(clean_phone)}.")
                 try:
                     client.table("otp_codes").delete().eq("mobile_number", clean_phone).execute()
                 except Exception:
@@ -325,7 +341,7 @@ def verify_otp_from_db(phone: str, input_otp: str) -> bool:
                     .execute()
 
         if not res.data:
-            logger.warning(f"No OTP record found for phone: {clean_phone}")
+            logger.warning(f"No OTP record found for phone: {mask_phone(clean_phone)}")
             return False
 
         record = res.data[0]
@@ -344,13 +360,13 @@ def verify_otp_from_db(phone: str, input_otp: str) -> bool:
 
         # Reject and purge legacy permanent or future-dated backdoor records
         if expires_dt.year >= 2090 or expires_dt > (now_dt + timedelta(hours=1)):
-            logger.warning(f"Legacy permanent OTP record detected for phone {clean_phone}. Purging record.")
+            logger.warning(f"Legacy permanent OTP record detected for phone {mask_phone(clean_phone)}. Purging record.")
             if record_id:
                 client.table("otp_codes").delete().eq("id", record_id).execute()
             return False
 
         if now_dt > expires_dt:
-            logger.warning(f"OTP expired for phone {clean_phone}. Dropping record.")
+            logger.warning(f"OTP expired for phone {mask_phone(clean_phone)}. Dropping record.")
             if record_id:
                 client.table("otp_codes").delete().eq("id", record_id).execute()
             return False
@@ -367,10 +383,10 @@ def verify_otp_from_db(phone: str, input_otp: str) -> bool:
                 cur["count"] += 1
                 _failed_attempts[clean_phone] = cur
                 if cur["count"] >= MAX_OTP_ATTEMPTS:
-                    logger.warning(f"Max OTP attempts reached for {clean_phone}. Invaliding record in database.")
+                    logger.warning(f"Max OTP attempts reached for {mask_phone(clean_phone)}. Invaliding record in database.")
                     if record_id:
                         client.table("otp_codes").delete().eq("id", record_id).execute()
-            logger.warning(f"OTP verification failed for phone {clean_phone}.")
+            logger.warning(f"OTP verification failed for phone {mask_phone(clean_phone)}.")
             return False
 
         # Atomic consumption: ensure at most one concurrent request can consume this OTP
@@ -384,9 +400,9 @@ def verify_otp_from_db(phone: str, input_otp: str) -> bool:
             try:
                 del_res = client.table("otp_codes").delete().eq("id", record_id).execute()
                 if not del_res or not getattr(del_res, "data", None):
-                    logger.warning(f"OTP record {record_id} already consumed concurrently for phone {clean_phone}.")
+                    logger.warning(f"OTP record {record_id} already consumed concurrently for phone {mask_phone(clean_phone)}.")
                     return False
-                logger.info(f"OTP successfully consumed for phone {clean_phone}.")
+                logger.info(f"OTP successfully consumed for phone {mask_phone(clean_phone)}.")
             finally:
                 with _otp_lock:
                     _consuming_records.discard(record_id)
@@ -411,7 +427,7 @@ def store_password_reset_code(email: str, code: str) -> bool:
     email_clean = email.lower().strip() if email else ""
     code_clean = str(code).strip() if code else ""
     if not email_clean or "@" not in email_clean or not code_clean.isdigit() or len(code_clean) != 6:
-        logger.warning(f"Invalid email or code format for password reset storage: {email_clean}")
+        logger.warning(f"Invalid email or code format for password reset storage: {mask_email(email_clean)}")
         return False
 
     now = datetime.now(timezone.utc)
@@ -424,7 +440,7 @@ def store_password_reset_code(email: str, code: str) -> bool:
             if now > attempt_info["expires_at"]:
                 _failed_attempts.pop(lock_key, None)
             elif attempt_info.get("count", 0) >= MAX_OTP_ATTEMPTS:
-                logger.warning(f"Rejecting store_password_reset_code for {email_clean}: account is locked out ({attempt_info['count']} failed attempts)")
+                logger.warning(f"Rejecting store_password_reset_code for {mask_email(email_clean)}: account is locked out ({attempt_info['count']} failed attempts)")
                 return False
         # Do not wipe failed attempts: prevents unlimited guessing via repeated reset requests
 
@@ -476,7 +492,7 @@ def verify_password_reset_code(email: str, input_code: str) -> bool:
             if now_dt > attempt_info["expires_at"]:
                 _failed_attempts.pop(lock_key, None)
             elif attempt_info["count"] >= MAX_OTP_ATTEMPTS:
-                logger.warning(f"Maximum password-reset attempts exceeded for {email_clean}.")
+                logger.warning(f"Maximum password-reset attempts exceeded for {mask_email(email_clean)}.")
                 try:
                     client.table("otp_codes").delete().eq("mobile_number", lock_key).execute()
                 except Exception:
@@ -503,7 +519,7 @@ def verify_password_reset_code(email: str, input_code: str) -> bool:
         record = res.data[0]
         # Strictly ensure the returned record matches the target identity
         if record.get("mobile_number") != lock_key:
-            logger.warning(f"Target identity mismatch in password reset verification for {lock_key}")
+            logger.warning(f"Target identity mismatch in password reset verification for {mask_email(email_clean)}")
             return False
 
         record_id = record.get("id")
@@ -519,7 +535,7 @@ def verify_password_reset_code(email: str, input_code: str) -> bool:
 
         # Reject and purge legacy permanent or future-dated backdoor records
         if expires_dt.year >= 2090 or expires_dt > (now_dt + timedelta(hours=1)):
-            logger.warning(f"Legacy permanent password reset code detected for {email_clean}. Purging record.")
+            logger.warning(f"Legacy permanent password reset code detected for {mask_email(email_clean)}. Purging record.")
             if record_id:
                 client.table("otp_codes").delete().eq("id", record_id).execute()
             return False
@@ -541,7 +557,7 @@ def verify_password_reset_code(email: str, input_code: str) -> bool:
                 cur["count"] += 1
                 _failed_attempts[lock_key] = cur
                 if cur["count"] >= MAX_OTP_ATTEMPTS:
-                    logger.warning(f"Lockout triggered for password reset {email_clean}. Purging record.")
+                    logger.warning(f"Lockout triggered for password reset {mask_email(email_clean)}. Purging record.")
                     if record_id:
                         client.table("otp_codes").delete().eq("id", record_id).execute()
             return False
@@ -560,7 +576,7 @@ def verify_password_reset_code(email: str, input_code: str) -> bool:
                 logger.warning(f"Password reset code {record_id} deletion returned error: {del_err}")
                 return False
             if not del_res or not getattr(del_res, "data", None):
-                logger.warning(f"Password reset code {record_id} already consumed concurrently for {email_clean}.")
+                logger.warning(f"Password reset code {record_id} already consumed concurrently for {mask_email(email_clean)}.")
                 return False
         finally:
             with _otp_lock:
