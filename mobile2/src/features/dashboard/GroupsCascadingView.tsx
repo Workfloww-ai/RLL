@@ -94,8 +94,12 @@ export function GroupsCascadingView({
   const groupBrandsCacheRef = useRef<Map<string, any[]>>(new Map());
   const licenseeBrandsCacheRef = useRef<Map<string, any[]>>(new Map());
 
-  // Reset cache and set loading state on date/period/selectedHq change
+  // Reset navigation to main screen (Level 1) and clear cache on date/period/selectedHq change
   useEffect(() => {
+    setLevel(1);
+    setSelectedGroup(null);
+    setSelectedLicensee(null);
+    resetFilters();
     groupsCacheRef.current = null;
     groupLicenseesCacheRef.current.clear();
     groupBrandsCacheRef.current.clear();
@@ -206,13 +210,7 @@ export function GroupsCascadingView({
 
   // Sync Level 1 on mount or date/period/HQ changes
   useEffect(() => {
-    if (level === 1) {
-      loadGroups(true);
-    } else if (level === 2 && selectedGroup) {
-      loadGroupDetails(selectedGroup.group_id);
-    } else if (level === 3 && selectedLicensee) {
-      loadLicenseeBrands(selectedLicensee.licensee_id);
-    }
+    loadGroups(true);
   }, [dateFrom, dateTo, period, selectedHq]);
 
   // Selection handlers

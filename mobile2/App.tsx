@@ -190,6 +190,11 @@ function MainApp() {
     return () => subscription.remove();
   }, [showSortModal, selectedCompany, viewModeHistory]);
 
+  // Reset drill-down company modal when period or filters change so view returns to main screen
+  useEffect(() => {
+    setSelectedCompany(null);
+  }, [period, dateFrom, dateTo, selectedHq]);
+
   const { height: windowHeight } = useWindowDimensions();
   const cardDimensions = useMemo(() => getDynamicCardDimensions(windowHeight), [windowHeight]);
   const scaleFactor = 1;
