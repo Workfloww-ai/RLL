@@ -121,7 +121,8 @@ function MainApp() {
           setApiData((prev: any) => ({ ...(prev || {}), ...compRes }));
         }
       } else {
-        const res = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq);
+        const refreshLevel = viewMode === 'tsm' ? 'tsms' : 'companies';
+        const res = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq, undefined, false, refreshLevel);
         if (res) setApiData(res);
       }
       const profile = await fetchUserProfile();
@@ -364,7 +365,7 @@ function MainApp() {
       });
 
       try {
-        const targetLevel = viewMode === 'tsm' ? 'tsms' : (viewMode === 'companies' ? 'companies' : undefined);
+        const targetLevel = viewMode === 'tsm' ? 'tsms' : (viewMode === 'companies' ? 'companies' : (viewMode === 'depots' ? 'companies' : undefined));
         let res: any = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq, undefined, false, targetLevel);
 
         if (res && isMounted) {
@@ -466,7 +467,7 @@ function MainApp() {
 
     const intervalId = setInterval(() => {
       if (user) {
-        const targetLevel = viewMode === 'tsm' ? 'tsms' : (viewMode === 'companies' ? 'companies' : undefined);
+        const targetLevel = viewMode === 'tsm' ? 'tsms' : (viewMode === 'companies' ? 'companies' : (viewMode === 'depots' ? 'companies' : undefined));
         fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq, undefined, true, targetLevel).then((res) => {
           if (res && isMounted) {
             setApiData((prevData: any) => ({ ...(prevData || {}), ...res }));

@@ -18,7 +18,20 @@ _MASTER_COMPANIES_CACHE: Tuple[float, List[Dict[str, Any]]] = (0.0, [])
 _MASTER_BRANDS_CACHE: Tuple[float, Dict[str, List[Dict[str, Any]]]] = (0.0, {})
 
 
+def _get_master_bundle_cached():
+    try:
+        from backend.mobile.router import get_cached_master_lookups
+        return get_cached_master_lookups()
+    except Exception as e:
+        logger.debug(f"Could not load centralized master cache: {e}")
+        return {}
+
+
 def _get_hq_lookup() -> Dict[str, str]:
+    master = _get_master_bundle_cached()
+    if master and master.get("hq_name_to_id"):
+        return master["hq_name_to_id"]
+
     global _HQ_CACHE
     now = time.time()
     if _HQ_CACHE[1] and (now - _HQ_CACHE[0]) < _TTL:
@@ -39,6 +52,10 @@ def _get_hq_lookup() -> Dict[str, str]:
 
 
 def _get_latest_sale_date() -> str:
+    master = _get_master_bundle_cached()
+    if master and master.get("latest_sale_date"):
+        return master["latest_sale_date"]
+
     global _MAX_DATE_CACHE
     now = time.time()
     if _MAX_DATE_CACHE[1] and (now - _MAX_DATE_CACHE[0]) < _TTL:
@@ -61,6 +78,12 @@ def _get_latest_sale_date() -> str:
 
 
 def _get_master_companies() -> List[Dict[str, Any]]:
+    master = _get_master_bundle_cached()
+    if master and master.get("companies_lookup"):
+        return [{"company_id": str(cid), "company_name": cname} for cid, cname in master["companies_lookup"].items()]
+    if master and master.get("master_companies"):
+        return list(master["master_companies"].values())
+
     global _MASTER_COMPANIES_CACHE
     now = time.time()
     if _MASTER_COMPANIES_CACHE[1] and (now - _MASTER_COMPANIES_CACHE[0]) < _TTL:
@@ -79,13 +102,25 @@ def _get_master_companies() -> List[Dict[str, Any]]:
 
 
 def _get_master_brands_by_company() -> Dict[str, List[Dict[str, Any]]]:
+    master = _get_master_bundle_cached()
+    if master and master.get("brands_lookup"):
+        brands_map: Dict[str, List[Dict[str, Any]]] = {}
+        for bid, binfo in master["brands_lookup"].items():
+            cid = str(binfo.get("company_id") or "")
+            bname = str(binfo.get("brand_name") or "Generic Brand").strip()
+            if cid and bid:
+                if cid not in brands_map:
+                    brands_map[cid] = []
+                brands_map[cid].append({"brand_id": str(bid), "brand_name": bname})
+        return brands_map
+
     global _MASTER_BRANDS_CACHE
     now = time.time()
     if _MASTER_BRANDS_CACHE[1] and (now - _MASTER_BRANDS_CACHE[0]) < _TTL:
         return _MASTER_BRANDS_CACHE[1]
 
     client = get_supabase_client()
-    brands_map: Dict[str, List[Dict[str, Any]]] = {}
+    brands_map = {}
     if client:
         try:
             res = client.table("brands").select("brand_id, brand_name, company_id").execute()
