@@ -463,7 +463,8 @@ export async function fetchMobileSales(
   period: string,
   selectedHq: string = 'All Headquarters',
   testLimit?: number,
-  isPrefetch: boolean = false
+  isPrefetch: boolean = false,
+  level?: string
 ) {
   const token = await getAuthToken();
   if (!token) {
@@ -495,6 +496,9 @@ export async function fetchMobileSales(
     };
     if (testLimit) {
       queryParams['test_limit'] = String(testLimit);
+    }
+    if (level) {
+      queryParams['level'] = level;
     }
 
     const query = new URLSearchParams(queryParams);

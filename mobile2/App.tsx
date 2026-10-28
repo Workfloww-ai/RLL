@@ -310,18 +310,32 @@ function MainApp() {
             ? Boolean(apiData && Array.isArray(apiData.tsms) && apiData.tsms.length > 0)
             : true;
 
-      // When date or HQ changes, try immediate 0ms FastStorage hydration so YTD/MTD total never drops to 0.00
+      // When date, period, or HQ changes, try immediate 0ms FastStorage hydration so YTD/MTD total never drops to 0.00
       const cleanHq = (selectedHq || 'All Headquarters').trim();
-      if (dateOrHqChanged) {
-        const fastKey = `rll_fast_companies_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}`;
-        const fastCached = FastStorage.getObject<any>(fastKey);
-        if (fastCached && Array.isArray(fastCached.companies) && fastCached.companies.length > 0) {
+      if (dateOrHqChanged || periodChanged) {
+        const fastCompKey = `rll_fast_companies_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}`;
+        const fastComp = FastStorage.getObject<any>(fastCompKey);
+        const fastTsmKey = `rll_fast_tsms_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}`;
+        const fastTsm = FastStorage.getObject<any[]>(fastTsmKey);
+
+        const newPartial: any = {};
+        let hydratedAny = false;
+        if (fastComp && Array.isArray(fastComp.companies) && fastComp.companies.length > 0) {
+          newPartial.companies = fastComp.companies;
+          newPartial.latest_sale_date = fastComp.latest_sale_date;
+          hydratedAny = true;
+        }
+        if (fastTsm && Array.isArray(fastTsm) && fastTsm.length > 0) {
+          newPartial.tsms = fastTsm;
+          hydratedAny = true;
+        }
+        if (hydratedAny) {
           setApiData((prevData: any) => ({
             ...(prevData || {}),
-            companies: fastCached.companies,
-            latest_sale_date: fastCached.latest_sale_date || prevData?.latest_sale_date,
+            ...newPartial,
           }));
-        } else if (!hasDataForTab) {
+        }
+        if (!hasDataForTab && !hydratedAny) {
           setLoadingSalesData(true);
         }
       } else if (!hasDataForTab) {
@@ -350,11 +364,16 @@ function MainApp() {
       });
 
       try {
-        let res: any = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq);
+        const targetLevel = viewMode === 'tsm' ? 'tsms' : (viewMode === 'companies' ? 'companies' : undefined);
+        let res: any = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq, undefined, false, targetLevel);
 
         if (res && isMounted) {
           const tStateStart = getNow();
           setApiData((prevData: any) => ({ ...(prevData || {}), ...res }));
+          if (Array.isArray(res.tsms) && res.tsms.length > 0) {
+            const fastTsmKey = `rll_fast_tsms_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}`;
+            FastStorage.setObject(fastTsmKey, res.tsms);
+          }
           if (res.latest_sale_date && (!dateFrom && !dateTo)) {
             setDateFrom(res.latest_sale_date);
             setDateTo(res.latest_sale_date);
@@ -447,9 +466,15 @@ function MainApp() {
 
     const intervalId = setInterval(() => {
       if (user) {
-        fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq).then((res) => {
+        const targetLevel = viewMode === 'tsm' ? 'tsms' : (viewMode === 'companies' ? 'companies' : undefined);
+        fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq, undefined, true, targetLevel).then((res) => {
           if (res && isMounted) {
-            setApiData(res);
+            setApiData((prevData: any) => ({ ...(prevData || {}), ...res }));
+            if (Array.isArray(res.tsms) && res.tsms.length > 0) {
+              const cleanHq = (selectedHq || 'All Headquarters').trim();
+              const fastTsmKey = `rll_fast_tsms_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}`;
+              FastStorage.setObject(fastTsmKey, res.tsms);
+            }
           }
         });
       }
@@ -768,7 +793,7 @@ function MainApp() {
                     period={period}
                     scaleFactor={scaleFactor}
                     selectedHq={selectedHq}
-                    loading={loadingSalesData}
+                    loading={loadingSalesData && (!apiData || !apiData.tsms || apiData.tsms.length === 0)}
                     onRefresh={handleRefresh}
                   />
                 </View>
