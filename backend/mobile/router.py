@@ -1461,9 +1461,9 @@ async def get_mobile_sales(
         selected_period = "Daily"
 
     from backend.services.tenant_service import get_include_others_setting_async
-    from backend.services.tenant_service import get_include_others_setting_async
     inc_others_str = "inc1" if await get_include_others_setting_async() else "inc0"
-    cache_key = f"{selected_period}:{clean_level or 'all'}:{page or 'all'}:{page_size or 'all'}:{selected_hq}:{date_from}:{date_to}:{user_role}:{user_id}:{test_limit or 'all'}:{inc_others_str}"
+    effective_cache_uid = "global" if user_role in ["leader", "admin", "super_admin", "developer"] else (user_id or "global")
+    cache_key = f"{selected_period}:{clean_level or 'all'}:{page or 'all'}:{page_size or 'all'}:{selected_hq}:{date_from}:{date_to}:{user_role}:{effective_cache_uid}:{test_limit or 'all'}:{inc_others_str}"
     
     # D. Sales response cache timing
     t_sales_cache_start = time.perf_counter()
@@ -1975,10 +1975,14 @@ async def get_mobile_sales(
 
 
 
+    inc_others_val = (inc_others_str == "inc1")
+
     for row in all_usf_records:
         c_id_raw = str(row.get("company_id") or "")
         comp_name = companies_lookup.get(c_id_raw)
-        if not comp_name or is_others_company(comp_name):
+        if not comp_name:
+            continue
+        if not inc_others_val and is_others_company(comp_name):
             continue
 
         raw_uid = str(row.get("user_id") or "")
