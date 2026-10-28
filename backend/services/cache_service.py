@@ -151,7 +151,15 @@ async def prewarm_cache_egress() -> Dict[str, Any]:
     immediately after summary generation to optimize API egress performance.
     """
     results: Dict[str, Any] = {}
-    # 1. Pre-warm mobile sales cache responses
+    # 1. Pre-warm mobile company responses (Daily, MTD, YTD across top HQs with 24h TTL)
+    try:
+        from backend.services.mobile_companies_service import prewarm_mobile_companies_cache
+        c_res = await prewarm_mobile_companies_cache()
+        results["mobile_companies"] = c_res
+    except Exception as e_c:
+        logger.warning(f"prewarm_cache_egress mobile companies notice: {e_c}")
+
+    # 2. Pre-warm legacy mobile sales cache responses
     try:
         from backend.services.mobile_sales_service import prewarm_mobile_sales
         m_res = prewarm_mobile_sales()

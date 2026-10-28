@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { TSM, Period, ASE } from '../../types';
 import { formatNumber, toTitleCase } from '../../lib/utils';
-import { TsmListSkeletonList } from '../../components/SkeletonLoaders';
+import { TsmListSkeletonList, CompanyListSkeletonList } from '../../components/SkeletonLoaders';
 import { MetricsCard } from '../../components/MetricsCard';
 import { SegmentedTabs } from '../../components/SegmentedTabs';
 import { PaginationBar } from '../../components/PaginationBar';
@@ -252,7 +252,7 @@ export function TsmView({
       const cases = getItemCases(selectedTsm);
       const aseCount = selectedTsm.ases?.length || 0;
       const itemTsm = selectedTsm as any;
-      const companyCount = itemTsm.companyCount?.[period] ?? itemTsm.company_count?.[period] ?? (itemTsm.brands?.filter((b: any) => (b.data?.[period]?.cases || 0) > 0 || (b.data?.[period]?.bottles || 0) > 0).length || 0);
+      const companyCount = itemTsm.companyCount?.[period] ?? itemTsm.company_count?.[period] ?? (itemTsm.companies?.length || 0);
       const subtitle = `${aseCount} ASE(s)  •  ${companyCount} Companies`;
       return {
         cases,
@@ -263,7 +263,7 @@ export function TsmView({
     if (level === 3 && selectedAse) {
       const cases = getItemCases(selectedAse);
       const itemAse = selectedAse as any;
-      const companyCount = itemAse.companyCount?.[period] ?? itemAse.company_count?.[period] ?? (itemAse.brands?.filter((b: any) => (b.data?.[period]?.cases || 0) > 0 || (b.data?.[period]?.bottles || 0) > 0).length || 0);
+      const companyCount = itemAse.companyCount?.[period] ?? itemAse.company_count?.[period] ?? (itemAse.companies?.length || 0);
       const subtitle = `${companyCount} Companies`;
       return {
         cases,
@@ -395,8 +395,14 @@ export function TsmView({
           />
         }
       >
-        {loading ? (
-          <TsmListSkeletonList count={5} />
+        {Boolean(
+          loading ||
+          (level === 1 && filteredTsms.length === 0 && !searchQuery.trim()) ||
+          (level === 2 && activeTsmTab === 'companies' && (!((selectedTsm as any)?.companies || selectedTsm?.brands) || ((selectedTsm as any)?.companies || selectedTsm?.brands)?.length === 0) && !searchQuery.trim()) ||
+          (level === 2 && activeTsmTab === 'ase' && (!selectedTsm?.ases || selectedTsm.ases.length === 0) && !searchQuery.trim()) ||
+          (level === 3 && (!selectedAse || !(selectedAse as any).companies || (selectedAse as any).companies.length === 0) && !searchQuery.trim())
+        ) ? (
+          level === 1 ? <TsmListSkeletonList count={6} /> : <CompanyListSkeletonList count={6} />
         ) : paginatedList.length === 0 ? (
           <View style={styles.emptyCard}>
             <Text style={styles.emptyText}>
@@ -411,7 +417,7 @@ export function TsmView({
               const cases = Number(((rawData.cases || 0) * scaleFactor).toFixed(2));
               const bottles = Math.round((rawData.bottles || 0) * scaleFactor);
               const aseCount = item.ases?.length || 0;
-              const companyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.brands?.filter((b: any) => (b.data?.[period]?.cases || 0) > 0 || (b.data?.[period]?.bottles || 0) > 0).length || 0);
+              const companyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.companies?.length || 0);
               const hqName = item.hqLocation || 'Unassigned';
 
               return (
@@ -454,7 +460,7 @@ export function TsmView({
               const rawData = item.data?.[period] || { cases: 0, bottles: 0 };
               const cases = Number(((rawData.cases || 0) * scaleFactor).toFixed(2));
               const bottles = Math.round((rawData.bottles || 0) * scaleFactor);
-              const companyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.brands?.filter((b: any) => (b.data?.[period]?.cases || 0) > 0 || (b.data?.[period]?.bottles || 0) > 0).length || 0);
+              const companyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.companies?.length || 0);
               const hqName = item.hqLocation || 'Unassigned';
 
               return (

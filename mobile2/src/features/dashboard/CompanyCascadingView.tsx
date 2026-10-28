@@ -88,12 +88,26 @@ export function CompanyCascadingView({
   const companyBrandsCacheRef = useRef<Map<string, any[]>>(new Map());
   const brandLicenseesCacheRef = useRef<Map<string, any[]>>(new Map());
 
-  // Reset cache on date/period/HQ changes
+  // Reset filters & pagination
+  const resetFilters = () => {
+    setSearchQuery('');
+    setSortOption('az');
+    setCurrentPage(1);
+  };
+
+  // Reset navigation to main screen (Level 1) and clear cache on date/period/HQ changes
   useEffect(() => {
+    setLevel(1);
+    setSelectedCompany(null);
+    setSelectedBrand(null);
+    resetFilters();
     companyBrandsCacheRef.current.clear();
     brandLicenseesCacheRef.current.clear();
     setCompanyBrands([]);
     setBrandLicensees([]);
+    if (onClearParentSelectedCompany) {
+      onClearParentSelectedCompany();
+    }
   }, [dateFrom, dateTo, period, selectedHq]);
 
   // Handle drilldown trigger from parent
@@ -108,13 +122,6 @@ export function CompanyCascadingView({
       loadCompanyBrands(compId);
     }
   }, [selectedCompanyFromParent]);
-
-  // Reset filters & pagination
-  const resetFilters = () => {
-    setSearchQuery('');
-    setSortOption('az');
-    setCurrentPage(1);
-  };
 
   // Helper for consistent company cache key resolution
   const getNormalizedCompanyKey = useCallback((companyObjOrId: any): string => {
@@ -187,16 +194,7 @@ export function CompanyCascadingView({
     return companies.find((c) => getNormalizedCompanyKey(c) === normKey) || selectedCompany;
   }, [selectedCompany, companies, getNormalizedCompanyKey]);
 
-  // Sync details on date/period/HQ changes
-  useEffect(() => {
-    companyBrandsCacheRef.current.clear();
-    brandLicenseesCacheRef.current.clear();
-    if (level === 2 && activeSelectedCompany) {
-      loadCompanyBrands(activeSelectedCompany, true);
-    } else if (level === 3 && selectedBrand) {
-      loadBrandLicensees(selectedBrand.brand_id, true);
-    }
-  }, [dateFrom, dateTo, period, selectedHq]);
+
 
   // Selection handlers
   const handleSelectCompany = (c: Company) => {
@@ -477,8 +475,11 @@ export function CompanyCascadingView({
         </TouchableOpacity>
       </View>
 
-      {/* Main Content List */}
-      {(loading || (level === 1 && (parentLoading || (companies.length === 0 && !searchQuery)))) ? (
+      {(loading ||
+        parentLoading ||
+        (level === 1 && (companies.length === 0 && !searchQuery.trim())) ||
+        (level === 2 && companyBrands.length === 0 && !searchQuery.trim()) ||
+        (level === 3 && brandLicensees.length === 0 && !searchQuery.trim())) ? (
         <View style={styles.scrollContent}>
           {level === 1 ? <CompanyListSkeletonList count={6} /> : <GroupListSkeletonList count={6} />}
         </View>

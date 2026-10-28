@@ -69,14 +69,14 @@ class FastStorageEngine {
       const keys = await AsyncStorage.getAllKeys();
       const prunable = keys.filter(
         (k) =>
-          k.startsWith(this.FAST_STORAGE_PREFIX + 'rll_fast_companies_') ||
-          k.startsWith('rll_disk_cache::')
+          !k.includes('token') &&
+          !k.includes('user') &&
+          !k.includes('auth') &&
+          (k.startsWith(this.FAST_STORAGE_PREFIX) || k.startsWith('rll_') || k.startsWith('companies_'))
       );
-      if (prunable.length > 4) {
-        // Keep only 4 most recent prefetch entries on disk, prune the rest
-        const toRemove = prunable.slice(0, prunable.length - 4);
-        await AsyncStorage.multiRemove(toRemove);
-        logger.info(`FastStorage: Auto-purged ${toRemove.length} stale disk cache keys to recover AsyncStorage quota.`);
+      if (prunable.length > 0) {
+        await AsyncStorage.multiRemove(prunable);
+        logger.info(`FastStorage: Auto-purged ${prunable.length} stale disk cache keys to recover AsyncStorage quota.`);
       }
     } catch (err) {
       logger.warn(`FastStorage: Error during disk purge: ${err}`);
@@ -85,10 +85,15 @@ class FastStorageEngine {
 
   /**
    * Synchronous memory write + background non-blocking disk sync.
+   * Large payloads (>250KB) remain strictly in memory cache to avoid Android SQLITE_FULL errors.
    */
   public setString(key: string, value: string): void {
     if (!key || value === undefined || value === null) return;
     this.memoryMap.set(key, value);
+    if (value.length > 250_000) {
+      // Keep in RAM only; do not bloat SQLite
+      return;
+    }
     const diskKey = `${this.FAST_STORAGE_PREFIX}${key}`;
     AsyncStorage.setItem(diskKey, value).catch(async (e) => {
       const errStr = String(e || '');

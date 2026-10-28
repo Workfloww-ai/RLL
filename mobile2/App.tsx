@@ -101,7 +101,13 @@ function MainApp() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedHq, setSelectedHq] = useState<string>('All Headquarters');
   const [headquartersList, setHeadquartersList] = useState<string[]>(['All Headquarters']);
-  const [apiData, setApiData] = useState<any>(null);
+  const [apiData, setApiData] = useState<any>(() => {
+    const initialComp = FastStorage.getObject<any>('rll_initial_companies_v4');
+    if (initialComp && Array.isArray(initialComp.companies) && initialComp.companies.length > 0) {
+      return { companies: initialComp.companies, latest_sale_date: initialComp.latest_sale_date };
+    }
+    return null;
+  });
   const [loadingSalesData, setLoadingSalesData] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [showNoDataModal, setShowNoDataModal] = useState<boolean>(false);
@@ -121,7 +127,8 @@ function MainApp() {
           setApiData((prev: any) => ({ ...(prev || {}), ...compRes }));
         }
       } else {
-        const res = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq);
+        const refreshLevel = viewMode === 'tsm' ? 'tsms' : 'companies';
+        const res = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq, undefined, false, refreshLevel);
         if (res) setApiData(res);
       }
       const profile = await fetchUserProfile();
@@ -156,6 +163,30 @@ function MainApp() {
     });
   }, []);
 
+  const handleHqChange = useCallback((hq: string) => {
+    if (hq !== selectedHq) {
+      setLoadingSalesData(true);
+      setSelectedHq(hq);
+    }
+  }, [selectedHq]);
+
+  const handlePeriodChange = useCallback((p: Period) => {
+    if (p !== period) {
+      setLoadingSalesData(true);
+      setPeriod(p);
+    }
+  }, [period]);
+
+  const handleDateFromChange = useCallback((d: string) => {
+    setLoadingSalesData(true);
+    setDateFrom(d);
+  }, []);
+
+  const handleDateToChange = useCallback((d: string) => {
+    setLoadingSalesData(true);
+    setDateTo(d);
+  }, []);
+
   // Hardware BackHandler for tab history & modals
   useEffect(() => {
     const onBackPress = () => {
@@ -182,6 +213,11 @@ function MainApp() {
     const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => subscription.remove();
   }, [showSortModal, selectedCompany, viewModeHistory]);
+
+  // Reset drill-down company modal when period or filters change so view returns to main screen
+  useEffect(() => {
+    setSelectedCompany(null);
+  }, [period, dateFrom, dateTo, selectedHq]);
 
   const { height: windowHeight } = useWindowDimensions();
   const cardDimensions = useMemo(() => getDynamicCardDimensions(windowHeight), [windowHeight]);
@@ -310,26 +346,38 @@ function MainApp() {
             ? Boolean(apiData && Array.isArray(apiData.tsms) && apiData.tsms.length > 0)
             : true;
 
-      // When date or HQ changes, try immediate 0ms FastStorage hydration so YTD/MTD total never drops to 0.00
+      // When date, period, or HQ changes, immediately show skeleton loaders
       const cleanHq = (selectedHq || 'All Headquarters').trim();
-      if (dateOrHqChanged) {
-        const fastKey = `rll_fast_companies_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}`;
-        const fastCached = FastStorage.getObject<any>(fastKey);
-        if (fastCached && Array.isArray(fastCached.companies) && fastCached.companies.length > 0) {
+      if (dateOrHqChanged || periodChanged) {
+        setLoadingSalesData(true);
+        const fastCompKey = `rll_fast_v4_companies_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}`;
+        const fastComp = FastStorage.getObject<any>(fastCompKey);
+        const fastTsmKey = `rll_fast_v4_tsms_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}`;
+        const fastTsm = FastStorage.getObject<any[]>(fastTsmKey);
+
+        const newPartial: any = {};
+        let hydratedAny = false;
+        if (fastComp && Array.isArray(fastComp.companies) && fastComp.companies.length > 0) {
+          newPartial.companies = fastComp.companies;
+          newPartial.latest_sale_date = fastComp.latest_sale_date;
+          hydratedAny = true;
+        }
+        if (fastTsm && Array.isArray(fastTsm) && fastTsm.length > 0) {
+          newPartial.tsms = fastTsm;
+          hydratedAny = true;
+        }
+        if (hydratedAny) {
           setApiData((prevData: any) => ({
             ...(prevData || {}),
-            companies: fastCached.companies,
-            latest_sale_date: fastCached.latest_sale_date || prevData?.latest_sale_date,
+            ...newPartial,
           }));
-        } else if (!hasDataForTab) {
-          setLoadingSalesData(true);
         }
       } else if (!hasDataForTab) {
         setLoadingSalesData(true);
       }
 
       // Fast-path: Concurrently fetch lightweight companies summary (12 KB, ~30ms)
-      // This guarantees the header {period} TOTAL and Company cards populate in 30ms without waiting for 7MB sales payload!
+      // This guarantees the header {period} TOTAL is populated in 30ms across ALL tabs without waiting for 7MB sales payload!
       fetchMobileCompanies(period, dateTo || dateFrom, selectedHq).then((compRes) => {
         if (compRes && Array.isArray(compRes.companies) && compRes.companies.length > 0 && isMounted) {
           setApiData((prevData: any) => ({
@@ -337,12 +385,21 @@ function MainApp() {
             companies: compRes.companies,
             latest_sale_date: compRes.latest_sale_date || prevData?.latest_sale_date,
           }));
+          FastStorage.setObject('rll_initial_companies_v4', { companies: compRes.companies, latest_sale_date: compRes.latest_sale_date });
+          const fastCompKey = `companies_v4_${cleanHq}_${period}_${dateTo || dateFrom || 'latest'}`;
+          FastStorage.setObject(fastCompKey, { companies: compRes.companies, latest_sale_date: compRes.latest_sale_date });
           if (compRes.latest_sale_date && (!dateFrom && !dateTo)) {
             setDateFrom(compRes.latest_sale_date);
             setDateTo(compRes.latest_sale_date);
           }
           if (viewMode === 'companies') {
-            setLoadingSalesData(false);
+            if (dateOrHqChanged || periodChanged) {
+              setTimeout(() => {
+                if (isMounted) setLoadingSalesData(false);
+              }, 300);
+            } else {
+              setLoadingSalesData(false);
+            }
           }
         }
       }).catch((err) => {
@@ -350,11 +407,16 @@ function MainApp() {
       });
 
       try {
-        let res: any = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq);
+        const targetLevel = viewMode === 'tsm' ? 'tsms' : (viewMode === 'companies' ? 'companies' : (viewMode === 'depots' ? 'companies' : undefined));
+        let res: any = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq, undefined, false, targetLevel);
 
         if (res && isMounted) {
           const tStateStart = getNow();
           setApiData((prevData: any) => ({ ...(prevData || {}), ...res }));
+          if (Array.isArray(res.tsms) && res.tsms.length > 0) {
+            const fastTsmKey = `rll_fast_v4_tsms_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}`;
+            FastStorage.setObject(fastTsmKey, res.tsms);
+          }
           if (res.latest_sale_date && (!dateFrom && !dateTo)) {
             setDateFrom(res.latest_sale_date);
             setDateTo(res.latest_sale_date);
@@ -440,16 +502,30 @@ function MainApp() {
           }, 50);
         }
       } finally {
-        if (isMounted) setLoadingSalesData(false);
+        if (isMounted) {
+          if (dateOrHqChanged || periodChanged) {
+            setTimeout(() => {
+              if (isMounted) setLoadingSalesData(false);
+            }, 300);
+          } else {
+            setLoadingSalesData(false);
+          }
+        }
       }
     };
     fetchSalesData();
 
     const intervalId = setInterval(() => {
       if (user) {
-        fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq).then((res) => {
+        const targetLevel = viewMode === 'tsm' ? 'tsms' : (viewMode === 'companies' ? 'companies' : (viewMode === 'depots' ? 'companies' : undefined));
+        fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq, undefined, true, targetLevel).then((res) => {
           if (res && isMounted) {
-            setApiData(res);
+            setApiData((prevData: any) => ({ ...(prevData || {}), ...res }));
+            if (Array.isArray(res.tsms) && res.tsms.length > 0) {
+              const cleanHq = (selectedHq || 'All Headquarters').trim();
+              const fastTsmKey = `rll_fast_v4_tsms_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}`;
+              FastStorage.setObject(fastTsmKey, res.tsms);
+            }
           }
         });
       }
@@ -541,10 +617,11 @@ function MainApp() {
   const totalSummary = useMemo(() => {
     const rawCompanies: Company[] = (apiData && Array.isArray(apiData.companies)) ? apiData.companies : [];
 
-    if (rawCompanies.length > 0) {
-      const raw = rawCompanies.reduce(
-        (acc, c) => {
-          const d = c.data?.[period] || { cases: 0, bottles: 0 };
+    const computeFromList = (list: any[]) => {
+      if (!list || !list.length) return null;
+      const raw = list.reduce(
+        (acc: any, item: any) => {
+          const d = item.data?.[period] || { cases: 0, bottles: 0 };
           return {
             cases: acc.cases + (Number(d.cases) || 0),
             bottles: acc.bottles + (Number(d.bottles) || 0),
@@ -552,28 +629,56 @@ function MainApp() {
         },
         { cases: 0, bottles: 0 }
       );
-      const computed = {
-        cases: Number((raw.cases * scaleFactor).toFixed(2)),
-        bottles: Math.round(raw.bottles * scaleFactor),
-      };
-      if (computed.cases > 0) {
-        const cleanHq = (selectedHq || 'All Headquarters').trim();
-        const cacheKey = `rll_total_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}`;
-        FastStorage.setObject(cacheKey, computed);
+      if (raw.cases > 0 || raw.bottles > 0) {
+        return {
+          cases: Number((raw.cases * scaleFactor).toFixed(2)),
+          bottles: Math.round(raw.bottles * scaleFactor),
+        };
       }
-      return computed;
+      return null;
+    };
+
+    const fromCompanies = computeFromList(rawCompanies);
+    if (fromCompanies) {
+      const cleanHq = (selectedHq || 'All Headquarters').trim();
+      const cacheKey = `rll_v4_total_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}`;
+      FastStorage.setObject(cacheKey, fromCompanies);
+      return fromCompanies;
     }
 
-    // Fallback: If companies are currently loading, check FastStorage instant cache
+    // Fallback 1: Initial companies cache (contains all 3 periods Daily, MTD, YTD)
+    const initialComp = FastStorage.getObject<any>('rll_initial_companies_v4');
+    if (initialComp && Array.isArray(initialComp.companies)) {
+      const fromInitial = computeFromList(initialComp.companies);
+      if (fromInitial) return fromInitial;
+    }
+
+    // Fallback 2: Check FastStorage instant total cache
     const cleanHq = (selectedHq || 'All Headquarters').trim();
-    const cacheKey = `rll_total_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}`;
+    const cacheKey = `rll_v4_total_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}`;
     const cachedTotal = FastStorage.getObject<{ cases: number; bottles: number }>(cacheKey);
     if (cachedTotal && typeof cachedTotal.cases === 'number' && cachedTotal.cases > 0) {
       return cachedTotal;
     }
 
+    // Fallback 3: Check fast companies storage
+    const fastCompKey = `companies_v4_${cleanHq}_${period}_${dateTo || dateFrom || 'latest'}`;
+    const fastComp = FastStorage.getObject<any>(fastCompKey);
+    if (fastComp && Array.isArray(fastComp.companies)) {
+      const fromFast = computeFromList(fastComp.companies);
+      if (fromFast) {
+        FastStorage.setObject(cacheKey, fromFast);
+        return fromFast;
+      }
+    }
+
+    // Fallback 4: If on TSM tab and TSMs are loaded, aggregate TSM totals
+    const rawTsms: any[] = (apiData && Array.isArray(apiData.tsms)) ? apiData.tsms : [];
+    const fromTsms = computeFromList(rawTsms);
+    if (fromTsms) return fromTsms;
+
     return { cases: 0, bottles: 0 };
-  }, [apiData?.companies, period, scaleFactor, selectedHq, dateTo, dateFrom]);
+  }, [apiData?.companies, apiData?.tsms, period, scaleFactor, selectedHq, dateTo, dateFrom]);
 
   const renderCompanyItem = useCallback(
     ({ item }: { item: Company }) => (
@@ -701,13 +806,13 @@ function MainApp() {
             {viewMode !== 'profile' && (
               <Header
                 period={period}
-                setPeriod={setPeriod}
+                setPeriod={handlePeriodChange}
                 dateFrom={dateFrom}
-                setDateFrom={setDateFrom}
+                setDateFrom={handleDateFromChange}
                 dateTo={dateTo}
-                setDateTo={setDateTo}
+                setDateTo={handleDateToChange}
                 selectedHq={selectedHq}
-                setSelectedHq={setSelectedHq}
+                setSelectedHq={handleHqChange}
                 headquartersList={headquartersList}
                 latestSaleDate={apiData?.latest_sale_date}
                 fetchTimeMs={apiData?._fetchTimeMs}
@@ -722,10 +827,14 @@ function MainApp() {
                   <View style={styles.indicatorDot} />
                   <Text style={styles.indicatorLabel}>{period} TOTAL</Text>
                 </View>
-                <Text style={styles.metricsSummaryText}>
-                  <Text style={styles.boldText}>{formatNumber(totalSummary.cases)}</Text>{' '}
-                  <Text style={styles.lightText}>Cases</Text>
-                </Text>
+                {loadingSalesData && (!totalSummary || totalSummary.cases === 0) ? (
+                  <View style={{ width: 85, height: 16, backgroundColor: '#E2E8F0', borderRadius: 4, opacity: 0.7 }} />
+                ) : (
+                  <Text style={styles.metricsSummaryText}>
+                    <Text style={styles.boldText}>{formatNumber(totalSummary.cases)}</Text>{' '}
+                    <Text style={styles.lightText}>Cases</Text>
+                  </Text>
+                )}
               </View>
             )}
 
@@ -755,6 +864,7 @@ function MainApp() {
                     dateTo={dateTo}
                     scaleFactor={scaleFactor}
                     selectedHq={selectedHq}
+                    loading={loadingSalesData}
                     onRefresh={handleRefresh}
                   />
                 </View>
@@ -768,7 +878,7 @@ function MainApp() {
                     period={period}
                     scaleFactor={scaleFactor}
                     selectedHq={selectedHq}
-                    loading={loadingSalesData}
+                    loading={loadingSalesData || !apiData?.tsms || apiData.tsms.length === 0}
                     onRefresh={handleRefresh}
                   />
                 </View>
@@ -776,7 +886,7 @@ function MainApp() {
 
               {/* View Mode: PROFILE */}
               {viewMode === 'profile' && (
-                <ProfileScreen user={user} onLogout={handleLogout} loading={loadingSession} onRefresh={handleRefresh} />
+                <ProfileScreen user={user} onLogout={handleLogout} loading={loadingSession || !user} onRefresh={handleRefresh} />
               )}
             </View>
 

@@ -125,7 +125,7 @@ export function DepotsView({
       </View>
 
       {/* Depots Cards List */}
-      {loading ? (
+      {loading || (depots.length === 0 && !searchTerm.trim()) ? (
         <DepotListSkeletonList count={5} />
       ) : filteredDepots.length === 0 ? (
         <View style={styles.emptyCard}>

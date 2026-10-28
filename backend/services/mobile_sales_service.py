@@ -109,19 +109,8 @@ def _resolve_target_date(client, date_from: Optional[str], date_to: Optional[str
     for d in [date_to, date_from]:
         if d and isinstance(d, str) and d.strip():
             return d.strip()
-    # Fetch latest from DB (cached in master cache)
-    now = time.time()
-    cached = _MASTER_CACHE.get("latest_sale_date")
-    if not cached or (now - _MASTER_CACHE["timestamp"] > _MASTER_CACHE_TTL):
-        try:
-            # Phase 4 Consolidation: Query sales_daily_summary directly
-            res = client.table("sales_daily_summary").select("sale_date").order("sale_date", desc=True).limit(1).execute()
-            if res.data and res.data[0].get("sale_date"):
-                cached = res.data[0]["sale_date"]
-                _MASTER_CACHE["latest_sale_date"] = cached
-        except Exception as e:
-            logger.warning(f"_resolve_target_date: Could not fetch max sale_date: {e}")
-    return cached or time.strftime("%Y-%m-%d")
+    from backend.db.supabase_client import resolve_latest_sale_date
+    return resolve_latest_sale_date(client)
 
 
 def _period_start(period: str, target_date: str) -> str:

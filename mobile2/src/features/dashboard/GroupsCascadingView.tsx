@@ -44,6 +44,7 @@ interface GroupsCascadingViewProps {
   dateTo: string;
   scaleFactor: number;
   selectedHq?: string;
+  loading?: boolean;
   onRefresh?: () => Promise<void> | void;
 }
 
@@ -53,6 +54,7 @@ export function GroupsCascadingView({
   dateTo,
   scaleFactor,
   selectedHq,
+  loading: parentLoading = false,
   onRefresh,
 }: GroupsCascadingViewProps) {
   // Navigation level:
@@ -73,7 +75,7 @@ export function GroupsCascadingView({
   const [licenseeBrands, setLicenseeBrands] = useState<any[]>([]);
 
   // Filtering & controls
-  const [loading, setLoading] = useState<boolean>(false);
+  const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [sortOption, setSortOption] = useState<SortOptionValue>('az');
@@ -94,8 +96,12 @@ export function GroupsCascadingView({
   const groupBrandsCacheRef = useRef<Map<string, any[]>>(new Map());
   const licenseeBrandsCacheRef = useRef<Map<string, any[]>>(new Map());
 
-  // Reset cache and set loading state on date/period/selectedHq change
+  // Reset navigation to main screen (Level 1) and clear cache on date/period/selectedHq change
   useEffect(() => {
+    setLevel(1);
+    setSelectedGroup(null);
+    setSelectedLicensee(null);
+    resetFilters();
     groupsCacheRef.current = null;
     groupLicenseesCacheRef.current.clear();
     groupBrandsCacheRef.current.clear();
@@ -206,13 +212,7 @@ export function GroupsCascadingView({
 
   // Sync Level 1 on mount or date/period/HQ changes
   useEffect(() => {
-    if (level === 1) {
-      loadGroups(true);
-    } else if (level === 2 && selectedGroup) {
-      loadGroupDetails(selectedGroup.group_id);
-    } else if (level === 3 && selectedLicensee) {
-      loadLicenseeBrands(selectedLicensee.licensee_id);
-    }
+    loadGroups(true);
   }, [dateFrom, dateTo, period, selectedHq]);
 
   // Selection handlers
@@ -504,9 +504,14 @@ export function GroupsCascadingView({
       </View>
 
       {/* Main List Container */}
-      {loading ? (
+      {(loading ||
+        parentLoading ||
+        (level === 1 && groups.length === 0 && !searchQuery.trim()) ||
+        (level === 2 && activeGroupTab === 'brands' && groupBrands.length === 0 && !searchQuery.trim()) ||
+        (level === 2 && activeGroupTab === 'licensees' && licensees.length === 0 && !searchQuery.trim()) ||
+        (level === 3 && licenseeBrands.length === 0 && !searchQuery.trim())) ? (
         <View style={styles.scrollContent}>
-          <GroupListSkeletonList count={5} />
+          <GroupListSkeletonList count={6} />
         </View>
       ) : (
         <FlatList
