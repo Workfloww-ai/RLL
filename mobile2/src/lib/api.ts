@@ -820,7 +820,7 @@ export async function fetchMobileCompanies(
   forceRefresh: boolean = false
 ) {
   const cleanHq = selectedHq ? selectedHq.trim() : 'All Headquarters';
-  const fastKey = `companies_${cleanHq}_${period}_${dateTo || 'latest'}`;
+  const fastKey = `companies_v4_${cleanHq}_${period}_${dateTo || 'latest'}`;
   logger.info(`fetchMobileCompanies: period=${period}, dateTo=${dateTo}, selectedHq=${cleanHq}, isPrefetch=${isPrefetch}, forceRefresh=${forceRefresh}`);
 
   // 1. FastStorage 0ms synchronous read (pre-fetched background queue or previous session)

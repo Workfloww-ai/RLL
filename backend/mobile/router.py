@@ -2249,11 +2249,9 @@ async def get_mobile_sales(
             return {target_key: data_dict[target_key]}
         return data_dict
 
-    # Apply period pruning to formatted entities & nested leaf brands
+    # Apply period pruning to leaf brands to keep payload lean, while preserving Daily, MTD, YTD in entity data nodes
     if clean_level in [None, "companies"]:
         for comp in formatted_companies:
-            if "data" in comp:
-                comp["data"] = _prune_period_dict(comp["data"], selected_period)
             for b in comp.get("brands", []):
                 if "data" in b:
                     b["data"] = _prune_period_dict(b["data"], selected_period)
@@ -2281,32 +2279,16 @@ async def get_mobile_sales(
     depot_list_for_pruning = paginated_depots if (page is not None or page_size is not None) else formatted_depots
     if clean_level in [None, "depots"]:
         for depot in depot_list_for_pruning:
-            if "data" in depot:
-                depot["data"] = _prune_period_dict(depot["data"], selected_period)
             for b in depot.get("brands", []):
                 if "data" in b:
                     b["data"] = _prune_period_dict(b["data"], selected_period)
 
     if clean_level in [None, "tsms"]:
         for tsm in formatted_tsms:
-            if "data" in tsm:
-                tsm["data"] = _prune_period_dict(tsm["data"], selected_period)
-            if "companyCount" in tsm:
-                tsm["companyCount"] = _prune_period_dict(tsm["companyCount"], selected_period)
-            for tc in tsm.get("companies", []):
-                if "data" in tc:
-                    tc["data"] = _prune_period_dict(tc["data"], selected_period)
             for tb in tsm.get("brands", []):
                 if "data" in tb:
                     tb["data"] = _prune_period_dict(tb["data"], selected_period)
             for ase in tsm.get("ases", []):
-                if "data" in ase:
-                    ase["data"] = _prune_period_dict(ase["data"], selected_period)
-                if "companyCount" in ase:
-                    ase["companyCount"] = _prune_period_dict(ase["companyCount"], selected_period)
-                for ac in ase.get("companies", []):
-                    if "data" in ac:
-                        ac["data"] = _prune_period_dict(ac["data"], selected_period)
                 for ab in ase.get("brands", []):
                     if "data" in ab:
                         ab["data"] = _prune_period_dict(ab["data"], selected_period)
