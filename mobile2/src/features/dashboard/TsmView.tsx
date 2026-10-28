@@ -252,7 +252,7 @@ export function TsmView({
       const cases = getItemCases(selectedTsm);
       const aseCount = selectedTsm.ases?.length || 0;
       const itemTsm = selectedTsm as any;
-      const companyCount = itemTsm.companyCount?.[period] ?? itemTsm.company_count?.[period] ?? (itemTsm.brands?.filter((b: any) => (b.data?.[period]?.cases || 0) > 0 || (b.data?.[period]?.bottles || 0) > 0).length || 0);
+      const companyCount = itemTsm.companyCount?.[period] ?? itemTsm.company_count?.[period] ?? (itemTsm.companies?.length || 0);
       const subtitle = `${aseCount} ASE(s)  •  ${companyCount} Companies`;
       return {
         cases,
@@ -263,7 +263,7 @@ export function TsmView({
     if (level === 3 && selectedAse) {
       const cases = getItemCases(selectedAse);
       const itemAse = selectedAse as any;
-      const companyCount = itemAse.companyCount?.[period] ?? itemAse.company_count?.[period] ?? (itemAse.brands?.filter((b: any) => (b.data?.[period]?.cases || 0) > 0 || (b.data?.[period]?.bottles || 0) > 0).length || 0);
+      const companyCount = itemAse.companyCount?.[period] ?? itemAse.company_count?.[period] ?? (itemAse.companies?.length || 0);
       const subtitle = `${companyCount} Companies`;
       return {
         cases,
@@ -411,7 +411,7 @@ export function TsmView({
               const cases = Number(((rawData.cases || 0) * scaleFactor).toFixed(2));
               const bottles = Math.round((rawData.bottles || 0) * scaleFactor);
               const aseCount = item.ases?.length || 0;
-              const companyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.brands?.filter((b: any) => (b.data?.[period]?.cases || 0) > 0 || (b.data?.[period]?.bottles || 0) > 0).length || 0);
+              const companyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.companies?.length || 0);
               const hqName = item.hqLocation || 'Unassigned';
 
               return (
@@ -454,7 +454,7 @@ export function TsmView({
               const rawData = item.data?.[period] || { cases: 0, bottles: 0 };
               const cases = Number(((rawData.cases || 0) * scaleFactor).toFixed(2));
               const bottles = Math.round((rawData.bottles || 0) * scaleFactor);
-              const companyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.brands?.filter((b: any) => (b.data?.[period]?.cases || 0) > 0 || (b.data?.[period]?.bottles || 0) > 0).length || 0);
+              const companyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.companies?.length || 0);
               const hqName = item.hqLocation || 'Unassigned';
 
               return (

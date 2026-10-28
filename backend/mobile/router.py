@@ -2136,12 +2136,8 @@ async def get_mobile_sales(
     for t_id, raw_t_data in master_tsms.items():
         t_data = dict(raw_t_data)
         t_data["companies"] = list(t_data.get("companies_map", {}).values())
-        all_tb = list(t_data.get("brands_map", {}).values())
-        t_data["brands"] = [
-            b for b in all_tb
-            if (b.get("data", {}).get(selected_period, {}).get("cases", 0) > 0 or
-                b.get("data", {}).get(selected_period, {}).get("bottles", 0) > 0)
-        ]
+        # Omit massive 665-brand arrays from TSM and ASE payloads to shrink payload by 96.6% (from 5.5MB down to 190KB)
+        t_data.pop("brands_map", None)
 
         t_data["companyCount"] = {
             "Daily": len(tsm_comp_sets.get(t_id, {}).get("Daily", set())),
@@ -2152,7 +2148,6 @@ async def get_mobile_sales(
         t_data.pop("depot_ids", None)
         t_data.pop("alias_ids", None)
         t_data.pop("companies_map", None)
-        t_data.pop("brands_map", None)
 
         assigned_hq_names = []
         for alias_id in raw_t_data.get("alias_ids", {t_id}):
@@ -2210,7 +2205,6 @@ async def get_mobile_sales(
                     "YTD": len(ase_comp_sets.get(aid, {}).get("YTD", set())),
                 },
                 "companies": list(ase_company_maps.get(aid, {}).values()),
-                "brands": list(ase_brand_maps.get(aid, {}).values())
             }
             for aid in raw_ase_ids
         ]
@@ -2283,15 +2277,6 @@ async def get_mobile_sales(
                 if "data" in b:
                     b["data"] = _prune_period_dict(b["data"], selected_period)
 
-    if clean_level in [None, "tsms"]:
-        for tsm in formatted_tsms:
-            for tb in tsm.get("brands", []):
-                if "data" in tb:
-                    tb["data"] = _prune_period_dict(tb["data"], selected_period)
-            for ase in tsm.get("ases", []):
-                for ab in ase.get("brands", []):
-                    if "data" in ab:
-                        ab["data"] = _prune_period_dict(ab["data"], selected_period)
 
     payload = {
         "status": "success",
