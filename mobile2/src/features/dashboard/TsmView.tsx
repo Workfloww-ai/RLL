@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { TSM, Period, ASE } from '../../types';
 import { formatNumber, toTitleCase } from '../../lib/utils';
-import { TsmListSkeletonList } from '../../components/SkeletonLoaders';
+import { TsmListSkeletonList, CompanyListSkeletonList } from '../../components/SkeletonLoaders';
 import { MetricsCard } from '../../components/MetricsCard';
 import { SegmentedTabs } from '../../components/SegmentedTabs';
 import { PaginationBar } from '../../components/PaginationBar';
@@ -395,8 +395,14 @@ export function TsmView({
           />
         }
       >
-        {loading ? (
-          <TsmListSkeletonList count={5} />
+        {Boolean(
+          loading ||
+          (level === 1 && filteredTsms.length === 0 && !searchQuery.trim()) ||
+          (level === 2 && activeTsmTab === 'companies' && (!((selectedTsm as any)?.companies || selectedTsm?.brands) || ((selectedTsm as any)?.companies || selectedTsm?.brands)?.length === 0) && !searchQuery.trim()) ||
+          (level === 2 && activeTsmTab === 'ase' && (!selectedTsm?.ases || selectedTsm.ases.length === 0) && !searchQuery.trim()) ||
+          (level === 3 && (!selectedAse || !(selectedAse as any).companies || (selectedAse as any).companies.length === 0) && !searchQuery.trim())
+        ) ? (
+          level === 1 ? <TsmListSkeletonList count={6} /> : <CompanyListSkeletonList count={6} />
         ) : paginatedList.length === 0 ? (
           <View style={styles.emptyCard}>
             <Text style={styles.emptyText}>

@@ -24,11 +24,11 @@
         "backgroundColor": "#FFFFFF"
       }
     },
+    "owner": "serviceaccountworkfloww",
     "extra": {
       "eas": {
-        "projectId": "57ca29f2-77f9-4c6b-bf39-3ac26c7e586f"
+        "projectId": "23af74ff-59e9-41dc-8c85-cd233326b8eb"
       }
-    },
-    "owner": "khwaish.gahoi"
+    }
   }
 }

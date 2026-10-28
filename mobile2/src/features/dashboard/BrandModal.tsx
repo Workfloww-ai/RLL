@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { Company, Period } from '../../types';
 import { formatNumber } from '../../lib/utils';
+import { GroupListSkeletonList } from '../../components/SkeletonLoaders';
 import {
   XIcon,
   SearchIcon,
@@ -255,41 +256,47 @@ export function BrandModal({
           </View>
 
           {/* Brand List (flex: 1 allows FlatList to shrink & scroll smoothly above keyboard) */}
-          <FlatList
-            data={sortedBrands}
-            keyExtractor={(item) => item.id || item.name}
-            style={{ flex: 1 }}
-            contentContainerStyle={styles.listContent}
-            keyboardShouldPersistTaps="handled"
-            keyboardDismissMode="on-drag"
-            showsVerticalScrollIndicator={true}
-            nestedScrollEnabled={true}
-            ListEmptyComponent={
-              <Text style={styles.emptyText}>No brands match "{searchTerm}"</Text>
-            }
-            renderItem={({ item }) => {
-              const rawBData = item.data[period];
-              const bCases = Number((rawBData.cases * scaleFactor).toFixed(2));
-              const bBottles = Math.round(rawBData.bottles * scaleFactor);
+          {(!company.brands || company.brands.length === 0) && !searchTerm.trim() ? (
+            <View style={styles.listContent}>
+              <GroupListSkeletonList count={6} />
+            </View>
+          ) : (
+            <FlatList
+              data={sortedBrands}
+              keyExtractor={(item) => item.id || item.name}
+              style={{ flex: 1 }}
+              contentContainerStyle={styles.listContent}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+              showsVerticalScrollIndicator={true}
+              nestedScrollEnabled={true}
+              ListEmptyComponent={
+                <Text style={styles.emptyText}>No brands match "{searchTerm}"</Text>
+              }
+              renderItem={({ item }) => {
+                const rawBData = item.data[period];
+                const bCases = Number((rawBData.cases * scaleFactor).toFixed(2));
+                const bBottles = Math.round(rawBData.bottles * scaleFactor);
 
-              return (
-                <View style={styles.brandCard}>
-                  <View style={styles.brandMainRow}>
-                    <View style={styles.brandTitleWrapper}>
-                      <Text style={styles.brandName}>{item.name}</Text>
-                    </View>
+                return (
+                  <View style={styles.brandCard}>
+                    <View style={styles.brandMainRow}>
+                      <View style={styles.brandTitleWrapper}>
+                        <Text style={styles.brandName}>{item.name}</Text>
+                      </View>
 
-                    <View style={styles.metricsRightRow}>
-                      <View style={styles.metricCell}>
-                        <Text style={styles.brandMetricValPrimary}>{formatNumber(bCases)}</Text>
-                        <Text style={styles.brandMetricLabel}>CASES</Text>
+                      <View style={styles.metricsRightRow}>
+                        <View style={styles.metricCell}>
+                          <Text style={styles.brandMetricValPrimary}>{formatNumber(bCases)}</Text>
+                          <Text style={styles.brandMetricLabel}>CASES</Text>
+                        </View>
                       </View>
                     </View>
                   </View>
-                </View>
-              );
-            }}
-          />
+                );
+              }}
+            />
+          )}
         </View>
       </KeyboardAvoidingView>
 

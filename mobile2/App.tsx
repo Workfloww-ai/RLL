@@ -163,6 +163,30 @@ function MainApp() {
     });
   }, []);
 
+  const handleHqChange = useCallback((hq: string) => {
+    if (hq !== selectedHq) {
+      setLoadingSalesData(true);
+      setSelectedHq(hq);
+    }
+  }, [selectedHq]);
+
+  const handlePeriodChange = useCallback((p: Period) => {
+    if (p !== period) {
+      setLoadingSalesData(true);
+      setPeriod(p);
+    }
+  }, [period]);
+
+  const handleDateFromChange = useCallback((d: string) => {
+    setLoadingSalesData(true);
+    setDateFrom(d);
+  }, []);
+
+  const handleDateToChange = useCallback((d: string) => {
+    setLoadingSalesData(true);
+    setDateTo(d);
+  }, []);
+
   // Hardware BackHandler for tab history & modals
   useEffect(() => {
     const onBackPress = () => {
@@ -322,9 +346,10 @@ function MainApp() {
             ? Boolean(apiData && Array.isArray(apiData.tsms) && apiData.tsms.length > 0)
             : true;
 
-      // When date, period, or HQ changes, try immediate 0ms FastStorage hydration so YTD/MTD total never drops to 0.00
+      // When date, period, or HQ changes, immediately show skeleton loaders
       const cleanHq = (selectedHq || 'All Headquarters').trim();
       if (dateOrHqChanged || periodChanged) {
+        setLoadingSalesData(true);
         const fastCompKey = `rll_fast_v4_companies_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}`;
         const fastComp = FastStorage.getObject<any>(fastCompKey);
         const fastTsmKey = `rll_fast_v4_tsms_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}`;
@@ -347,9 +372,6 @@ function MainApp() {
             ...newPartial,
           }));
         }
-        if (!hasDataForTab && !hydratedAny) {
-          setLoadingSalesData(true);
-        }
       } else if (!hasDataForTab) {
         setLoadingSalesData(true);
       }
@@ -371,7 +393,13 @@ function MainApp() {
             setDateTo(compRes.latest_sale_date);
           }
           if (viewMode === 'companies') {
-            setLoadingSalesData(false);
+            if (dateOrHqChanged || periodChanged) {
+              setTimeout(() => {
+                if (isMounted) setLoadingSalesData(false);
+              }, 300);
+            } else {
+              setLoadingSalesData(false);
+            }
           }
         }
       }).catch((err) => {
@@ -474,7 +502,15 @@ function MainApp() {
           }, 50);
         }
       } finally {
-        if (isMounted) setLoadingSalesData(false);
+        if (isMounted) {
+          if (dateOrHqChanged || periodChanged) {
+            setTimeout(() => {
+              if (isMounted) setLoadingSalesData(false);
+            }, 300);
+          } else {
+            setLoadingSalesData(false);
+          }
+        }
       }
     };
     fetchSalesData();
@@ -770,13 +806,13 @@ function MainApp() {
             {viewMode !== 'profile' && (
               <Header
                 period={period}
-                setPeriod={setPeriod}
+                setPeriod={handlePeriodChange}
                 dateFrom={dateFrom}
-                setDateFrom={setDateFrom}
+                setDateFrom={handleDateFromChange}
                 dateTo={dateTo}
-                setDateTo={setDateTo}
+                setDateTo={handleDateToChange}
                 selectedHq={selectedHq}
-                setSelectedHq={setSelectedHq}
+                setSelectedHq={handleHqChange}
                 headquartersList={headquartersList}
                 latestSaleDate={apiData?.latest_sale_date}
                 fetchTimeMs={apiData?._fetchTimeMs}
@@ -791,10 +827,14 @@ function MainApp() {
                   <View style={styles.indicatorDot} />
                   <Text style={styles.indicatorLabel}>{period} TOTAL</Text>
                 </View>
-                <Text style={styles.metricsSummaryText}>
-                  <Text style={styles.boldText}>{formatNumber(totalSummary.cases)}</Text>{' '}
-                  <Text style={styles.lightText}>Cases</Text>
-                </Text>
+                {loadingSalesData && (!totalSummary || totalSummary.cases === 0) ? (
+                  <View style={{ width: 85, height: 16, backgroundColor: '#E2E8F0', borderRadius: 4, opacity: 0.7 }} />
+                ) : (
+                  <Text style={styles.metricsSummaryText}>
+                    <Text style={styles.boldText}>{formatNumber(totalSummary.cases)}</Text>{' '}
+                    <Text style={styles.lightText}>Cases</Text>
+                  </Text>
+                )}
               </View>
             )}
 
@@ -824,6 +864,7 @@ function MainApp() {
                     dateTo={dateTo}
                     scaleFactor={scaleFactor}
                     selectedHq={selectedHq}
+                    loading={loadingSalesData}
                     onRefresh={handleRefresh}
                   />
                 </View>
@@ -837,7 +878,7 @@ function MainApp() {
                     period={period}
                     scaleFactor={scaleFactor}
                     selectedHq={selectedHq}
-                    loading={loadingSalesData && (!apiData || !apiData.tsms || apiData.tsms.length === 0)}
+                    loading={loadingSalesData || !apiData?.tsms || apiData.tsms.length === 0}
                     onRefresh={handleRefresh}
                   />
                 </View>
@@ -845,7 +886,7 @@ function MainApp() {
 
               {/* View Mode: PROFILE */}
               {viewMode === 'profile' && (
-                <ProfileScreen user={user} onLogout={handleLogout} loading={loadingSession} onRefresh={handleRefresh} />
+                <ProfileScreen user={user} onLogout={handleLogout} loading={loadingSession || !user} onRefresh={handleRefresh} />
               )}
             </View>
 

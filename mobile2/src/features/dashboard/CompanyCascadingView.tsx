@@ -475,8 +475,11 @@ export function CompanyCascadingView({
         </TouchableOpacity>
       </View>
 
-      {/* Main Content List */}
-      {(loading || (level === 1 && (parentLoading || (companies.length === 0 && !searchQuery)))) ? (
+      {(loading ||
+        parentLoading ||
+        (level === 1 && (companies.length === 0 && !searchQuery.trim())) ||
+        (level === 2 && companyBrands.length === 0 && !searchQuery.trim()) ||
+        (level === 3 && brandLicensees.length === 0 && !searchQuery.trim())) ? (
         <View style={styles.scrollContent}>
           {level === 1 ? <CompanyListSkeletonList count={6} /> : <GroupListSkeletonList count={6} />}
         </View>
