@@ -1984,6 +1984,15 @@ class ImportPipelineEngine:
                 threading.Thread(target=self._purge_batch_temporary_data, args=(batch_id,), daemon=True).start()
 
             if final_status == "loaded":
+                if distinct_dates:
+                    try:
+                        from backend.db.supabase_client import set_latest_sale_date_cached
+                        newest_date = str(max(distinct_dates))
+                        set_latest_sale_date_cached(newest_date)
+                        logger.info(f"Batch {batch_id}: Updated cached latest sale date to {newest_date}.")
+                    except Exception as e_date:
+                        logger.warning(f"Batch {batch_id}: set_latest_sale_date_cached notice: {e_date}")
+
                 from backend.services.cache_service import invalidate_analytics_cache_sync, prewarm_cache_egress_sync
                 try:
                     purged_count = invalidate_analytics_cache_sync()

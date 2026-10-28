@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query, Request, status, H
 from pydantic import BaseModel
 from backend.core.security import create_access_token, get_current_user, RoleChecker, normalize_role_name
 from backend.db.client import get_supabase
+from backend.db.supabase_client import resolve_latest_sale_date
 from backend.db.company_aliases import normalize_company_name, is_pinned_company
 from backend.services.company_cascading_service import is_others_company
 
@@ -447,7 +448,7 @@ def _fetch_fresh_master_lookups() -> Dict[str, Any]:
             f_user_depots = executor.submit(lambda: client.table("user_depot").select("user_id, depot_id").execute().data or [])
             f_uhq = executor.submit(lambda: client.table("user_headquarters_mapping").select("user_id, headquarters_id, is_active").eq("is_active", True).execute().data or [])
             f_atm = executor.submit(lambda: client.table("ase_tsm_mapping").select("tsm_user_id, ase_user_id").execute().data or [])
-            f_max_date = executor.submit(lambda: client.table("sales_daily_summary").select("sale_date").order("sale_date", desc=True).limit(1).execute().data or [])
+            f_max_date = executor.submit(lambda: [{"sale_date": resolve_latest_sale_date(client)}])
 
             lookups_data = f_lookups.result() or {}
             roles_data = f_roles.result()
@@ -1566,16 +1567,8 @@ async def get_mobile_sales(
         # Cached latest sale date resolution (0ms DB calls on cache hit)
         latest_sale_date = _MASTER_CACHE.get("latest_sale_date")
         if not latest_sale_date or (time.time() - _MASTER_CACHE["timestamp"]) >= _MASTER_CACHE_TTL:
-            try:
-                max_res = client.table("sales_daily_summary").select("sale_date").order("sale_date", desc=True).limit(1).execute()
-                if max_res.data and max_res.data[0].get("sale_date"):
-                    latest_sale_date = max_res.data[0]["sale_date"]
-                    _MASTER_CACHE["latest_sale_date"] = latest_sale_date
-            except Exception as e:
-                logger.warning(f"Error fetching latest sale date from sales_daily_summary: {e}")
-
-        if not latest_sale_date:
-            latest_sale_date = datetime.utcnow().strftime("%Y-%m-%d")
+            latest_sale_date = resolve_latest_sale_date(client)
+            _MASTER_CACHE["latest_sale_date"] = latest_sale_date
 
         end_date = latest_sale_date
         if date_to and date_to.strip():

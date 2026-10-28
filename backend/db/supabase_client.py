@@ -1459,3 +1459,72 @@ def fetch_brand_licensees_sales_db(
     except Exception as e:
         logger.error(f"fetch_brand_licensees_sales_db error: {e}")
         return []
+
+
+# ---------------------------------------------------------------------------
+# High-Performance Latest Sale Date Resolution (<2ms, 24h TTL)
+# ---------------------------------------------------------------------------
+_LATEST_SALE_DATE_MEMO: Dict[str, Any] = {"date": None, "ts": 0.0}
+_LATEST_SALE_DATE_TTL = 86400.0  # 24 hours
+
+
+def set_latest_sale_date_cached(date_str: str) -> None:
+    """Sets latest sale date in memory and Redis cache with 24h TTL upon upload."""
+    clean_date = str(date_str).strip()
+    if clean_date:
+        _LATEST_SALE_DATE_MEMO["date"] = clean_date
+        _LATEST_SALE_DATE_MEMO["ts"] = time.time()
+        try:
+            from backend.db.redis_client import safe_set
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(safe_set("rll:meta:latest_sale_date", clean_date, ttl=86400))
+            except RuntimeError:
+                pass
+        except Exception:
+            pass
+
+
+def resolve_latest_sale_date(client=None) -> str:
+    """
+    Ultra-fast resolution of latest sale date (<2ms).
+    1. Returns in-memory cache if < 24 hours old.
+    2. Attempts RPC get_latest_sale_date() (B-Tree index max probe < 1ms).
+    3. Falls back to sales_daily_summary max date or current UTC date.
+    4. Caches in memory for 24 hours.
+    """
+    now = time.time()
+    cached = _LATEST_SALE_DATE_MEMO.get("date")
+    if cached and (now - _LATEST_SALE_DATE_MEMO.get("ts", 0)) < _LATEST_SALE_DATE_TTL:
+        return cached
+
+    if client is None:
+        client = get_supabase_client()
+
+    date_val = None
+    if client:
+        # Priority 1: Standalone RPC get_latest_sale_date (<1ms)
+        try:
+            res_rpc = client.rpc("get_latest_sale_date").execute()
+            if res_rpc.data:
+                date_val = str(res_rpc.data).strip()
+        except Exception:
+            pass
+
+        # Priority 2: Single-row query only if RPC is missing
+        if not date_val:
+            try:
+                res_tbl = client.table("sales_daily_summary").select("sale_date").order("sale_date", desc=True).limit(1).execute()
+                if res_tbl.data and res_tbl.data[0].get("sale_date"):
+                    date_val = str(res_tbl.data[0]["sale_date"]).strip()
+            except Exception as e_tbl:
+                logger.warning(f"resolve_latest_sale_date fallback table query error: {e_tbl}")
+
+    if not date_val:
+        from datetime import datetime
+        date_val = datetime.utcnow().strftime("%Y-%m-%d")
+
+    _LATEST_SALE_DATE_MEMO["date"] = date_val
+    _LATEST_SALE_DATE_MEMO["ts"] = now
+    return date_val

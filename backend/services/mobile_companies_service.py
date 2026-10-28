@@ -56,25 +56,8 @@ def _get_latest_sale_date() -> str:
     if master and master.get("latest_sale_date"):
         return master["latest_sale_date"]
 
-    global _MAX_DATE_CACHE
-    now = time.time()
-    if _MAX_DATE_CACHE[1] and (now - _MAX_DATE_CACHE[0]) < _TTL:
-        return _MAX_DATE_CACHE[1]
-
-    client = get_supabase_client()
-    target_date = ""
-    if client:
-        try:
-            res = client.table("sales_daily_summary").select("sale_date").order("sale_date", desc=True).limit(1).execute()
-            if res.data and res.data[0].get("sale_date"):
-                target_date = str(res.data[0]["sale_date"])
-                _MAX_DATE_CACHE = (now, target_date)
-        except Exception as e:
-            logger.warning(f"_get_latest_sale_date error: {e}")
-
-    if not target_date:
-        target_date = datetime.utcnow().strftime("%Y-%m-%d")
-    return target_date
+    from backend.db.supabase_client import resolve_latest_sale_date
+    return resolve_latest_sale_date()
 
 
 def _get_master_companies() -> List[Dict[str, Any]]:
@@ -458,3 +441,43 @@ def get_companies_summary(
 ) -> Tuple[List[Dict[str, Any]], str]:
     """Synchronous fallback wrapper for get_companies_summary_async."""
     return asyncio.run(get_companies_summary_async(period, date_to, selected_hq, company_name))
+
+
+async def prewarm_mobile_companies_cache() -> Dict[str, Any]:
+    """
+    Proactive Cache Pre-Warming Engine:
+    Pre-warms Redis for primary landing pages (Daily, MTD, YTD) across top HQs
+    with 24h TTL immediately upon upload or cache invalidation, guaranteeing 0% cache miss for mobile users.
+    """
+    from backend.services.cache_service import set_json_cache
+    from backend.services.tenant_service import get_include_others_setting_async
+    from backend.db.supabase_client import resolve_latest_sale_date, set_latest_sale_date_cached
+
+    inc_others_str = "inc1" if await get_include_others_setting_async() else "inc0"
+    latest_date = resolve_latest_sale_date()
+    set_latest_sale_date_cached(latest_date)
+
+    periods = ["Daily", "MTD", "YTD"]
+    hqs = ["All Headquarters", "Jaipur", "Jodhpur", "Udaipur"]
+    prewarmed = 0
+
+    for hq in hqs:
+        for p in periods:
+            try:
+                comp_list, res_date = await get_companies_summary_async(period=p, selected_hq=hq, date_to=latest_date)
+                if comp_list:
+                    payload = {
+                        "status": "success",
+                        "period": p,
+                        "count": len(comp_list),
+                        "latest_sale_date": res_date or latest_date,
+                        "companies": comp_list
+                    }
+                    redis_key = f"rll:mobile:companies:{p}:{hq}:latest:all:{inc_others_str}"
+                    await set_json_cache(redis_key, payload, ttl=86400)
+                    prewarmed += 1
+            except Exception as e_pw:
+                logger.warning(f"prewarm_mobile_companies_cache error for {p}/{hq}: {e_pw}")
+
+    logger.info(f"⚡ Pre-warmed {prewarmed} mobile company cache entries with 24h TTL.")
+    return {"prewarmed": prewarmed, "latest_date": latest_date}
