@@ -14,7 +14,7 @@ import Login from './pages/Login';
 import { ViewState } from './types';
 import { API_BASE_URL } from './config';
 import { logErrorToBackend } from './lib/logger';
-import { setTenantId } from './lib/apiClient';
+import { setTenantId, refreshWebToken } from './lib/apiClient';
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -113,19 +113,46 @@ export default function App() {
   const userRole = getUserRoleFromStorage();
   const isDeveloper = userRole === 'developer';
 
+  // Listen for background session expiration events from apiClient interceptor
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      setIsAuthenticated(false);
+      setUserName(null);
+      setTenantId('');
+      document.title = 'LucidX360 Admin Portal';
+    };
+    window.addEventListener('rll:session_expired', handleSessionExpired);
+    return () => window.removeEventListener('rll:session_expired', handleSessionExpired);
+  }, []);
+
   useEffect(() => {
     async function verifySession() {
-      const token = localStorage.getItem('token');
+      let token = localStorage.getItem('token');
       const headers: Record<string, string> = {};
       if (token) {
         headers['Authorization'] = `Bearer ${token}`;
       }
       try {
-        const res = await fetch(`${API_BASE_URL}/auth/me`, {
+        let res = await fetch(`${API_BASE_URL}/auth/me`, {
           method: 'GET',
           headers,
           credentials: 'include',
         });
+
+        // If access token expired, attempt automatic rolling refresh
+        if (res.status === 401) {
+          const refreshedToken = await refreshWebToken();
+          if (refreshedToken) {
+            token = refreshedToken;
+            headers['Authorization'] = `Bearer ${token}`;
+            res = await fetch(`${API_BASE_URL}/auth/me`, {
+              method: 'GET',
+              headers,
+              credentials: 'include',
+            });
+          }
+        }
+
         if (res.ok) {
           const data = await res.json();
           if (data && data.user) {
@@ -145,6 +172,7 @@ export default function App() {
           setIsAuthenticated(false);
           setUserName(null);
           localStorage.removeItem('token');
+          localStorage.removeItem('refresh_token');
           localStorage.removeItem('user_name');
           localStorage.removeItem('user');
           localStorage.removeItem('rll_tenant_id');
@@ -215,6 +243,7 @@ export default function App() {
       setIsAuthenticated(false);
       setUserName(null);
       localStorage.removeItem('token');
+      localStorage.removeItem('refresh_token');
       localStorage.removeItem('user_name');
       localStorage.removeItem('user');
       localStorage.removeItem('current_view');

@@ -7,7 +7,13 @@ from backend.core.security import create_access_token, get_current_user
 from backend.db.client import get_supabase
 from backend.db.redis_client import safe_get, safe_set, safe_delete
 from backend.core.config import settings
-from backend.auth.schemas import LoginRequest, TokenResponse, ForgotPasswordRequest, ResetPasswordRequest
+from backend.auth.schemas import LoginRequest, TokenResponse, ForgotPasswordRequest, ResetPasswordRequest, RefreshTokenRequest
+from backend.services.token_service import (
+    create_token_pair,
+    refresh_session_async,
+    revoke_refresh_token_async,
+    revoke_all_user_tokens_async
+)
 from supabase import create_client
 from backend.core.route import EncryptedRoute
 
@@ -150,17 +156,12 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
     }
     logger.info(f"Web login successful for user: {email} with role: {role_name} (tenant: {user_tenant_id})")
 
-    token_data = {
-        "sub": user_data["email"],
-        "role": user_data.get("role_name", "admin"),
-        "user_id": user_data["user_id"]
-    }
-    if user_tenant_id:
-        token_data["tenant_id"] = user_tenant_id
+    # Generate Dual-Token Pair (1h Access Token + 30-day Rolling Refresh Token)
+    token_pair = await create_token_pair(user_data, client_type="web")
+    token = token_pair["access_token"]
+    refresh_token = token_pair["refresh_token"]
 
-    token = create_access_token(data=token_data)
-
-    # Create Redis Session & Set HttpOnly Cookie (24h Web Admin vs 30d Mobile)
+    # Create Redis Session & Set HttpOnly Cookies
     session_token = str(uuid.uuid4())
     remember_me = bool(credentials.remember_me)
     ttl = 30 * 86400 if remember_me else 86400  # 30 days vs 24 hours
@@ -188,11 +189,55 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
         secure=is_secure
     )
 
+    response.set_cookie(
+        key="rll_refresh",
+        value=refresh_token,
+        max_age=token_pair["refresh_expires_in"],
+        httponly=True,
+        samesite="lax",
+        secure=is_secure
+    )
+
     return {
         "access_token": token,
+        "refresh_token": refresh_token,
         "token_type": "bearer",
+        "expires_in": token_pair["expires_in"],
         "user": user_data
     }
+
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh_web_token(
+    request: Request,
+    response: Response,
+    body: Optional[RefreshTokenRequest] = None
+):
+    """
+    Refreshes access token for Web Admin Portal using rolling 30-day refresh token.
+    Accepts token via JSON body or HttpOnly 'rll_refresh' cookie.
+    """
+    token_str = (body.refresh_token.strip() if body and body.refresh_token else None) or request.cookies.get("rll_refresh")
+    if not token_str:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Refresh token must be provided in body or cookie."
+        )
+
+    refreshed = await refresh_session_async(token_str)
+
+    # Roll the cookie TTL forward
+    is_secure = settings.ENVIRONMENT.lower() in ["production", "prod"]
+    response.set_cookie(
+        key="rll_refresh",
+        value=refreshed["refresh_token"],
+        max_age=refreshed["refresh_expires_in"],
+        httponly=True,
+        samesite="lax",
+        secure=is_secure
+    )
+
+    return refreshed
 
 
 @router.post("/forgot-password")
@@ -483,8 +528,9 @@ async def revoke_user_sessions(
     Instantly revoke all active sessions for a target user (Admin only).
     Forces active mobile and web users to be logged out immediately.
     """
-    await safe_set(f"rll:revoked:{target_user_id}", "true", ttl=86400 * 30)
-    logger.info(f"Admin {current_user.get('email')} revoked all sessions for user {target_user_id}")
+    # Instantly revoke all active refresh tokens in Redis
+    revoked_count = await revoke_all_user_tokens_async(target_user_id)
+    logger.info(f"Admin {current_user.get('email')} revoked all sessions ({revoked_count} tokens) for user {target_user_id}")
     return {
         "success": True,
         "message": f"User session for {target_user_id} revoked successfully."
@@ -504,7 +550,12 @@ async def logout(request: Request, response: Response):
     session_token = request.cookies.get("rll_session")
     if session_token:
         await safe_delete(f"rll:session:{session_token}")
+    refresh_token = request.cookies.get("rll_refresh")
+    if refresh_token:
+        await revoke_refresh_token_async(refresh_token)
+
     response.delete_cookie(key="rll_session")
+    response.delete_cookie(key="rll_refresh")
 
     # If an upload is active when the user signs out, cancel and rollback immediately
     try:

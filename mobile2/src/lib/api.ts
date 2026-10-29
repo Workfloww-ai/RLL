@@ -70,7 +70,103 @@ export function registerSessionRevokedListener(callback: () => void) {
   _onSessionRevokedCallback = callback;
 }
 
-export async function apiFetch(endpointPath: string, init?: RequestInit): Promise<Response> {
+// ── Auth Token Storage & Concurrency Single-Flight Refresh Mutex ───────────
+let _refreshPromise: Promise<string | null> | null = null;
+
+export async function getRefreshToken(): Promise<string | null> {
+  return await secureStorage.getItem('rll_mobile_refresh_token');
+}
+
+export async function saveAuthTokens(accessToken: string, refreshToken?: string, user?: any): Promise<void> {
+  if (accessToken) {
+    await secureStorage.setItem('rll_mobile_token', accessToken);
+    seedCachedToken(accessToken);
+  }
+  if (refreshToken) {
+    await secureStorage.setItem('rll_mobile_refresh_token', refreshToken);
+  }
+  if (user) {
+    await secureStorage.setItem('rll_mobile_user', JSON.stringify(user));
+  }
+}
+
+/**
+ * Executes token refresh with single-flight concurrency lock.
+ * Parallel requests join the active in-flight refresh promise, preventing race conditions.
+ */
+export async function refreshAccessToken(): Promise<string | null> {
+  if (_refreshPromise) {
+    logger.info('refreshAccessToken: Concurrency lock active; joining in-flight refresh request.');
+    return _refreshPromise;
+  }
+
+  _refreshPromise = (async () => {
+    try {
+      const refreshToken = await getRefreshToken();
+      if (!refreshToken) {
+        logger.warn('refreshAccessToken: No refresh token in secureStorage.');
+        return null;
+      }
+
+      logger.info('refreshAccessToken: Initiating token refresh with backend...');
+      const tenantId = getTenantId();
+      const res = await fetch(`${BASE_URL}/mobile/refresh?tenant_id=${encodeURIComponent(tenantId)}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Tenant-ID': tenantId,
+        },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+
+      if (!res.ok) {
+        logger.warn(`refreshAccessToken: Backend returned HTTP ${res.status}`);
+        return null;
+      }
+
+      const data = await res.json();
+      if (data?.access_token && data?.refresh_token) {
+        await saveAuthTokens(data.access_token, data.refresh_token, data.user);
+        logger.info('refreshAccessToken: Refreshed successfully. 30-day session rolled forward.');
+        return data.access_token;
+      }
+      return null;
+    } catch (err) {
+      logger.error('refreshAccessToken: Exception during refresh:', err);
+      return null;
+    } finally {
+      _refreshPromise = null;
+    }
+  })();
+
+  return _refreshPromise;
+}
+
+/**
+ * Checks access token expiry and proactively refreshes if less than 5 minutes remain.
+ */
+export async function checkAndProactivelyRefreshToken(): Promise<void> {
+  try {
+    const token = await getAuthToken();
+    if (!token) return;
+    const parts = token.split('.');
+    if (parts.length === 3) {
+      const payloadBase64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      const payload = JSON.parse(decodeURIComponent(escape(atob(payloadBase64))));
+      if (payload && payload.exp) {
+        const remainingSeconds = payload.exp - Math.floor(Date.now() / 1000);
+        if (remainingSeconds < 300) {
+          logger.info(`checkAndProactivelyRefreshToken: Access token expiring in ${remainingSeconds}s. Refreshing in background...`);
+          await refreshAccessToken();
+        }
+      }
+    }
+  } catch (e) {
+    logger.debug('checkAndProactivelyRefreshToken: non-fatal parsing error', e);
+  }
+}
+
+export async function apiFetch(endpointPath: string, init?: RequestInit, isRetry = false): Promise<Response> {
   const cleanPath = endpointPath.startsWith('/') ? endpointPath : `/${endpointPath}`;
   const tenantId = getTenantId();
 
@@ -141,8 +237,34 @@ export async function apiFetch(endpointPath: string, init?: RequestInit): Promis
       `   └─ 🗄️  DB HTTP Requests   : ${dbCount || '0'} request(s) resolved in DB (DB Time: ${dbMs || '0'} ms | Env: ${dbEnv})`
     );
 
-    if (res.status === 401 || res.status === 403) {
-      logger.warn(`apiFetch: Received status ${res.status} for ${endpointPath}. Session may be revoked or expired. Wiping credentials.`);
+    // ── Seamless Refresh on 401 Unauthorized ───────────────────────────────
+    if (res.status === 401 && !isRetry) {
+      const isAuthEndpoint = cleanPath.includes('/mobile/login') ||
+                             cleanPath.includes('/mobile/send-otp') ||
+                             cleanPath.includes('/mobile/verify-otp') ||
+                             cleanPath.includes('/mobile/refresh') ||
+                             cleanPath.includes('/mobile/logout');
+
+      if (!isAuthEndpoint) {
+        logger.info(`apiFetch: 401 received for ${cleanPath}. Attempting token refresh via rolling window...`);
+        const newAccessToken = await refreshAccessToken();
+        if (newAccessToken) {
+          // Replay request with new token
+          const retryInit: RequestInit = { ...(init || {}) };
+          const retryHeaders = new Headers(retryInit.headers || {});
+          retryHeaders.set('Authorization', `Bearer ${newAccessToken}`);
+          retryInit.headers = retryHeaders;
+          return await apiFetch(endpointPath, retryInit, true);
+        } else {
+          logger.warn(`apiFetch: Token refresh failed or session inactive >30 days. Wiping session.`);
+          await clearAuthSession();
+          if (_onSessionRevokedCallback) {
+            _onSessionRevokedCallback();
+          }
+        }
+      }
+    } else if (res.status === 403 || (res.status === 401 && isRetry)) {
+      logger.warn(`apiFetch: Received status ${res.status} for ${endpointPath} (isRetry=${isRetry}). Session terminated.`);
       await clearAuthSession();
       if (_onSessionRevokedCallback) {
         _onSessionRevokedCallback();
@@ -410,9 +532,7 @@ export async function verifyMobileOTP(phone: string, otp: string, email: string 
 
     const data = await res.json();
     if (data.access_token) {
-      await secureStorage.setItem('rll_mobile_token', data.access_token);
-      await secureStorage.setItem('rll_mobile_user', JSON.stringify(data.user));
-      seedCachedToken(data.access_token);
+      await saveAuthTokens(data.access_token, data.refresh_token, data.user);
     }
     logger.info(`verifyMobileOTP: Success. Token acquired for phone: ${phone}`);
     return data;
@@ -442,9 +562,7 @@ export async function loginMobileUser(email: string, password: string) {
 
     const data = await res.json();
     if (data.access_token) {
-      await secureStorage.setItem('rll_mobile_token', data.access_token);
-      await secureStorage.setItem('rll_mobile_user', JSON.stringify(data.user));
-      seedCachedToken(data.access_token);
+      await saveAuthTokens(data.access_token, data.refresh_token, data.user);
     }
     logger.info(`loginMobileUser: Success. Session loaded for email: ${email}`);
     return data;
@@ -703,8 +821,10 @@ export async function clearAllPhoneCaches() {
 export async function clearAuthSession() {
   logger.info('clearAuthSession: Clearing user auth tokens and profiles from encrypted secureStorage.');
   await secureStorage.removeItem('rll_mobile_token');
+  await secureStorage.removeItem('rll_mobile_refresh_token');
   await secureStorage.removeItem('rll_mobile_user');
   await AsyncStorage.removeItem('rll_mobile_token').catch(() => {});
+  await AsyncStorage.removeItem('rll_mobile_refresh_token').catch(() => {});
   await AsyncStorage.removeItem('rll_mobile_user').catch(() => {});
   await clearAllPhoneCaches();
   clearCachedToken();

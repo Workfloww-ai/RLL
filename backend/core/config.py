@@ -48,7 +48,9 @@ class Settings(BaseSettings):
     # JWT Configuration (Application Authentication)
     JWT_SECRET: str = ""
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 # 24 hours
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 # 1 hour short-lived access token
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30   # 30-day rolling inactivity window
+    REFRESH_TOKEN_GRACE_SECONDS: int = 30 # Grace period for rotated refresh tokens
     
     # Dovesoft SMS Gateway Credentials (loaded strictly from .env)
     DOVESOFT_API_KEY: str = ""

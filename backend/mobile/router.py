@@ -9,6 +9,11 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, Depends, Query, Request, status, Header
 from pydantic import BaseModel
 from backend.core.security import create_access_token, get_current_user, RoleChecker, normalize_role_name
+from backend.services.token_service import (
+    create_token_pair,
+    refresh_session_async,
+    revoke_refresh_token_async,
+)
 from backend.db.client import get_supabase
 from backend.db.supabase_client import resolve_latest_sale_date
 from backend.db.company_aliases import normalize_company_name, is_pinned_company
@@ -407,7 +412,8 @@ def _build_master_lookups_dict(
         "user_alias_map": user_alias_map,
         "user_hqs_map": user_hqs_map,
         "user_hq_ids_map": user_hq_ids_map,
-        "latest_sale_date": latest_sale_date
+        "latest_sale_date": latest_sale_date,
+        "users_map": users_map
     }
 
 
@@ -578,7 +584,10 @@ class VerifyOTPRequest(BaseModel):
 class MobileLoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    refresh_token: Optional[str] = None
+    expires_in: Optional[int] = None
     user: Dict[str, Any]
+    tenant_config: Optional[Dict[str, Any]] = None
 
 
 @router.post("/login", response_model=MobileLoginResponse)
@@ -678,22 +687,14 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
         except Exception as e:
             logger.warning(f"Could not log to user_auth_logs table: {e}")
 
-    # 3. Create Access Token valid for 30 days for mobile application
-    token = create_access_token(
-        data={
-            "sub": user_data["email"],
-            "role": user_data["role_name"],
-            "roles": user_data["roles"],
-            "user_id": user_data["user_id"],
-            "tenant_id": user_data["tenant_id"],
-            "company_name": user_data["company_name"]
-        },
-        expires_delta=timedelta(days=30)
-    )
+    # 3. Create Dual-Token Pair (1h Access Token + 30-day Rolling Refresh Token)
+    token_pair = await create_token_pair(user_data, client_type="mobile")
 
     return {
-        "access_token": token,
+        "access_token": token_pair["access_token"],
+        "refresh_token": token_pair["refresh_token"],
         "token_type": "bearer",
+        "expires_in": token_pair["expires_in"],
         "user": user_data
     }
 
@@ -903,26 +904,17 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
             "is_active": True
         }
 
-        # Issue short-lived review session (consistent with token architecture, no 30-day default)
-        token = create_access_token(
-            data={
-                "sub": user_data["email"],
-                "role": user_data["role_name"],
-                "roles": user_data["roles"],
-                "user_id": user_data["user_id"],
-                "tenant_id": user_data["tenant_id"],
-                "company_name": user_data["company_name"],
-                "is_review_user": True
-            },
-            expires_delta=timedelta(hours=settings.APP_REVIEW_TOKEN_EXPIRE_HOURS)
-        )
+        # Issue dual-token review session
+        token_pair = await create_token_pair(user_data, client_type="mobile")
         logger.info(
             f"Dedicated review session generated for {mask_phone(settings.APP_REVIEW_PHONE)} "
             f"(expires in {settings.APP_REVIEW_TOKEN_EXPIRE_HOURS}h, tenant: {settings.APP_REVIEW_DEMO_TENANT_ID})"
         )
         return {
-            "access_token": token,
+            "access_token": token_pair["access_token"],
+            "refresh_token": token_pair["refresh_token"],
             "token_type": "bearer",
+            "expires_in": token_pair["expires_in"],
             "user": user_data,
             "tenant_config": {
                 "tenant_id": user_data["tenant_id"],
@@ -1060,23 +1052,15 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
             detail="This mobile number is not registered."
         )
 
-    # Generate Access Token valid for 30 days for mobile application with tenant and company scope
-    token = create_access_token(
-        data={
-            "sub": user_data["email"],
-            "role": user_data["role_name"],
-            "roles": user_data["roles"],
-            "user_id": user_data["user_id"],
-            "tenant_id": user_data["tenant_id"],
-            "company_name": user_data["company_name"]
-        },
-        expires_delta=timedelta(days=30)
-    )
+    # Generate Dual-Token Pair (1h Access Token + 30-day Rolling Refresh Token)
+    token_pair = await create_token_pair(user_data, client_type="mobile")
     logger.info(f"Mobile OTP verification successful for phone: {mask_phone(phone)} (User: {mask_email(user_data['email'])}, Company: {user_data['company_name']}, Role: {user_data['role_name']})")
 
     return {
-        "access_token": token,
+        "access_token": token_pair["access_token"],
+        "refresh_token": token_pair["refresh_token"],
         "token_type": "bearer",
+        "expires_in": token_pair["expires_in"],
         "user": user_data,
         "tenant_config": {
             "tenant_id": user_data["tenant_id"],
@@ -1085,6 +1069,33 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
             "pinned_company_name": user_data["company_name"] or "Rajasthan Liquor Limited",
         }
     }
+
+
+class MobileRefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+
+@router.post("/refresh")
+async def refresh_mobile_token(req: MobileRefreshTokenRequest):
+    """
+    Refreshes mobile access token using rolling 30-day refresh token.
+    Guarantees continuous 30-day rolling session for active mobile users.
+    """
+    return await refresh_session_async(req.refresh_token)
+
+
+class MobileLogoutRequest(BaseModel):
+    refresh_token: Optional[str] = None
+
+
+@router.post("/logout")
+async def mobile_logout(req: Optional[MobileLogoutRequest] = None):
+    """
+    Safely revokes the mobile refresh token upon user logout.
+    """
+    if req and req.refresh_token:
+        await revoke_refresh_token_async(req.refresh_token)
+    return {"success": True, "message": "Logged out successfully."}
 
 
 @router.get("/me")
@@ -1435,6 +1446,13 @@ async def get_mobile_sales(
     t_auth_start = time.perf_counter()
     user_role = (current_user.get("role_name") or current_user.get("role") or "").lower()
     user_id = current_user.get("user_id")
+    user_tenant_id = current_user.get("tenant_id")
+    if not user_tenant_id or not str(user_tenant_id).strip():
+        logger.warning(f"Unauthorized: user {user_id} has no valid tenant_id association.")
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized: User profile has no valid tenant association"
+        )
     
     # Apply Data Visibility Toggle
     from backend.db.redis_client import safe_get
@@ -1631,6 +1649,31 @@ async def get_mobile_sales(
         rpc_trace_info: Dict[str, Any] = {}
         tsm_rpc_trace: Dict[str, Any] = {}
 
+        # Pre-build member_to_tsms mapping from master lookups
+        user_alias_map = master_cache.get("user_alias_map", {})
+        member_to_tsms = {}
+        ase_assigned_tsm = {}
+
+        for tid, t_obj in master_tsms.items():
+            if tid not in member_to_tsms:
+                member_to_tsms[tid] = set()
+            member_to_tsms[tid].add(tid)
+            for aid in tsm_ase_lookup.get(tid, set()):
+                if aid == tid:
+                    continue
+                if aid not in ase_assigned_tsm:
+                    ase_assigned_tsm[aid] = tid
+                    if aid not in member_to_tsms:
+                        member_to_tsms[aid] = set()
+                    member_to_tsms[aid].add(tid)
+
+        # Expand member_to_tsms to include all alias user_ids
+        for inactive_id, active_id in user_alias_map.items():
+            if active_id in member_to_tsms:
+                if inactive_id not in member_to_tsms:
+                    member_to_tsms[inactive_id] = set()
+                member_to_tsms[inactive_id].update(member_to_tsms[active_id])
+
         scoped_user_ids = None
         if selected_hq and selected_hq != "All Headquarters":
             clean_sel_hq = selected_hq.strip().lower()
@@ -1639,8 +1682,27 @@ async def get_mobile_sales(
                 uid for uid, hq_list in user_hqs_map.items()
                 if any(h.strip().lower() == clean_sel_hq or re.sub(r'[\s\-_.]+', '', h).lower() == clean_sel_no_space for h in hq_list)
             ]
-            if matched_uids:
-                scoped_user_ids = matched_uids
+            scoped_user_ids = matched_uids
+
+        # Enforce role-based user scoping for TSM and ASE roles when data restriction is active
+        if user_role == "tsm":
+            t_obj = master_tsms.get(user_id)
+            permitted_uids = (set(t_obj.get("alias_ids", {user_id})) | set(t_obj.get("ase_ids", []))) if t_obj else {user_id}
+            if scoped_user_ids is None:
+                scoped_user_ids = list(permitted_uids)
+            else:
+                scoped_user_ids = [uid for uid in scoped_user_ids if uid in permitted_uids]
+        elif user_role in ["ase", "territory executive"]:
+            permitted_uids = {user_id}
+            if scoped_user_ids is None:
+                scoped_user_ids = list(permitted_uids)
+            else:
+                scoped_user_ids = [uid for uid in scoped_user_ids if uid in permitted_uids]
+        elif scoped_user_ids is None and member_to_tsms:
+            # For All Headquarters viewed by unrestricted roles (Admin, Super Admin, Director):
+            # Scope to the known fleet users (TSMs, ASEs, and aliases) so PostgreSQL seeks directly
+            # to active sales personnel via index instead of scanning millions of unrelated sales fact rows.
+            scoped_user_ids = list(member_to_tsms.keys())
 
         t_rpc_start = time.perf_counter()
 
@@ -1662,8 +1724,24 @@ async def get_mobile_sales(
                 rpc_trace_info["brands_rpc_error"] = str(e_brands)
                 return []
 
+        user_tenant_id = current_user.get("tenant_id")
+
         def _exec_tsm_rpc():
-            return call_mobile_tsm_sales_json_rpc(end_date, mtd_start, ytd_start, user_ids=scoped_user_ids, trace_info=tsm_rpc_trace)
+            try:
+                return call_mobile_tsm_sales_json_rpc(
+                    end_date,
+                    mtd_start,
+                    ytd_start,
+                    user_ids=scoped_user_ids,
+                    hq_id=target_hq_id,
+                    tenant_id=user_tenant_id,
+                    trace_info=tsm_rpc_trace,
+                )
+            except Exception as e_tsm:
+                logger.error(f"Error calling call_mobile_tsm_sales_json_rpc: {e_tsm}")
+                tsm_rpc_trace["tsm_rpc_error"] = str(e_tsm)
+                rpc_trace_info["tsm_rpc_error"] = str(e_tsm)
+                return []
 
         if clean_level == "companies":
             comp_res, b_res = await asyncio.gather(

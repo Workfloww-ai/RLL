@@ -69,3 +69,11 @@ docs/audits
 FLOW.md
 /Users/khwaish/Desktop/RLL/tests
 mobile2/@khwaish.gahoi__rll-keystore.bak.jks
+/backend/tests/*
+/backend/mobile2/*
+backend/tests/test_system_bottlenecks_audit.py
+
+mobile2/__mocks__/*
+mobile2/e2e/__mocks__/*
+mobile2/__tests__/TsmView.test.tsx
+backend/tests/test_system_bottlenecks_audit.py

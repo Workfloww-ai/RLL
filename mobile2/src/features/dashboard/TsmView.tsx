@@ -36,6 +36,8 @@ interface TsmViewProps {
   scaleFactor: number;
   selectedHq: string;
   loading?: boolean;
+  error?: string | null;
+  onRetry?: () => void;
   onRefresh?: () => Promise<void> | void;
 }
 
@@ -45,6 +47,8 @@ export function TsmView({
   scaleFactor,
   selectedHq,
   loading = false,
+  error = null,
+  onRetry,
   onRefresh,
 }: TsmViewProps) {
   // Navigation level:
@@ -395,18 +399,35 @@ export function TsmView({
           />
         }
       >
-        {Boolean(
-          loading ||
-          (level === 1 && filteredTsms.length === 0 && !searchQuery.trim()) ||
-          (level === 2 && activeTsmTab === 'companies' && (!((selectedTsm as any)?.companies || selectedTsm?.brands) || ((selectedTsm as any)?.companies || selectedTsm?.brands)?.length === 0) && !searchQuery.trim()) ||
-          (level === 2 && activeTsmTab === 'ase' && (!selectedTsm?.ases || selectedTsm.ases.length === 0) && !searchQuery.trim()) ||
-          (level === 3 && (!selectedAse || !(selectedAse as any).companies || (selectedAse as any).companies.length === 0) && !searchQuery.trim())
-        ) ? (
+        {loading ? (
           level === 1 ? <TsmListSkeletonList count={6} /> : <CompanyListSkeletonList count={6} />
+        ) : error ? (
+          <View style={styles.emptyCard}>
+            <Text style={[styles.emptyText, { color: '#EF4444', marginBottom: onRetry ? 12 : 0, textAlign: 'center' }]}>
+              {error}
+            </Text>
+            {onRetry && (
+              <TouchableOpacity
+                style={styles.retryBtn}
+                onPress={onRetry}
+                activeOpacity={0.75}
+              >
+                <Text style={styles.retryBtnText}>Retry</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         ) : paginatedList.length === 0 ? (
           <View style={styles.emptyCard}>
             <Text style={styles.emptyText}>
-              {searchQuery.trim() ? 'No items match your search' : 'No data found'}
+              {searchQuery.trim()
+                ? 'No items match your search'
+                : level === 1
+                ? 'No data found'
+                : level === 2
+                ? activeTsmTab === 'companies'
+                  ? 'No companies found for this TSM'
+                  : 'No ASEs found for this TSM'
+                : 'No companies found for this ASE'}
             </Text>
           </View>
         ) : (
@@ -711,6 +732,19 @@ const styles = StyleSheet.create({
     color: '#64748B',
     fontSize: 14,
     fontWeight: '500',
+  },
+  retryBtn: {
+    backgroundColor: '#0284C7',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignSelf: 'center',
+    marginTop: 4,
+  },
+  retryBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+    fontSize: 13,
   },
   modalOverlay: {
     flex: 1,

@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import Any, Dict, List, Optional
 # pyrefly: ignore [missing-import]
 from supabase import create_client, Client
@@ -1301,30 +1302,51 @@ def call_mobile_tsm_sales_json_rpc(
     target_date: str,
     mtd_start: str,
     ytd_start: str,
+    tenant_id: Optional[str] = None,
     user_ids: Optional[List[str]] = None,
+    hq_id: Optional[str] = None,
     trace_info: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Calls get_mobile_tsm_sales_summary_json PostgreSQL RPC function.
     Returns JSONB list [...] of untruncated TSM/ASE sales fact aggregations.
+    Strictly enforces tenant scoping and fail-closed security.
     """
     import time
     import json
     if isinstance(user_ids, dict) and trace_info is None:
         trace_info = user_ids
         user_ids = None
+
+    # Mandatory Tenant Scope: Fail-closed if tenant_id is missing or empty
+    if not tenant_id or not str(tenant_id).strip():
+        logger.error("call_mobile_tsm_sales_json_rpc rejected: tenant_id is required for multi-tenant isolation")
+        raise ValueError("tenant_id is required for multi-tenant isolation")
+
+    # Priority 2: Empty user list guard: return [] immediately in 0ms without hitting DB
+    if user_ids is not None and len(user_ids) == 0:
+        if trace_info is not None:
+            trace_info["tsm_rpc_duration_ms"] = 0.0
+            trace_info["tsm_rpc_payload_bytes"] = 2
+        return []
+
     client = get_supabase_client()
     if not client:
         logger.warning("call_mobile_tsm_sales_json_rpc: No Supabase client available.")
-        return []
+        raise RuntimeError("No Supabase client available.")
+
+    # Canonical 6-parameter payload with mandatory tenant scoping
+    params: Dict[str, Any] = {
+        "p_target_date": target_date,
+        "p_mtd_start": mtd_start,
+        "p_ytd_start": ytd_start,
+        "p_user_ids": user_ids if user_ids is not None else None,
+        "p_hq_id": hq_id if hq_id is not None else None,
+        "p_tenant_id": str(tenant_id).strip(),
+    }
+
+    t0 = time.perf_counter()
     try:
-        params: Dict[str, Any] = {
-            "p_target_date": target_date,
-            "p_mtd_start": mtd_start,
-            "p_ytd_start": ytd_start,
-            "p_user_ids": user_ids if user_ids is not None else None,
-        }
-        t0 = time.perf_counter()
         res = client.rpc("get_mobile_tsm_sales_summary_json", params).execute()
         t1 = time.perf_counter()
         
@@ -1336,10 +1358,13 @@ def call_mobile_tsm_sales_json_rpc(
 
         return data
     except Exception as e:
-        logger.error(f"call_mobile_tsm_sales_json_rpc error (target={target_date}, mtd={mtd_start}, ytd={ytd_start}): {e}")
+        logger.error(
+            f"call_mobile_tsm_sales_json_rpc error (target={target_date}, mtd={mtd_start}, ytd={ytd_start}, tenant={tenant_id}): {e}"
+        )
         if trace_info is not None:
             trace_info["tsm_rpc_error"] = str(e)
-        return []
+        # Fail closed: Do NOT silently return [] on RPC authorization or schema errors
+        raise RuntimeError(f"Database error in get_mobile_tsm_sales_summary_json: {e}") from e
 
 
 import re

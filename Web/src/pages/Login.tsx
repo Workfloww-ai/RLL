@@ -82,6 +82,9 @@ export default function Login({ onLogin }: LoginProps) {
           localStorage.removeItem('rll_remembered_email');
         }
         localStorage.setItem('token', data.access_token);
+        if (data.refresh_token) {
+          localStorage.setItem('refresh_token', data.refresh_token);
+        }
         if (data.user) {
           localStorage.setItem('user', JSON.stringify(data.user));
           if (data.user.tenant_id) {
