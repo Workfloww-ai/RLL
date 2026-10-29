@@ -407,7 +407,8 @@ def _build_master_lookups_dict(
         "user_alias_map": user_alias_map,
         "user_hqs_map": user_hqs_map,
         "user_hq_ids_map": user_hq_ids_map,
-        "latest_sale_date": latest_sale_date
+        "latest_sale_date": latest_sale_date,
+        "users_map": users_map
     }
 
 
@@ -1435,6 +1436,13 @@ async def get_mobile_sales(
     t_auth_start = time.perf_counter()
     user_role = (current_user.get("role_name") or current_user.get("role") or "").lower()
     user_id = current_user.get("user_id")
+    user_tenant_id = current_user.get("tenant_id")
+    if not user_tenant_id or not str(user_tenant_id).strip():
+        logger.warning(f"Unauthorized: user {user_id} has no valid tenant_id association.")
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized: User profile has no valid tenant association"
+        )
     
     # Apply Data Visibility Toggle
     from backend.db.redis_client import safe_get
@@ -1631,6 +1639,31 @@ async def get_mobile_sales(
         rpc_trace_info: Dict[str, Any] = {}
         tsm_rpc_trace: Dict[str, Any] = {}
 
+        # Pre-build member_to_tsms mapping from master lookups
+        user_alias_map = master_cache.get("user_alias_map", {})
+        member_to_tsms = {}
+        ase_assigned_tsm = {}
+
+        for tid, t_obj in master_tsms.items():
+            if tid not in member_to_tsms:
+                member_to_tsms[tid] = set()
+            member_to_tsms[tid].add(tid)
+            for aid in tsm_ase_lookup.get(tid, set()):
+                if aid == tid:
+                    continue
+                if aid not in ase_assigned_tsm:
+                    ase_assigned_tsm[aid] = tid
+                    if aid not in member_to_tsms:
+                        member_to_tsms[aid] = set()
+                    member_to_tsms[aid].add(tid)
+
+        # Expand member_to_tsms to include all alias user_ids
+        for inactive_id, active_id in user_alias_map.items():
+            if active_id in member_to_tsms:
+                if inactive_id not in member_to_tsms:
+                    member_to_tsms[inactive_id] = set()
+                member_to_tsms[inactive_id].update(member_to_tsms[active_id])
+
         scoped_user_ids = None
         if selected_hq and selected_hq != "All Headquarters":
             clean_sel_hq = selected_hq.strip().lower()
@@ -1639,8 +1672,27 @@ async def get_mobile_sales(
                 uid for uid, hq_list in user_hqs_map.items()
                 if any(h.strip().lower() == clean_sel_hq or re.sub(r'[\s\-_.]+', '', h).lower() == clean_sel_no_space for h in hq_list)
             ]
-            if matched_uids:
-                scoped_user_ids = matched_uids
+            scoped_user_ids = matched_uids
+
+        # Enforce role-based user scoping for TSM and ASE roles when data restriction is active
+        if user_role == "tsm":
+            t_obj = master_tsms.get(user_id)
+            permitted_uids = (set(t_obj.get("alias_ids", {user_id})) | set(t_obj.get("ase_ids", []))) if t_obj else {user_id}
+            if scoped_user_ids is None:
+                scoped_user_ids = list(permitted_uids)
+            else:
+                scoped_user_ids = [uid for uid in scoped_user_ids if uid in permitted_uids]
+        elif user_role in ["ase", "territory executive"]:
+            permitted_uids = {user_id}
+            if scoped_user_ids is None:
+                scoped_user_ids = list(permitted_uids)
+            else:
+                scoped_user_ids = [uid for uid in scoped_user_ids if uid in permitted_uids]
+        elif scoped_user_ids is None and member_to_tsms:
+            # For All Headquarters viewed by unrestricted roles (Admin, Super Admin, Director):
+            # Scope to the known fleet users (TSMs, ASEs, and aliases) so PostgreSQL seeks directly
+            # to active sales personnel via index instead of scanning millions of unrelated sales fact rows.
+            scoped_user_ids = list(member_to_tsms.keys())
 
         t_rpc_start = time.perf_counter()
 
@@ -1662,8 +1714,24 @@ async def get_mobile_sales(
                 rpc_trace_info["brands_rpc_error"] = str(e_brands)
                 return []
 
+        user_tenant_id = current_user.get("tenant_id")
+
         def _exec_tsm_rpc():
-            return call_mobile_tsm_sales_json_rpc(end_date, mtd_start, ytd_start, user_ids=scoped_user_ids, trace_info=tsm_rpc_trace)
+            try:
+                return call_mobile_tsm_sales_json_rpc(
+                    end_date,
+                    mtd_start,
+                    ytd_start,
+                    user_ids=scoped_user_ids,
+                    hq_id=target_hq_id,
+                    tenant_id=user_tenant_id,
+                    trace_info=tsm_rpc_trace,
+                )
+            except Exception as e_tsm:
+                logger.error(f"Error calling call_mobile_tsm_sales_json_rpc: {e_tsm}")
+                tsm_rpc_trace["tsm_rpc_error"] = str(e_tsm)
+                rpc_trace_info["tsm_rpc_error"] = str(e_tsm)
+                return []
 
         if clean_level == "companies":
             comp_res, b_res = await asyncio.gather(

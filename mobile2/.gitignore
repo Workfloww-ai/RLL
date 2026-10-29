@@ -83,3 +83,5 @@ upload_cert.pem
 credentials/*
 @workflowwais-team__rll.jks
 rll-by-workfloww-505506-68f8b7a507b0.json
+backend/tests/*
+backend/tests/*

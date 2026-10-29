@@ -109,6 +109,17 @@ function MainApp() {
     return null;
   });
   const [loadingSalesData, setLoadingSalesData] = useState(true);
+  const [successfulFetches, setSuccessfulFetches] = useState<{
+    companies: boolean;
+    tsm: boolean;
+    depots: boolean;
+  }>({
+    companies: false,
+    tsm: false,
+    depots: false,
+  });
+  const [salesError, setSalesError] = useState<string | null>(null);
+  const [retryTrigger, setRetryTrigger] = useState<number>(0);
   const [refreshing, setRefreshing] = useState(false);
   const [showNoDataModal, setShowNoDataModal] = useState<boolean>(false);
   const [showChatbotModal, setShowChatbotModal] = useState<boolean>(false);
@@ -119,17 +130,22 @@ function MainApp() {
   const handleRefresh = useCallback(async () => {
     if (!user) return;
     setRefreshing(true);
+    setSalesError(null);
     try {
       await clearAllPhoneCaches();
       if (viewMode === 'companies') {
         const compRes = await fetchMobileCompanies(period, dateTo, selectedHq, false, true);
         if (compRes && Array.isArray(compRes.companies)) {
+          setSuccessfulFetches((prev) => ({ ...prev, companies: true }));
           setApiData((prev: any) => ({ ...(prev || {}), ...compRes }));
         }
       } else {
         const refreshLevel = viewMode === 'tsm' ? 'tsms' : 'companies';
         const res = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq, undefined, false, refreshLevel);
-        if (res) setApiData(res);
+        if (res) {
+          setSuccessfulFetches((prev) => ({ ...prev, [viewMode]: true }));
+          setApiData((prev: any) => ({ ...(prev || {}), ...res }));
+        }
       }
       const profile = await fetchUserProfile();
       if (profile && (profile.email || profile.phone || profile.user_id)) {
@@ -341,14 +357,16 @@ function MainApp() {
 
       const hasDataForTab =
         viewMode === 'companies'
-          ? Boolean(apiData && Array.isArray(apiData.companies) && apiData.companies.length > 0)
+          ? successfulFetches.companies || Boolean(apiData && Array.isArray(apiData.companies))
           : viewMode === 'tsm'
-            ? Boolean(apiData && Array.isArray(apiData.tsms) && apiData.tsms.length > 0)
+            ? successfulFetches.tsm
             : true;
 
       // When date, period, or HQ changes, immediately show skeleton loaders
       const cleanHq = (selectedHq || 'All Headquarters').trim();
       if (dateOrHqChanged || periodChanged) {
+        setSalesError(null);
+        setSuccessfulFetches({ companies: false, tsm: false, depots: false });
         setLoadingSalesData(true);
         const fastCompKey = `rll_fast_v4_companies_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}`;
         const fastComp = FastStorage.getObject<any>(fastCompKey);
@@ -380,6 +398,7 @@ function MainApp() {
       // This guarantees the header {period} TOTAL is populated in 30ms across ALL tabs without waiting for 7MB sales payload!
       fetchMobileCompanies(period, dateTo || dateFrom, selectedHq).then((compRes) => {
         if (compRes && Array.isArray(compRes.companies) && compRes.companies.length > 0 && isMounted) {
+          setSuccessfulFetches((prev) => ({ ...prev, companies: true }));
           setApiData((prevData: any) => ({
             ...(prevData || {}),
             companies: compRes.companies,
@@ -411,6 +430,11 @@ function MainApp() {
         let res: any = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq, undefined, false, targetLevel);
 
         if (res && isMounted) {
+          setSalesError(null);
+          setSuccessfulFetches((prev) => ({
+            ...prev,
+            [viewMode]: true,
+          }));
           const tStateStart = getNow();
           setApiData((prevData: any) => ({ ...(prevData || {}), ...res }));
           if (Array.isArray(res.tsms) && res.tsms.length > 0) {
@@ -501,6 +525,11 @@ function MainApp() {
             );
           }, 50);
         }
+      } catch (err: any) {
+        logger.error('App: fetchMobileSales error:', err);
+        if (isMounted) {
+          setSalesError(err?.message || 'Failed to load sales data. Please check your connection.');
+        }
       } finally {
         if (isMounted) {
           if (dateOrHqChanged || periodChanged) {
@@ -535,7 +564,7 @@ function MainApp() {
       isMounted = false;
       clearInterval(intervalId);
     };
-  }, [user, dateFrom, dateTo, selectedHq, period, viewMode]);
+  }, [user, dateFrom, dateTo, selectedHq, period, viewMode, retryTrigger]);
 
   const handleLogout = async () => {
     logger.info('App: User initiated logout.');
@@ -878,7 +907,13 @@ function MainApp() {
                     period={period}
                     scaleFactor={scaleFactor}
                     selectedHq={selectedHq}
-                    loading={loadingSalesData || !apiData?.tsms || apiData.tsms.length === 0}
+                    loading={loadingSalesData && !successfulFetches.tsm}
+                    error={salesError}
+                    onRetry={() => {
+                      setSalesError(null);
+                      setLoadingSalesData(true);
+                      setRetryTrigger((prev) => prev + 1);
+                    }}
                     onRefresh={handleRefresh}
                   />
                 </View>
