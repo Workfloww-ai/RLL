@@ -172,16 +172,117 @@ export async function secureFetch(url: string, options: RequestInit = {}): Promi
     return response;
 }
 
-// Global fetch interceptor to guarantee 100% of API calls include tenant_id
+// ── Web Refresh Mutex (Single-Flight Lock) ─────────────────────────
+let _webRefreshPromise: Promise<string | null> | null = null;
+
+export async function refreshWebToken(): Promise<string | null> {
+    if (_webRefreshPromise) {
+        return _webRefreshPromise;
+    }
+
+    _webRefreshPromise = (async () => {
+        try {
+            const refreshToken = localStorage.getItem('refresh_token');
+            const tenantId = getTenantId();
+            
+            // Resolve API base URL for refresh
+            let refreshUrl = '/api/v1/auth/refresh';
+            if (typeof window !== 'undefined' && (window as any).API_BASE_URL) {
+                refreshUrl = `${(window as any).API_BASE_URL}/auth/refresh`;
+            }
+
+            const originalFetch = (window as any).__originalFetch || window.fetch;
+            const res = await originalFetch(`${refreshUrl}?tenant_id=${encodeURIComponent(tenantId)}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Tenant-ID': tenantId,
+                },
+                credentials: 'include',
+                body: JSON.stringify({ refresh_token: refreshToken || undefined }),
+            });
+
+            if (!res.ok) {
+                return null;
+            }
+
+            const data = await res.json();
+            if (data?.access_token) {
+                localStorage.setItem('token', data.access_token);
+                if (data.refresh_token) {
+                    localStorage.setItem('refresh_token', data.refresh_token);
+                }
+                if (data.user) {
+                    localStorage.setItem('user', JSON.stringify(data.user));
+                }
+                return data.access_token;
+            }
+            return null;
+        } catch (e) {
+            console.warn('Web token refresh exception:', e);
+            return null;
+        } finally {
+            _webRefreshPromise = null;
+        }
+    })();
+
+    return _webRefreshPromise;
+}
+
+// Global fetch interceptor to guarantee 100% of API calls include tenant_id, auth, and rolling refresh
 if (typeof window !== 'undefined' && window.fetch) {
     const originalFetch = window.fetch;
-    window.fetch = function(input: RequestInfo | URL, init?: RequestInit) {
-        if (typeof input === 'string') {
-            // Check if it's an API request
-            if (input.includes('/api/v1') || input.includes('/api/')) {
-                const { url, options } = injectTenantContext(input, init || {});
-                return originalFetch.call(this, url, options);
+    (window as any).__originalFetch = originalFetch;
+
+    window.fetch = async function(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+        let inputUrl = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input));
+
+        if (inputUrl.includes('/api/v1') || inputUrl.includes('/api/')) {
+            const { url, options } = injectTenantContext(inputUrl, init || {});
+
+            // 1. Auto-attach credentials: 'include' for session cookies
+            if (!options.credentials) {
+                options.credentials = 'include';
             }
+
+            // 2. Auto-attach Authorization: Bearer <token> if present in localStorage
+            const token = localStorage.getItem('token');
+            if (token) {
+                const hdrs = (options.headers as Record<string, string>) || {};
+                if (!hdrs['Authorization'] && !hdrs['authorization']) {
+                    hdrs['Authorization'] = `Bearer ${token}`;
+                    options.headers = hdrs;
+                }
+            }
+
+            const response = await originalFetch.call(this, url, options);
+
+            // 3. Handle 401 Unauthorized with automatic sliding refresh
+            const isAuthRoute = url.includes('/auth/login') ||
+                                url.includes('/auth/refresh') ||
+                                url.includes('/auth/forgot-password') ||
+                                url.includes('/auth/reset-password');
+
+            if (response.status === 401 && !isAuthRoute) {
+                const newAccessToken = await refreshWebToken();
+                if (newAccessToken) {
+                    // Retry with updated Bearer token
+                    const retryOptions = { ...options };
+                    const retryHeaders = { ...(retryOptions.headers as Record<string, string> || {}) };
+                    retryHeaders['Authorization'] = `Bearer ${newAccessToken}`;
+                    retryOptions.headers = retryHeaders;
+                    return originalFetch.call(this, url, retryOptions);
+                } else {
+                    // Refresh token expired after 30 days inactivity or revoked
+                    localStorage.removeItem('token');
+                    localStorage.removeItem('refresh_token');
+                    localStorage.removeItem('user');
+                    localStorage.removeItem('user_name');
+                    window.dispatchEvent(new Event('rll:session_expired'));
+                }
+            }
+
+            return response;
         }
         return originalFetch.call(this, input, init);
     };

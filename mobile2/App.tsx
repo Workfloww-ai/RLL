@@ -38,6 +38,7 @@ import {
   clearAllPhoneCaches,
   hydratePersistentCache,
   registerSessionRevokedListener,
+  checkAndProactivelyRefreshToken,
 } from './src/lib/api';
 import { preloadAllHeadquartersData } from './src/lib/prefetchService';
 
@@ -251,16 +252,18 @@ function MainApp() {
     });
   }, []);
 
-  // Monitor AppState to perform background -> foreground session health-check
+  // Monitor AppState to perform background -> foreground session health-check & proactive refresh
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
       if (nextAppState === 'active' && user) {
-        logger.info('App: Foregrounded. Validating session health with server...');
-        fetchUserProfile().then((profile) => {
-          if (!profile) {
-            logger.warn('App: Foreground health-check failed (session revoked/expired). Resetting user state.');
-            setUser(null);
-          }
+        logger.info('App: Foregrounded. Validating session health and proactive token freshness...');
+        checkAndProactivelyRefreshToken().then(() => {
+          fetchUserProfile().then((profile) => {
+            if (!profile) {
+              logger.warn('App: Foreground health-check failed (session revoked/expired). Resetting user state.');
+              setUser(null);
+            }
+          });
         });
       }
     });

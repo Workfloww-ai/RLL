@@ -9,6 +9,11 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, Depends, Query, Request, status, Header
 from pydantic import BaseModel
 from backend.core.security import create_access_token, get_current_user, RoleChecker, normalize_role_name
+from backend.services.token_service import (
+    create_token_pair,
+    refresh_session_async,
+    revoke_refresh_token_async,
+)
 from backend.db.client import get_supabase
 from backend.db.supabase_client import resolve_latest_sale_date
 from backend.db.company_aliases import normalize_company_name, is_pinned_company
@@ -579,7 +584,10 @@ class VerifyOTPRequest(BaseModel):
 class MobileLoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    refresh_token: Optional[str] = None
+    expires_in: Optional[int] = None
     user: Dict[str, Any]
+    tenant_config: Optional[Dict[str, Any]] = None
 
 
 @router.post("/login", response_model=MobileLoginResponse)
@@ -679,22 +687,14 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
         except Exception as e:
             logger.warning(f"Could not log to user_auth_logs table: {e}")
 
-    # 3. Create Access Token valid for 30 days for mobile application
-    token = create_access_token(
-        data={
-            "sub": user_data["email"],
-            "role": user_data["role_name"],
-            "roles": user_data["roles"],
-            "user_id": user_data["user_id"],
-            "tenant_id": user_data["tenant_id"],
-            "company_name": user_data["company_name"]
-        },
-        expires_delta=timedelta(days=30)
-    )
+    # 3. Create Dual-Token Pair (1h Access Token + 30-day Rolling Refresh Token)
+    token_pair = await create_token_pair(user_data, client_type="mobile")
 
     return {
-        "access_token": token,
+        "access_token": token_pair["access_token"],
+        "refresh_token": token_pair["refresh_token"],
         "token_type": "bearer",
+        "expires_in": token_pair["expires_in"],
         "user": user_data
     }
 
@@ -904,26 +904,17 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
             "is_active": True
         }
 
-        # Issue short-lived review session (consistent with token architecture, no 30-day default)
-        token = create_access_token(
-            data={
-                "sub": user_data["email"],
-                "role": user_data["role_name"],
-                "roles": user_data["roles"],
-                "user_id": user_data["user_id"],
-                "tenant_id": user_data["tenant_id"],
-                "company_name": user_data["company_name"],
-                "is_review_user": True
-            },
-            expires_delta=timedelta(hours=settings.APP_REVIEW_TOKEN_EXPIRE_HOURS)
-        )
+        # Issue dual-token review session
+        token_pair = await create_token_pair(user_data, client_type="mobile")
         logger.info(
             f"Dedicated review session generated for {mask_phone(settings.APP_REVIEW_PHONE)} "
             f"(expires in {settings.APP_REVIEW_TOKEN_EXPIRE_HOURS}h, tenant: {settings.APP_REVIEW_DEMO_TENANT_ID})"
         )
         return {
-            "access_token": token,
+            "access_token": token_pair["access_token"],
+            "refresh_token": token_pair["refresh_token"],
             "token_type": "bearer",
+            "expires_in": token_pair["expires_in"],
             "user": user_data,
             "tenant_config": {
                 "tenant_id": user_data["tenant_id"],
@@ -1061,23 +1052,15 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
             detail="This mobile number is not registered."
         )
 
-    # Generate Access Token valid for 30 days for mobile application with tenant and company scope
-    token = create_access_token(
-        data={
-            "sub": user_data["email"],
-            "role": user_data["role_name"],
-            "roles": user_data["roles"],
-            "user_id": user_data["user_id"],
-            "tenant_id": user_data["tenant_id"],
-            "company_name": user_data["company_name"]
-        },
-        expires_delta=timedelta(days=30)
-    )
+    # Generate Dual-Token Pair (1h Access Token + 30-day Rolling Refresh Token)
+    token_pair = await create_token_pair(user_data, client_type="mobile")
     logger.info(f"Mobile OTP verification successful for phone: {mask_phone(phone)} (User: {mask_email(user_data['email'])}, Company: {user_data['company_name']}, Role: {user_data['role_name']})")
 
     return {
-        "access_token": token,
+        "access_token": token_pair["access_token"],
+        "refresh_token": token_pair["refresh_token"],
         "token_type": "bearer",
+        "expires_in": token_pair["expires_in"],
         "user": user_data,
         "tenant_config": {
             "tenant_id": user_data["tenant_id"],
@@ -1086,6 +1069,33 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
             "pinned_company_name": user_data["company_name"] or "Rajasthan Liquor Limited",
         }
     }
+
+
+class MobileRefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+
+@router.post("/refresh")
+async def refresh_mobile_token(req: MobileRefreshTokenRequest):
+    """
+    Refreshes mobile access token using rolling 30-day refresh token.
+    Guarantees continuous 30-day rolling session for active mobile users.
+    """
+    return await refresh_session_async(req.refresh_token)
+
+
+class MobileLogoutRequest(BaseModel):
+    refresh_token: Optional[str] = None
+
+
+@router.post("/logout")
+async def mobile_logout(req: Optional[MobileLogoutRequest] = None):
+    """
+    Safely revokes the mobile refresh token upon user logout.
+    """
+    if req and req.refresh_token:
+        await revoke_refresh_token_async(req.refresh_token)
+    return {"success": True, "message": "Logged out successfully."}
 
 
 @router.get("/me")
