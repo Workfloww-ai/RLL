@@ -12,6 +12,56 @@ logger = logging.getLogger("redis_client")
 
 _redis_client: Optional[aioredis.Redis] = None
 _main_loop: Optional[asyncio.AbstractEventLoop] = None
+_reaper_task: Optional[asyncio.Task] = None
+
+
+async def reap_zombie_connections(idle_threshold_seconds: int = 120) -> int:
+    """
+    Scans Redis client list and terminates idle zombie connections older than idle_threshold_seconds.
+    Prevents connection pool starvation on capped Redis plans (e.g. 30 connections).
+    Always preserves the caller's own active connection.
+    """
+    global _redis_client
+    if not _redis_client:
+        return 0
+
+    killed = 0
+    try:
+        # Get client's own ID to guarantee self is never killed
+        my_info = await _redis_client.client_info()
+        my_id = my_info.get("id")
+
+        clients = await _redis_client.client_list()
+        for client in clients:
+            client_id = client.get("id")
+            if client_id == my_id:
+                continue
+
+            idle_time = int(client.get("idle", 0))
+            if idle_time >= idle_threshold_seconds:
+                addr = client.get("addr")
+                try:
+                    await _redis_client.execute_command("CLIENT", "KILL", "ID", str(client_id))
+                    logger.info(f"Reaped zombie Redis client id={client_id} addr={addr} (idle {idle_time}s)")
+                    killed += 1
+                except Exception as e_kill:
+                    logger.debug(f"Failed to kill idle client {client_id}: {e_kill}")
+    except Exception as e:
+        logger.debug(f"Zombie connection reaper check notice: {e}")
+
+    return killed
+
+
+async def _zombie_reaper_loop(interval_seconds: int = 60, idle_threshold_seconds: int = 120):
+    """Periodic background task that sweeps zombie connections every interval_seconds."""
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            await reap_zombie_connections(idle_threshold_seconds=idle_threshold_seconds)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.debug(f"Error in zombie reaper loop: {e}")
 
 async def init_redis() -> Optional[aioredis.Redis]:
     """
@@ -57,8 +107,23 @@ async def init_redis() -> Optional[aioredis.Redis]:
             # Ping Redis to verify connection health
             await _redis_client.ping()
             logger.info("Successfully connected to Redis Cloud server.")
-            # Note: Database-wide flushes (FLUSHDB/FLUSHALL) are strictly forbidden
-            # in application lifecycle to preserve sessions, OTPs, locks, and security state.
+
+            # Run startup zombie connection sweep to free up stale sockets from prior restarts
+            try:
+                await reap_zombie_connections(idle_threshold_seconds=120)
+            except Exception as e_zomb:
+                logger.debug(f"Startup zombie reaper notice: {e_zomb}")
+
+            # Spawn periodic background reaper task
+            try:
+                global _reaper_task
+                if _reaper_task is None or _reaper_task.done():
+                    _reaper_task = asyncio.create_task(
+                        _zombie_reaper_loop(interval_seconds=60, idle_threshold_seconds=120)
+                    )
+            except Exception as e_task:
+                logger.debug(f"Could not spawn background zombie reaper: {e_task}")
+
             return _redis_client
 
             
@@ -77,7 +142,14 @@ async def init_redis() -> Optional[aioredis.Redis]:
 
 async def close_redis() -> None:
     """Close Redis client connection pool during application shutdown."""
-    global _redis_client, _main_loop
+    global _redis_client, _main_loop, _reaper_task
+    if _reaper_task is not None and not _reaper_task.done():
+        try:
+            _reaper_task.cancel()
+        except Exception:
+            pass
+        _reaper_task = None
+
     if _redis_client is not None:
         try:
             await _redis_client.aclose()

@@ -16,7 +16,7 @@ from backend.services.tenant_service import get_include_others_setting_async, cl
 
 logger = logging.getLogger(__name__)
 
-admin_only = RoleChecker(["admin", "super_admin"])
+admin_only = RoleChecker(["admin", "super_admin", "developer"])
 authenticated = Depends(get_current_user)
 
 router = APIRouter(prefix="/master-data", tags=["Master Data"], dependencies=[authenticated], route_class=EncryptedRoute)

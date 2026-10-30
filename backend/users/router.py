@@ -10,7 +10,7 @@ from backend.core.system_lock import check_system_lock_or_raise, roster_upload_l
 
 logger = logging.getLogger(__name__)
 
-admin_only = RoleChecker(["admin", "super_admin"])
+admin_only = RoleChecker(["admin", "super_admin", "developer"])
 
 router = APIRouter(
     prefix="/users", 
@@ -21,7 +21,7 @@ router = APIRouter(
 
 async def invalidate_user_and_territory_caches():
     """Purge Redis caches when users, roles, or territory assignments change."""
-    await safe_delete("rll:cache:users_list")
+    await safe_delete_pattern("rll:cache:users_list*")
     await safe_delete("rll:cache:depots_list")
     await safe_delete("rll:cache:headquarters_list")
     await safe_delete("rll:cache:roles_list")

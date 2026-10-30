@@ -13,7 +13,7 @@ from backend.uploads.schemas import UploadBatchResponse, UploadLogResponse
 
 logger = logging.getLogger(__name__)
 
-admin_only = RoleChecker(["admin", "super_admin"])
+admin_only = RoleChecker(["admin", "super_admin", "developer"])
 
 router = APIRouter(
     prefix="/uploads", 

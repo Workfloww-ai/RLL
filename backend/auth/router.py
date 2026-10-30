@@ -522,7 +522,7 @@ async def reset_password(req: ResetPasswordRequest):
 @router.post("/revoke-user/{target_user_id}")
 async def revoke_user_sessions(
     target_user_id: str,
-    current_user: dict = Depends(RoleChecker(["admin", "super_admin"]))
+    current_user: dict = Depends(RoleChecker(["admin", "super_admin", "developer"]))
 ):
     """
     Instantly revoke all active sessions for a target user (Admin only).

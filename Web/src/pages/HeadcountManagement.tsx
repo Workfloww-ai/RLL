@@ -35,7 +35,16 @@ const normalizeUser = (u: any): User => {
   const circleName = u.circleName || u.circle_name || u.circle || 'Unassigned';
   const headquarters = u.headquarters || u.headquarters_name || u.hq || 'Unassigned';
   const headquarters_ids = Array.isArray(u.headquarters_ids) ? u.headquarters_ids : [];
-  const headquartersList = Array.isArray(u.headquarters_list) ? u.headquarters_list : [];
+  const rawHqList = (Array.isArray(u.headquartersList) && u.headquartersList.length > 0)
+    ? u.headquartersList
+    : (Array.isArray(u.headquarters_list) && u.headquarters_list.length > 0)
+      ? u.headquarters_list
+      : [];
+  const headquartersList = rawHqList.map((h: any) =>
+    typeof h === 'string'
+      ? { headquarters_id: '', name: h }
+      : { headquarters_id: h.headquarters_id || '', name: h.name || '' }
+  );
   const reportingManager = u.reportingManager || u.reporting_manager || u.manager || 'Unassigned';
   const phoneNumber = u.phoneNumber || u.phone_number || u.phone || '';
   const isActive = u.isActive ?? u.is_active ?? true;

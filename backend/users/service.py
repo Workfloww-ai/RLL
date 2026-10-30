@@ -153,6 +153,7 @@ class UserService:
                     "headquarters": headquarters_str,
                     "headquarters_ids": hq_ids,
                     "headquarters_list": display_hqs,
+                    "headquartersList": display_hqs,
                     "circleName": circle_name,
                     "isActive": u.get("is_active", True),
                     "is_active": u.get("is_active", True)
