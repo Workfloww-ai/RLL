@@ -79,3 +79,5 @@ mobile2/__tests__/TsmView.test.tsx
 backend/tests/test_system_bottlenecks_audit.py
 IMFL Data Apr-26 (1).xlsb
 IMFL Data Sep-2026.xlsb
+tests/test_inactive_user_sales.py
+tests/verify_migration_057.py

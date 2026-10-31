@@ -25,11 +25,15 @@ class UserService:
 
         try:
             # 1. Fetch users strictly scoped by tenant_id if provided
-            users_query = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, created_at, tenant_id")
+            users_query = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, created_at, updated_at, tenant_id")
             if tenant_id:
                 users_query = users_query.eq("tenant_id", tenant_id)
             users_res = users_query.execute()
             raw_users = users_res.data if users_res.data is not None else []
+
+            for ru in raw_users:
+                if not ru.get("deactivated_at") and not ru.get("is_active", True):
+                    ru["deactivated_at"] = ru.get("updated_at")
 
             if not raw_users:
                 return []
@@ -590,8 +594,14 @@ class UserService:
             user_update["email"] = payload["email"]
         is_active_val = payload.get("is_active", payload.get("isActive"))
         if is_active_val is not None:
-            user_update["is_active"] = bool(is_active_val)
-            user_update["updated_at"] = datetime.now(timezone.utc).isoformat()
+            new_status = bool(is_active_val)
+            now_iso = datetime.now(timezone.utc).isoformat()
+            user_update["is_active"] = new_status
+            user_update["updated_at"] = now_iso
+            if not new_status:
+                user_update["deactivated_at"] = now_iso
+            else:
+                user_update["deactivated_at"] = None
 
         updator_id = updated_by or payload.get("updated_by") or payload.get("uploaded_by") or payload.get("created_by")
         clean_updator_id = str(updator_id) if (updator_id and len(str(updator_id)) == 36 and str(updator_id) != "00000000-0000-0000-0000-000000000001") else None
@@ -607,7 +617,15 @@ class UserService:
 
         try:
             if user_update:
-                client.table("users").update(user_update).eq("user_id", user_id).execute()
+                try:
+                    client.table("users").update(user_update).eq("user_id", user_id).execute()
+                except Exception as e_up:
+                    if "deactivated_at" in str(e_up) and "deactivated_at" in user_update:
+                        fallback_update = dict(user_update)
+                        fallback_update.pop("deactivated_at", None)
+                        client.table("users").update(fallback_update).eq("user_id", user_id).execute()
+                    else:
+                        raise e_up
 
             if is_active_val is not None:
                 new_status = bool(is_active_val)
@@ -820,7 +838,7 @@ class UserService:
 
         try:
             now_iso = datetime.now(timezone.utc).isoformat()
-            user_update_data: Dict[str, Any] = {"is_active": False, "updated_at": now_iso}
+            user_update_data: Dict[str, Any] = {"is_active": False, "updated_at": now_iso, "deactivated_at": now_iso}
             clean_deleted_by = str(deleted_by) if (deleted_by and len(str(deleted_by)) == 36 and str(deleted_by) != "00000000-0000-0000-0000-000000000001") else None
             if clean_deleted_by:
                 user_update_data["updated_by"] = clean_deleted_by
@@ -828,7 +846,12 @@ class UserService:
             try:
                 client.table("users").update(user_update_data).eq("user_id", user_id).execute()
             except Exception as e:
-                logger.warning(f"Could not set users.is_active=False for {user_id}: {e}")
+                if "deactivated_at" in str(e):
+                    fallback_data = dict(user_update_data)
+                    fallback_data.pop("deactivated_at", None)
+                    client.table("users").update(fallback_data).eq("user_id", user_id).execute()
+                else:
+                    logger.warning(f"Could not set users.is_active=False for {user_id}: {e}")
 
             try:
                 client.table("user_roles").update({"is_active": False}).eq("user_id", user_id).execute()

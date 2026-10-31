@@ -1122,15 +1122,22 @@ class ImportPipelineEngine:
             tsm_user_ids: Set[str] = set()
             user_approved_hq_names_by_id: Dict[str, Set[str]] = {}
             hq_id_to_name: Dict[str, str] = {}
+            user_is_active_by_id: Dict[str, bool] = {}
+            user_deactivated_date_by_id: Dict[str, str] = {}
 
             if client:
                 try:
-                    u_res = client.table("users").select("user_id, first_name, last_name, email, is_active").execute()
+                    u_res = client.table("users").select("user_id, first_name, last_name, email, is_active, updated_at").execute()
                     if u_res and u_res.data:
                         all_users = u_res.data
                         all_users.sort(key=lambda x: 0 if x.get("is_active") else 1)
                         for u in all_users:
                             uid = str(u["user_id"])
+                            is_act = bool(u.get("is_active", True))
+                            user_is_active_by_id[uid] = is_act
+                            deact_val = u.get("deactivated_at") or (u.get("updated_at") if not is_act else "")
+                            user_deactivated_date_by_id[uid] = str(deact_val or "")[:10]
+
                             fn = (u.get("first_name") or "").strip()
                             ln = (u.get("last_name") or "").strip()
                             full_name = f"{fn} {ln}".strip()
@@ -1403,6 +1410,70 @@ class ImportPipelineEngine:
                         "error_message": f"[Row #{row_num}] DATE_ERROR: Invalid or unparseable sale date '{raw_date}'. Expected valid date format.",
                         "resolution": "Format the sale date column as a valid date in the Excel file."
                     })
+
+                # Inactive User Sales Prohibition Check (User Requirement A4):
+                # If an employee (ASE or ASM/TSM) is marked inactive, sales CANNOT be uploaded for dates
+                # on or after their deactivation date. Halt and rollback, prompting user to activate first.
+                if parsed_dt_val:
+                    if raw_ase and raw_ase.lower() not in ("unassigned", "none", "null", "nan", ""):
+                        ase_uid_chk = _resolve_user_id(raw_ase)
+                        if ase_uid_chk and not user_is_active_by_id.get(ase_uid_chk, True):
+                            deact_dt = user_deactivated_date_by_id.get(ase_uid_chk)
+                            if deact_dt and parsed_dt_val >= deact_dt:
+                                u_name = user_name_by_id.get(ase_uid_chk, raw_ase)
+                                validation_error_records.append({
+                                    "upload_batch_id": str(batch_id),
+                                    "batch_id": str(batch_id),
+                                    "filename": filename,
+                                    "excel_row_number": row_num,
+                                    "error_code": "INACTIVE_USER_SALES_NOT_ALLOWED",
+                                    "severity": "CRITICAL",
+                                    "field_name": "ASE",
+                                    "column_name": "ase_raw",
+                                    "actual_value": raw_ase,
+                                    "expected_value": "Active Employee",
+                                    "ase": raw_ase,
+                                    "asm_tsm": raw_asm,
+                                    "approved_asm_tsm": approved_tsm_name_curr,
+                                    "hq": raw_hq,
+                                    "depot": raw_depot,
+                                    "licensee": raw_licensee,
+                                    "company": raw_company,
+                                    "brand": raw_brand,
+                                    "raw_id": r_id,
+                                    "error_message": f"[Row #{row_num}] INACTIVE_USER_SALES_NOT_ALLOWED: User '{u_name}' has been marked inactive on {deact_dt}. Sales cannot be uploaded for date {parsed_dt_val} (on or after deactivation date). First activate the user in User Management and then re-upload the file.",
+                                    "resolution": f"First activate '{u_name}' in User Management and then re-upload the file."
+                                })
+
+                    if raw_asm and raw_asm.lower() not in ("unassigned", "none", "null", "nan", ""):
+                        asm_uid_chk = _resolve_user_id(raw_asm)
+                        if asm_uid_chk and not user_is_active_by_id.get(asm_uid_chk, True):
+                            deact_dt = user_deactivated_date_by_id.get(asm_uid_chk)
+                            if deact_dt and parsed_dt_val >= deact_dt:
+                                u_name = user_name_by_id.get(asm_uid_chk, raw_asm)
+                                validation_error_records.append({
+                                    "upload_batch_id": str(batch_id),
+                                    "batch_id": str(batch_id),
+                                    "filename": filename,
+                                    "excel_row_number": row_num,
+                                    "error_code": "INACTIVE_USER_SALES_NOT_ALLOWED",
+                                    "severity": "CRITICAL",
+                                    "field_name": "ASM/TSM",
+                                    "column_name": "asm_tsm_raw",
+                                    "actual_value": raw_asm,
+                                    "expected_value": "Active Employee",
+                                    "ase": raw_ase,
+                                    "asm_tsm": raw_asm,
+                                    "approved_asm_tsm": approved_tsm_name_curr,
+                                    "hq": raw_hq,
+                                    "depot": raw_depot,
+                                    "licensee": raw_licensee,
+                                    "company": raw_company,
+                                    "brand": raw_brand,
+                                    "raw_id": r_id,
+                                    "error_message": f"[Row #{row_num}] INACTIVE_USER_SALES_NOT_ALLOWED: User '{u_name}' has been marked inactive on {deact_dt}. Sales cannot be uploaded for date {parsed_dt_val} (on or after deactivation date). First activate the user in User Management and then re-upload the file.",
+                                    "resolution": f"First activate '{u_name}' in User Management and then re-upload the file."
+                                })
 
                 # A. Validate Case Quantity Field
                 if pd.isna(val_case) or val_case < 0:
@@ -3820,7 +3891,7 @@ class ImportPipelineEngine:
                 if not user_active_map.get(user_id, True):
                     deact_date = user_deact_date_map.get(user_id)
                     if deact_date and sale_dt_str:
-                        if sale_dt_str > deact_date:
+                        if sale_dt_str >= deact_date:
                             continue
                     else:
                         continue
