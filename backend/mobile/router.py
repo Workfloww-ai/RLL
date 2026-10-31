@@ -18,6 +18,7 @@ from backend.db.client import get_supabase
 from backend.db.supabase_client import resolve_latest_sale_date
 from backend.db.company_aliases import normalize_company_name, is_pinned_company
 from backend.services.company_cascading_service import is_others_company
+from backend.services.activity_log_service import auth_log_service
 
 # Centralized Mobile Access Authorization Policies
 MOBILE_ACCESS_ROLES = [
@@ -581,6 +582,7 @@ router = APIRouter(prefix="/mobile", tags=["Mobile App API"])
 class MobileLoginRequest(BaseModel):
     email: str
     password: str
+    phone_type: Optional[str] = None
 
 class SendOTPRequest(BaseModel):
     phone: str
@@ -590,6 +592,7 @@ class VerifyOTPRequest(BaseModel):
     phone: str
     otp: str
     email: Optional[str] = None
+    phone_type: Optional[str] = None
 
 class MobileLoginResponse(BaseModel):
     access_token: str
@@ -685,17 +688,19 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
             detail="Invalid email or password"
         )
 
-    # 2. Log login entry into 'user_auth_logs' in Supabase
-    if client:
-        try:
-            client.table("user_auth_logs").insert({
-                "user_id": user_data["user_id"],
-                "email": email,
-                "login_at": datetime.utcnow().isoformat(),
-                "status": "SUCCESS"
-            }).execute()
-        except Exception as e:
-            logger.warning(f"Could not log to user_auth_logs table: {e}")
+    # 2. Record user's last login in user_auth_logs (updates existing user record to prevent DB bloat)
+    client_ip = request.client.host if (request and request.client) else None
+    user_agent = request.headers.get("user-agent") if request else None
+    phone_type = auth_log_service.detect_phone_type(request, user_agent, credentials.phone_type)
+    auth_log_service.dispatch_background(
+        user_id=user_data["user_id"],
+        email=email,
+        phone_type=phone_type,
+        ip_address=client_ip,
+        user_agent=user_agent,
+        action="LOGIN",
+        status="SUCCESS",
+    )
 
     # 3. Create Dual-Token Pair (1h Access Token + 30-day Rolling Refresh Token)
     token_pair = await create_token_pair(user_data, client_type="mobile")
@@ -863,7 +868,7 @@ async def send_mobile_otp(req: SendOTPRequest):
 
 
 @router.post("/verify-otp", response_model=MobileLoginResponse)
-async def verify_mobile_otp(req: VerifyOTPRequest):
+async def verify_mobile_otp(req: VerifyOTPRequest, request: Request):
     """
     Verify 6-digit OTP code sent to user's mobile number.
     Returns 30-day Access Token and scoped user profile.
@@ -1065,6 +1070,20 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
     # Generate Dual-Token Pair (1h Access Token + 30-day Rolling Refresh Token)
     token_pair = await create_token_pair(user_data, client_type="mobile")
     logger.info(f"Mobile OTP verification successful for phone: {mask_phone(phone)} (User: {mask_email(user_data['email'])}, Company: {user_data['company_name']}, Role: {user_data['role_name']})")
+
+    # Record user's last login in user_auth_logs (updates existing user record to prevent DB bloat)
+    client_ip = request.client.host if (request and request.client) else None
+    user_agent = request.headers.get("user-agent") if request else None
+    phone_type = auth_log_service.detect_phone_type(request, user_agent, req.phone_type)
+    auth_log_service.dispatch_background(
+        user_id=user_data["user_id"],
+        email=user_data["email"],
+        phone_type=phone_type,
+        ip_address=client_ip,
+        user_agent=user_agent,
+        action="LOGIN_OTP",
+        status="SUCCESS",
+    )
 
     return {
         "access_token": token_pair["access_token"],
@@ -2698,6 +2717,7 @@ def get_mobile_tenant_config_endpoint(
     effective_id = tenant_id or x_tenant_id
     effective_slug = tenant_slug or x_tenant_slug or "rll"
     return get_tenant_config_service(tenant_slug=effective_slug, tenant_id=effective_id)
+
 
 
 

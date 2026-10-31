@@ -177,6 +177,23 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
 
     await safe_set(f"rll:session:{session_token}", session_payload, ttl=ttl)
 
+    # Record user's last login in user_auth_logs (updates existing user record to prevent DB bloat)
+    try:
+        from backend.services.activity_log_service import auth_log_service
+        user_agent = request.headers.get("user-agent") if request else None
+        phone_type = auth_log_service.detect_phone_type(request, user_agent, "web")
+        auth_log_service.dispatch_background(
+            user_id=user_data["user_id"],
+            email=user_data["email"],
+            phone_type=phone_type,
+            ip_address=client_ip,
+            user_agent=user_agent,
+            action="LOGIN",
+            status="SUCCESS",
+        )
+    except Exception as e_log:
+        logger.warning(f"Notice logging web login to user_auth_logs: {e_log}")
+
     # Dynamic environment secure flag check
     is_secure = settings.ENVIRONMENT.lower() in ["production", "prod"]
 

@@ -189,6 +189,8 @@ export async function apiFetch(endpointPath: string, init?: RequestInit, isRetry
 
   headers.set('X-Request-ID', reqId);
   headers.set('X-Mobile-Client-Time-Ms', String(tStartTime));
+  headers.set('X-Device-Platform', Platform.OS);
+  headers.set('X-Device-OS-Version', String(Platform.Version));
 
   if (token && !headers.has('Authorization')) {
     headers.set('Authorization', `Bearer ${token}`);
@@ -521,8 +523,9 @@ export async function verifyMobileOTP(phone: string, otp: string, email: string 
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'X-Device-Platform': Platform.OS,
       },
-      body: JSON.stringify({ phone, otp, email }),
+      body: JSON.stringify({ phone, otp, email, phone_type: Platform.OS }),
     });
 
     if (!res.ok) {
@@ -551,8 +554,9 @@ export async function loginMobileUser(email: string, password: string) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'X-Device-Platform': Platform.OS,
       },
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, phone_type: Platform.OS }),
     });
 
     if (!res.ok) {
@@ -1191,4 +1195,5 @@ export async function fetchTenantConfig(tenantIdentifier?: string) {
     return null;
   }
 }
+
 
