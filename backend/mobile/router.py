@@ -173,9 +173,16 @@ def _build_master_lookups_dict(
     latest_sale_date: Optional[str] = None
 ) -> Dict[str, Any]:
     companies_lookup: Dict[str, str] = {}
+    companies_category_lookup: Dict[str, str] = {}
     for c in (companies_data or []):
         if c.get("company_id") and c.get("company_name"):
-            companies_lookup[str(c["company_id"])] = c["company_name"]
+            cid = str(c["company_id"])
+            cname = c["company_name"]
+            cat = str(c.get("category") or "").strip()
+            if not cat:
+                cat = "Others" if cname.strip().lower() in ("others", "other") or cname.strip().lower().startswith("comp_") else "RLL"
+            companies_lookup[cid] = cname
+            companies_category_lookup[cid] = cat
 
     brands_lookup: Dict[str, Dict[str, Any]] = {}
     for b in (brands_data or []):
@@ -399,6 +406,7 @@ def _build_master_lookups_dict(
 
     return {
         "companies_lookup": companies_lookup,
+        "companies_category_lookup": companies_category_lookup,
         "brands_lookup": brands_lookup,
         "hq_lookup": hq_lookup,
         "hq_name_to_id": hq_name_to_id,
@@ -446,8 +454,9 @@ def _fetch_fresh_master_lookups() -> Dict[str, Any]:
 
     # Attempt 2: High-concurrency fallback (parallel execution via ThreadPoolExecutor)
     try:
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        with ThreadPoolExecutor(max_workers=9) as executor:
             f_lookups = executor.submit(lambda: client.rpc("get_master_lookups_json").execute().data)
+            f_companies = executor.submit(lambda: client.table("companies").select("company_id, company_name, category").execute().data or [])
             f_roles = executor.submit(lambda: client.table("roles").select("role_id, role_name").execute().data or [])
             f_user_roles = executor.submit(lambda: client.table("user_roles").select("user_id, role_id, is_active").eq("is_active", True).execute().data or [])
             f_users = executor.submit(lambda: client.table("users").select("user_id, first_name, last_name, email, is_active").execute().data or [])
@@ -457,6 +466,7 @@ def _fetch_fresh_master_lookups() -> Dict[str, Any]:
             f_max_date = executor.submit(lambda: [{"sale_date": resolve_latest_sale_date(client)}])
 
             lookups_data = f_lookups.result() or {}
+            companies_data = f_companies.result() or lookups_data.get("companies") or []
             roles_data = f_roles.result()
             user_roles_data = f_user_roles.result()
             users_data = f_users.result()
@@ -468,7 +478,7 @@ def _fetch_fresh_master_lookups() -> Dict[str, Any]:
             resolved_max_date = max_date_data[0].get("sale_date") if max_date_data else None
 
             return _build_master_lookups_dict(
-                companies_data=lookups_data.get("companies") or [],
+                companies_data=companies_data,
                 brands_data=lookups_data.get("brands") or [],
                 hq_data=lookups_data.get("headquarters") or [],
                 depots_data=lookups_data.get("depots") or [],
@@ -1404,6 +1414,7 @@ async def get_mobile_sales(
     page: Optional[int] = Query(None, description="Page number for depots pagination (1-indexed)"),
     page_size: Optional[int] = Query(None, description="Page size for depots pagination (1 to 100)"),
     test_limit: Optional[int] = Query(None, description="Diagnostic payload scaling test limit"),
+    tsm_include_others: Optional[bool] = Query(None, description="Toggle to include or exclude others/competitor companies on TSM screen"),
     current_user: dict = Depends(mobile_access_checker)
 ):
     """
@@ -1478,10 +1489,11 @@ async def get_mobile_sales(
     else:
         selected_period = "Daily"
 
-    from backend.services.tenant_service import get_include_others_setting_async
+    from backend.services.tenant_service import get_include_others_setting_async, get_include_others_in_tsm_sales_async
     inc_others_str = "inc1" if await get_include_others_setting_async() else "inc0"
+    tsm_inc_str = "tsm_default" if tsm_include_others is None else ("tsm_inc1" if tsm_include_others else "tsm_inc0")
     effective_cache_uid = "global" if user_role in ["leader", "admin", "super_admin", "developer"] else (user_id or "global")
-    cache_key = f"{selected_period}:{clean_level or 'all'}:{page or 'all'}:{page_size or 'all'}:{selected_hq}:{date_from}:{date_to}:{user_role}:{effective_cache_uid}:{test_limit or 'all'}:{inc_others_str}"
+    cache_key = f"{selected_period}:{clean_level or 'all'}:{page or 'all'}:{page_size or 'all'}:{selected_hq}:{date_from}:{date_to}:{user_role}:{effective_cache_uid}:{test_limit or 'all'}:{inc_others_str}:{tsm_inc_str}"
     
     # D. Sales response cache timing
     t_sales_cache_start = time.perf_counter()
@@ -1560,6 +1572,7 @@ async def get_mobile_sales(
         master_cache_duration_ms = round((t_master_end - t_master_start) * 1000, 2)
 
         companies_lookup = master_cache["companies_lookup"]
+        companies_category_lookup = master_cache.get("companies_category_lookup", {})
         brands_lookup = master_cache["brands_lookup"]
         hq_lookup = master_cache["hq_lookup"]
         master_companies = master_cache["master_companies"]
@@ -2050,17 +2063,30 @@ async def get_mobile_sales(
     # Initialize companies_map on master_tsms
     for tid in master_tsms.keys():
         master_tsms[tid]["companies_map"] = {}
+        master_tsms[tid]["brands_map"] = {}
+        master_tsms[tid]["data"] = {
+            "Daily": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+            "MTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+            "YTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+        }
 
 
 
-    inc_others_val = (inc_others_str == "inc1")
+    # Determine effective TSM include others toggle
+    if tsm_include_others is not None:
+        effective_tsm_include = tsm_include_others
+    else:
+        effective_tsm_include = await get_include_others_in_tsm_sales_async()
 
     for row in all_usf_records:
         c_id_raw = str(row.get("company_id") or "")
         comp_name = companies_lookup.get(c_id_raw)
         if not comp_name:
             continue
-        if not inc_others_val and is_others_company(comp_name):
+        comp_cat = companies_category_lookup.get(c_id_raw) or ("Others" if is_others_company(comp_name) else "RLL")
+        is_comp_others = (comp_cat.strip().lower() == "others" or is_others_company(comp_name, comp_cat))
+
+        if not effective_tsm_include and is_comp_others:
             continue
 
         raw_uid = str(row.get("user_id") or "")
@@ -2107,6 +2133,7 @@ async def get_mobile_sales(
                             "companyId": c_id_raw,
                             "companyName": comp_name,
                             "name": comp_name,
+                            "category": comp_cat,
                             "data": {
                                 "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
                                 "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
@@ -2151,6 +2178,7 @@ async def get_mobile_sales(
                                 "companyId": c_id_raw,
                                 "companyName": comp_name,
                                 "name": comp_name,
+                                "category": comp_cat,
                                 "data": {
                                     "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
                                     "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},

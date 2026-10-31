@@ -152,7 +152,9 @@ export async function checkAndProactivelyRefreshToken(): Promise<void> {
     const parts = token.split('.');
     if (parts.length === 3) {
       const payloadBase64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-      const payload = JSON.parse(decodeURIComponent(escape(atob(payloadBase64))));
+      const atobFn = (globalThis as any).atob;
+      const rawDecoded = typeof atobFn === 'function' ? atobFn(payloadBase64) : '';
+      const payload = rawDecoded ? JSON.parse(decodeURIComponent(escape(rawDecoded))) : null;
       if (payload && payload.exp) {
         const remainingSeconds = payload.exp - Math.floor(Date.now() / 1000);
         if (remainingSeconds < 300) {
@@ -162,7 +164,7 @@ export async function checkAndProactivelyRefreshToken(): Promise<void> {
       }
     }
   } catch (e) {
-    logger.debug('checkAndProactivelyRefreshToken: non-fatal parsing error', e);
+    logger.warn('checkAndProactivelyRefreshToken: non-fatal parsing error', e);
   }
 }
 
@@ -582,7 +584,8 @@ export async function fetchMobileSales(
   selectedHq: string = 'All Headquarters',
   testLimit?: number,
   isPrefetch: boolean = false,
-  level?: string
+  level?: string,
+  tsmIncludeOthers?: boolean
 ) {
   const token = await getAuthToken();
   if (!token) {
@@ -617,6 +620,9 @@ export async function fetchMobileSales(
     }
     if (level) {
       queryParams['level'] = level;
+    }
+    if (tsmIncludeOthers !== undefined) {
+      queryParams['tsm_include_others'] = String(tsmIncludeOthers);
     }
 
     const query = new URLSearchParams(queryParams);

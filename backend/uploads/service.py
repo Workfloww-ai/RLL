@@ -60,6 +60,12 @@ COLUMN_ALIASES = {
         "company name",
         "company_name",
     ],
+    "Category": [
+        "category",
+        "company category",
+        "company_category",
+        "comp category",
+    ],
     "LICENSEE_NAME": [
         "licensee_name",
         "licensee name",
@@ -949,6 +955,7 @@ class ImportPipelineEngine:
                     local_batch["covers_end"] = covers_end_date
 
             s_company = get_series("Company")
+            s_category = get_series("Category")
             s_licensee = get_series("LICENSEE_NAME")
             s_trade = get_series("Trade")
             s_group = get_series("Group Name")
@@ -984,7 +991,20 @@ class ImportPipelineEngine:
             office_cache = master_service.bulk_resolve_offices(unique_offices)
             circle_cache = master_service.bulk_resolve_circles(unique_circles)
             hq_cache = master_service.bulk_resolve_headquarters(unique_hqs, tenant_id=tenant_id)
-            company_cache = master_service.bulk_resolve_companies(unique_companies, tenant_id=tenant_id)
+
+            company_category_map = {}
+            if not s_category.empty:
+                for c, cat in zip(s_company, s_category):
+                    c_str = str(c).strip() if c else ""
+                    cat_str = str(cat).strip() if cat else ""
+                    if c_str and cat_str and c_str not in company_category_map:
+                        company_category_map[c_str] = cat_str
+
+            company_cache = master_service.bulk_resolve_companies(
+                unique_companies,
+                tenant_id=tenant_id,
+                company_categories=company_category_map
+            )
 
             depot_items = [
                 {
@@ -1121,6 +1141,11 @@ class ImportPipelineEngine:
                             if full_name_clean and full_name_clean not in user_id_by_name:
                                 user_id_by_name[full_name_clean] = uid
                                 user_name_by_id[uid] = full_name
+                            ln_parts = ln.split()
+                            if len(ln_parts) > 1:
+                                short_name = f"{fn} {ln_parts[-1]}".strip().lower()
+                                if short_name and short_name not in user_id_by_name:
+                                    user_id_by_name[short_name] = uid
                             if prefix and prefix not in user_id_by_name:
                                 user_id_by_name[prefix] = uid
                             if fn and fn.lower() not in user_id_by_name:
@@ -1205,7 +1230,15 @@ class ImportPipelineEngine:
                 first_part = c_name.replace(",", "/").split("/")[0].strip()
                 if first_part in user_id_by_name:
                     return user_id_by_name[first_part]
-                words = c_name.split()
+                words = first_part.split()
+                if len(words) > 2:
+                    fl = f"{words[0]} {words[-1]}"
+                    if fl in user_id_by_name:
+                        return user_id_by_name[fl]
+                    if len(words) > 3:
+                        fl2 = f"{words[0]} {words[1]} {words[-1]}"
+                        if fl2 in user_id_by_name:
+                            return user_id_by_name[fl2]
                 if words and words[0] in user_id_by_name:
                     return user_id_by_name[words[0]]
                 return None
@@ -3566,6 +3599,11 @@ class ImportPipelineEngine:
 
                 if full_name_clean and full_name_clean not in user_id_by_name:
                     user_id_by_name[full_name_clean] = uid
+                ln_parts = ln.split()
+                if len(ln_parts) > 1:
+                    short_name = f"{fn} {ln_parts[-1]}".strip().lower()
+                    if short_name and short_name not in user_id_by_name:
+                        user_id_by_name[short_name] = uid
                 if prefix and prefix not in user_id_by_name:
                     user_id_by_name[prefix] = uid
                 if fn and fn.lower() not in user_id_by_name:
@@ -3580,7 +3618,15 @@ class ImportPipelineEngine:
                 first_p = c_name.replace(",", "/").split("/")[0].strip()
                 if first_p in user_id_by_name:
                     return user_id_by_name[first_p]
-                words = c_name.split()
+                words = first_p.split()
+                if len(words) > 2:
+                    fl = f"{words[0]} {words[-1]}"
+                    if fl in user_id_by_name:
+                        return user_id_by_name[fl]
+                    if len(words) > 3:
+                        fl2 = f"{words[0]} {words[1]} {words[-1]}"
+                        if fl2 in user_id_by_name:
+                            return user_id_by_name[fl2]
                 if words and words[0] in user_id_by_name:
                     return user_id_by_name[words[0]]
                 return None
@@ -3726,6 +3772,28 @@ class ImportPipelineEngine:
                 if fn and fn not in user_lookup:
                     user_lookup[fn] = uid
 
+            def _resolve_ase_uid(name_str: str) -> Optional[str]:
+                if not name_str or str(name_str).lower() in ("unassigned", "none", "null", "nan", ""):
+                    return None
+                c_name = re.sub(r'\s+', ' ', str(name_str).strip()).lower()
+                if c_name in user_lookup:
+                    return user_lookup[c_name]
+                first_p = c_name.replace(",", "/").split("/")[0].strip()
+                if first_p in user_lookup:
+                    return user_lookup[first_p]
+                words = first_p.split()
+                if len(words) > 2:
+                    fl = f"{words[0]} {words[-1]}"
+                    if fl in user_lookup:
+                        return user_lookup[fl]
+                    if len(words) > 3:
+                        fl2 = f"{words[0]} {words[1]} {words[-1]}"
+                        if fl2 in user_lookup:
+                            return user_lookup[fl2]
+                if words and words[0] in user_lookup:
+                    return user_lookup[words[0]]
+                return None
+
             clean_fn = master_service._clean
 
             fact_records = []
@@ -3740,8 +3808,7 @@ class ImportPipelineEngine:
                 if not ase_clean or ase_clean.lower() in ("unassigned", "none", "null"):
                     continue
 
-                first_ase = ase_clean.replace(",", "/").split("/")[0].strip()
-                user_id = user_lookup.get(ase_clean.lower()) or user_lookup.get(first_ase.lower())
+                user_id = _resolve_ase_uid(ase_clean)
                 if not user_id:
                     continue
 

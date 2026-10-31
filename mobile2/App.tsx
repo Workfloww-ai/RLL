@@ -121,6 +121,7 @@ function MainApp() {
   });
   const [salesError, setSalesError] = useState<string | null>(null);
   const [retryTrigger, setRetryTrigger] = useState<number>(0);
+  const [tsmIncludeOthers, setTsmIncludeOthers] = useState<boolean>(false);
   const [refreshing, setRefreshing] = useState(false);
   const [showNoDataModal, setShowNoDataModal] = useState<boolean>(false);
   const [showChatbotModal, setShowChatbotModal] = useState<boolean>(false);
@@ -142,7 +143,16 @@ function MainApp() {
         }
       } else {
         const refreshLevel = viewMode === 'tsm' ? 'tsms' : 'companies';
-        const res = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq, undefined, false, refreshLevel);
+        const res = await fetchMobileSales(
+          dateFrom || '',
+          dateTo || '',
+          period,
+          selectedHq,
+          undefined,
+          false,
+          refreshLevel,
+          refreshLevel === 'tsms' ? tsmIncludeOthers : undefined
+        );
         if (res) {
           setSuccessfulFetches((prev) => ({ ...prev, [viewMode]: true }));
           setApiData((prev: any) => ({ ...(prev || {}), ...res }));
@@ -430,7 +440,16 @@ function MainApp() {
 
       try {
         const targetLevel = viewMode === 'tsm' ? 'tsms' : (viewMode === 'companies' ? 'companies' : (viewMode === 'depots' ? 'companies' : undefined));
-        let res: any = await fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq, undefined, false, targetLevel);
+        let res: any = await fetchMobileSales(
+          dateFrom || '',
+          dateTo || '',
+          period,
+          selectedHq,
+          undefined,
+          false,
+          targetLevel,
+          viewMode === 'tsm' ? tsmIncludeOthers : undefined
+        );
 
         if (res && isMounted) {
           setSalesError(null);
@@ -550,7 +569,16 @@ function MainApp() {
     const intervalId = setInterval(() => {
       if (user) {
         const targetLevel = viewMode === 'tsm' ? 'tsms' : (viewMode === 'companies' ? 'companies' : (viewMode === 'depots' ? 'companies' : undefined));
-        fetchMobileSales(dateFrom || '', dateTo || '', period, selectedHq, undefined, true, targetLevel).then((res) => {
+        fetchMobileSales(
+          dateFrom || '',
+          dateTo || '',
+          period,
+          selectedHq,
+          undefined,
+          true,
+          targetLevel,
+          viewMode === 'tsm' ? tsmIncludeOthers : undefined
+        ).then((res) => {
           if (res && isMounted) {
             setApiData((prevData: any) => ({ ...(prevData || {}), ...res }));
             if (Array.isArray(res.tsms) && res.tsms.length > 0) {
@@ -567,7 +595,7 @@ function MainApp() {
       isMounted = false;
       clearInterval(intervalId);
     };
-  }, [user, dateFrom, dateTo, selectedHq, period, viewMode, retryTrigger]);
+  }, [user, dateFrom, dateTo, selectedHq, period, viewMode, retryTrigger, tsmIncludeOthers]);
 
   const handleLogout = async () => {
     logger.info('App: User initiated logout.');
@@ -647,6 +675,50 @@ function MainApp() {
   }, [filteredCompanies, sortBy, period]);
 
   const totalSummary = useMemo(() => {
+    // 1. When on TSM view, calculate total from TSMs matching selectedHq and respecting tsmIncludeOthers toggle
+    if (viewMode === 'tsm') {
+      const rawTsms: any[] = (apiData && Array.isArray(apiData.tsms)) ? apiData.tsms : [];
+      if (rawTsms.length > 0) {
+        const matchingTsms = rawTsms.filter((t: any) => {
+          if (!selectedHq || selectedHq === 'All Headquarters') return true;
+          const assigned = Array.isArray(t.assignedHqs) ? t.assignedHqs : [];
+          return (
+            assigned.some((h: string) => h.toLowerCase() === selectedHq.toLowerCase()) ||
+            (t.hqLocation && t.hqLocation.toLowerCase().includes(selectedHq.toLowerCase()))
+          );
+        });
+
+        let totalCases = 0;
+        let totalBottles = 0;
+
+        for (const t of matchingTsms) {
+          const comps = t.companies || [];
+          if (comps.length > 0) {
+            for (const c of comps) {
+              const compCat = (c.category || '').toLowerCase();
+              const compName = (c.companyName || c.name || c.brandName || '').toLowerCase();
+              const isOthers = (compCat === 'others' || compName.startsWith('comp_') || compName === 'others' || compName === 'other');
+              if (!tsmIncludeOthers && isOthers) {
+                continue;
+              }
+              const d = c.data?.[period] || { cases: 0, bottles: 0 };
+              totalCases += Number(d.cases) || 0;
+              totalBottles += Number(d.bottles) || 0;
+            }
+          } else {
+            const d = t.data?.[period] || { cases: 0, bottles: 0 };
+            totalCases += Number(d.cases) || 0;
+            totalBottles += Number(d.bottles) || 0;
+          }
+        }
+
+        return {
+          cases: Number((totalCases * scaleFactor).toFixed(2)),
+          bottles: Math.round(totalBottles * scaleFactor),
+        };
+      }
+    }
+
     const rawCompanies: Company[] = (apiData && Array.isArray(apiData.companies)) ? apiData.companies : [];
 
     const computeFromList = (list: any[]) => {
@@ -710,7 +782,7 @@ function MainApp() {
     if (fromTsms) return fromTsms;
 
     return { cases: 0, bottles: 0 };
-  }, [apiData?.companies, apiData?.tsms, period, scaleFactor, selectedHq, dateTo, dateFrom]);
+  }, [viewMode, tsmIncludeOthers, apiData?.companies, apiData?.tsms, period, scaleFactor, selectedHq, dateTo, dateFrom]);
 
   const renderCompanyItem = useCallback(
     ({ item }: { item: Company }) => (
@@ -912,6 +984,12 @@ function MainApp() {
                     selectedHq={selectedHq}
                     loading={loadingSalesData && !successfulFetches.tsm}
                     error={salesError}
+                    includeOthers={tsmIncludeOthers}
+                    onToggleIncludeOthers={(val) => {
+                      setTsmIncludeOthers(val);
+                      setSuccessfulFetches((prev) => ({ ...prev, tsm: false }));
+                      setLoadingSalesData(true);
+                    }}
                     onRetry={() => {
                       setSalesError(null);
                       setLoadingSalesData(true);

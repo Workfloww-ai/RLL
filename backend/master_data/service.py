@@ -39,6 +39,7 @@ class MasterService:
         self._circle_cache: Dict[str, int] = {}
         self._headquarter_cache: Dict[str, int] = {}
         self._company_cache: Dict[str, int] = {}
+        self._company_category_cache: Dict[str, str] = {}
         self._depot_cache: Dict[str, int] = {}
         self._licensee_cache: Dict[str, int] = {}
         self._licensee_hq_cache: Dict[str, Any] = {}
@@ -777,28 +778,57 @@ class MasterService:
 
         return self._headquarter_cache
 
-    def bulk_resolve_companies(self, names: List[str], tenant_id: Optional[str] = None) -> Dict[str, Any]:
+    def bulk_resolve_companies(
+        self,
+        names: List[str],
+        tenant_id: Optional[str] = None,
+        company_categories: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
         client = get_supabase()
         from backend.db.company_aliases import get_company_aliases, upsert_company_alias
 
         # 1. Ensure master company cache and alias mappings are loaded
         if client and not self._company_cache:
             try:
-                res = client.table("companies").select("company_id, company_name").execute()
+                try:
+                    res = client.table("companies").select("company_id, company_name, category").execute()
+                except Exception:
+                    res = client.table("companies").select("company_id, company_name").execute()
+
                 for row in (res.data or []):
                     c_name = row.get("company_name")
                     c_id = str(row.get("company_id"))
+                    c_cat = row.get("category")
                     if c_name and c_id:
                         k_clean = self._clean(c_name)
                         k_norm = self._clean_company(c_name)
                         self._company_cache[k_clean] = c_id
                         self._company_cache[k_norm] = c_id
+                        if c_cat:
+                            self._company_category_cache[c_id] = c_cat
             except Exception as e:
                 logger.warning(f"Error fetching companies in bulk_resolve_companies: {e}")
 
             alias_map = get_company_aliases()
             for norm_key, c_id in alias_map.items():
                 self._company_cache[norm_key] = str(c_id)
+
+        # 2. Update category on existing companies if provided and different
+        if client and company_categories:
+            for name, cat in company_categories.items():
+                if not name or not cat:
+                    continue
+                k_clean = self._clean(name)
+                k_norm = self._clean_company(name)
+                c_id = self._company_cache.get(k_norm) or self._company_cache.get(k_clean)
+                if c_id:
+                    existing_cat = self._company_category_cache.get(c_id)
+                    if not existing_cat or existing_cat != cat:
+                        try:
+                            client.table("companies").update({"category": cat}).eq("company_id", c_id).execute()
+                            self._company_category_cache[c_id] = cat
+                        except Exception as e_upd:
+                            logger.warning(f"Could not update category for company {name} ({c_id}): {e_upd}")
 
         missing = {}
         for name in names:
@@ -821,6 +851,17 @@ class MasterService:
             for name, (k_clean, k_norm, disp) in missing.items():
                 try:
                     payload = {"company_name": disp, "is_active": True}
+                    if company_categories and company_categories.get(name):
+                        payload["category"] = company_categories[name]
+                    elif disp.strip().lower() in {
+                        "amrut", "ardent", "beyond water", "campari", "diageo",
+                        "in brew", "inbrew", "khoday", "mhi", "rll", "rajasthan liquor limited",
+                        "sgs", "william grants", "william grant"
+                    }:
+                        payload["category"] = "RLL"
+                    else:
+                        payload["category"] = "Others"
+
                     if tenant_id:
                         payload["tenant_id"] = tenant_id
                     res = client.table("companies").insert(payload).execute()
@@ -828,6 +869,8 @@ class MasterService:
                         c_id = str(res.data[0].get("company_id") or res.data[0].get("id"))
                         self._company_cache[k_clean] = c_id
                         self._company_cache[k_norm] = c_id
+                        if "category" in payload:
+                            self._company_category_cache[c_id] = payload["category"]
                         upsert_company_alias(raw_name=name, norm_key=k_norm, company_id=c_id, source="auto")
                 except Exception as e_comp:
                     logger.warning(f"bulk_resolve_companies insert notice for {name}: {e_comp}")

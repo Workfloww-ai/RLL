@@ -12,7 +12,7 @@ from backend.core.security import get_current_user, RoleChecker, developer_only
 from backend.core.route import EncryptedRoute
 from backend.core.system_lock import check_system_lock_or_raise
 from backend.services.cache_service import invalidate_others_toggle_cache
-from backend.services.tenant_service import get_include_others_setting_async, clear_tenant_cache
+from backend.services.tenant_service import get_include_others_setting_async, get_include_others_in_tsm_sales_async, clear_tenant_cache
 
 logger = logging.getLogger(__name__)
 
@@ -177,12 +177,86 @@ class SystemSettingUpdate(BaseModel):
 class IncludeOthersPayload(BaseModel):
     include_others_in_sales: bool
 
+class IncludeOthersTsmPayload(BaseModel):
+    include_others_in_tsm_sales: bool
+
 
 @router.get("/settings/include-others")
 async def get_include_others_setting():
     """Fetch include_others_in_sales setting value."""
     val = await get_include_others_setting_async()
     return {"include_others_in_sales": val}
+
+
+@router.get("/settings/include-others-tsm")
+async def get_include_others_tsm_setting():
+    """Fetch include_others_in_tsm_sales setting value."""
+    val = await get_include_others_in_tsm_sales_async()
+    return {"include_others_in_tsm_sales": val}
+
+
+@router.put("/settings/include-others-tsm")
+async def update_include_others_tsm_setting(
+    payload: IncludeOthersTsmPayload,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update include_others_in_tsm_sales setting value (Admin, Super Admin, Developer)."""
+    check_system_lock_or_raise()
+    user_role = (current_user.get("role_name") or current_user.get("role") or "").strip().lower()
+    if user_role not in {"admin", "super_admin", "superadmin", "developer"}:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Permission denied: Only Admin, Super Admin, or Developer role can modify include_others_in_tsm_sales. Current role is '{user_role}'."
+        )
+
+    new_val_bool = payload.include_others_in_tsm_sales
+    new_val_str = "true" if new_val_bool else "false"
+    old_val_bool = await get_include_others_in_tsm_sales_async()
+    old_val_str = "true" if old_val_bool else "false"
+
+    user_id = current_user.get("user_id") or current_user.get("sub")
+    user_email = current_user.get("email") or current_user.get("user_metadata", {}).get("email") or "admin"
+
+    client = get_supabase()
+    if client:
+        try:
+            client.rpc("set_system_setting", {"p_key": "include_others_in_tsm_sales", "p_val": new_val_str}).execute()
+        except Exception as e:
+            logger.warning(f"RPC set_system_setting notice: {e}")
+            try:
+                client.table("system_settings").upsert({"setting_key": "include_others_in_tsm_sales", "setting_value": new_val_str}).execute()
+            except Exception as e2:
+                logger.error(f"Error updating system_settings table: {e2}")
+
+        try:
+            audit_entry = {
+                "setting_key": "include_others_in_tsm_sales",
+                "old_value": old_val_str,
+                "new_value": new_val_str,
+                "changed_by_user_id": str(user_id) if user_id else None,
+                "changed_by_email": str(user_email),
+                "source": "Admin Portal"
+            }
+            client.table("system_settings_audit_log").insert(audit_entry).execute()
+        except Exception as e_audit:
+            logger.warning(f"Failed to record audit log for include_others_in_tsm_sales toggle: {e_audit}")
+
+    await safe_set("rll:setting:include_others_in_tsm_sales", new_val_str, ttl=86400 * 30)
+    clear_tenant_cache()
+    await invalidate_others_toggle_cache()
+
+    logger.info(
+        f"include_others_tsm_toggle_changed: old_value={old_val_str}, new_value={new_val_str}, "
+        f"changed_by={user_email}, user_id={user_id}"
+    )
+
+    return {
+        "success": True,
+        "setting_key": "include_others_in_tsm_sales",
+        "include_others_in_tsm_sales": new_val_bool,
+        "old_value": old_val_bool,
+        "new_value": new_val_bool
+    }
 
 
 @router.put("/settings/include-others")
@@ -280,6 +354,47 @@ async def update_system_setting(
     key = payload.setting_key.strip()
     val = payload.setting_value.strip().lower()
     user_role = (current_user.get("role_name") or current_user.get("role") or "").strip().lower()
+
+    # TSM Others inclusion setting
+    if key == "include_others_in_tsm_sales":
+        if user_role not in {"admin", "super_admin", "superadmin", "developer"}:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Permission denied: Only Admin, Super Admin, or Developer role can modify '{key}'. Current role is '{user_role}'."
+            )
+        old_val_bool = await get_include_others_in_tsm_sales_async()
+        old_val_str = "true" if old_val_bool else "false"
+        user_id = current_user.get("user_id") or current_user.get("sub")
+        user_email = current_user.get("email") or "admin"
+
+        client = get_supabase()
+        if client:
+            try:
+                client.rpc("set_system_setting", {"p_key": key, "p_val": val}).execute()
+            except Exception as e:
+                logger.warning(f"RPC set_system_setting notice: {e}")
+                try:
+                    client.table("system_settings").upsert({"setting_key": key, "setting_value": val}).execute()
+                except Exception as e2:
+                    logger.error(f"Error updating system_settings table: {e2}")
+
+            try:
+                audit_entry = {
+                    "setting_key": key,
+                    "old_value": old_val_str,
+                    "new_value": val,
+                    "changed_by_user_id": str(user_id) if user_id else None,
+                    "changed_by_email": str(user_email),
+                    "source": "Admin Portal"
+                }
+                client.table("system_settings_audit_log").insert(audit_entry).execute()
+            except Exception as e_audit:
+                logger.warning(f"Failed to record audit log: {e_audit}")
+
+        await safe_set(f"rll:setting:{key}", val, ttl=86400 * 30)
+        clear_tenant_cache()
+        await invalidate_others_toggle_cache()
+        return {"success": True, "setting_key": key, "setting_value": val}
 
     # Developer-Only check for include_others_in_sales and chatbot_enabled
     if key in {"include_others_in_sales", "chatbot_enabled"}:

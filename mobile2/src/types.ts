@@ -61,6 +61,8 @@ export interface ASE {
   hqLocation?: string;
   assignedHqs?: string[];
   data: Record<Period, Metrics>;
+  companies?: any[];
+  companyCount?: Record<Period, number>;
 }
 
 export interface TSM {
@@ -71,6 +73,8 @@ export interface TSM {
   data: Record<Period, Metrics>;
   brands: TsmBrandSales[];
   ases?: ASE[];
+  companies?: any[];
+  companyCount?: Record<Period, number>;
 }
 
 export type ViewMode = 'companies' | 'depots' | 'tsm' | 'profile';
