@@ -3709,11 +3709,11 @@ class ImportPipelineEngine:
             user_depot_rows = []
             existing_uhq_users = set()
             try:
-                ex_res = client.table("user_headquarters_mapping").select("user_id").eq("is_active", True).execute()
+                ex_res = client.table("user_headquarters_mapping").select("user_id").limit(10000).execute()
                 if ex_res and ex_res.data:
                     existing_uhq_users = {str(r["user_id"]) for r in ex_res.data if r.get("user_id")}
             except Exception as e_ex_uhq:
-                logger.debug(f"Notice querying existing user headquarters: {e_ex_uhq}")
+                logger.warning(f"Notice querying existing user headquarters: {e_ex_uhq}")
 
             assigned_uhq_users = set(existing_uhq_users)
             user_hq_rows = []

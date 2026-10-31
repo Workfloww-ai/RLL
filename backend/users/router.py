@@ -22,6 +22,8 @@ router = APIRouter(
 async def invalidate_user_and_territory_caches():
     """Purge Redis caches when users, roles, or territory assignments change."""
     await safe_delete_pattern("rll:cache:users_list*")
+    await safe_delete("rll:cache:users_list:all")
+    await safe_delete("rll:cache:users_list:a0000000-0000-0000-0000-000000000001")
     await safe_delete("rll:cache:depots_list")
     await safe_delete("rll:cache:headquarters_list")
     await safe_delete("rll:cache:roles_list")
@@ -29,20 +31,49 @@ async def invalidate_user_and_territory_caches():
     await safe_delete_pattern("rll:mobile:sales:*")
 
 
+async def refresh_users_list_cache(tenant_id: Optional[str] = None):
+    """
+    Write-through cache update:
+    1. Immediately purges all stale users_list cache keys across all tenant variations.
+    2. Queries the authoritative DB via user_service.list_users.
+    3. Writes the latest refreshed user list directly into Redis.
+    """
+    await invalidate_user_and_territory_caches()
+
+    tenants_to_refresh = set()
+    if tenant_id:
+        tenants_to_refresh.add(str(tenant_id))
+    tenants_to_refresh.add("all")
+    tenants_to_refresh.add("a0000000-0000-0000-0000-000000000001")
+
+    for tid in tenants_to_refresh:
+        query_tid = None if tid == "all" else tid
+        try:
+            fresh_users = user_service.list_users(tenant_id=query_tid)
+            if fresh_users:
+                cache_key = f"rll:cache:users_list:{tid}"
+                await safe_set(cache_key, json.dumps(fresh_users), ttl=86400)
+                logger.info(f"Write-through cache refreshed for key: {cache_key} ({len(fresh_users)} users)")
+        except Exception as e_refresh:
+            logger.warning(f"Notice refreshing users list cache for {tid}: {e_refresh}")
+
+
 @router.get("/")
 async def list_users(
     current_user: dict = Depends(get_current_user),
     x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID"),
     tenant_id: Optional[str] = Query(None),
+    fresh: bool = Query(False),
 ):
     target_tenant_id = x_tenant_id or tenant_id or (current_user.get("tenant_id") if current_user else None)
     cache_key = f"rll:cache:users_list:{target_tenant_id or 'all'}"
-    cached = await safe_get(cache_key)
-    if cached:
-        try:
-            return json.loads(cached)
-        except Exception as e:
-            logger.warning(f"Error parsing cached users_list: {e}")
+    if not fresh:
+        cached = await safe_get(cache_key)
+        if cached:
+            try:
+                return json.loads(cached)
+            except Exception as e:
+                logger.warning(f"Error parsing cached users_list: {e}")
 
     data = user_service.list_users(tenant_id=target_tenant_id)
     if data:
@@ -55,8 +86,9 @@ async def create_user(payload: Dict[str, Any], current_user: dict = Depends(get_
     check_system_lock_or_raise()
     try:
         acting_user_id = current_user.get("user_id") if current_user else None
+        acting_tenant_id = current_user.get("tenant_id") if current_user else None
         res = user_service.create_user(payload, created_by=acting_user_id)
-        await invalidate_user_and_territory_caches()
+        await refresh_users_list_cache(acting_tenant_id)
         return res
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
@@ -85,8 +117,9 @@ async def create_role(payload: Dict[str, Any], current_user: dict = Depends(get_
     check_system_lock_or_raise()
     try:
         acting_user_id = current_user.get("user_id") if current_user else None
+        acting_tenant_id = current_user.get("tenant_id") if current_user else None
         res = user_service.create_role(payload, created_by=acting_user_id)
-        await invalidate_user_and_territory_caches()
+        await refresh_users_list_cache(acting_tenant_id)
         return res
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -97,20 +130,22 @@ async def update_role(role_id: str, payload: Dict[str, Any], current_user: dict 
     check_system_lock_or_raise()
     try:
         acting_user_id = current_user.get("user_id") if current_user else None
+        acting_tenant_id = current_user.get("tenant_id") if current_user else None
         res = user_service.update_role(role_id, payload, updated_by=acting_user_id)
-        await invalidate_user_and_territory_caches()
+        await refresh_users_list_cache(acting_tenant_id)
         return res
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.delete("/roles/{role_id}")
-async def delete_role(role_id: str):
+async def delete_role(role_id: str, current_user: dict = Depends(get_current_user)):
     check_system_lock_or_raise()
     success = user_service.delete_role(role_id)
     if not success:
         raise HTTPException(status_code=400, detail="Failed to delete role.")
-    await invalidate_user_and_territory_caches()
+    acting_tenant_id = current_user.get("tenant_id") if current_user else None
+    await refresh_users_list_cache(acting_tenant_id)
     return {"message": "Role deleted successfully"}
 
 
@@ -142,7 +177,7 @@ async def upload_roster(file: UploadFile = File(...), current_user: dict = Depen
                 except Exception:
                     pass
             res = user_service.process_excel_roster(contents, file.filename, uploaded_by=acting_user_id, tenant_id=acting_tenant_id)
-            await invalidate_user_and_territory_caches()
+            await refresh_users_list_cache(acting_tenant_id)
             record_upload_completion("roster_upload", file.filename)
             return res
         except Exception as e:
@@ -160,6 +195,7 @@ async def update_user(user_id: str, payload: Dict[str, Any], current_user: dict 
 
     try:
         acting_user_id = current_user.get("user_id") if current_user else None
+        acting_tenant_id = current_user.get("tenant_id") if current_user else None
         res = user_service.update_user(user_id, payload, updated_by=acting_user_id)
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
@@ -178,7 +214,7 @@ async def update_user(user_id: str, payload: Dict[str, Any], current_user: dict 
         await safe_delete(f"rll:revoked:{user_id}")
         logger.info(f"Revocation flag cleared for reactivated user: {user_id}")
 
-    await invalidate_user_and_territory_caches()
+    await refresh_users_list_cache(acting_tenant_id)
     return res
 
 
@@ -189,6 +225,7 @@ async def delete_user(user_id: str, current_user: dict = Depends(get_current_use
         raise HTTPException(status_code=400, detail="You cannot delete your own account.")
 
     acting_user_id = current_user.get("user_id") if current_user else None
+    acting_tenant_id = current_user.get("tenant_id") if current_user else None
     success = user_service.delete_user(user_id, deleted_by=acting_user_id)
     if not success:
         raise HTTPException(status_code=400, detail="Failed to delete user.")
@@ -196,7 +233,7 @@ async def delete_user(user_id: str, current_user: dict = Depends(get_current_use
     # Instantly revoke all active sessions for deleted user
     await safe_set(f"rll:revoked:{user_id}", "true", ttl=86400 * 30)
     logger.info(f"Instant Remote User Revocation executed for deleted user: {user_id}")
-    await invalidate_user_and_territory_caches()
+    await refresh_users_list_cache(acting_tenant_id)
     return {"message": "User deleted successfully", "user_id": user_id}
 
 
@@ -221,9 +258,10 @@ async def set_user_headquarters(user_id: str, payload: Dict[str, Any], current_u
         raise HTTPException(status_code=400, detail="'headquarters_ids' must be a list of headquarters UUIDs.")
 
     admin_user_id = str(current_user.get("user_id") or "")
+    acting_tenant_id = current_user.get("tenant_id") if current_user else None
     try:
         res = user_service.set_user_headquarters(user_id, hq_ids, updated_by=admin_user_id)
-        await invalidate_user_and_territory_caches()
+        await refresh_users_list_cache(acting_tenant_id)
         return res
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))

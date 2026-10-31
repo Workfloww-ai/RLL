@@ -40,11 +40,27 @@ const normalizeUser = (u: any): User => {
     : (Array.isArray(u.headquarters_list) && u.headquarters_list.length > 0)
       ? u.headquarters_list
       : [];
-  const headquartersList = rawHqList.map((h: any) =>
+  let headquartersList = rawHqList.map((h: any) =>
     typeof h === 'string'
       ? { headquarters_id: '', name: h }
       : { headquarters_id: h.headquarters_id || '', name: h.name || '' }
   );
+  let cleanHqIds = headquarters_ids;
+  let cleanHqStr = headquarters;
+
+  const upperRole = String(role).trim().toUpperCase();
+  if (['ASE', 'TSM', 'ASM'].includes(upperRole)) {
+    if (headquartersList.length > 1) {
+      headquartersList = [headquartersList[headquartersList.length - 1]];
+    }
+    if (cleanHqIds.length > 1) {
+      cleanHqIds = [cleanHqIds[cleanHqIds.length - 1]];
+    }
+    if (headquartersList.length === 1 && headquartersList[0].name) {
+      cleanHqStr = headquartersList[0].name;
+    }
+  }
+
   const reportingManager = u.reportingManager || u.reporting_manager || u.manager || 'Unassigned';
   const phoneNumber = u.phoneNumber || u.phone_number || u.phone || '';
   const isActive = u.isActive ?? u.is_active ?? true;
@@ -56,8 +72,8 @@ const normalizeUser = (u: any): User => {
     role,
     depotName,
     circleName,
-    headquarters,
-    headquarters_ids,
+    headquarters: cleanHqStr,
+    headquarters_ids: cleanHqIds,
     headquartersList,
     reportingManager,
     phoneNumber,
@@ -158,8 +174,11 @@ export default function HeadcountManagement() {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
-      const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
-      const res = await fetch(`${API_BASE_URL}/users/`, { headers });
+      const headers = {
+        'Cache-Control': 'no-cache',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      };
+      const res = await fetch(`${API_BASE_URL}/users/?fresh=true`, { headers });
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) {
@@ -241,9 +260,13 @@ export default function HeadcountManagement() {
     setEditRole(user.role || 'Territory Executive');
     setEditReportingManager(user.reportingManager && user.reportingManager !== 'Unassigned' ? user.reportingManager : '');
     setEditIsActive(user.isActive ?? true);
-    const initialHqIds = (user.headquarters_ids && user.headquarters_ids.length > 0)
+    let initialHqIds = (user.headquarters_ids && user.headquarters_ids.length > 0)
       ? user.headquarters_ids
       : (user.headquartersList ? user.headquartersList.map((h: any) => h.headquarters_id) : []);
+    const upperRole = String(user.role || '').trim().toUpperCase();
+    if (['ASE', 'TSM', 'ASM'].includes(upperRole) && initialHqIds.length > 1) {
+      initialHqIds = [initialHqIds[initialHqIds.length - 1]];
+    }
     setEditHeadquartersIds(initialHqIds);
   };
 

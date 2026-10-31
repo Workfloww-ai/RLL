@@ -512,10 +512,11 @@ async def safe_delete_pattern(pattern: str) -> int:
     async def _do_delete_pattern(r: aioredis.Redis) -> int:
         count = 0
         keys_to_delete = []
-        async for key in r.scan_iter(match=clean_pattern, count=100):
+        async for key in r.scan_iter(match=clean_pattern, count=250):
+            s_key = key.decode("utf-8", errors="ignore") if isinstance(key, bytes) else str(key)
             # Defense-in-depth: Never delete any key matching a protected security prefix
-            if any(key.startswith(p) for p in PROTECTED_SECURITY_PREFIXES):
-                logger.warning(f"Skipping deletion of protected key matching pattern: {key}")
+            if any(s_key.startswith(p) for p in PROTECTED_SECURITY_PREFIXES):
+                logger.warning(f"Skipping deletion of protected key matching pattern: {s_key}")
                 continue
             keys_to_delete.append(key)
             if len(keys_to_delete) >= 100:
@@ -523,6 +524,21 @@ async def safe_delete_pattern(pattern: str) -> int:
                 keys_to_delete = []
         if keys_to_delete:
             count += await r.delete(*keys_to_delete)
+            keys_to_delete = []
+
+        # Fallback to direct keys lookup if scan_iter returned 0
+        if count == 0:
+            try:
+                direct_keys = await r.keys(clean_pattern)
+                for dk in direct_keys:
+                    s_dk = dk.decode("utf-8", errors="ignore") if isinstance(dk, bytes) else str(dk)
+                    if not any(s_dk.startswith(p) for p in PROTECTED_SECURITY_PREFIXES):
+                        keys_to_delete.append(dk)
+                if keys_to_delete:
+                    count += await r.delete(*keys_to_delete)
+            except Exception as e_direct:
+                logger.debug(f"Direct keys pattern fallback notice: {e_direct}")
+
         logger.info(f"Deleted {count} Redis keys matching pattern '{clean_pattern}'")
         return count
 

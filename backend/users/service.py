@@ -130,11 +130,14 @@ class UserService:
                 ud_data = user_depot_info.get(uid, {})
                 depot_name = ud_data.get("depot_name", "Unassigned")
                 circle_name = ud_data.get("circle_name", "Unassigned")
+                user_role = role_by_user_id.get(uid, "ASE")
 
                 all_assigned_hqs = user_hqs_map.get(uid, [])
                 # If active HQs exist, use them; otherwise show assigned historical HQs so inactive users aren't unassigned
                 active_hqs = [h for h in all_assigned_hqs if h.get("is_active", True)]
                 display_hqs = active_hqs if active_hqs else all_assigned_hqs
+                if str(user_role).strip().upper() in ("ASE", "TSM", "ASM") and len(display_hqs) > 1:
+                    display_hqs = display_hqs[-1:]
                 hq_names = [h["name"] for h in display_hqs]
                 hq_ids = [h["headquarters_id"] for h in display_hqs]
                 headquarters_str = ", ".join(hq_names) if hq_names else ud_data.get("headquarters", "Unassigned")
@@ -693,10 +696,7 @@ class UserService:
 
             # Update headquarters assignments if headquarters_ids provided in payload
             if "headquarters_ids" in payload and payload["headquarters_ids"] is not None:
-                try:
-                    self.set_user_headquarters(user_id, payload["headquarters_ids"], updated_by=clean_updator_id)
-                except Exception as hq_err:
-                    logger.warning(f"Could not update user headquarters during update_user: {hq_err}")
+                self.set_user_headquarters(user_id, payload["headquarters_ids"], updated_by=clean_updator_id)
 
         except Exception as e:
             logger.error(f"Error updating user {user_id} in Supabase: {e}")
@@ -749,14 +749,24 @@ class UserService:
         if not user_res.data:
             raise ValueError(f"User '{user_id}' does not exist.")
         user = user_res.data[0]
-        user_tenant_id = user.get("tenant_id")
-        if not user_tenant_id and updated_by:
+        user_tenant_id = user.get("tenant_id") or "a0000000-0000-0000-0000-000000000001"
+        if not user.get("tenant_id") and updated_by:
             try:
                 admin_res = client.table("users").select("tenant_id").eq("user_id", str(updated_by)).limit(1).execute()
                 if admin_res.data and admin_res.data[0].get("tenant_id"):
                     user_tenant_id = admin_res.data[0]["tenant_id"]
             except Exception:
                 pass
+
+        # 1b. Validate updated_by exists in public.users to prevent Foreign Key constraint violations
+        valid_updator_id = None
+        if updated_by and len(str(updated_by)) == 36 and str(updated_by) != "00000000-0000-0000-0000-000000000001":
+            try:
+                chk_up = client.table("users").select("user_id").eq("user_id", str(updated_by)).limit(1).execute()
+                if chk_up.data:
+                    valid_updator_id = str(updated_by)
+            except Exception:
+                valid_updator_id = None
 
         # 2. De-duplicate requested HQ IDs while preserving order
         clean_hq_ids = []
@@ -804,14 +814,13 @@ class UserService:
             new_rows = []
             for hid in clean_hq_ids:
                 row_map = {
+                    "tenant_id": user_tenant_id,
                     "user_id": user_id,
                     "headquarters_id": hid,
                     "is_active": True,
-                    "created_by": updated_by,
-                    "updated_by": updated_by
+                    "created_by": valid_updator_id,
+                    "updated_by": valid_updator_id
                 }
-                if user_tenant_id:
-                    row_map["tenant_id"] = user_tenant_id
                 new_rows.append(row_map)
             client.table("user_headquarters_mapping").insert(new_rows).execute()
 
