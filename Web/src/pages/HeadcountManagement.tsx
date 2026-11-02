@@ -114,6 +114,7 @@ export default function HeadcountManagement() {
   const [editHeadquartersIds, setEditHeadquartersIds] = useState<string[]>([]);
   const [headquartersOptions, setHeadquartersOptions] = useState<{ headquarters_id: string; name: string }[]>([]);
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [savingNewUser, setSavingNewUser] = useState(false);
 
   type SortField = 'name' | 'phoneNumber' | 'email' | 'role' | 'reportingManager' | 'isActive';
   type SortDirection = 'asc' | 'desc';
@@ -414,27 +415,35 @@ export default function HeadcountManagement() {
       return;
     }
 
-    const cleanPhone = newUser.phoneNumber.replace(/\D/g, '');
-    const fullName = `${newUser.firstName.trim()} ${newUser.lastName.trim()}`.trim();
-    const userPayload = {
-      ...newUser,
-      first_name: newUser.firstName.trim(),
-      last_name: newUser.lastName.trim(),
-      name: fullName,
-      phone: cleanPhone,
-      phoneNumber: cleanPhone,
-      email: newUser.email.trim(),
-      role: newUser.role,
-      circleName: 'Unassigned',
-      manager_id: managerOptions.find(m => m.name.trim().toLowerCase() === (newUser.reportingManager || '').trim().toLowerCase())?.id || null,
-      managerId: managerOptions.find(m => m.name.trim().toLowerCase() === (newUser.reportingManager || '').trim().toLowerCase())?.id || null,
-      reportingManager: newUser.reportingManager && newUser.reportingManager !== 'Unassigned' ? newUser.reportingManager.trim() : 'Unassigned',
-      reporting_manager: newUser.reportingManager && newUser.reportingManager !== 'Unassigned' ? newUser.reportingManager.trim() : 'Unassigned',
-      is_active: newUser.isActive,
-      headquarters_ids: newUser.headquarters_ids || [],
-    };
-
+    setSavingNewUser(true);
     try {
+      const cleanPhone = newUser.phoneNumber.replace(/\D/g, '');
+      const fullName = `${newUser.firstName.trim()} ${newUser.lastName.trim()}`.trim();
+      const repMgr = newUser.reportingManager && newUser.reportingManager !== 'Unassigned' ? newUser.reportingManager.trim() : 'Unassigned';
+      
+      const selectedMgr = managerOptions.find(
+        (m) => m.name.trim().toLowerCase() === repMgr.toLowerCase() || m.id === repMgr
+      );
+
+      const userPayload = {
+        ...newUser,
+        first_name: newUser.firstName.trim(),
+        last_name: newUser.lastName.trim(),
+        name: fullName,
+        phone: cleanPhone,
+        phoneNumber: cleanPhone,
+        email: newUser.email.trim(),
+        role: newUser.role,
+        circleName: 'Unassigned',
+        depotName: 'Unassigned',
+        manager_id: selectedMgr?.id || null,
+        managerId: selectedMgr?.id || null,
+        reportingManager: selectedMgr ? selectedMgr.name : repMgr,
+        reporting_manager: selectedMgr ? selectedMgr.name : repMgr,
+        is_active: newUser.isActive,
+        headquarters_ids: newUser.headquarters_ids || [],
+      };
+
       const token = localStorage.getItem('token');
       const res = await fetch(`${API_BASE_URL}/users/`, {
         method: 'POST',
@@ -457,6 +466,8 @@ export default function HeadcountManagement() {
     } catch (err) {
       console.error('Error creating user on backend:', err);
       showToast('Network error while saving.', 'error');
+    } finally {
+      setSavingNewUser(false);
     }
   };
 
@@ -943,16 +954,21 @@ export default function HeadcountManagement() {
           </div>
           <div className="flex gap-2 mt-4 justify-end">
             <button 
+              type="button"
               onClick={() => setIsAdding(false)}
-              className="px-4 py-2 border border-slate-200 text-slate-600 rounded-xl text-xs font-bold hover:bg-slate-50 transition-colors cursor-pointer"
+              disabled={savingNewUser}
+              className="px-4 py-2 border border-slate-200 text-slate-600 rounded-xl text-xs font-bold hover:bg-slate-50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Cancel
             </button>
             <button 
+              type="button"
               onClick={handleAdd}
-              className="px-5 py-2 bg-[#0D3B8E] text-white rounded-xl text-xs font-bold hover:bg-[#0A2F73] transition-colors cursor-pointer shadow-xs"
+              disabled={savingNewUser}
+              className={`px-5 py-2 bg-[#0D3B8E] text-white rounded-xl text-xs font-bold hover:bg-[#0A2F73] transition-colors cursor-pointer shadow-xs flex items-center gap-1.5 ${savingNewUser ? 'opacity-70 cursor-not-allowed' : ''}`}
             >
-              Save Record
+              {savingNewUser && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+              {savingNewUser ? 'Saving Record...' : 'Save Record'}
             </button>
           </div>
         </div>

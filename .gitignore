@@ -82,3 +82,4 @@ IMFL Data Sep-2026.xlsb
 tests/test_inactive_user_sales.py
 tests/verify_migration_057.py
 tests/test_user_hierarchy_lifecycle.py
+tests/test_web_portal_user_lifecycle.py

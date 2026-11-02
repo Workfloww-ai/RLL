@@ -276,7 +276,7 @@ class UserService:
         return None
 
     def _resolve_auth_user_id(self, client: Any, email: str, first_name: str, last_name: str) -> Optional[str]:
-        """Find or create user in Supabase auth.users to satisfy fk_users_auth_id constraint."""
+        """Find existing user in public.users, or generate a deterministic user_id."""
         email_clean = email.strip().lower()
 
         # 1. Check if user already exists in public.users
@@ -287,42 +287,7 @@ class UserService:
         except Exception as e:
             logger.warning(f"Error checking existing user in public.users: {e}")
 
-        # 2. Try creating user via Supabase RPC function (bypasses Auth API key format issues)
-        try:
-            rpc_res = client.rpc("create_auth_user_if_not_exists", {
-                "p_email": email_clean,
-                "p_first_name": first_name,
-                "p_last_name": last_name
-            }).execute()
-            if rpc_res.data:
-                return str(rpc_res.data)
-        except Exception as rpc_err:
-            logger.warning(f"RPC create_auth_user_if_not_exists error: {rpc_err}")
-
-        # 3. Fallback to Supabase Auth Admin API
-        try:
-            import secrets
-            secure_temp_password = secrets.token_urlsafe(32)
-            auth_user = client.auth.admin.create_user({
-                "email": email_clean,
-                "password": secure_temp_password,
-                "email_confirm": True,
-                "user_metadata": {"first_name": first_name, "last_name": last_name}
-            })
-            if auth_user and hasattr(auth_user, 'user') and auth_user.user:
-                return str(auth_user.user.id)
-            elif isinstance(auth_user, dict) and "id" in auth_user:
-                return str(auth_user["id"])
-        except Exception:
-            pass
-        """Check if user exists in auth.users or public.users, or generate a deterministic user_id."""
-        try:
-            res = client.table("users").select("user_id").ilike("email", email).limit(1).execute()
-            if res.data and len(res.data) > 0:
-                return str(res.data[0]["user_id"])
-        except Exception as e:
-            logger.warning(f"Failed to resolve user_id for email '{email}': {e}")
-        return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{email.lower().strip()}"))
+        return str(uuid.uuid5(uuid.NAMESPACE_DNS, email_clean))
 
     def _resolve_manager_user_id(self, client: Any, reporting_manager: str) -> Optional[str]:
         if not reporting_manager or reporting_manager.strip().lower() in ("unassigned", "none", "", "null", "nan"):
@@ -409,6 +374,21 @@ class UserService:
 
         phone = clean_phone
         full_name = f"{first_name} {last_name}".strip()
+
+        # Check if email or phone already exists in public.users to give clear user-friendly error
+        if client:
+            try:
+                dup_check = client.table("users").select("user_id, email, phone").or_(f"email.ilike.{email},phone.eq.{clean_phone}").limit(1).execute()
+                if dup_check.data and len(dup_check.data) > 0:
+                    existing = dup_check.data[0]
+                    if str(existing.get("email", "")).strip().lower() == email.lower():
+                        raise ValueError(f"A user with email '{email}' already exists.")
+                    if str(existing.get("phone", "")).strip() == clean_phone:
+                        raise ValueError(f"A user with phone number '{clean_phone}' already exists.")
+            except ValueError:
+                raise
+            except Exception as e_dup:
+                logger.warning(f"Duplicate user check warning: {e_dup}")
 
         # Resolve real user_id from auth.users or public.users if client is available
         user_id = None
@@ -499,12 +479,12 @@ class UserService:
             manager_param = payload.get("manager_id") or payload.get("managerId") or payload.get("reportingManager") or payload.get("reporting_manager")
             if manager_param and str(manager_param).strip().lower() not in ("unassigned", "none", "null", ""):
                 try:
-                    manager_user_id = self._resolve_manager_user_id(client, str(manager_param).strip())
-                    if manager_user_id:
+                    resolved_mgr_id = manager_user_id or self._resolve_manager_user_id(client, str(manager_param).strip())
+                    if resolved_mgr_id:
                         client.table("ase_tsm_mapping").delete().eq("ase_user_id", user_id).execute()
                         client.table("ase_tsm_mapping").insert({
                             "ase_user_id": user_id,
-                            "tsm_user_id": manager_user_id,
+                            "tsm_user_id": resolved_mgr_id,
                             "is_active": True
                         }).execute()
                 except Exception as mgr_err:
@@ -522,14 +502,22 @@ class UserService:
                     logger.warning(f"Could not update user_depot mapping during create_user: {d_err}")
 
             # 5. If headquarters_ids provided, map user to headquarters
-            if "headquarters_ids" in payload and payload["headquarters_ids"] is not None:
+            if "headquarters_ids" in payload and payload["headquarters_ids"]:
                 try:
                     self.set_user_headquarters(user_id, payload["headquarters_ids"], updated_by=clean_creator_id)
+                    user_record["headquarters_ids"] = payload["headquarters_ids"]
+                    if client and payload["headquarters_ids"]:
+                        hq_res = client.table("headquarters").select("name").eq("headquarters_id", payload["headquarters_ids"][0]).limit(1).execute()
+                        if hq_res.data:
+                            user_record["headquarters"] = hq_res.data[0]["name"]
                 except Exception as hq_err:
                     logger.warning(f"Could not set user headquarters during create_user: {hq_err}")
 
+        except ValueError:
+            raise
         except Exception as e:
             logger.error(f"Error creating user in Supabase: {e}")
+            raise ValueError(f"Failed to create user in database: {e}")
 
         user_record["id"] = user_id
         user_record["user_id"] = user_id
@@ -584,6 +572,10 @@ class UserService:
                     rm = payload.get("reporting_manager", payload.get("reportingManager"))
                     self.in_memory_users[idx]["reporting_manager"] = rm
                     self.in_memory_users[idx]["reportingManager"] = rm
+                is_act = payload.get("is_active", payload.get("isActive"))
+                if is_act is not None:
+                    self.in_memory_users[idx]["is_active"] = bool(is_act)
+                    self.in_memory_users[idx]["isActive"] = bool(is_act)
 
         if not client:
             return payload

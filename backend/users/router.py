@@ -1,5 +1,6 @@
 import json
 import logging
+import asyncio
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, Header, Query
 from backend.users.service import user_service
@@ -31,31 +32,35 @@ async def invalidate_user_and_territory_caches():
     await safe_delete_pattern("rll:mobile:sales:*")
 
 
+async def _background_refresh_users_list_cache(tenant_id: Optional[str] = None):
+    """
+    Non-blocking background refresh:
+    Queries DB via thread pool so FastAPI's main async event loop never hangs,
+    then updates Redis with the latest authoritative user list.
+    """
+    try:
+        query_tid = str(tenant_id) if tenant_id and str(tenant_id).lower() != "all" else None
+        fresh_users = await asyncio.to_thread(user_service.list_users, tenant_id=query_tid)
+        if fresh_users:
+            json_data = json.dumps(fresh_users)
+            target_keys = {
+                f"rll:cache:users_list:{tid}" for tid in (tenant_id, "all", "a0000000-0000-0000-0000-000000000001") if tid
+            }
+            for k in target_keys:
+                await safe_set(k, json_data, ttl=86400)
+            logger.info(f"Write-through cache background refresh complete ({len(fresh_users)} users)")
+    except Exception as e:
+        logger.warning(f"Error in background users list cache refresh: {e}")
+
+
 async def refresh_users_list_cache(tenant_id: Optional[str] = None):
     """
     Write-through cache update:
-    1. Immediately purges all stale users_list cache keys across all tenant variations.
-    2. Queries the authoritative DB via user_service.list_users.
-    3. Writes the latest refreshed user list directly into Redis.
+    1. Immediately purges all stale users_list cache keys in <5ms.
+    2. Spawns a background task to pre-warm Redis with fresh DB state without blocking response.
     """
     await invalidate_user_and_territory_caches()
-
-    tenants_to_refresh = set()
-    if tenant_id:
-        tenants_to_refresh.add(str(tenant_id))
-    tenants_to_refresh.add("all")
-    tenants_to_refresh.add("a0000000-0000-0000-0000-000000000001")
-
-    for tid in tenants_to_refresh:
-        query_tid = None if tid == "all" else tid
-        try:
-            fresh_users = user_service.list_users(tenant_id=query_tid)
-            if fresh_users:
-                cache_key = f"rll:cache:users_list:{tid}"
-                await safe_set(cache_key, json.dumps(fresh_users), ttl=86400)
-                logger.info(f"Write-through cache refreshed for key: {cache_key} ({len(fresh_users)} users)")
-        except Exception as e_refresh:
-            logger.warning(f"Notice refreshing users list cache for {tid}: {e_refresh}")
+    asyncio.create_task(_background_refresh_users_list_cache(tenant_id))
 
 
 @router.get("/")
