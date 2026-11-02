@@ -37,6 +37,8 @@ interface TsmViewProps {
   selectedHq: string;
   loading?: boolean;
   error?: string | null;
+  includeOthers?: boolean;
+  onToggleIncludeOthers?: (include: boolean) => void;
   onRetry?: () => void;
   onRefresh?: () => Promise<void> | void;
 }
@@ -48,6 +50,8 @@ export function TsmView({
   selectedHq,
   loading = false,
   error = null,
+  includeOthers = false,
+  onToggleIncludeOthers,
   onRetry,
   onRefresh,
 }: TsmViewProps) {
@@ -179,6 +183,11 @@ export function TsmView({
       if (activeTsmTab === 'companies') {
         const comps = (selectedTsm as any)?.companies || selectedTsm?.brands || [];
         return comps.filter((item: any) => {
+          const compCat = (item.category || '').toLowerCase();
+          const compName = (item.companyName || item.name || item.brandName || '').toLowerCase();
+          if (!includeOthers && (compCat === 'others' || compName.startsWith('comp_') || compName === 'others' || compName === 'other')) {
+            return false;
+          }
           const raw = item.data?.[period] || { cases: 0, bottles: 0 };
           return (raw.cases || 0) > 0 || (raw.bottles || 0) > 0;
         });
@@ -188,10 +197,40 @@ export function TsmView({
 
     const aseComps = (selectedAse as any)?.companies || (selectedAse as any)?.brands || (selectedTsm as any)?.companies || [];
     return aseComps.filter((item: any) => {
+      const compCat = (item.category || '').toLowerCase();
+      const compName = (item.companyName || item.name || item.brandName || '').toLowerCase();
+      if (!includeOthers && (compCat === 'others' || compName.startsWith('comp_') || compName === 'others' || compName === 'other')) {
+        return false;
+      }
       const raw = item.data?.[period] || { cases: 0, bottles: 0 };
       return (raw.cases || 0) > 0 || (raw.bottles || 0) > 0;
     });
-  }, [level, activeTsmTab, filteredTsms, selectedTsm, selectedAse, period]);
+  }, [level, activeTsmTab, filteredTsms, selectedTsm, selectedAse, period, includeOthers]);
+
+  const getItemCases = useCallback(
+    (item: any): number => {
+      if (!item) return 0;
+      const comps = item.companies || [];
+      if (comps.length > 0) {
+        let sum = 0;
+        for (const c of comps) {
+          const compCat = (c.category || '').toLowerCase();
+          const compName = (c.companyName || c.name || c.brandName || '').toLowerCase();
+          const isOthers = (compCat === 'others' || compName.startsWith('comp_') || compName === 'others' || compName === 'other');
+          if (!includeOthers && isOthers) {
+            continue;
+          }
+          const d = c.data?.[period] || { cases: 0, bottles: 0 };
+          sum += Number(d.cases) || 0;
+        }
+        return Number((sum * scaleFactor).toFixed(2));
+      }
+      const rawData = item.data?.[period] || { cases: 0 };
+      const cases = Number(((rawData.cases || item.total_cases || 0) * scaleFactor).toFixed(2));
+      return cases;
+    },
+    [includeOthers, period, scaleFactor]
+  );
 
   const filteredAndSortedList = useMemo(() => {
     let result = [...activeRawList];
@@ -209,10 +248,8 @@ export function TsmView({
       const nameA = (a.name || a.brandName || a.company_name || '').toLowerCase();
       const nameB = (b.name || b.brandName || b.company_name || '').toLowerCase();
 
-      const aRaw = a.data?.[period] || { cases: 0, bottles: 0 };
-      const bRaw = b.data?.[period] || { cases: 0, bottles: 0 };
-      const casesA = Number(((aRaw.cases || a.total_cases || 0) * scaleFactor).toFixed(2));
-      const casesB = Number(((bRaw.cases || b.total_cases || 0) * scaleFactor).toFixed(2));
+      const casesA = getItemCases(a);
+      const casesB = getItemCases(b);
 
       if (sortOption === 'az') return nameA.localeCompare(nameB);
       if (sortOption === 'za') return nameB.localeCompare(nameA);
@@ -222,7 +259,7 @@ export function TsmView({
     });
 
     return result;
-  }, [activeRawList, level, searchQuery, sortOption, period, scaleFactor]);
+  }, [activeRawList, level, searchQuery, sortOption, getItemCases]);
 
   const totalItems = filteredAndSortedList.length;
   const totalPages = Math.ceil(totalItems / perPage) || 1;
@@ -241,22 +278,21 @@ export function TsmView({
     return `Search companies for ${firstName}...`;
   }, [level, activeTsmTab, selectedAse]);
 
-  const getItemCases = useCallback(
-    (item: any): number => {
-      if (!item) return 0;
-      const rawData = item.data?.[period] || { cases: 0 };
-      const cases = Number(((rawData.cases || item.total_cases || 0) * scaleFactor).toFixed(2));
-      return cases;
-    },
-    [period, scaleFactor]
-  );
-
   const headerMetrics = useMemo(() => {
     if (level === 2 && selectedTsm) {
       const cases = getItemCases(selectedTsm);
       const aseCount = selectedTsm.ases?.length || 0;
-      const itemTsm = selectedTsm as any;
-      const companyCount = itemTsm.companyCount?.[period] ?? itemTsm.company_count?.[period] ?? (itemTsm.companies?.length || 0);
+      const allComps = (selectedTsm as any)?.companies || selectedTsm?.brands || [];
+      const validComps = allComps.filter((item: any) => {
+        const compCat = (item.category || '').toLowerCase();
+        const compName = (item.companyName || item.name || item.brandName || '').toLowerCase();
+        if (!includeOthers && (compCat === 'others' || compName.startsWith('comp_') || compName === 'others' || compName === 'other')) {
+          return false;
+        }
+        const raw = item.data?.[period] || { cases: 0, bottles: 0 };
+        return (raw.cases || 0) > 0 || (raw.bottles || 0) > 0;
+      });
+      const companyCount = validComps.length;
       const subtitle = `${aseCount} ASE(s)  •  ${companyCount} Companies`;
       return {
         cases,
@@ -266,8 +302,17 @@ export function TsmView({
     }
     if (level === 3 && selectedAse) {
       const cases = getItemCases(selectedAse);
-      const itemAse = selectedAse as any;
-      const companyCount = itemAse.companyCount?.[period] ?? itemAse.company_count?.[period] ?? (itemAse.companies?.length || 0);
+      const allAseComps = (selectedAse as any)?.companies || (selectedAse as any)?.brands || [];
+      const validAseComps = allAseComps.filter((item: any) => {
+        const compCat = (item.category || '').toLowerCase();
+        const compName = (item.companyName || item.name || item.brandName || '').toLowerCase();
+        if (!includeOthers && (compCat === 'others' || compName.startsWith('comp_') || compName === 'others' || compName === 'other')) {
+          return false;
+        }
+        const raw = item.data?.[period] || { cases: 0, bottles: 0 };
+        return (raw.cases || 0) > 0 || (raw.bottles || 0) > 0;
+      });
+      const companyCount = validAseComps.length;
       const subtitle = `${companyCount} Companies`;
       return {
         cases,
@@ -276,7 +321,7 @@ export function TsmView({
       };
     }
     return null;
-  }, [level, selectedTsm, selectedAse, period, getItemCases]);
+  }, [level, selectedTsm, selectedAse, period, getItemCases, includeOthers]);
 
   const getSortOptionLabel = (option: SortOptionValue): string => {
     switch (option) {
@@ -384,6 +429,28 @@ export function TsmView({
           </Text>
           <ChevronDownIcon size={14} color="#94A3B8" />
         </TouchableOpacity>
+
+        {/* Dedicated TSM Include/Exclude Others Toggle */}
+        <TouchableOpacity
+          style={[
+            styles.othersTogglePill,
+            includeOthers ? styles.othersTogglePillActive : styles.othersTogglePillInactive,
+          ]}
+          onPress={() => onToggleIncludeOthers && onToggleIncludeOthers(!includeOthers)}
+          activeOpacity={0.75}
+        >
+          <View style={[styles.toggleDot, includeOthers ? styles.toggleDotActive : styles.toggleDotInactive]} />
+          <Text
+            style={[
+              styles.othersToggleText,
+              includeOthers ? styles.othersToggleTextActive : styles.othersToggleTextInactive,
+              { fontSize: scaledFontSize(11) }
+            ]}
+            numberOfLines={1}
+          >
+            {includeOthers ? 'Others: ON' : 'Others: OFF'}
+          </Text>
+        </TouchableOpacity>
       </View>
 
       {/* Scrollable Content */}
@@ -434,18 +501,33 @@ export function TsmView({
           paginatedList.map((item: any, index: number) => {
             // Level 1: Root TSM Card (Image 1)
             if (level === 1) {
-              const rawData = item.data?.[period] || { cases: 0, bottles: 0 };
-              const cases = Number(((rawData.cases || 0) * scaleFactor).toFixed(2));
-              const bottles = Math.round((rawData.bottles || 0) * scaleFactor);
+              const cases = getItemCases(item);
+              const comps = item.companies || [];
+              let validCompanyCount = 0;
+              if (comps.length > 0) {
+                for (const c of comps) {
+                  const compCat = (c.category || '').toLowerCase();
+                  const compName = (c.companyName || c.name || c.brandName || '').toLowerCase();
+                  const isOthers = (compCat === 'others' || compName.startsWith('comp_') || compName === 'others' || compName === 'other');
+                  if (!includeOthers && isOthers) {
+                    continue;
+                  }
+                  const d = c.data?.[period] || { cases: 0, bottles: 0 };
+                  if ((d.cases || 0) > 0 || (d.bottles || 0) > 0) {
+                    validCompanyCount++;
+                  }
+                }
+              } else {
+                validCompanyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? 0;
+              }
               const aseCount = item.ases?.length || 0;
-              const companyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.companies?.length || 0);
               const hqName = item.hqLocation || 'Unassigned';
 
               return (
                 <MetricsCard
                   key={`tsm-${item.id || item.name || 'tsm'}-${index}`}
                   title={item.name}
-                  subtitle={`${aseCount} ASE(s)  •  ${companyCount} Companies`}
+                  subtitle={`${aseCount} ASE(s)  •  ${validCompanyCount} Companies`}
                   metrics={[
                     { label: 'Cases', value: cases },
                   ]}
@@ -478,17 +560,32 @@ export function TsmView({
 
             // Level 2: TSM ASEs List View (Image 3)
             if (level === 2 && activeTsmTab === 'ase') {
-              const rawData = item.data?.[period] || { cases: 0, bottles: 0 };
-              const cases = Number(((rawData.cases || 0) * scaleFactor).toFixed(2));
-              const bottles = Math.round((rawData.bottles || 0) * scaleFactor);
-              const companyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? (item.companies?.length || 0);
+              const cases = getItemCases(item);
+              const comps = item.companies || [];
+              let validCompanyCount = 0;
+              if (comps.length > 0) {
+                for (const c of comps) {
+                  const compCat = (c.category || '').toLowerCase();
+                  const compName = (c.companyName || c.name || c.brandName || '').toLowerCase();
+                  const isOthers = (compCat === 'others' || compName.startsWith('comp_') || compName === 'others' || compName === 'other');
+                  if (!includeOthers && isOthers) {
+                    continue;
+                  }
+                  const d = c.data?.[period] || { cases: 0, bottles: 0 };
+                  if ((d.cases || 0) > 0 || (d.bottles || 0) > 0) {
+                    validCompanyCount++;
+                  }
+                }
+              } else {
+                validCompanyCount = item.companyCount?.[period] ?? item.company_count?.[period] ?? 0;
+              }
               const hqName = item.hqLocation || 'Unassigned';
 
               return (
                 <MetricsCard
                   key={`ase-${item.id || item.name || 'ase'}-${index}`}
                   title={item.name}
-                  subtitle={`${companyCount} Companies`}
+                  subtitle={`${validCompanyCount} Companies`}
                   metrics={[
                     { label: 'Cases', value: cases },
                   ]}
@@ -844,5 +941,42 @@ const styles = StyleSheet.create({
     fontSize: 12.5,
     fontWeight: '800',
     color: '#1D4ED8',
+  },
+  othersTogglePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    height: 40,
+    gap: 5,
+  },
+  othersTogglePillInactive: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#E2E8F0',
+  },
+  othersTogglePillActive: {
+    backgroundColor: '#EFF6FF',
+    borderColor: '#38BDF8',
+  },
+  toggleDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  toggleDotInactive: {
+    backgroundColor: '#94A3B8',
+  },
+  toggleDotActive: {
+    backgroundColor: '#0284C7',
+  },
+  othersToggleText: {
+    fontWeight: '700',
+  },
+  othersToggleTextInactive: {
+    color: '#64748B',
+  },
+  othersToggleTextActive: {
+    color: '#0284C7',
   },
 });

@@ -60,6 +60,12 @@ COLUMN_ALIASES = {
         "company name",
         "company_name",
     ],
+    "Category": [
+        "category",
+        "company category",
+        "company_category",
+        "comp category",
+    ],
     "LICENSEE_NAME": [
         "licensee_name",
         "licensee name",
@@ -949,6 +955,7 @@ class ImportPipelineEngine:
                     local_batch["covers_end"] = covers_end_date
 
             s_company = get_series("Company")
+            s_category = get_series("Category")
             s_licensee = get_series("LICENSEE_NAME")
             s_trade = get_series("Trade")
             s_group = get_series("Group Name")
@@ -984,7 +991,20 @@ class ImportPipelineEngine:
             office_cache = master_service.bulk_resolve_offices(unique_offices)
             circle_cache = master_service.bulk_resolve_circles(unique_circles)
             hq_cache = master_service.bulk_resolve_headquarters(unique_hqs, tenant_id=tenant_id)
-            company_cache = master_service.bulk_resolve_companies(unique_companies, tenant_id=tenant_id)
+
+            company_category_map = {}
+            if not s_category.empty:
+                for c, cat in zip(s_company, s_category):
+                    c_str = str(c).strip() if c else ""
+                    cat_str = str(cat).strip() if cat else ""
+                    if c_str and cat_str and c_str not in company_category_map:
+                        company_category_map[c_str] = cat_str
+
+            company_cache = master_service.bulk_resolve_companies(
+                unique_companies,
+                tenant_id=tenant_id,
+                company_categories=company_category_map
+            )
 
             depot_items = [
                 {
@@ -1102,15 +1122,22 @@ class ImportPipelineEngine:
             tsm_user_ids: Set[str] = set()
             user_approved_hq_names_by_id: Dict[str, Set[str]] = {}
             hq_id_to_name: Dict[str, str] = {}
+            user_is_active_by_id: Dict[str, bool] = {}
+            user_deactivated_date_by_id: Dict[str, str] = {}
 
             if client:
                 try:
-                    u_res = client.table("users").select("user_id, first_name, last_name, email, is_active").execute()
+                    u_res = client.table("users").select("user_id, first_name, last_name, email, is_active, updated_at").execute()
                     if u_res and u_res.data:
                         all_users = u_res.data
                         all_users.sort(key=lambda x: 0 if x.get("is_active") else 1)
                         for u in all_users:
                             uid = str(u["user_id"])
+                            is_act = bool(u.get("is_active", True))
+                            user_is_active_by_id[uid] = is_act
+                            deact_val = u.get("deactivated_at") or (u.get("updated_at") if not is_act else "")
+                            user_deactivated_date_by_id[uid] = str(deact_val or "")[:10]
+
                             fn = (u.get("first_name") or "").strip()
                             ln = (u.get("last_name") or "").strip()
                             full_name = f"{fn} {ln}".strip()
@@ -1121,6 +1148,11 @@ class ImportPipelineEngine:
                             if full_name_clean and full_name_clean not in user_id_by_name:
                                 user_id_by_name[full_name_clean] = uid
                                 user_name_by_id[uid] = full_name
+                            ln_parts = ln.split()
+                            if len(ln_parts) > 1:
+                                short_name = f"{fn} {ln_parts[-1]}".strip().lower()
+                                if short_name and short_name not in user_id_by_name:
+                                    user_id_by_name[short_name] = uid
                             if prefix and prefix not in user_id_by_name:
                                 user_id_by_name[prefix] = uid
                             if fn and fn.lower() not in user_id_by_name:
@@ -1205,7 +1237,15 @@ class ImportPipelineEngine:
                 first_part = c_name.replace(",", "/").split("/")[0].strip()
                 if first_part in user_id_by_name:
                     return user_id_by_name[first_part]
-                words = c_name.split()
+                words = first_part.split()
+                if len(words) > 2:
+                    fl = f"{words[0]} {words[-1]}"
+                    if fl in user_id_by_name:
+                        return user_id_by_name[fl]
+                    if len(words) > 3:
+                        fl2 = f"{words[0]} {words[1]} {words[-1]}"
+                        if fl2 in user_id_by_name:
+                            return user_id_by_name[fl2]
                 if words and words[0] in user_id_by_name:
                     return user_id_by_name[words[0]]
                 return None
@@ -1370,6 +1410,70 @@ class ImportPipelineEngine:
                         "error_message": f"[Row #{row_num}] DATE_ERROR: Invalid or unparseable sale date '{raw_date}'. Expected valid date format.",
                         "resolution": "Format the sale date column as a valid date in the Excel file."
                     })
+
+                # Inactive User Sales Prohibition Check (User Requirement A4):
+                # If an employee (ASE or ASM/TSM) is marked inactive, sales CANNOT be uploaded for dates
+                # on or after their deactivation date. Halt and rollback, prompting user to activate first.
+                if parsed_dt_val:
+                    if raw_ase and raw_ase.lower() not in ("unassigned", "none", "null", "nan", ""):
+                        ase_uid_chk = _resolve_user_id(raw_ase)
+                        if ase_uid_chk and not user_is_active_by_id.get(ase_uid_chk, True):
+                            deact_dt = user_deactivated_date_by_id.get(ase_uid_chk)
+                            if deact_dt and parsed_dt_val >= deact_dt:
+                                u_name = user_name_by_id.get(ase_uid_chk, raw_ase)
+                                validation_error_records.append({
+                                    "upload_batch_id": str(batch_id),
+                                    "batch_id": str(batch_id),
+                                    "filename": filename,
+                                    "excel_row_number": row_num,
+                                    "error_code": "INACTIVE_USER_SALES_NOT_ALLOWED",
+                                    "severity": "CRITICAL",
+                                    "field_name": "ASE",
+                                    "column_name": "ase_raw",
+                                    "actual_value": raw_ase,
+                                    "expected_value": "Active Employee",
+                                    "ase": raw_ase,
+                                    "asm_tsm": raw_asm,
+                                    "approved_asm_tsm": approved_tsm_name_curr,
+                                    "hq": raw_hq,
+                                    "depot": raw_depot,
+                                    "licensee": raw_licensee,
+                                    "company": raw_company,
+                                    "brand": raw_brand,
+                                    "raw_id": r_id,
+                                    "error_message": f"[Row #{row_num}] INACTIVE_USER_SALES_NOT_ALLOWED: User '{u_name}' has been marked inactive on {deact_dt}. Sales cannot be uploaded for date {parsed_dt_val} (on or after deactivation date). First activate the user in User Management and then re-upload the file.",
+                                    "resolution": f"First activate '{u_name}' in User Management and then re-upload the file."
+                                })
+
+                    if raw_asm and raw_asm.lower() not in ("unassigned", "none", "null", "nan", ""):
+                        asm_uid_chk = _resolve_user_id(raw_asm)
+                        if asm_uid_chk and not user_is_active_by_id.get(asm_uid_chk, True):
+                            deact_dt = user_deactivated_date_by_id.get(asm_uid_chk)
+                            if deact_dt and parsed_dt_val >= deact_dt:
+                                u_name = user_name_by_id.get(asm_uid_chk, raw_asm)
+                                validation_error_records.append({
+                                    "upload_batch_id": str(batch_id),
+                                    "batch_id": str(batch_id),
+                                    "filename": filename,
+                                    "excel_row_number": row_num,
+                                    "error_code": "INACTIVE_USER_SALES_NOT_ALLOWED",
+                                    "severity": "CRITICAL",
+                                    "field_name": "ASM/TSM",
+                                    "column_name": "asm_tsm_raw",
+                                    "actual_value": raw_asm,
+                                    "expected_value": "Active Employee",
+                                    "ase": raw_ase,
+                                    "asm_tsm": raw_asm,
+                                    "approved_asm_tsm": approved_tsm_name_curr,
+                                    "hq": raw_hq,
+                                    "depot": raw_depot,
+                                    "licensee": raw_licensee,
+                                    "company": raw_company,
+                                    "brand": raw_brand,
+                                    "raw_id": r_id,
+                                    "error_message": f"[Row #{row_num}] INACTIVE_USER_SALES_NOT_ALLOWED: User '{u_name}' has been marked inactive on {deact_dt}. Sales cannot be uploaded for date {parsed_dt_val} (on or after deactivation date). First activate the user in User Management and then re-upload the file.",
+                                    "resolution": f"First activate '{u_name}' in User Management and then re-upload the file."
+                                })
 
                 # A. Validate Case Quantity Field
                 if pd.isna(val_case) or val_case < 0:
@@ -3566,6 +3670,11 @@ class ImportPipelineEngine:
 
                 if full_name_clean and full_name_clean not in user_id_by_name:
                     user_id_by_name[full_name_clean] = uid
+                ln_parts = ln.split()
+                if len(ln_parts) > 1:
+                    short_name = f"{fn} {ln_parts[-1]}".strip().lower()
+                    if short_name and short_name not in user_id_by_name:
+                        user_id_by_name[short_name] = uid
                 if prefix and prefix not in user_id_by_name:
                     user_id_by_name[prefix] = uid
                 if fn and fn.lower() not in user_id_by_name:
@@ -3580,7 +3689,15 @@ class ImportPipelineEngine:
                 first_p = c_name.replace(",", "/").split("/")[0].strip()
                 if first_p in user_id_by_name:
                     return user_id_by_name[first_p]
-                words = c_name.split()
+                words = first_p.split()
+                if len(words) > 2:
+                    fl = f"{words[0]} {words[-1]}"
+                    if fl in user_id_by_name:
+                        return user_id_by_name[fl]
+                    if len(words) > 3:
+                        fl2 = f"{words[0]} {words[1]} {words[-1]}"
+                        if fl2 in user_id_by_name:
+                            return user_id_by_name[fl2]
                 if words and words[0] in user_id_by_name:
                     return user_id_by_name[words[0]]
                 return None
@@ -3592,11 +3709,11 @@ class ImportPipelineEngine:
             user_depot_rows = []
             existing_uhq_users = set()
             try:
-                ex_res = client.table("user_headquarters_mapping").select("user_id").eq("is_active", True).execute()
+                ex_res = client.table("user_headquarters_mapping").select("user_id").limit(10000).execute()
                 if ex_res and ex_res.data:
                     existing_uhq_users = {str(r["user_id"]) for r in ex_res.data if r.get("user_id")}
             except Exception as e_ex_uhq:
-                logger.debug(f"Notice querying existing user headquarters: {e_ex_uhq}")
+                logger.warning(f"Notice querying existing user headquarters: {e_ex_uhq}")
 
             assigned_uhq_users = set(existing_uhq_users)
             user_hq_rows = []
@@ -3726,6 +3843,28 @@ class ImportPipelineEngine:
                 if fn and fn not in user_lookup:
                     user_lookup[fn] = uid
 
+            def _resolve_ase_uid(name_str: str) -> Optional[str]:
+                if not name_str or str(name_str).lower() in ("unassigned", "none", "null", "nan", ""):
+                    return None
+                c_name = re.sub(r'\s+', ' ', str(name_str).strip()).lower()
+                if c_name in user_lookup:
+                    return user_lookup[c_name]
+                first_p = c_name.replace(",", "/").split("/")[0].strip()
+                if first_p in user_lookup:
+                    return user_lookup[first_p]
+                words = first_p.split()
+                if len(words) > 2:
+                    fl = f"{words[0]} {words[-1]}"
+                    if fl in user_lookup:
+                        return user_lookup[fl]
+                    if len(words) > 3:
+                        fl2 = f"{words[0]} {words[1]} {words[-1]}"
+                        if fl2 in user_lookup:
+                            return user_lookup[fl2]
+                if words and words[0] in user_lookup:
+                    return user_lookup[words[0]]
+                return None
+
             clean_fn = master_service._clean
 
             fact_records = []
@@ -3740,8 +3879,7 @@ class ImportPipelineEngine:
                 if not ase_clean or ase_clean.lower() in ("unassigned", "none", "null"):
                     continue
 
-                first_ase = ase_clean.replace(",", "/").split("/")[0].strip()
-                user_id = user_lookup.get(ase_clean.lower()) or user_lookup.get(first_ase.lower())
+                user_id = _resolve_ase_uid(ase_clean)
                 if not user_id:
                     continue
 
@@ -3753,7 +3891,7 @@ class ImportPipelineEngine:
                 if not user_active_map.get(user_id, True):
                     deact_date = user_deact_date_map.get(user_id)
                     if deact_date and sale_dt_str:
-                        if sale_dt_str > deact_date:
+                        if sale_dt_str >= deact_date:
                             continue
                     else:
                         continue

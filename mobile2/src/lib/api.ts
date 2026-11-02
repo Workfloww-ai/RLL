@@ -152,7 +152,9 @@ export async function checkAndProactivelyRefreshToken(): Promise<void> {
     const parts = token.split('.');
     if (parts.length === 3) {
       const payloadBase64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-      const payload = JSON.parse(decodeURIComponent(escape(atob(payloadBase64))));
+      const atobFn = (globalThis as any).atob;
+      const rawDecoded = typeof atobFn === 'function' ? atobFn(payloadBase64) : '';
+      const payload = rawDecoded ? JSON.parse(decodeURIComponent(escape(rawDecoded))) : null;
       if (payload && payload.exp) {
         const remainingSeconds = payload.exp - Math.floor(Date.now() / 1000);
         if (remainingSeconds < 300) {
@@ -162,7 +164,7 @@ export async function checkAndProactivelyRefreshToken(): Promise<void> {
       }
     }
   } catch (e) {
-    logger.debug('checkAndProactivelyRefreshToken: non-fatal parsing error', e);
+    logger.warn('checkAndProactivelyRefreshToken: non-fatal parsing error', e);
   }
 }
 
@@ -187,6 +189,8 @@ export async function apiFetch(endpointPath: string, init?: RequestInit, isRetry
 
   headers.set('X-Request-ID', reqId);
   headers.set('X-Mobile-Client-Time-Ms', String(tStartTime));
+  headers.set('X-Device-Platform', Platform.OS);
+  headers.set('X-Device-OS-Version', String(Platform.Version));
 
   if (token && !headers.has('Authorization')) {
     headers.set('Authorization', `Bearer ${token}`);
@@ -519,8 +523,9 @@ export async function verifyMobileOTP(phone: string, otp: string, email: string 
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'X-Device-Platform': Platform.OS,
       },
-      body: JSON.stringify({ phone, otp, email }),
+      body: JSON.stringify({ phone, otp, email, phone_type: Platform.OS }),
     });
 
     if (!res.ok) {
@@ -549,8 +554,9 @@ export async function loginMobileUser(email: string, password: string) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'X-Device-Platform': Platform.OS,
       },
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, phone_type: Platform.OS }),
     });
 
     if (!res.ok) {
@@ -582,7 +588,8 @@ export async function fetchMobileSales(
   selectedHq: string = 'All Headquarters',
   testLimit?: number,
   isPrefetch: boolean = false,
-  level?: string
+  level?: string,
+  tsmIncludeOthers?: boolean
 ) {
   const token = await getAuthToken();
   if (!token) {
@@ -617,6 +624,9 @@ export async function fetchMobileSales(
     }
     if (level) {
       queryParams['level'] = level;
+    }
+    if (tsmIncludeOthers !== undefined) {
+      queryParams['tsm_include_others'] = String(tsmIncludeOthers);
     }
 
     const query = new URLSearchParams(queryParams);
@@ -1185,4 +1195,5 @@ export async function fetchTenantConfig(tenantIdentifier?: string) {
     return null;
   }
 }
+
 

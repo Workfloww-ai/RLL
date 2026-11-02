@@ -82,7 +82,10 @@ def _load_master_data(client) -> Dict[str, Any]:
     if now - _MASTER_CACHE["timestamp"] < _MASTER_CACHE_TTL and _MASTER_CACHE["comp_db"]:
         return _MASTER_CACHE
     try:
-        comp_db = client.table("companies").select("company_id, company_name, is_active").eq("is_active", True).execute().data or []
+        try:
+            comp_db = client.table("companies").select("company_id, company_name, is_active, category").eq("is_active", True).execute().data or []
+        except Exception:
+            comp_db = client.table("companies").select("company_id, company_name, is_active").eq("is_active", True).execute().data or []
         brand_db = client.table("brands").select("brand_id, brand_name, company_id, is_active").eq("is_active", True).execute().data or []
         depot_db = client.table("depots").select("depot_id, name, headquarters_id").execute().data or []
         hq_db = client.table("headquarters").select("headquarters_id, name").execute().data or []
@@ -204,7 +207,8 @@ def build_sales_response(
     for c in master["comp_db"]:
         raw_c_name = c.get("company_name") or ""
         c_name = normalize_company_name(raw_c_name)
-        if not c_name or is_others_company(c_name):
+        c_cat = c.get("category")
+        if not c_name or is_others_company(c_name, category=c_cat):
             continue
         c_id = _normalize_id(c_name)
         companies_map[c_id] = {
@@ -214,6 +218,7 @@ def build_sales_response(
             "name": c_name,
             "is_active": c.get("is_active", True),
             "isPinned": is_pinned_company(c_name, c_id),
+            "category": c_cat or ("Others" if is_others_company(c_name, category=c_cat) else "RLL"),
             "hqLocation": "Jaipur",
             "data": {
                 "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
@@ -237,7 +242,8 @@ def build_sales_response(
 
         raw_comp_name = comp_meta.get("company_name") or "Others"
         comp_name = normalize_company_name(raw_comp_name)
-        if not comp_name or is_others_company(comp_name):
+        comp_cat = comp_meta.get("category")
+        if not comp_name or is_others_company(comp_name, category=comp_cat):
             continue
         brand_name = brand_meta.get("brand_name") or "Generic Brand"
         depot_name = depot_meta.get("name") or "Central Depot"
@@ -281,7 +287,9 @@ def build_sales_response(
                 companies_map[c_id] = {
                     "id": c_id, "company_id": comp_uuid, "company_name": comp_name,
                     "name": comp_name, "is_active": comp_meta.get("is_active", True),
-                    "isPinned": is_pinned_company(comp_name, c_id), "hqLocation": hq_name,
+                    "isPinned": is_pinned_company(comp_name, c_id),
+                    "category": comp_meta.get("category") or ("Others" if is_others_company(comp_name) else "RLL"),
+                    "hqLocation": hq_name,
                     "data": {
                         "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
                         "MTD":   {"cases": 0, "bottles": 0, "bl": 0.0},

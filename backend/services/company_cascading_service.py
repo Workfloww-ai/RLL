@@ -13,15 +13,59 @@ from backend.db.supabase_client import (
 
 logger = logging.getLogger(__name__)
 
-def is_others_company(company_name: Optional[str]) -> bool:
-    """Helper to check if company name matches 'Others' exclusion criteria when inclusion toggle is OFF."""
+_COMPANY_CATEGORIES_CACHE: Dict[str, str] = {}
+_COMPANY_CATEGORIES_CACHE_TIME: float = 0.0
+
+def _get_cached_company_categories() -> Dict[str, str]:
+    global _COMPANY_CATEGORIES_CACHE, _COMPANY_CATEGORIES_CACHE_TIME
+    import time
+    now = time.time()
+    if _COMPANY_CATEGORIES_CACHE and (now - _COMPANY_CATEGORIES_CACHE_TIME) < 300.0:
+        return _COMPANY_CATEGORIES_CACHE
+    try:
+        from backend.db.supabase_client import get_supabase_client
+        client = get_supabase_client()
+        if client:
+            res = client.table("companies").select("company_id, company_name, category").execute()
+            mapping: Dict[str, str] = {}
+            for r in (res.data or []):
+                cat = (r.get("category") or "Others").strip()
+                if r.get("company_name"):
+                    mapping[r["company_name"].strip().lower()] = cat
+                if r.get("company_id"):
+                    mapping[str(r["company_id"]).strip().lower()] = cat
+            _COMPANY_CATEGORIES_CACHE = mapping
+            _COMPANY_CATEGORIES_CACHE_TIME = now
+    except Exception as e:
+        logger.debug(f"_get_cached_company_categories notice: {e}")
+    return _COMPANY_CATEGORIES_CACHE
+
+
+def is_others_company(company_name: Optional[str] = None, category: Optional[str] = None) -> bool:
+    """Helper to check if company matches 'Others' exclusion criteria (category == 'Others') when inclusion toggle is OFF."""
     from backend.services.tenant_service import get_include_others_setting_sync
     if get_include_others_setting_sync():
         return False
+    if category is not None and str(category).strip():
+        return str(category).strip().lower() == "others"
     if not company_name:
         return False
     name = company_name.strip().lower()
-    return name in ("others", "other", "others company", "other company") or name.startswith("others ") or name.startswith("other ")
+    # Fast-path for competitor brand prefixes and others company
+    if (
+        name in ("others", "other", "others company", "other company")
+        or name.startswith("others ")
+        or name.startswith("other ")
+        or name.startswith("comp_")
+    ):
+        return True
+
+    # Check cached DB category if available
+    cats = _get_cached_company_categories()
+    if name in cats:
+        return cats[name].lower() == "others"
+
+    return False
 
 
 

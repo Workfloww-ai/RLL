@@ -18,6 +18,7 @@ from backend.db.client import get_supabase
 from backend.db.supabase_client import resolve_latest_sale_date
 from backend.db.company_aliases import normalize_company_name, is_pinned_company
 from backend.services.company_cascading_service import is_others_company
+from backend.services.activity_log_service import auth_log_service
 
 # Centralized Mobile Access Authorization Policies
 MOBILE_ACCESS_ROLES = [
@@ -173,9 +174,16 @@ def _build_master_lookups_dict(
     latest_sale_date: Optional[str] = None
 ) -> Dict[str, Any]:
     companies_lookup: Dict[str, str] = {}
+    companies_category_lookup: Dict[str, str] = {}
     for c in (companies_data or []):
         if c.get("company_id") and c.get("company_name"):
-            companies_lookup[str(c["company_id"])] = c["company_name"]
+            cid = str(c["company_id"])
+            cname = c["company_name"]
+            cat = str(c.get("category") or "").strip()
+            if not cat:
+                cat = "Others" if cname.strip().lower() in ("others", "other") or cname.strip().lower().startswith("comp_") else "RLL"
+            companies_lookup[cid] = cname
+            companies_category_lookup[cid] = cat
 
     brands_lookup: Dict[str, Dict[str, Any]] = {}
     for b in (brands_data or []):
@@ -237,7 +245,7 @@ def _build_master_lookups_dict(
     tsm_user_ids = set()
     if tsm_role_ids:
         for ur in (user_roles_data or []):
-            if str(ur.get("role_id")) in tsm_role_ids and ur.get("is_active", True) is not False:
+            if str(ur.get("role_id")) in tsm_role_ids:
                 if ur.get("user_id"):
                     tsm_user_ids.add(str(ur["user_id"]))
 
@@ -247,11 +255,13 @@ def _build_master_lookups_dict(
     tsm_name_to_id = {}
     for uid in tsm_user_ids:
         u = users_map.get(uid)
-        if not u or not u.get("is_active", True):
+        if not u:
             continue
         email = str(u.get("email") or "").lower()
         full_name = f"{u.get('first_name', '')} {u.get('last_name', '')}".strip() or "TSM Manager"
         norm_name = full_name.lower().strip()
+        is_active = bool(u.get("is_active", True))
+        deactivated_at = u.get("deactivated_at") or (u.get("updated_at") if not is_active else None)
 
         if norm_name in tsm_name_to_id:
             primary_id = tsm_name_to_id[norm_name]
@@ -262,6 +272,8 @@ def _build_master_lookups_dict(
                 master_tsms[uid] = {
                     "id": uid,
                     "name": full_name,
+                    "is_active": is_active,
+                    "deactivated_at": deactivated_at,
                     "hqLocation": "All Headquarters",
                     "depot_ids": old_obj.get("depot_ids", set()) if old_obj else set(),
                     "data": {
@@ -280,6 +292,8 @@ def _build_master_lookups_dict(
             master_tsms[uid] = {
                 "id": uid,
                 "name": full_name,
+                "is_active": is_active,
+                "deactivated_at": deactivated_at,
                 "hqLocation": "All Headquarters",
                 "depot_ids": set(),
                 "data": {
@@ -387,6 +401,8 @@ def _build_master_lookups_dict(
             )
             if act_id:
                 user_alias_map[uid] = act_id
+            else:
+                user_alias_map[uid] = uid
 
     hq_name_to_id = {}
     for k, v in hq_lookup.items():
@@ -399,6 +415,7 @@ def _build_master_lookups_dict(
 
     return {
         "companies_lookup": companies_lookup,
+        "companies_category_lookup": companies_category_lookup,
         "brands_lookup": brands_lookup,
         "hq_lookup": hq_lookup,
         "hq_name_to_id": hq_name_to_id,
@@ -427,6 +444,26 @@ def _fetch_fresh_master_lookups() -> Dict[str, Any]:
         b_res = client.rpc("get_master_metadata_bundle").execute()
         if b_res.data and isinstance(b_res.data, dict) and b_res.data.get("companies"):
             bd = b_res.data
+            user_roles_data = bd.get("user_roles") or []
+            uhq_data = bd.get("user_headquarters_mapping") or []
+            # Fallback check: if bundle only returned active user_roles, fetch full user_roles so deactivated personnel past sales are preserved
+            has_inactive_ur = any(ur.get("is_active") is False for ur in user_roles_data)
+            if not has_inactive_ur and client:
+                try:
+                    all_ur = client.table("user_roles").select("user_id, role_id, is_active").execute()
+                    if all_ur.data:
+                        user_roles_data = all_ur.data
+                except Exception as e_ur_fetch:
+                    logger.warning(f"Notice fetching complete user_roles: {e_ur_fetch}")
+            has_inactive_uhq = any(uhq.get("is_active") is False for uhq in uhq_data)
+            if not has_inactive_uhq and client:
+                try:
+                    all_uhq = client.table("user_headquarters_mapping").select("user_id, headquarters_id, is_active").execute()
+                    if all_uhq.data:
+                        uhq_data = all_uhq.data
+                except Exception as e_uhq_fetch:
+                    logger.warning(f"Notice fetching complete user_headquarters_mapping: {e_uhq_fetch}")
+
             logger.info("⚡ Master metadata bundle loaded via single get_master_metadata_bundle RPC.")
             return _build_master_lookups_dict(
                 companies_data=bd.get("companies") or [],
@@ -434,10 +471,10 @@ def _fetch_fresh_master_lookups() -> Dict[str, Any]:
                 hq_data=bd.get("headquarters") or [],
                 depots_data=bd.get("depots") or [],
                 roles_data=bd.get("roles") or [],
-                user_roles_data=bd.get("user_roles") or [],
+                user_roles_data=user_roles_data,
                 users_data=bd.get("users") or [],
                 user_depots_data=bd.get("user_depot") or [],
-                uhq_data=bd.get("user_headquarters_mapping") or [],
+                uhq_data=uhq_data,
                 atm_data=bd.get("ase_tsm_mapping") or [],
                 latest_sale_date=bd.get("latest_sale_date")
             )
@@ -446,17 +483,19 @@ def _fetch_fresh_master_lookups() -> Dict[str, Any]:
 
     # Attempt 2: High-concurrency fallback (parallel execution via ThreadPoolExecutor)
     try:
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        with ThreadPoolExecutor(max_workers=9) as executor:
             f_lookups = executor.submit(lambda: client.rpc("get_master_lookups_json").execute().data)
+            f_companies = executor.submit(lambda: client.table("companies").select("company_id, company_name, category").execute().data or [])
             f_roles = executor.submit(lambda: client.table("roles").select("role_id, role_name").execute().data or [])
-            f_user_roles = executor.submit(lambda: client.table("user_roles").select("user_id, role_id, is_active").eq("is_active", True).execute().data or [])
-            f_users = executor.submit(lambda: client.table("users").select("user_id, first_name, last_name, email, is_active").execute().data or [])
+            f_user_roles = executor.submit(lambda: client.table("user_roles").select("user_id, role_id, is_active").execute().data or [])
+            f_users = executor.submit(lambda: client.table("users").select("user_id, first_name, last_name, email, is_active, updated_at").execute().data or [])
             f_user_depots = executor.submit(lambda: client.table("user_depot").select("user_id, depot_id").execute().data or [])
-            f_uhq = executor.submit(lambda: client.table("user_headquarters_mapping").select("user_id, headquarters_id, is_active").eq("is_active", True).execute().data or [])
+            f_uhq = executor.submit(lambda: client.table("user_headquarters_mapping").select("user_id, headquarters_id, is_active").execute().data or [])
             f_atm = executor.submit(lambda: client.table("ase_tsm_mapping").select("tsm_user_id, ase_user_id").execute().data or [])
             f_max_date = executor.submit(lambda: [{"sale_date": resolve_latest_sale_date(client)}])
 
             lookups_data = f_lookups.result() or {}
+            companies_data = f_companies.result() or lookups_data.get("companies") or []
             roles_data = f_roles.result()
             user_roles_data = f_user_roles.result()
             users_data = f_users.result()
@@ -468,7 +507,7 @@ def _fetch_fresh_master_lookups() -> Dict[str, Any]:
             resolved_max_date = max_date_data[0].get("sale_date") if max_date_data else None
 
             return _build_master_lookups_dict(
-                companies_data=lookups_data.get("companies") or [],
+                companies_data=companies_data,
                 brands_data=lookups_data.get("brands") or [],
                 hq_data=lookups_data.get("headquarters") or [],
                 depots_data=lookups_data.get("depots") or [],
@@ -571,6 +610,7 @@ router = APIRouter(prefix="/mobile", tags=["Mobile App API"])
 class MobileLoginRequest(BaseModel):
     email: str
     password: str
+    phone_type: Optional[str] = None
 
 class SendOTPRequest(BaseModel):
     phone: str
@@ -580,6 +620,7 @@ class VerifyOTPRequest(BaseModel):
     phone: str
     otp: str
     email: Optional[str] = None
+    phone_type: Optional[str] = None
 
 class MobileLoginResponse(BaseModel):
     access_token: str
@@ -675,17 +716,19 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
             detail="Invalid email or password"
         )
 
-    # 2. Log login entry into 'user_auth_logs' in Supabase
-    if client:
-        try:
-            client.table("user_auth_logs").insert({
-                "user_id": user_data["user_id"],
-                "email": email,
-                "login_at": datetime.utcnow().isoformat(),
-                "status": "SUCCESS"
-            }).execute()
-        except Exception as e:
-            logger.warning(f"Could not log to user_auth_logs table: {e}")
+    # 2. Record user's last login in user_auth_logs (updates existing user record to prevent DB bloat)
+    client_ip = request.client.host if (request and request.client) else None
+    user_agent = request.headers.get("user-agent") if request else None
+    phone_type = auth_log_service.detect_phone_type(request, user_agent, credentials.phone_type)
+    auth_log_service.dispatch_background(
+        user_id=user_data["user_id"],
+        email=email,
+        phone_type=phone_type,
+        ip_address=client_ip,
+        user_agent=user_agent,
+        action="LOGIN",
+        status="SUCCESS",
+    )
 
     # 3. Create Dual-Token Pair (1h Access Token + 30-day Rolling Refresh Token)
     token_pair = await create_token_pair(user_data, client_type="mobile")
@@ -853,7 +896,7 @@ async def send_mobile_otp(req: SendOTPRequest):
 
 
 @router.post("/verify-otp", response_model=MobileLoginResponse)
-async def verify_mobile_otp(req: VerifyOTPRequest):
+async def verify_mobile_otp(req: VerifyOTPRequest, request: Request):
     """
     Verify 6-digit OTP code sent to user's mobile number.
     Returns 30-day Access Token and scoped user profile.
@@ -1055,6 +1098,20 @@ async def verify_mobile_otp(req: VerifyOTPRequest):
     # Generate Dual-Token Pair (1h Access Token + 30-day Rolling Refresh Token)
     token_pair = await create_token_pair(user_data, client_type="mobile")
     logger.info(f"Mobile OTP verification successful for phone: {mask_phone(phone)} (User: {mask_email(user_data['email'])}, Company: {user_data['company_name']}, Role: {user_data['role_name']})")
+
+    # Record user's last login in user_auth_logs (updates existing user record to prevent DB bloat)
+    client_ip = request.client.host if (request and request.client) else None
+    user_agent = request.headers.get("user-agent") if request else None
+    phone_type = auth_log_service.detect_phone_type(request, user_agent, req.phone_type)
+    auth_log_service.dispatch_background(
+        user_id=user_data["user_id"],
+        email=user_data["email"],
+        phone_type=phone_type,
+        ip_address=client_ip,
+        user_agent=user_agent,
+        action="LOGIN_OTP",
+        status="SUCCESS",
+    )
 
     return {
         "access_token": token_pair["access_token"],
@@ -1404,6 +1461,7 @@ async def get_mobile_sales(
     page: Optional[int] = Query(None, description="Page number for depots pagination (1-indexed)"),
     page_size: Optional[int] = Query(None, description="Page size for depots pagination (1 to 100)"),
     test_limit: Optional[int] = Query(None, description="Diagnostic payload scaling test limit"),
+    tsm_include_others: Optional[bool] = Query(None, description="Toggle to include or exclude others/competitor companies on TSM screen"),
     current_user: dict = Depends(mobile_access_checker)
 ):
     """
@@ -1478,10 +1536,11 @@ async def get_mobile_sales(
     else:
         selected_period = "Daily"
 
-    from backend.services.tenant_service import get_include_others_setting_async
+    from backend.services.tenant_service import get_include_others_setting_async, get_include_others_in_tsm_sales_async
     inc_others_str = "inc1" if await get_include_others_setting_async() else "inc0"
+    tsm_inc_str = "tsm_default" if tsm_include_others is None else ("tsm_inc1" if tsm_include_others else "tsm_inc0")
     effective_cache_uid = "global" if user_role in ["leader", "admin", "super_admin", "developer"] else (user_id or "global")
-    cache_key = f"{selected_period}:{clean_level or 'all'}:{page or 'all'}:{page_size or 'all'}:{selected_hq}:{date_from}:{date_to}:{user_role}:{effective_cache_uid}:{test_limit or 'all'}:{inc_others_str}"
+    cache_key = f"{selected_period}:{clean_level or 'all'}:{page or 'all'}:{page_size or 'all'}:{selected_hq}:{date_from}:{date_to}:{user_role}:{effective_cache_uid}:{test_limit or 'all'}:{inc_others_str}:{tsm_inc_str}"
     
     # D. Sales response cache timing
     t_sales_cache_start = time.perf_counter()
@@ -1554,12 +1613,13 @@ async def get_mobile_sales(
 
         # C. Master cache lookup timing
         t_master_start = time.perf_counter()
-        master_cache_hit = _MASTER_CACHE["data"] is not None and (time.time() - _MASTER_CACHE["timestamp"]) < _MASTER_CACHE_TTL
+        master_cache_hit = _MASTER_CACHE.get("data") is not None and (time.time() - _MASTER_CACHE.get("timestamp", 0)) < _MASTER_CACHE_TTL
         master_cache = get_cached_master_lookups()
         t_master_end = time.perf_counter()
         master_cache_duration_ms = round((t_master_end - t_master_start) * 1000, 2)
 
         companies_lookup = master_cache["companies_lookup"]
+        companies_category_lookup = master_cache.get("companies_category_lookup", {})
         brands_lookup = master_cache["brands_lookup"]
         hq_lookup = master_cache["hq_lookup"]
         master_companies = master_cache["master_companies"]
@@ -1584,7 +1644,7 @@ async def get_mobile_sales(
 
         # Cached latest sale date resolution (0ms DB calls on cache hit)
         latest_sale_date = _MASTER_CACHE.get("latest_sale_date")
-        if not latest_sale_date or (time.time() - _MASTER_CACHE["timestamp"]) >= _MASTER_CACHE_TTL:
+        if not latest_sale_date or (time.time() - _MASTER_CACHE.get("timestamp", 0)) >= _MASTER_CACHE_TTL:
             latest_sale_date = resolve_latest_sale_date(client)
             _MASTER_CACHE["latest_sale_date"] = latest_sale_date
 
@@ -2003,6 +2063,7 @@ async def get_mobile_sales(
             db_map[brand_id]["data"][period_key]["bl"] += metrics["bl"]
 
     user_alias_map = master_cache.get("user_alias_map", {})
+    users_map = master_cache.get("users_map", {})
     member_to_tsms = {}
     ase_assigned_tsm = {}
 
@@ -2050,17 +2111,30 @@ async def get_mobile_sales(
     # Initialize companies_map on master_tsms
     for tid in master_tsms.keys():
         master_tsms[tid]["companies_map"] = {}
+        master_tsms[tid]["brands_map"] = {}
+        master_tsms[tid]["data"] = {
+            "Daily": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+            "MTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+            "YTD": {"cases": 0.0, "bottles": 0.0, "bl": 0.0},
+        }
 
 
 
-    inc_others_val = (inc_others_str == "inc1")
+    # Determine effective TSM include others toggle
+    if tsm_include_others is not None:
+        effective_tsm_include = tsm_include_others
+    else:
+        effective_tsm_include = await get_include_others_in_tsm_sales_async()
 
     for row in all_usf_records:
         c_id_raw = str(row.get("company_id") or "")
         comp_name = companies_lookup.get(c_id_raw)
         if not comp_name:
             continue
-        if not inc_others_val and is_others_company(comp_name):
+        comp_cat = companies_category_lookup.get(c_id_raw) or ("Others" if is_others_company(comp_name) else "RLL")
+        is_comp_others = (comp_cat.strip().lower() == "others" or is_others_company(comp_name, comp_cat))
+
+        if not effective_tsm_include and is_comp_others:
             continue
 
         raw_uid = str(row.get("user_id") or "")
@@ -2092,53 +2166,67 @@ async def get_mobile_sales(
             },
         }
 
+        # Check if user is inactive: if so, Daily sales on or after deactivation date are not credited
+        u_record = users_map.get(uid, {})
+        u_is_active = bool(u_record.get("is_active", True))
+        u_deact_date = str(u_record.get("deactivated_at") or u_record.get("updated_at") or "")[:10] if not u_is_active else None
+
         for period_key, metrics in usf_metrics.items():
             if metrics["cases"] > 0 or metrics["bottles"] > 0:
                 if uid in ase_sales:
-                    ase_sales[uid][period_key]["cases"] += metrics["cases"]
-                    ase_sales[uid][period_key]["bottles"] += metrics["bottles"]
-                    ase_sales[uid][period_key]["bl"] += metrics["bl"]
-                    ase_comp_sets[uid][period_key].add(c_id_raw)
+                    # Inactive ASE guard: do not credit daily sales on or after deactivation date
+                    if not (period_key == "Daily" and u_deact_date and end_date and end_date >= u_deact_date):
+                        ase_sales[uid][period_key]["cases"] += metrics["cases"]
+                        ase_sales[uid][period_key]["bottles"] += metrics["bottles"]
+                        ase_sales[uid][period_key]["bl"] += metrics["bl"]
+                        ase_comp_sets[uid][period_key].add(c_id_raw)
 
-                    # ASE Company level
-                    ac_map = ase_company_maps[uid]
-                    if c_id_raw not in ac_map:
-                        ac_map[c_id_raw] = {
-                            "companyId": c_id_raw,
-                            "companyName": comp_name,
-                            "name": comp_name,
-                            "data": {
-                                "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                                "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                                "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                        # ASE Company level
+                        ac_map = ase_company_maps[uid]
+                        if c_id_raw not in ac_map:
+                            ac_map[c_id_raw] = {
+                                "companyId": c_id_raw,
+                                "companyName": comp_name,
+                                "name": comp_name,
+                                "category": comp_cat,
+                                "data": {
+                                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                                    "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                                    "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                                }
                             }
-                        }
-                    ac_map[c_id_raw]["data"][period_key]["cases"] += metrics["cases"]
-                    ac_map[c_id_raw]["data"][period_key]["bottles"] += metrics["bottles"]
-                    ac_map[c_id_raw]["data"][period_key]["bl"] += metrics["bl"]
+                        ac_map[c_id_raw]["data"][period_key]["cases"] += metrics["cases"]
+                        ac_map[c_id_raw]["data"][period_key]["bottles"] += metrics["bottles"]
+                        ac_map[c_id_raw]["data"][period_key]["bl"] += metrics["bl"]
 
-                    # ASE Brand level
-                    ab_map = ase_brand_maps[uid]
-                    if brand_id not in ab_map:
-                        ab_map[brand_id] = {
-                            "brandId": brand_id,
-                            "brandName": brand_name,
-                            "name": brand_name,
-                            "companyId": c_id_raw,
-                            "companyName": comp_name,
-                            "data": {
-                                "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
-                                "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
-                                "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                        # ASE Brand level
+                        ab_map = ase_brand_maps[uid]
+                        if brand_id not in ab_map:
+                            ab_map[brand_id] = {
+                                "brandId": brand_id,
+                                "brandName": brand_name,
+                                "name": brand_name,
+                                "companyId": c_id_raw,
+                                "companyName": comp_name,
+                                "data": {
+                                    "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
+                                    "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                                    "YTD": {"cases": 0, "bottles": 0, "bl": 0.0},
+                                }
                             }
-                        }
-                    ab_map[brand_id]["data"][period_key]["cases"] += metrics["cases"]
-                    ab_map[brand_id]["data"][period_key]["bottles"] += metrics["bottles"]
-                    ab_map[brand_id]["data"][period_key]["bl"] += metrics["bl"]
+                        ab_map[brand_id]["data"][period_key]["cases"] += metrics["cases"]
+                        ab_map[brand_id]["data"][period_key]["bottles"] += metrics["bottles"]
+                        ab_map[brand_id]["data"][period_key]["bl"] += metrics["bl"]
 
                 for tid in target_tsm_ids:
                     if tid in master_tsms:
                         t_obj = master_tsms[tid]
+                        t_is_active = bool(t_obj.get("is_active", True))
+                        t_deact_date = str(t_obj.get("deactivated_at") or "")[:10] if not t_is_active else None
+                        # Inactive TSM guard: do not credit daily sales on or after deactivation date
+                        if period_key == "Daily" and t_deact_date and end_date and end_date >= t_deact_date:
+                            continue
+
                         t_obj["data"][period_key]["cases"] += metrics["cases"]
                         t_obj["data"][period_key]["bottles"] += metrics["bottles"]
                         t_obj["data"][period_key]["bl"] += metrics["bl"]
@@ -2151,6 +2239,7 @@ async def get_mobile_sales(
                                 "companyId": c_id_raw,
                                 "companyName": comp_name,
                                 "name": comp_name,
+                                "category": comp_cat,
                                 "data": {
                                     "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
                                     "MTD": {"cases": 0, "bottles": 0, "bl": 0.0},
@@ -2285,6 +2374,14 @@ async def get_mobile_sales(
                 "companies": list(ase_company_maps.get(aid, {}).values()),
             }
             for aid in raw_ase_ids
+        ]
+
+        # Inactive ASE filter: prune inactive ASEs with 0 sales for the active period
+        t_data["ases"] = [
+            ase for ase in t_data.get("ases", [])
+            if (bool(users_map.get(ase.get("id"), {}).get("is_active", True)) or
+                ase.get("data", {}).get(selected_period, {}).get("cases", 0) > 0 or
+                ase.get("data", {}).get(selected_period, {}).get("bottles", 0) > 0)
         ]
 
         # Filter out TSM cards with 0 cases and 0 bottles for the active period
@@ -2670,6 +2767,7 @@ def get_mobile_tenant_config_endpoint(
     effective_id = tenant_id or x_tenant_id
     effective_slug = tenant_slug or x_tenant_slug or "rll"
     return get_tenant_config_service(tenant_slug=effective_slug, tenant_id=effective_id)
+
 
 
 
