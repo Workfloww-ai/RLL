@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import FileUpload from '../components/FileUpload';
-import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X, RefreshCw, RotateCcw, ChevronUp, ChevronDown, ArrowUpDown, ChevronLeft, ChevronRight, Mail, Phone, ArrowLeft, Clock, Lock } from 'lucide-react';
+import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X, RefreshCw, RotateCcw, ChevronUp, ChevronDown, ArrowUpDown, ChevronLeft, ChevronRight, Mail, Phone, ArrowLeft, Clock, Lock, Eye, EyeOff, Key } from 'lucide-react';
 import { User } from '../types';
 import { API_BASE_URL } from '../config';
 import { useToast } from '../contexts/ToastContext';
@@ -95,6 +95,7 @@ export default function HeadcountManagement() {
     lastName: '', 
     phoneNumber: '', 
     email: '', 
+    password: '',
     role: 'ASE', 
     id: '', 
     headquarters: 'Unassigned', 
@@ -103,6 +104,15 @@ export default function HeadcountManagement() {
     reportingManager: 'Unassigned', 
     isActive: true 
   });
+  const [showPassword, setShowPassword] = useState(false);
+
+  // Admin Password Reset Modal State
+  const [resetPasswordModalUser, setResetPasswordModalUser] = useState<User | null>(null);
+  const [newPasswordVal, setNewPasswordVal] = useState('');
+  const [confirmPasswordVal, setConfirmPasswordVal] = useState('');
+  const [showResetPasswordVal, setShowResetPasswordVal] = useState(false);
+  const [showConfirmPasswordVal, setShowConfirmPasswordVal] = useState(false);
+  const [savingResetPassword, setSavingResetPassword] = useState(false);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
@@ -271,7 +281,7 @@ export default function HeadcountManagement() {
     setEditHeadquartersIds(initialHqIds);
   };
 
-  const validateUserForm = (firstName: string, email: string, phoneNumber: string, role: string) => {
+  const validateUserForm = (firstName: string, email: string, phoneNumber: string, role: string, password?: string) => {
     if (!firstName || !firstName.trim()) {
       showToast('First Name is mandatory.', 'error');
       return false;
@@ -297,6 +307,16 @@ export default function HeadcountManagement() {
     if (!role || !role.trim()) {
       showToast('Role is mandatory.', 'error');
       return false;
+    }
+    if (role.trim().toLowerCase() === 'admin') {
+      if (!password || !password.trim()) {
+        showToast('Password is required when creating an Admin user.', 'error');
+        return false;
+      }
+      if (password.trim().length < 6) {
+        showToast('Admin password must be at least 6 characters long.', 'error');
+        return false;
+      }
     }
     return true;
   };
@@ -411,7 +431,7 @@ export default function HeadcountManagement() {
       showToast('System is in read-only mode during data upload. Adding users is locked.', 'warning');
       return;
     }
-    if (!validateUserForm(newUser.firstName, newUser.email, newUser.phoneNumber, newUser.role)) {
+    if (!validateUserForm(newUser.firstName, newUser.email, newUser.phoneNumber, newUser.role, newUser.password)) {
       return;
     }
 
@@ -425,6 +445,7 @@ export default function HeadcountManagement() {
         (m) => m.name.trim().toLowerCase() === repMgr.toLowerCase() || m.id === repMgr
       );
 
+      const isUserAdmin = newUser.role.trim().toLowerCase() === 'admin';
       const userPayload = {
         ...newUser,
         first_name: newUser.firstName.trim(),
@@ -434,6 +455,7 @@ export default function HeadcountManagement() {
         phoneNumber: cleanPhone,
         email: newUser.email.trim(),
         role: newUser.role,
+        ...(isUserAdmin ? { password: newUser.password.trim() } : {}),
         circleName: 'Unassigned',
         depotName: 'Unassigned',
         manager_id: selectedMgr?.id || null,
@@ -458,7 +480,8 @@ export default function HeadcountManagement() {
         setUsers([normalizeUser(created), ...users]);
         showToast('User created successfully.', 'success');
         setIsAdding(false);
-        setNewUser({ firstName: '', lastName: '', phoneNumber: '', email: '', role: 'ASE', id: '', headquarters: 'Unassigned', headquarters_ids: [], depotName: 'Unassigned', reportingManager: 'Unassigned', isActive: true });
+        setNewUser({ firstName: '', lastName: '', phoneNumber: '', email: '', password: '', role: 'ASE', id: '', headquarters: 'Unassigned', headquarters_ids: [], depotName: 'Unassigned', reportingManager: 'Unassigned', isActive: true });
+        setShowPassword(false);
       } else {
         const errData = await res.json().catch(() => ({}));
         showToast(errData.detail || 'Failed to create user.', 'error');
@@ -468,6 +491,53 @@ export default function HeadcountManagement() {
       showToast('Network error while saving.', 'error');
     } finally {
       setSavingNewUser(false);
+    }
+  };
+
+  const handleResetPassword = async () => {
+    if (!resetPasswordModalUser) return;
+    if (isLocked) {
+      showToast('System is in read-only mode during data upload. Password reset is locked.', 'warning');
+      return;
+    }
+    const cleanPwd = newPasswordVal.trim();
+    const cleanConfirm = confirmPasswordVal.trim();
+
+    if (!cleanPwd || cleanPwd.length < 6) {
+      showToast('New password must be at least 6 characters long.', 'error');
+      return;
+    }
+    if (cleanPwd !== cleanConfirm) {
+      showToast('New password and confirm password do not match.', 'error');
+      return;
+    }
+    setSavingResetPassword(true);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE_URL}/users/${resetPasswordModalUser.id}/password`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ password: cleanPwd })
+      });
+      if (res.ok) {
+        showToast(`Password updated successfully in Supabase for ${resetPasswordModalUser.name}.`, 'success');
+        setResetPasswordModalUser(null);
+        setNewPasswordVal('');
+        setConfirmPasswordVal('');
+        setShowResetPasswordVal(false);
+        setShowConfirmPasswordVal(false);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.detail || 'Failed to update password.', 'error');
+      }
+    } catch (e) {
+      console.error('Error resetting password:', e);
+      showToast('Network error while resetting password.', 'error');
+    } finally {
+      setSavingResetPassword(false);
     }
   };
 
@@ -918,6 +988,33 @@ export default function HeadcountManagement() {
                 ))}
               </select>
             </div>
+            {newUser.role.trim().toLowerCase() === 'admin' && (
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                  Password <span className="text-red-500">*</span>
+                </label>
+                <div className="relative">
+                  <input 
+                    type={showPassword ? "text" : "password"} 
+                    value={newUser.password}
+                    onChange={(e) => setNewUser({...newUser, password: e.target.value})}
+                    placeholder="Set admin password (min 6 chars)"
+                    className="w-full px-3 py-2 pr-9 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:border-[#0D3B8E]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer p-0.5"
+                    title={showPassword ? "Hide password" : "Show password"}
+                  >
+                    {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+                <span className="text-[10px] text-slate-400 mt-1 block">
+                  Hashed with bcrypt in Supabase Auth (min 6 chars)
+                </span>
+              </div>
+            )}
             <div className="md:col-span-3">
               <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
                 Assigned Headquarters <span className="text-slate-400 font-normal lowercase">(1 HQ per ASE / TSM)</span>
@@ -1347,6 +1444,25 @@ export default function HeadcountManagement() {
                       <td className="px-2 py-2 pr-4 text-right whitespace-nowrap">
                         {editingId === user.id ? (
                           <div className="inline-flex items-center justify-end gap-1.5 whitespace-nowrap">
+                            {String(editRole).toLowerCase() === 'admin' && (
+                              <button
+                                type="button"
+                                disabled={isLocked || savingId === user.id}
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => {
+                                  setResetPasswordModalUser(user);
+                                  setNewPasswordVal('');
+                                  setConfirmPasswordVal('');
+                                  setShowResetPasswordVal(false);
+                                  setShowConfirmPasswordVal(false);
+                                }}
+                                className="px-2 py-1 inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-800 text-[10px] font-bold uppercase tracking-wider transition-all shadow-2xs hover:shadow-xs cursor-pointer active:scale-95"
+                                title="Reset Admin Password"
+                              >
+                                <Key className="w-3 h-3 text-amber-600" />
+                                <span>Reset Password</span>
+                              </button>
+                            )}
                             <button
                               type="button"
                               disabled={isLocked || savingId === user.id}
@@ -1452,6 +1568,125 @@ export default function HeadcountManagement() {
                 className="p-1.5 border border-slate-200 bg-white rounded-lg disabled:opacity-40 text-slate-600 hover:bg-slate-50 transition-colors cursor-pointer"
               >
                 <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reset Password Modal for Admin */}
+      {resetPasswordModalUser && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full p-6 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600">
+                  <Key className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">Reset Admin Password</h3>
+                  <p className="text-[11px] text-slate-500">{resetPasswordModalUser.name} ({resetPasswordModalUser.email || 'No email'})</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setResetPasswordModalUser(null)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                  Create New Password <span className="text-red-500">*</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type={showResetPasswordVal ? "text" : "password"}
+                    value={newPasswordVal}
+                    onChange={(e) => setNewPasswordVal(e.target.value)}
+                    placeholder="Enter new password (min 6 chars)"
+                    className="w-full px-3 py-2 pr-9 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:border-[#0D3B8E]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowResetPasswordVal(!showResetPasswordVal)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer p-0.5"
+                    title={showResetPasswordVal ? "Hide password" : "Show password"}
+                  >
+                    {showResetPasswordVal ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                  Confirm New Password <span className="text-red-500">*</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type={showConfirmPasswordVal ? "text" : "password"}
+                    value={confirmPasswordVal}
+                    onChange={(e) => setConfirmPasswordVal(e.target.value)}
+                    placeholder="Re-enter new password"
+                    className={`w-full px-3 py-2 pr-9 bg-slate-50 border rounded-xl text-xs font-bold text-slate-700 focus:outline-none ${
+                      confirmPasswordVal && confirmPasswordVal !== newPasswordVal
+                        ? 'border-red-300 focus:border-red-500'
+                        : 'border-slate-200 focus:border-[#0D3B8E]'
+                    }`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmPasswordVal(!showConfirmPasswordVal)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer p-0.5"
+                    title={showConfirmPasswordVal ? "Hide password" : "Show password"}
+                  >
+                    {showConfirmPasswordVal ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+                {confirmPasswordVal && confirmPasswordVal !== newPasswordVal && (
+                  <span className="text-[10px] font-semibold text-red-500 mt-1 block">
+                    Passwords do not match
+                  </span>
+                )}
+                {confirmPasswordVal && confirmPasswordVal === newPasswordVal && newPasswordVal.length >= 6 && (
+                  <span className="text-[10px] font-semibold text-emerald-600 mt-1 flex items-center gap-1">
+                    <Check className="w-3 h-3" /> Passwords match
+                  </span>
+                )}
+              </div>
+
+              <div className="p-2.5 bg-slate-50 border border-slate-200/80 rounded-xl">
+                <span className="text-[10px] text-slate-500 leading-relaxed block">
+                  Password will be hashed with bcrypt in Supabase Auth and all current sessions revoked.
+                </span>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 mt-6">
+              <button
+                type="button"
+                onClick={() => setResetPasswordModalUser(null)}
+                disabled={savingResetPassword}
+                className="px-4 py-2 border border-slate-200 text-slate-600 rounded-xl text-xs font-bold hover:bg-slate-50 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleResetPassword}
+                disabled={
+                  savingResetPassword ||
+                  !newPasswordVal ||
+                  newPasswordVal.trim().length < 6 ||
+                  newPasswordVal !== confirmPasswordVal
+                }
+                className="px-5 py-2 bg-[#0D3B8E] hover:bg-[#0A2F73] text-white rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 shadow-xs disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {savingResetPassword && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                {savingResetPassword ? 'Updating...' : 'Change Password'}
               </button>
             </div>
           </div>

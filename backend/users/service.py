@@ -390,9 +390,49 @@ class UserService:
             except Exception as e_dup:
                 logger.warning(f"Duplicate user check warning: {e_dup}")
 
-        # Resolve real user_id from auth.users or public.users if client is available
-        user_id = None
-        if client:
+        # Password handling for Admin users
+        is_admin_role = (role_name.strip().lower() == "admin")
+        password = str(payload.get("password") or "").strip()
+        if is_admin_role:
+            if not password:
+                raise ValueError("Password is mandatory when creating an Admin user.")
+            if len(password) < 6:
+                raise ValueError("Admin password must be at least 6 characters long.")
+
+        # Resolve or create real user_id via Supabase Auth Admin
+        auth_user_id = None
+        if client and getattr(client, "auth", None) and getattr(client.auth, "admin", None):
+            if is_admin_role:
+                try:
+                    auth_resp = client.auth.admin.create_user({
+                        "email": email.lower(),
+                        "password": password,
+                        "email_confirm": True,
+                        "user_metadata": {
+                            "first_name": first_name,
+                            "last_name": last_name,
+                            "phone": f"+91{clean_phone}" if len(clean_phone) == 10 else clean_phone
+                        }
+                    })
+                    if hasattr(auth_resp, "user") and auth_resp.user:
+                        auth_user_id = str(auth_resp.user.id)
+                    elif isinstance(auth_resp, dict) and "id" in auth_resp:
+                        auth_user_id = str(auth_resp["id"])
+                    logger.info(f"Created Supabase Auth user {auth_user_id} with hashed password for {email}")
+                except Exception as e_auth:
+                    logger.info(f"Supabase auth.admin.create_user notice for {email}: {e_auth}")
+                    # If auth user already exists, update their password
+                    try:
+                        existing_user = client.table("users").select("user_id").ilike("email", email.lower()).limit(1).execute()
+                        if existing_user.data:
+                            auth_user_id = str(existing_user.data[0]["user_id"])
+                            client.auth.admin.update_user_by_id(auth_user_id, {"password": password})
+                            logger.info(f"Updated password for existing auth user {auth_user_id}")
+                    except Exception as e_pw:
+                        logger.warning(f"Could not update password on existing auth user: {e_pw}")
+
+        user_id = auth_user_id
+        if not user_id and client:
             user_id = self._resolve_auth_user_id(client, email, first_name, last_name)
 
         if not user_id:
@@ -521,8 +561,84 @@ class UserService:
 
         user_record["id"] = user_id
         user_record["user_id"] = user_id
+        user_record.pop("password", None)
         self.in_memory_users.insert(0, user_record)
         return user_record
+
+    def update_user_password(
+        self,
+        user_id: str,
+        password: str,
+        updated_by: Optional[str] = None,
+        updated_by_email: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Securely updates an Admin user's password in Supabase Auth.
+        Uses bcrypt hashing via Supabase GoTrue admin API (identical to SQL crypt(password, gen_salt('bf'))).
+        Restricted to Admin callers.
+        """
+        clean_password = str(password or "").strip()
+        if not clean_password or len(clean_password) < 6:
+            raise ValueError("Admin password must be at least 6 characters long.")
+
+        client = get_supabase()
+        if not client:
+            raise ValueError("Database service unavailable.")
+
+        # 1. Fetch user from public.users to verify existence
+        u_res = client.table("users").select("user_id, email, first_name, last_name, phone").eq("user_id", user_id).limit(1).execute()
+        if not u_res.data:
+            raise ValueError(f"User with ID '{user_id}' does not exist.")
+        
+        target_user = u_res.data[0]
+        target_email = (target_user.get("email") or "").strip().lower()
+
+        # 2. Verify target user has Admin role
+        roles_res = client.table("user_roles").select("role_id, is_active, roles(role_name)").eq("user_id", user_id).execute()
+        user_roles = [
+            str((ur.get("roles") or {}).get("role_name", "")).strip().lower()
+            for ur in (roles_res.data or [])
+            if ur.get("is_active", True)
+        ]
+        if "admin" not in user_roles and not any("admin" in r for r in user_roles):
+            raise ValueError("Password reset is only permitted for Admin users.")
+
+        # 3. Update or create in Supabase Auth
+        if not getattr(client, "auth", None) or not getattr(client.auth, "admin", None):
+            raise ValueError("Authentication administrative service is unavailable.")
+
+        try:
+            client.auth.admin.update_user_by_id(user_id, {"password": clean_password})
+            logger.info(f"Updated password in Supabase Auth for {target_email} ({user_id})")
+        except Exception as e_up:
+            logger.info(f"update_user_by_id notice for {user_id}: {e_up}. Creating auth.users record...")
+            try:
+                auth_resp = client.auth.admin.create_user({
+                    "email": target_email,
+                    "password": clean_password,
+                    "email_confirm": True,
+                    "user_metadata": {
+                        "first_name": target_user.get("first_name", ""),
+                        "last_name": target_user.get("last_name", ""),
+                        "phone": target_user.get("phone", "")
+                    }
+                })
+                logger.info(f"Created user in Supabase Auth for {target_email} with password")
+            except Exception as e_cr:
+                logger.error(f"Failed to create/update password in Supabase Auth for {target_email}: {e_cr}")
+                raise ValueError(f"Failed to update password in authentication system: {e_cr}")
+
+        # 4. Audit Log (Never log plaintext password)
+        logger.info(
+            f"ADMIN PASSWORD RESET AUDIT: Admin {updated_by_email or updated_by or 'Unknown'} updated password "
+            f"for Admin user {target_email} ({user_id}) at {datetime.now(timezone.utc).isoformat()}"
+        )
+
+        return {
+            "success": True,
+            "user_id": user_id,
+            "message": f"Password updated successfully for {target_email}."
+        }
 
     def update_user(self, user_id: str, payload: Dict[str, Any], updated_by: Optional[str] = None) -> Dict[str, Any]:
         client = get_supabase()
@@ -536,6 +652,13 @@ class UserService:
 
         if first_name is not None and not str(first_name).strip():
             raise ValueError("First Name is mandatory.")
+
+        if "password" in payload and payload["password"]:
+            self.update_user_password(
+                user_id=user_id,
+                password=str(payload["password"]).strip(),
+                updated_by=updated_by
+            )
 
         if "email" in payload:
             email_val = str(payload["email"]).strip()

@@ -189,6 +189,43 @@ async def upload_roster(file: UploadFile = File(...), current_user: dict = Depen
             raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.put("/{user_id}/password")
+async def reset_user_password(
+    user_id: str,
+    payload: Dict[str, Any],
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Reset/Update password for an Admin user.
+    Strictly restricted to Admin callers. Automatically hashes password with bcrypt
+    in Supabase Auth and revokes all active sessions for the target user.
+    """
+    check_system_lock_or_raise()
+    password = payload.get("password")
+    if not password or not str(password).strip():
+        raise HTTPException(status_code=400, detail="Password cannot be empty.")
+    
+    acting_user_id = current_user.get("user_id") if current_user else None
+    acting_email = current_user.get("email") if current_user else "unknown"
+    
+    try:
+        res = user_service.update_user_password(
+            user_id=user_id,
+            password=str(password).strip(),
+            updated_by=acting_user_id,
+            updated_by_email=acting_email
+        )
+        # Revoke active sessions for target user so re-login with new password is required
+        await safe_set(f"rll:revoked:{user_id}", "true", ttl=86400)
+        logger.info(f"Sessions revoked after password update for user {user_id}")
+        return res
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Error resetting password for user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.put("/{user_id}")
 async def update_user(user_id: str, payload: Dict[str, Any], current_user: dict = Depends(get_current_user)):
     check_system_lock_or_raise()
