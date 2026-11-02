@@ -63,7 +63,8 @@ def _get_latest_sale_date() -> str:
 def _get_master_companies() -> List[Dict[str, Any]]:
     master = _get_master_bundle_cached()
     if master and master.get("companies_lookup"):
-        return [{"company_id": str(cid), "company_name": cname} for cid, cname in master["companies_lookup"].items()]
+        cat_map = master.get("companies_category_lookup") or {}
+        return [{"company_id": str(cid), "company_name": cname, "category": cat_map.get(str(cid))} for cid, cname in master["companies_lookup"].items()]
     if master and master.get("master_companies"):
         return list(master["master_companies"].values())
 
@@ -76,7 +77,7 @@ def _get_master_companies() -> List[Dict[str, Any]]:
     comp_list = []
     if client:
         try:
-            res = client.table("companies").select("company_id, company_name").execute()
+            res = client.table("companies").select("company_id, company_name, category").execute()
             comp_list = res.data or []
             _MASTER_COMPANIES_CACHE = (now, comp_list)
         except Exception as e:
@@ -195,7 +196,7 @@ async def get_companies_summary_async(
     for mc in mc_data:
         cid = str(mc.get("company_id") or "")
         cname = str(mc.get("company_name") or "").strip()
-        if not cname or is_others_company(cname):
+        if not cname or is_others_company(cname, category=mc.get("category")):
             continue
         if company_name and cname.lower() != company_name.strip().lower():
             continue
@@ -275,7 +276,7 @@ async def get_companies_summary_async(
     for row in comp_summary_data:
         cid = str(row.get("company_id") or "")
         cname = str(row.get("company_name") or "").strip()
-        if not cname or is_others_company(cname):
+        if not cname or is_others_company(cname, category=row.get("category")):
             continue
 
         norm_name = normalize_company_name(cname)

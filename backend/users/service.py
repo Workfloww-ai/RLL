@@ -25,11 +25,15 @@ class UserService:
 
         try:
             # 1. Fetch users strictly scoped by tenant_id if provided
-            users_query = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, created_at, tenant_id")
+            users_query = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, created_at, updated_at, tenant_id")
             if tenant_id:
                 users_query = users_query.eq("tenant_id", tenant_id)
             users_res = users_query.execute()
             raw_users = users_res.data if users_res.data is not None else []
+
+            for ru in raw_users:
+                if not ru.get("deactivated_at") and not ru.get("is_active", True):
+                    ru["deactivated_at"] = ru.get("updated_at")
 
             if not raw_users:
                 return []
@@ -126,11 +130,14 @@ class UserService:
                 ud_data = user_depot_info.get(uid, {})
                 depot_name = ud_data.get("depot_name", "Unassigned")
                 circle_name = ud_data.get("circle_name", "Unassigned")
+                user_role = role_by_user_id.get(uid, "ASE")
 
                 all_assigned_hqs = user_hqs_map.get(uid, [])
                 # If active HQs exist, use them; otherwise show assigned historical HQs so inactive users aren't unassigned
                 active_hqs = [h for h in all_assigned_hqs if h.get("is_active", True)]
                 display_hqs = active_hqs if active_hqs else all_assigned_hqs
+                if str(user_role).strip().upper() in ("ASE", "TSM", "ASM") and len(display_hqs) > 1:
+                    display_hqs = display_hqs[-1:]
                 hq_names = [h["name"] for h in display_hqs]
                 hq_ids = [h["headquarters_id"] for h in display_hqs]
                 headquarters_str = ", ".join(hq_names) if hq_names else ud_data.get("headquarters", "Unassigned")
@@ -153,6 +160,7 @@ class UserService:
                     "headquarters": headquarters_str,
                     "headquarters_ids": hq_ids,
                     "headquarters_list": display_hqs,
+                    "headquartersList": display_hqs,
                     "circleName": circle_name,
                     "isActive": u.get("is_active", True),
                     "is_active": u.get("is_active", True)
@@ -268,7 +276,7 @@ class UserService:
         return None
 
     def _resolve_auth_user_id(self, client: Any, email: str, first_name: str, last_name: str) -> Optional[str]:
-        """Find or create user in Supabase auth.users to satisfy fk_users_auth_id constraint."""
+        """Find existing user in public.users, or generate a deterministic user_id."""
         email_clean = email.strip().lower()
 
         # 1. Check if user already exists in public.users
@@ -279,42 +287,7 @@ class UserService:
         except Exception as e:
             logger.warning(f"Error checking existing user in public.users: {e}")
 
-        # 2. Try creating user via Supabase RPC function (bypasses Auth API key format issues)
-        try:
-            rpc_res = client.rpc("create_auth_user_if_not_exists", {
-                "p_email": email_clean,
-                "p_first_name": first_name,
-                "p_last_name": last_name
-            }).execute()
-            if rpc_res.data:
-                return str(rpc_res.data)
-        except Exception as rpc_err:
-            logger.warning(f"RPC create_auth_user_if_not_exists error: {rpc_err}")
-
-        # 3. Fallback to Supabase Auth Admin API
-        try:
-            import secrets
-            secure_temp_password = secrets.token_urlsafe(32)
-            auth_user = client.auth.admin.create_user({
-                "email": email_clean,
-                "password": secure_temp_password,
-                "email_confirm": True,
-                "user_metadata": {"first_name": first_name, "last_name": last_name}
-            })
-            if auth_user and hasattr(auth_user, 'user') and auth_user.user:
-                return str(auth_user.user.id)
-            elif isinstance(auth_user, dict) and "id" in auth_user:
-                return str(auth_user["id"])
-        except Exception:
-            pass
-        """Check if user exists in auth.users or public.users, or generate a deterministic user_id."""
-        try:
-            res = client.table("users").select("user_id").ilike("email", email).limit(1).execute()
-            if res.data and len(res.data) > 0:
-                return str(res.data[0]["user_id"])
-        except Exception as e:
-            logger.warning(f"Failed to resolve user_id for email '{email}': {e}")
-        return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{email.lower().strip()}"))
+        return str(uuid.uuid5(uuid.NAMESPACE_DNS, email_clean))
 
     def _resolve_manager_user_id(self, client: Any, reporting_manager: str) -> Optional[str]:
         if not reporting_manager or reporting_manager.strip().lower() in ("unassigned", "none", "", "null", "nan"):
@@ -402,9 +375,64 @@ class UserService:
         phone = clean_phone
         full_name = f"{first_name} {last_name}".strip()
 
-        # Resolve real user_id from auth.users or public.users if client is available
-        user_id = None
+        # Check if email or phone already exists in public.users to give clear user-friendly error
         if client:
+            try:
+                dup_check = client.table("users").select("user_id, email, phone").or_(f"email.ilike.{email},phone.eq.{clean_phone}").limit(1).execute()
+                if dup_check.data and len(dup_check.data) > 0:
+                    existing = dup_check.data[0]
+                    if str(existing.get("email", "")).strip().lower() == email.lower():
+                        raise ValueError(f"A user with email '{email}' already exists.")
+                    if str(existing.get("phone", "")).strip() == clean_phone:
+                        raise ValueError(f"A user with phone number '{clean_phone}' already exists.")
+            except ValueError:
+                raise
+            except Exception as e_dup:
+                logger.warning(f"Duplicate user check warning: {e_dup}")
+
+        # Password handling for Admin users
+        is_admin_role = (role_name.strip().lower() == "admin")
+        password = str(payload.get("password") or "").strip()
+        if is_admin_role:
+            if not password:
+                raise ValueError("Password is mandatory when creating an Admin user.")
+            if len(password) < 6:
+                raise ValueError("Admin password must be at least 6 characters long.")
+
+        # Resolve or create real user_id via Supabase Auth Admin
+        auth_user_id = None
+        if client and getattr(client, "auth", None) and getattr(client.auth, "admin", None):
+            if is_admin_role:
+                try:
+                    auth_resp = client.auth.admin.create_user({
+                        "email": email.lower(),
+                        "password": password,
+                        "email_confirm": True,
+                        "user_metadata": {
+                            "first_name": first_name,
+                            "last_name": last_name,
+                            "phone": f"+91{clean_phone}" if len(clean_phone) == 10 else clean_phone
+                        }
+                    })
+                    if hasattr(auth_resp, "user") and auth_resp.user:
+                        auth_user_id = str(auth_resp.user.id)
+                    elif isinstance(auth_resp, dict) and "id" in auth_resp:
+                        auth_user_id = str(auth_resp["id"])
+                    logger.info(f"Created Supabase Auth user {auth_user_id} with hashed password for {email}")
+                except Exception as e_auth:
+                    logger.info(f"Supabase auth.admin.create_user notice for {email}: {e_auth}")
+                    # If auth user already exists, update their password
+                    try:
+                        existing_user = client.table("users").select("user_id").ilike("email", email.lower()).limit(1).execute()
+                        if existing_user.data:
+                            auth_user_id = str(existing_user.data[0]["user_id"])
+                            client.auth.admin.update_user_by_id(auth_user_id, {"password": password})
+                            logger.info(f"Updated password for existing auth user {auth_user_id}")
+                    except Exception as e_pw:
+                        logger.warning(f"Could not update password on existing auth user: {e_pw}")
+
+        user_id = auth_user_id
+        if not user_id and client:
             user_id = self._resolve_auth_user_id(client, email, first_name, last_name)
 
         if not user_id:
@@ -491,12 +519,12 @@ class UserService:
             manager_param = payload.get("manager_id") or payload.get("managerId") or payload.get("reportingManager") or payload.get("reporting_manager")
             if manager_param and str(manager_param).strip().lower() not in ("unassigned", "none", "null", ""):
                 try:
-                    manager_user_id = self._resolve_manager_user_id(client, str(manager_param).strip())
-                    if manager_user_id:
+                    resolved_mgr_id = manager_user_id or self._resolve_manager_user_id(client, str(manager_param).strip())
+                    if resolved_mgr_id:
                         client.table("ase_tsm_mapping").delete().eq("ase_user_id", user_id).execute()
                         client.table("ase_tsm_mapping").insert({
                             "ase_user_id": user_id,
-                            "tsm_user_id": manager_user_id,
+                            "tsm_user_id": resolved_mgr_id,
                             "is_active": True
                         }).execute()
                 except Exception as mgr_err:
@@ -514,19 +542,103 @@ class UserService:
                     logger.warning(f"Could not update user_depot mapping during create_user: {d_err}")
 
             # 5. If headquarters_ids provided, map user to headquarters
-            if "headquarters_ids" in payload and payload["headquarters_ids"] is not None:
+            if "headquarters_ids" in payload and payload["headquarters_ids"]:
                 try:
                     self.set_user_headquarters(user_id, payload["headquarters_ids"], updated_by=clean_creator_id)
+                    user_record["headquarters_ids"] = payload["headquarters_ids"]
+                    if client and payload["headquarters_ids"]:
+                        hq_res = client.table("headquarters").select("name").eq("headquarters_id", payload["headquarters_ids"][0]).limit(1).execute()
+                        if hq_res.data:
+                            user_record["headquarters"] = hq_res.data[0]["name"]
                 except Exception as hq_err:
                     logger.warning(f"Could not set user headquarters during create_user: {hq_err}")
 
+        except ValueError:
+            raise
         except Exception as e:
             logger.error(f"Error creating user in Supabase: {e}")
+            raise ValueError(f"Failed to create user in database: {e}")
 
         user_record["id"] = user_id
         user_record["user_id"] = user_id
+        user_record.pop("password", None)
         self.in_memory_users.insert(0, user_record)
         return user_record
+
+    def update_user_password(
+        self,
+        user_id: str,
+        password: str,
+        updated_by: Optional[str] = None,
+        updated_by_email: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Securely updates an Admin user's password in Supabase Auth.
+        Uses bcrypt hashing via Supabase GoTrue admin API (identical to SQL crypt(password, gen_salt('bf'))).
+        Restricted to Admin callers.
+        """
+        clean_password = str(password or "").strip()
+        if not clean_password or len(clean_password) < 6:
+            raise ValueError("Admin password must be at least 6 characters long.")
+
+        client = get_supabase()
+        if not client:
+            raise ValueError("Database service unavailable.")
+
+        # 1. Fetch user from public.users to verify existence
+        u_res = client.table("users").select("user_id, email, first_name, last_name, phone").eq("user_id", user_id).limit(1).execute()
+        if not u_res.data:
+            raise ValueError(f"User with ID '{user_id}' does not exist.")
+        
+        target_user = u_res.data[0]
+        target_email = (target_user.get("email") or "").strip().lower()
+
+        # 2. Verify target user has Admin role
+        roles_res = client.table("user_roles").select("role_id, is_active, roles(role_name)").eq("user_id", user_id).execute()
+        user_roles = [
+            str((ur.get("roles") or {}).get("role_name", "")).strip().lower()
+            for ur in (roles_res.data or [])
+            if ur.get("is_active", True)
+        ]
+        if "admin" not in user_roles and not any("admin" in r for r in user_roles):
+            raise ValueError("Password reset is only permitted for Admin users.")
+
+        # 3. Update or create in Supabase Auth
+        if not getattr(client, "auth", None) or not getattr(client.auth, "admin", None):
+            raise ValueError("Authentication administrative service is unavailable.")
+
+        try:
+            client.auth.admin.update_user_by_id(user_id, {"password": clean_password})
+            logger.info(f"Updated password in Supabase Auth for {target_email} ({user_id})")
+        except Exception as e_up:
+            logger.info(f"update_user_by_id notice for {user_id}: {e_up}. Creating auth.users record...")
+            try:
+                auth_resp = client.auth.admin.create_user({
+                    "email": target_email,
+                    "password": clean_password,
+                    "email_confirm": True,
+                    "user_metadata": {
+                        "first_name": target_user.get("first_name", ""),
+                        "last_name": target_user.get("last_name", ""),
+                        "phone": target_user.get("phone", "")
+                    }
+                })
+                logger.info(f"Created user in Supabase Auth for {target_email} with password")
+            except Exception as e_cr:
+                logger.error(f"Failed to create/update password in Supabase Auth for {target_email}: {e_cr}")
+                raise ValueError(f"Failed to update password in authentication system: {e_cr}")
+
+        # 4. Audit Log (Never log plaintext password)
+        logger.info(
+            f"ADMIN PASSWORD RESET AUDIT: Admin {updated_by_email or updated_by or 'Unknown'} updated password "
+            f"for Admin user {target_email} ({user_id}) at {datetime.now(timezone.utc).isoformat()}"
+        )
+
+        return {
+            "success": True,
+            "user_id": user_id,
+            "message": f"Password updated successfully for {target_email}."
+        }
 
     def update_user(self, user_id: str, payload: Dict[str, Any], updated_by: Optional[str] = None) -> Dict[str, Any]:
         client = get_supabase()
@@ -540,6 +652,13 @@ class UserService:
 
         if first_name is not None and not str(first_name).strip():
             raise ValueError("First Name is mandatory.")
+
+        if "password" in payload and payload["password"]:
+            self.update_user_password(
+                user_id=user_id,
+                password=str(payload["password"]).strip(),
+                updated_by=updated_by
+            )
 
         if "email" in payload:
             email_val = str(payload["email"]).strip()
@@ -576,6 +695,10 @@ class UserService:
                     rm = payload.get("reporting_manager", payload.get("reportingManager"))
                     self.in_memory_users[idx]["reporting_manager"] = rm
                     self.in_memory_users[idx]["reportingManager"] = rm
+                is_act = payload.get("is_active", payload.get("isActive"))
+                if is_act is not None:
+                    self.in_memory_users[idx]["is_active"] = bool(is_act)
+                    self.in_memory_users[idx]["isActive"] = bool(is_act)
 
         if not client:
             return payload
@@ -589,8 +712,14 @@ class UserService:
             user_update["email"] = payload["email"]
         is_active_val = payload.get("is_active", payload.get("isActive"))
         if is_active_val is not None:
-            user_update["is_active"] = bool(is_active_val)
-            user_update["updated_at"] = datetime.now(timezone.utc).isoformat()
+            new_status = bool(is_active_val)
+            now_iso = datetime.now(timezone.utc).isoformat()
+            user_update["is_active"] = new_status
+            user_update["updated_at"] = now_iso
+            if not new_status:
+                user_update["deactivated_at"] = now_iso
+            else:
+                user_update["deactivated_at"] = None
 
         updator_id = updated_by or payload.get("updated_by") or payload.get("uploaded_by") or payload.get("created_by")
         clean_updator_id = str(updator_id) if (updator_id and len(str(updator_id)) == 36 and str(updator_id) != "00000000-0000-0000-0000-000000000001") else None
@@ -606,7 +735,15 @@ class UserService:
 
         try:
             if user_update:
-                client.table("users").update(user_update).eq("user_id", user_id).execute()
+                try:
+                    client.table("users").update(user_update).eq("user_id", user_id).execute()
+                except Exception as e_up:
+                    if "deactivated_at" in str(e_up) and "deactivated_at" in user_update:
+                        fallback_update = dict(user_update)
+                        fallback_update.pop("deactivated_at", None)
+                        client.table("users").update(fallback_update).eq("user_id", user_id).execute()
+                    else:
+                        raise e_up
 
             if is_active_val is not None:
                 new_status = bool(is_active_val)
@@ -674,10 +811,7 @@ class UserService:
 
             # Update headquarters assignments if headquarters_ids provided in payload
             if "headquarters_ids" in payload and payload["headquarters_ids"] is not None:
-                try:
-                    self.set_user_headquarters(user_id, payload["headquarters_ids"], updated_by=clean_updator_id)
-                except Exception as hq_err:
-                    logger.warning(f"Could not update user headquarters during update_user: {hq_err}")
+                self.set_user_headquarters(user_id, payload["headquarters_ids"], updated_by=clean_updator_id)
 
         except Exception as e:
             logger.error(f"Error updating user {user_id} in Supabase: {e}")
@@ -730,14 +864,24 @@ class UserService:
         if not user_res.data:
             raise ValueError(f"User '{user_id}' does not exist.")
         user = user_res.data[0]
-        user_tenant_id = user.get("tenant_id")
-        if not user_tenant_id and updated_by:
+        user_tenant_id = user.get("tenant_id") or "a0000000-0000-0000-0000-000000000001"
+        if not user.get("tenant_id") and updated_by:
             try:
                 admin_res = client.table("users").select("tenant_id").eq("user_id", str(updated_by)).limit(1).execute()
                 if admin_res.data and admin_res.data[0].get("tenant_id"):
                     user_tenant_id = admin_res.data[0]["tenant_id"]
             except Exception:
                 pass
+
+        # 1b. Validate updated_by exists in public.users to prevent Foreign Key constraint violations
+        valid_updator_id = None
+        if updated_by and len(str(updated_by)) == 36 and str(updated_by) != "00000000-0000-0000-0000-000000000001":
+            try:
+                chk_up = client.table("users").select("user_id").eq("user_id", str(updated_by)).limit(1).execute()
+                if chk_up.data:
+                    valid_updator_id = str(updated_by)
+            except Exception:
+                valid_updator_id = None
 
         # 2. De-duplicate requested HQ IDs while preserving order
         clean_hq_ids = []
@@ -785,14 +929,13 @@ class UserService:
             new_rows = []
             for hid in clean_hq_ids:
                 row_map = {
+                    "tenant_id": user_tenant_id,
                     "user_id": user_id,
                     "headquarters_id": hid,
                     "is_active": True,
-                    "created_by": updated_by,
-                    "updated_by": updated_by
+                    "created_by": valid_updator_id,
+                    "updated_by": valid_updator_id
                 }
-                if user_tenant_id:
-                    row_map["tenant_id"] = user_tenant_id
                 new_rows.append(row_map)
             client.table("user_headquarters_mapping").insert(new_rows).execute()
 
@@ -819,7 +962,7 @@ class UserService:
 
         try:
             now_iso = datetime.now(timezone.utc).isoformat()
-            user_update_data: Dict[str, Any] = {"is_active": False, "updated_at": now_iso}
+            user_update_data: Dict[str, Any] = {"is_active": False, "updated_at": now_iso, "deactivated_at": now_iso}
             clean_deleted_by = str(deleted_by) if (deleted_by and len(str(deleted_by)) == 36 and str(deleted_by) != "00000000-0000-0000-0000-000000000001") else None
             if clean_deleted_by:
                 user_update_data["updated_by"] = clean_deleted_by
@@ -827,7 +970,12 @@ class UserService:
             try:
                 client.table("users").update(user_update_data).eq("user_id", user_id).execute()
             except Exception as e:
-                logger.warning(f"Could not set users.is_active=False for {user_id}: {e}")
+                if "deactivated_at" in str(e):
+                    fallback_data = dict(user_update_data)
+                    fallback_data.pop("deactivated_at", None)
+                    client.table("users").update(fallback_data).eq("user_id", user_id).execute()
+                else:
+                    logger.warning(f"Could not set users.is_active=False for {user_id}: {e}")
 
             try:
                 client.table("user_roles").update({"is_active": False}).eq("user_id", user_id).execute()

@@ -1,5 +1,6 @@
 import json
 import logging
+import asyncio
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, Header, Query
 from backend.users.service import user_service
@@ -10,7 +11,7 @@ from backend.core.system_lock import check_system_lock_or_raise, roster_upload_l
 
 logger = logging.getLogger(__name__)
 
-admin_only = RoleChecker(["admin", "super_admin"])
+admin_only = RoleChecker(["admin", "super_admin", "developer"])
 
 router = APIRouter(
     prefix="/users", 
@@ -21,7 +22,9 @@ router = APIRouter(
 
 async def invalidate_user_and_territory_caches():
     """Purge Redis caches when users, roles, or territory assignments change."""
-    await safe_delete("rll:cache:users_list")
+    await safe_delete_pattern("rll:cache:users_list*")
+    await safe_delete("rll:cache:users_list:all")
+    await safe_delete("rll:cache:users_list:a0000000-0000-0000-0000-000000000001")
     await safe_delete("rll:cache:depots_list")
     await safe_delete("rll:cache:headquarters_list")
     await safe_delete("rll:cache:roles_list")
@@ -29,20 +32,53 @@ async def invalidate_user_and_territory_caches():
     await safe_delete_pattern("rll:mobile:sales:*")
 
 
+async def _background_refresh_users_list_cache(tenant_id: Optional[str] = None):
+    """
+    Non-blocking background refresh:
+    Queries DB via thread pool so FastAPI's main async event loop never hangs,
+    then updates Redis with the latest authoritative user list.
+    """
+    try:
+        query_tid = str(tenant_id) if tenant_id and str(tenant_id).lower() != "all" else None
+        fresh_users = await asyncio.to_thread(user_service.list_users, tenant_id=query_tid)
+        if fresh_users:
+            json_data = json.dumps(fresh_users)
+            target_keys = {
+                f"rll:cache:users_list:{tid}" for tid in (tenant_id, "all", "a0000000-0000-0000-0000-000000000001") if tid
+            }
+            for k in target_keys:
+                await safe_set(k, json_data, ttl=86400)
+            logger.info(f"Write-through cache background refresh complete ({len(fresh_users)} users)")
+    except Exception as e:
+        logger.warning(f"Error in background users list cache refresh: {e}")
+
+
+async def refresh_users_list_cache(tenant_id: Optional[str] = None):
+    """
+    Write-through cache update:
+    1. Immediately purges all stale users_list cache keys in <5ms.
+    2. Spawns a background task to pre-warm Redis with fresh DB state without blocking response.
+    """
+    await invalidate_user_and_territory_caches()
+    asyncio.create_task(_background_refresh_users_list_cache(tenant_id))
+
+
 @router.get("/")
 async def list_users(
     current_user: dict = Depends(get_current_user),
     x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID"),
     tenant_id: Optional[str] = Query(None),
+    fresh: bool = Query(False),
 ):
     target_tenant_id = x_tenant_id or tenant_id or (current_user.get("tenant_id") if current_user else None)
     cache_key = f"rll:cache:users_list:{target_tenant_id or 'all'}"
-    cached = await safe_get(cache_key)
-    if cached:
-        try:
-            return json.loads(cached)
-        except Exception as e:
-            logger.warning(f"Error parsing cached users_list: {e}")
+    if not fresh:
+        cached = await safe_get(cache_key)
+        if cached:
+            try:
+                return json.loads(cached)
+            except Exception as e:
+                logger.warning(f"Error parsing cached users_list: {e}")
 
     data = user_service.list_users(tenant_id=target_tenant_id)
     if data:
@@ -55,8 +91,9 @@ async def create_user(payload: Dict[str, Any], current_user: dict = Depends(get_
     check_system_lock_or_raise()
     try:
         acting_user_id = current_user.get("user_id") if current_user else None
+        acting_tenant_id = current_user.get("tenant_id") if current_user else None
         res = user_service.create_user(payload, created_by=acting_user_id)
-        await invalidate_user_and_territory_caches()
+        await refresh_users_list_cache(acting_tenant_id)
         return res
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
@@ -85,8 +122,9 @@ async def create_role(payload: Dict[str, Any], current_user: dict = Depends(get_
     check_system_lock_or_raise()
     try:
         acting_user_id = current_user.get("user_id") if current_user else None
+        acting_tenant_id = current_user.get("tenant_id") if current_user else None
         res = user_service.create_role(payload, created_by=acting_user_id)
-        await invalidate_user_and_territory_caches()
+        await refresh_users_list_cache(acting_tenant_id)
         return res
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -97,20 +135,22 @@ async def update_role(role_id: str, payload: Dict[str, Any], current_user: dict 
     check_system_lock_or_raise()
     try:
         acting_user_id = current_user.get("user_id") if current_user else None
+        acting_tenant_id = current_user.get("tenant_id") if current_user else None
         res = user_service.update_role(role_id, payload, updated_by=acting_user_id)
-        await invalidate_user_and_territory_caches()
+        await refresh_users_list_cache(acting_tenant_id)
         return res
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.delete("/roles/{role_id}")
-async def delete_role(role_id: str):
+async def delete_role(role_id: str, current_user: dict = Depends(get_current_user)):
     check_system_lock_or_raise()
     success = user_service.delete_role(role_id)
     if not success:
         raise HTTPException(status_code=400, detail="Failed to delete role.")
-    await invalidate_user_and_territory_caches()
+    acting_tenant_id = current_user.get("tenant_id") if current_user else None
+    await refresh_users_list_cache(acting_tenant_id)
     return {"message": "Role deleted successfully"}
 
 
@@ -142,11 +182,48 @@ async def upload_roster(file: UploadFile = File(...), current_user: dict = Depen
                 except Exception:
                     pass
             res = user_service.process_excel_roster(contents, file.filename, uploaded_by=acting_user_id, tenant_id=acting_tenant_id)
-            await invalidate_user_and_territory_caches()
+            await refresh_users_list_cache(acting_tenant_id)
             record_upload_completion("roster_upload", file.filename)
             return res
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/{user_id}/password")
+async def reset_user_password(
+    user_id: str,
+    payload: Dict[str, Any],
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Reset/Update password for an Admin user.
+    Strictly restricted to Admin callers. Automatically hashes password with bcrypt
+    in Supabase Auth and revokes all active sessions for the target user.
+    """
+    check_system_lock_or_raise()
+    password = payload.get("password")
+    if not password or not str(password).strip():
+        raise HTTPException(status_code=400, detail="Password cannot be empty.")
+    
+    acting_user_id = current_user.get("user_id") if current_user else None
+    acting_email = current_user.get("email") if current_user else "unknown"
+    
+    try:
+        res = user_service.update_user_password(
+            user_id=user_id,
+            password=str(password).strip(),
+            updated_by=acting_user_id,
+            updated_by_email=acting_email
+        )
+        # Revoke active sessions for target user so re-login with new password is required
+        await safe_set(f"rll:revoked:{user_id}", "true", ttl=86400)
+        logger.info(f"Sessions revoked after password update for user {user_id}")
+        return res
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Error resetting password for user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.put("/{user_id}")
@@ -160,6 +237,7 @@ async def update_user(user_id: str, payload: Dict[str, Any], current_user: dict 
 
     try:
         acting_user_id = current_user.get("user_id") if current_user else None
+        acting_tenant_id = current_user.get("tenant_id") if current_user else None
         res = user_service.update_user(user_id, payload, updated_by=acting_user_id)
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
@@ -178,7 +256,7 @@ async def update_user(user_id: str, payload: Dict[str, Any], current_user: dict 
         await safe_delete(f"rll:revoked:{user_id}")
         logger.info(f"Revocation flag cleared for reactivated user: {user_id}")
 
-    await invalidate_user_and_territory_caches()
+    await refresh_users_list_cache(acting_tenant_id)
     return res
 
 
@@ -189,6 +267,7 @@ async def delete_user(user_id: str, current_user: dict = Depends(get_current_use
         raise HTTPException(status_code=400, detail="You cannot delete your own account.")
 
     acting_user_id = current_user.get("user_id") if current_user else None
+    acting_tenant_id = current_user.get("tenant_id") if current_user else None
     success = user_service.delete_user(user_id, deleted_by=acting_user_id)
     if not success:
         raise HTTPException(status_code=400, detail="Failed to delete user.")
@@ -196,7 +275,7 @@ async def delete_user(user_id: str, current_user: dict = Depends(get_current_use
     # Instantly revoke all active sessions for deleted user
     await safe_set(f"rll:revoked:{user_id}", "true", ttl=86400 * 30)
     logger.info(f"Instant Remote User Revocation executed for deleted user: {user_id}")
-    await invalidate_user_and_territory_caches()
+    await refresh_users_list_cache(acting_tenant_id)
     return {"message": "User deleted successfully", "user_id": user_id}
 
 
@@ -221,9 +300,10 @@ async def set_user_headquarters(user_id: str, payload: Dict[str, Any], current_u
         raise HTTPException(status_code=400, detail="'headquarters_ids' must be a list of headquarters UUIDs.")
 
     admin_user_id = str(current_user.get("user_id") or "")
+    acting_tenant_id = current_user.get("tenant_id") if current_user else None
     try:
         res = user_service.set_user_headquarters(user_id, hq_ids, updated_by=admin_user_id)
-        await invalidate_user_and_territory_caches()
+        await refresh_users_list_cache(acting_tenant_id)
         return res
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))

@@ -17,6 +17,9 @@ _TENANT_CACHE_TTL = 300.0  # 5 minutes
 _INCLUDE_OTHERS_LOCAL_CACHE: Optional[bool] = None
 _INCLUDE_OTHERS_CACHE_TIME: float = 0.0
 
+_INCLUDE_OTHERS_TSM_LOCAL_CACHE: Optional[bool] = None
+_INCLUDE_OTHERS_TSM_CACHE_TIME: float = 0.0
+
 _CHATBOT_ENABLED_LOCAL_CACHE: Optional[bool] = None
 _CHATBOT_ENABLED_CACHE_TIME: float = 0.0
 
@@ -58,6 +61,47 @@ async def get_include_others_setting_async() -> bool:
 
     val = get_include_others_setting_sync()
     await safe_set("rll:setting:include_others_in_sales", "true" if val else "false", ttl=86400 * 30)
+    return val
+
+
+def get_include_others_in_tsm_sales_sync() -> bool:
+    """
+    Synchronous helper returning whether company Others is included in TSM sales calculations (default: False).
+    Reads system_settings table from Supabase PostgreSQL with 60-second in-memory caching.
+    """
+    global _INCLUDE_OTHERS_TSM_LOCAL_CACHE, _INCLUDE_OTHERS_TSM_CACHE_TIME
+    now = time.time()
+    if _INCLUDE_OTHERS_TSM_LOCAL_CACHE is not None and (now - _INCLUDE_OTHERS_TSM_CACHE_TIME) < 60.0:
+        return _INCLUDE_OTHERS_TSM_LOCAL_CACHE
+
+    val = False
+    client = get_supabase_client()
+    if client:
+        try:
+            res = client.table("system_settings").select("setting_value").eq("setting_key", "include_others_in_tsm_sales").limit(1).execute()
+            if res.data and len(res.data) > 0:
+                val_str = str(res.data[0].get("setting_value", "false")).strip().lower()
+                val = (val_str == "true")
+        except Exception as e:
+            logger.debug(f"Notice reading include_others_in_tsm_sales setting (using default False): {e}")
+
+    _INCLUDE_OTHERS_TSM_LOCAL_CACHE = val
+    _INCLUDE_OTHERS_TSM_CACHE_TIME = now
+    return val
+
+
+async def get_include_others_in_tsm_sales_async() -> bool:
+    """
+    Async helper returning whether company Others is included in TSM sales calculations (default: False).
+    Checks Redis cache first then Supabase PostgreSQL.
+    """
+    from backend.db.redis_client import safe_get, safe_set
+    cached = await safe_get("rll:setting:include_others_in_tsm_sales")
+    if cached is not None:
+        return str(cached).strip().lower() == "true"
+
+    val = get_include_others_in_tsm_sales_sync()
+    await safe_set("rll:setting:include_others_in_tsm_sales", "true" if val else "false", ttl=86400 * 30)
     return val
 
 
@@ -104,10 +148,12 @@ async def get_chatbot_enabled_setting_async() -> bool:
 
 def clear_tenant_cache():
     """Clear local tenant cache entries."""
-    global _TENANT_CACHE, _INCLUDE_OTHERS_LOCAL_CACHE, _INCLUDE_OTHERS_CACHE_TIME, _CHATBOT_ENABLED_LOCAL_CACHE, _CHATBOT_ENABLED_CACHE_TIME
+    global _TENANT_CACHE, _INCLUDE_OTHERS_LOCAL_CACHE, _INCLUDE_OTHERS_CACHE_TIME, _INCLUDE_OTHERS_TSM_LOCAL_CACHE, _INCLUDE_OTHERS_TSM_CACHE_TIME, _CHATBOT_ENABLED_LOCAL_CACHE, _CHATBOT_ENABLED_CACHE_TIME
     _TENANT_CACHE.clear()
     _INCLUDE_OTHERS_LOCAL_CACHE = None
     _INCLUDE_OTHERS_CACHE_TIME = 0.0
+    _INCLUDE_OTHERS_TSM_LOCAL_CACHE = None
+    _INCLUDE_OTHERS_TSM_CACHE_TIME = 0.0
     _CHATBOT_ENABLED_LOCAL_CACHE = None
     _CHATBOT_ENABLED_CACHE_TIME = 0.0
 

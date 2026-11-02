@@ -19,6 +19,7 @@ class BrandAnalyticsItem(BaseModel):
 class CompanyAnalyticsItem(BaseModel):
     company_id: int
     company_name: str
+    category: Optional[str] = None
     total_cases: float
     total_bottles: float
     total_bl: float
