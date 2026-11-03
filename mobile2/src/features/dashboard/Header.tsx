@@ -640,10 +640,8 @@ const styles = StyleSheet.create({
   header: {
     backgroundColor: '#090D16',
     paddingHorizontal: 16,
-    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 28) + 8 : 14,
+    paddingTop: 8,
     paddingBottom: 14,
-    borderBottomLeftRadius: 24,
-    borderBottomRightRadius: 24,
     borderBottomWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.08)',
     shadowColor: '#000000',

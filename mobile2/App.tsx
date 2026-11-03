@@ -891,7 +891,7 @@ function MainApp() {
   return (
     <SafeAreaProvider>
       <View style={styles.appContainer}>
-        <StatusBar />
+        <StatusBar barStyle="light-content" />
 
         {!user ? (
           <LoginScreen
@@ -905,7 +905,7 @@ function MainApp() {
             }}
           />
         ) : (
-          <SafeAreaView style={styles.safeArea}>
+          <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
             {/* Header section (HQ picker, period chooser, dates) */}
             {viewMode !== 'profile' && (
               <Header
@@ -1164,7 +1164,7 @@ const styles = StyleSheet.create({
   },
   safeArea: {
     flex: 1,
-    backgroundColor: '#0F172A',
+    backgroundColor: '#090D16',
   },
   metricsBanner: {
     flexDirection: 'row',
