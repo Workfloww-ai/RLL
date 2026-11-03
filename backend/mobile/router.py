@@ -19,6 +19,7 @@ from backend.db.supabase_client import resolve_latest_sale_date
 from backend.db.company_aliases import normalize_company_name, is_pinned_company
 from backend.services.company_cascading_service import is_others_company
 from backend.services.activity_log_service import auth_log_service
+from backend.utils.name_matcher import UserNameMatcher
 
 # Centralized Mobile Access Authorization Policies
 MOBILE_ACCESS_ROLES = [
@@ -370,17 +371,7 @@ def _build_master_lookups_dict(
     user_alias_map = {}
     all_users = users_data or []
     active_users = [u for u in all_users if u.get("is_active")]
-
-    def _clean_str(s):
-        return "".join(c for c in str(s or "").lower() if c.isalnum())
-
-    def _first_word(s):
-        parts = str(s or "").strip().lower().replace(".", " ").replace("_", " ").split()
-        return _clean_str(parts[0]) if parts else ""
-
-    active_by_full = {_clean_str(f"{u.get('first_name','')} {u.get('last_name','')}"): str(u["user_id"]) for u in active_users}
-    active_by_first = {_first_word(u.get('first_name','')): str(u["user_id"]) for u in active_users if _first_word(u.get('first_name',''))}
-    active_by_prefix = {_first_word(str(u.get('email') or '').split('@')[0]): str(u["user_id"]) for u in active_users if _first_word(str(u.get('email') or '').split('@')[0])}
+    active_matcher = UserNameMatcher(active_users)
 
     for u in all_users:
         uid = str(u["user_id"])
@@ -393,12 +384,7 @@ def _build_master_lookups_dict(
             email = str(u.get("email") or "")
             prefix = email.split("@")[0]
 
-            act_id = (
-                active_by_full.get(_clean_str(full_name)) or
-                active_by_prefix.get(_first_word(prefix)) or
-                active_by_first.get(_first_word(fn)) or
-                active_by_first.get(_first_word(full_name))
-            )
+            act_id = active_matcher.resolve(full_name) or active_matcher.resolve(prefix) or active_matcher.resolve(fn)
             if act_id:
                 user_alias_map[uid] = act_id
             else:
@@ -2729,6 +2715,25 @@ async def warm_master_cache():
             logger.info("✅ Master lookup cache pre-warmed successfully.")
     except Exception as e:
         logger.warning(f"Failed to pre-warm master lookup cache on startup: {e}")
+
+
+@router.api_route("/cache/flush", methods=["GET", "POST"])
+async def flush_mobile_cache_dev(request: Request):
+    """
+    Clears all in-memory and Redis caches immediately.
+    """
+    clear_sales_response_cache()
+    from backend.services.cache_service import invalidate_analytics_cache
+    purged = 0
+    try:
+        purged = await invalidate_analytics_cache()
+    except Exception as e:
+        logger.warning(f"Notice purging Redis cache: {e}")
+    return {
+        "status": "ok",
+        "message": "All sales response and master caches purged successfully",
+        "redis_keys_purged": purged
+    }
 
 
 @router.api_route("/cache/clear", methods=["GET", "POST"])

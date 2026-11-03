@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from core.config import settings
 from supabase import create_client
+from utils.name_matcher import UserNameMatcher
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("sync_headcount_master")
@@ -197,16 +198,7 @@ def sync_headcount_master():
         all_u_list = all_u_res.data or []
         act_u_list = [u for u in all_u_list if u.get("is_active")]
 
-        def _clean_str(s):
-            return "".join(c for c in str(s or "").lower() if c.isalnum())
-
-        def _first_word(s):
-            parts = str(s or "").strip().lower().replace(".", " ").replace("_", " ").split()
-            return _clean_str(parts[0]) if parts else ""
-
-        active_by_full = {_clean_str(f"{u.get('first_name','')} {u.get('last_name','')}"): str(u["user_id"]) for u in act_u_list}
-        active_by_first = {_first_word(u.get('first_name','')): str(u["user_id"]) for u in act_u_list if _first_word(u.get('first_name',''))}
-        active_by_prefix = {_first_word(str(u.get('email') or '').split('@')[0]): str(u["user_id"]) for u in act_u_list if _first_word(str(u.get('email') or '').split('@')[0])}
+        matcher = UserNameMatcher(act_u_list)
 
         rebound_count = 0
         for u in all_u_list:
@@ -219,10 +211,9 @@ def sync_headcount_master():
                 prefix = email.split("@")[0]
 
                 act_id = (
-                    active_by_full.get(_clean_str(full_name)) or
-                    active_by_prefix.get(_first_word(prefix)) or
-                    active_by_first.get(_first_word(fn)) or
-                    active_by_first.get(_first_word(full_name))
+                    matcher.resolve(full_name) or
+                    matcher.resolve(prefix) or
+                    matcher.resolve(fn)
                 )
                 if act_id and act_id != uid:
                     try:

@@ -22,6 +22,7 @@ from backend.db.supabase_client import (
 )
 from backend.master_data.service import master_service
 from backend.services.cache_service import invalidate_analytics_cache
+from backend.utils.name_matcher import UserNameMatcher
 
 logger = logging.getLogger(__name__)
 
@@ -1124,12 +1125,14 @@ class ImportPipelineEngine:
             hq_id_to_name: Dict[str, str] = {}
             user_is_active_by_id: Dict[str, bool] = {}
             user_deactivated_date_by_id: Dict[str, str] = {}
+            user_matcher: Optional[UserNameMatcher] = None
 
             if client:
                 try:
                     u_res = client.table("users").select("user_id, first_name, last_name, email, is_active, updated_at").execute()
                     if u_res and u_res.data:
                         all_users = u_res.data
+                        user_matcher = UserNameMatcher(all_users)
                         all_users.sort(key=lambda x: 0 if x.get("is_active") else 1)
                         for u in all_users:
                             uid = str(u["user_id"])
@@ -1229,16 +1232,20 @@ class ImportPipelineEngine:
                 return any(re.sub(r'[\s\-_.]+', '', a).upper() == target_no_sp for a in approved_set)
 
             def _resolve_user_id(name_str: str) -> Optional[str]:
-                if not name_str or name_str.lower() in ("unassigned", "none", "null", "nan"):
+                if not name_str or str(name_str).lower() in ("unassigned", "none", "null", "nan", ""):
                     return None
-                c_name = re.sub(r'\s+', ' ', name_str.strip()).lower()
+                if user_matcher:
+                    matched = user_matcher.resolve(name_str)
+                    if matched:
+                        return matched
+                c_name = re.sub(r'\s+', ' ', str(name_str).strip()).lower()
                 if c_name in user_id_by_name:
                     return user_id_by_name[c_name]
                 first_part = c_name.replace(",", "/").split("/")[0].strip()
                 if first_part in user_id_by_name:
                     return user_id_by_name[first_part]
                 words = first_part.split()
-                if len(words) > 2:
+                if len(words) >= 2:
                     fl = f"{words[0]} {words[-1]}"
                     if fl in user_id_by_name:
                         return user_id_by_name[fl]
@@ -3654,53 +3661,14 @@ class ImportPipelineEngine:
 
         effective_tenant = tenant_id or "a0000000-0000-0000-0000-000000000001"
         try:
-            u_res = client.table("users").select("user_id, first_name, last_name, email").execute()
+            u_res = client.table("users").select("user_id, first_name, last_name, email, is_active").execute()
             if not u_res or not u_res.data:
                 return
 
-            user_id_by_name = {}
-            for u in u_res.data:
-                uid = str(u["user_id"])
-                fn = (u.get("first_name") or "").strip()
-                ln = (u.get("last_name") or "").strip()
-                full_name = f"{fn} {ln}".strip()
-                full_name_clean = re.sub(r'\s+', ' ', full_name).lower()
-                email = str(u.get("email") or "").lower()
-                prefix = email.split("@")[0].strip()
-
-                if full_name_clean and full_name_clean not in user_id_by_name:
-                    user_id_by_name[full_name_clean] = uid
-                ln_parts = ln.split()
-                if len(ln_parts) > 1:
-                    short_name = f"{fn} {ln_parts[-1]}".strip().lower()
-                    if short_name and short_name not in user_id_by_name:
-                        user_id_by_name[short_name] = uid
-                if prefix and prefix not in user_id_by_name:
-                    user_id_by_name[prefix] = uid
-                if fn and fn.lower() not in user_id_by_name:
-                    user_id_by_name[fn.lower()] = uid
+            user_matcher = UserNameMatcher(u_res.data)
 
             def resolve_u(name_val):
-                if not name_val or str(name_val).lower() in ("unassigned", "none", "null", "nan", ""):
-                    return None
-                c_name = re.sub(r'\s+', ' ', str(name_val).strip()).lower()
-                if c_name in user_id_by_name:
-                    return user_id_by_name[c_name]
-                first_p = c_name.replace(",", "/").split("/")[0].strip()
-                if first_p in user_id_by_name:
-                    return user_id_by_name[first_p]
-                words = first_p.split()
-                if len(words) > 2:
-                    fl = f"{words[0]} {words[-1]}"
-                    if fl in user_id_by_name:
-                        return user_id_by_name[fl]
-                    if len(words) > 3:
-                        fl2 = f"{words[0]} {words[1]} {words[-1]}"
-                        if fl2 in user_id_by_name:
-                            return user_id_by_name[fl2]
-                if words and words[0] in user_id_by_name:
-                    return user_id_by_name[words[0]]
-                return None
+                return user_matcher.resolve(name_val)
 
             clean_fn = master_service._clean
             clean_no_space = master_service._clean_no_space
@@ -3812,10 +3780,10 @@ class ImportPipelineEngine:
                     all_u = client.table("users").select("user_id, first_name, last_name, email, is_active, updated_at, tenant_id").execute().data or []
             else:
                 all_u = q.execute().data or []
-            # Sort active users first so active user_ids take precedence in user_lookup
+            # Sort active users first so active user_ids take precedence in user_matcher
             all_u.sort(key=lambda x: 0 if x.get("is_active") else 1)
+            user_matcher = UserNameMatcher(all_u)
 
-            user_lookup = {}
             user_active_map = {}
             user_deact_date_map = {}
             for u in all_u:
@@ -3825,45 +3793,8 @@ class ImportPipelineEngine:
                 up_at = str(u.get("updated_at") or "")
                 user_deact_date_map[uid] = up_at[:10] if (not is_act and len(up_at) >= 10) else None
 
-                fn = (u.get("first_name") or "").strip().lower()
-                ln = (u.get("last_name") or "").strip().lower()
-                full_name = f"{fn} {ln}".strip()
-                email = str(u.get("email") or "").lower()
-                prefix = email.split("@")[0].strip()
-
-                if full_name and full_name not in user_lookup:
-                    user_lookup[full_name] = uid
-                ln_parts = ln.split()
-                if len(ln_parts) > 1:
-                    short_name = f"{fn} {ln_parts[-1]}".strip()
-                    if short_name and short_name not in user_lookup:
-                        user_lookup[short_name] = uid
-                if prefix and prefix not in user_lookup:
-                    user_lookup[prefix] = uid
-                if fn and fn not in user_lookup:
-                    user_lookup[fn] = uid
-
             def _resolve_ase_uid(name_str: str) -> Optional[str]:
-                if not name_str or str(name_str).lower() in ("unassigned", "none", "null", "nan", ""):
-                    return None
-                c_name = re.sub(r'\s+', ' ', str(name_str).strip()).lower()
-                if c_name in user_lookup:
-                    return user_lookup[c_name]
-                first_p = c_name.replace(",", "/").split("/")[0].strip()
-                if first_p in user_lookup:
-                    return user_lookup[first_p]
-                words = first_p.split()
-                if len(words) > 2:
-                    fl = f"{words[0]} {words[-1]}"
-                    if fl in user_lookup:
-                        return user_lookup[fl]
-                    if len(words) > 3:
-                        fl2 = f"{words[0]} {words[1]} {words[-1]}"
-                        if fl2 in user_lookup:
-                            return user_lookup[fl2]
-                if words and words[0] in user_lookup:
-                    return user_lookup[words[0]]
-                return None
+                return user_matcher.resolve(name_str)
 
             clean_fn = master_service._clean
 
