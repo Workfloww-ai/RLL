@@ -112,7 +112,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
     },
   ]);
 
-  const scrollViewRef = useRef<ScrollView>(null);
+  const scrollViewRef = useRef<React.ComponentRef<typeof ScrollView>>(null);
 
   useEffect(() => {
     if (visible) {

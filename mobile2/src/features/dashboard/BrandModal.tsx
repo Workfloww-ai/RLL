@@ -46,7 +46,7 @@ export function BrandModal({
   const [sortBy, setSortBy] = useState<BrandSortOption>('default');
   const [showSortDropdown, setShowSortDropdown] = useState<boolean>(false);
   const [dropdownPos, setDropdownPos] = useState<{ top: number; right: number }>({ top: 250, right: 16 });
-  const sortBtnRef = useRef<View>(null);
+  const sortBtnRef = useRef<React.ComponentRef<typeof View>>(null);
 
   // Reset search and sort when company changes
   useEffect(() => {
