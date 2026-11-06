@@ -176,6 +176,7 @@ def _build_master_lookups_dict(
 ) -> Dict[str, Any]:
     companies_lookup: Dict[str, str] = {}
     companies_category_lookup: Dict[str, str] = {}
+    companies_pinned_lookup: Dict[str, bool] = {}
     for c in (companies_data or []):
         if c.get("company_id") and c.get("company_name"):
             cid = str(c["company_id"])
@@ -185,6 +186,7 @@ def _build_master_lookups_dict(
                 cat = "Others" if cname.strip().lower() in ("others", "other") or cname.strip().lower().startswith("comp_") else "RLL"
             companies_lookup[cid] = cname
             companies_category_lookup[cid] = cat
+            companies_pinned_lookup[cid] = bool(c.get("is_pinned", False))
 
     brands_lookup: Dict[str, Dict[str, Any]] = {}
     for b in (brands_data or []):
@@ -205,11 +207,14 @@ def _build_master_lookups_dict(
             continue
         norm_name = normalize_company_name(c_name)
         c_key = norm_name.lower().replace(" ", "-").replace("/", "-")
+        is_pin = bool(companies_pinned_lookup.get(str(c_id_raw), False)) or is_pinned_company(
+            norm_name, c_key, is_pinned_db=companies_pinned_lookup.get(str(c_id_raw))
+        )
         master_companies[c_key] = {
             "id": c_key,
             "company_id": str(c_id_raw),
             "name": norm_name,
-            "isPinned": is_pinned_company(norm_name, c_key),
+            "isPinned": is_pin,
             "hqLocation": "All Headquarters",
             "data": {
                 "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
@@ -402,6 +407,7 @@ def _build_master_lookups_dict(
     return {
         "companies_lookup": companies_lookup,
         "companies_category_lookup": companies_category_lookup,
+        "companies_pinned_lookup": companies_pinned_lookup,
         "brands_lookup": brands_lookup,
         "hq_lookup": hq_lookup,
         "hq_name_to_id": hq_name_to_id,
@@ -471,7 +477,13 @@ def _fetch_fresh_master_lookups() -> Dict[str, Any]:
     try:
         with ThreadPoolExecutor(max_workers=9) as executor:
             f_lookups = executor.submit(lambda: client.rpc("get_master_lookups_json").execute().data)
-            f_companies = executor.submit(lambda: client.table("companies").select("company_id, company_name, category").execute().data or [])
+            def _safe_fetch_companies():
+                try:
+                    return client.table("companies").select("company_id, company_name, category, is_pinned").execute().data or []
+                except Exception:
+                    return client.table("companies").select("company_id, company_name, category").execute().data or []
+
+            f_companies = executor.submit(_safe_fetch_companies)
             f_roles = executor.submit(lambda: client.table("roles").select("role_id, role_name").execute().data or [])
             f_user_roles = executor.submit(lambda: client.table("user_roles").select("user_id, role_id, is_active").execute().data or [])
             f_users = executor.submit(lambda: client.table("users").select("user_id, first_name, last_name, email, is_active, updated_at").execute().data or [])
@@ -1606,6 +1618,7 @@ async def get_mobile_sales(
 
         companies_lookup = master_cache["companies_lookup"]
         companies_category_lookup = master_cache.get("companies_category_lookup", {})
+        companies_pinned_lookup = master_cache.get("companies_pinned_lookup", {})
         brands_lookup = master_cache["brands_lookup"]
         hq_lookup = master_cache["hq_lookup"]
         master_companies = master_cache["master_companies"]
@@ -1832,11 +1845,14 @@ async def get_mobile_sales(
             continue
         norm_name = normalize_company_name(cname_raw)
         comp_id = norm_name.lower().replace(" ", "-").replace("/", "-")
+        is_pin = bool(companies_pinned_lookup.get(str(cid_raw), False)) or is_pinned_company(
+            norm_name, comp_id, is_pinned_db=companies_pinned_lookup.get(str(cid_raw))
+        )
         if comp_id not in grouped_comp_rows:
             grouped_comp_rows[comp_id] = {
                 "id": comp_id,
                 "name": norm_name,
-                "isPinned": is_pinned_company(norm_name, comp_id),
+                "isPinned": is_pin,
                 "hqLocation": selected_hq or "All Headquarters",
                 "company_ids": [str(cid_raw)],
                 "data": {
@@ -1846,9 +1862,11 @@ async def get_mobile_sales(
                 },
                 "brands_map": {}
             }
-        else:
-            if str(cid_raw) not in grouped_comp_rows[comp_id]["company_ids"]:
-                grouped_comp_rows[comp_id]["company_ids"].append(str(cid_raw))
+        elif is_pin:
+            grouped_comp_rows[comp_id]["isPinned"] = True
+
+        if str(cid_raw) not in grouped_comp_rows[comp_id]["company_ids"]:
+            grouped_comp_rows[comp_id]["company_ids"].append(str(cid_raw))
 
     for row in company_records:
         cid = str(row.get("company_id") or "")
@@ -1858,12 +1876,17 @@ async def get_mobile_sales(
 
         norm_name = normalize_company_name(cname)
         comp_id = norm_name.lower().replace(" ", "-").replace("/", "-")
+        is_pin = bool(row.get("is_pinned")) if "is_pinned" in row else (
+            bool(companies_pinned_lookup.get(cid, False)) or is_pinned_company(
+                norm_name, comp_id, is_pinned_db=companies_pinned_lookup.get(cid)
+            )
+        )
 
         if comp_id not in grouped_comp_rows:
             grouped_comp_rows[comp_id] = {
                 "id": comp_id,
                 "name": norm_name,
-                "isPinned": is_pinned_company(norm_name, comp_id),
+                "isPinned": is_pin,
                 "hqLocation": selected_hq or "All Headquarters",
                 "company_ids": [cid] if cid else [],
                 "data": {
@@ -1874,6 +1897,8 @@ async def get_mobile_sales(
                 "brands_map": {}
             }
         else:
+            if is_pin:
+                grouped_comp_rows[comp_id]["isPinned"] = True
             if cid and cid not in grouped_comp_rows[comp_id]["company_ids"]:
                 grouped_comp_rows[comp_id]["company_ids"].append(cid)
 

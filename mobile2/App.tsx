@@ -622,8 +622,8 @@ function MainApp() {
     });
   }, [searchQuery, apiData, config.pinnedCompanyName, user?.company_name]);
 
-  // Sort companies: Default A-Z view pins RLL (#1) & Diageo (#2) at top.
-  // Explicit sort modes (volume_desc, volume_asc, name_desc) sort ALL companies purely by metric.
+  // Sort companies: Default A-Z view pins DB-pinned companies at the top.
+  // Explicit sort modes (cases_desc, cases_asc, za) sort ALL companies purely by metric.
   const sortedCompanies = useMemo(() => {
     const list = [...filteredCompanies];
 
@@ -660,7 +660,7 @@ function MainApp() {
         return b.name.localeCompare(a.name);
       }
 
-      // Default / 'az': Pinned first (RLL rank 1, Diageo rank 2), then Alphabetical A to Z
+      // Default / 'az': Pinned first (primary tenant rank 1, DB-pinned rank 2), then Alphabetical A to Z
       const rankA = getPinnedRank(a);
       const rankB = getPinnedRank(b);
 

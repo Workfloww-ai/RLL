@@ -23,9 +23,7 @@ export const CompanyCard = React.memo(function CompanyCard({
   const cases = Number(((rawData.cases ?? company.cases ?? 0) * scaleFactor).toFixed(2));
   const bottles = Math.round((rawData.bottles ?? company.bottles ?? 0) * scaleFactor);
 
-  const cId = (company.id || '').toLowerCase();
-  const cName = (company.name || '').toLowerCase();
-  const isPinned = company.isPinned || cId === 'rll' || cName.includes('rajasthan') || cId.includes('diageo') || cName.includes('diageo');
+  const isPinned = Boolean(company.isPinned);
 
   return (
     <TouchableOpacity

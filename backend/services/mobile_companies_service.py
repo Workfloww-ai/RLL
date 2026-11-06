@@ -77,11 +77,17 @@ def _get_master_companies() -> List[Dict[str, Any]]:
     comp_list = []
     if client:
         try:
-            res = client.table("companies").select("company_id, company_name, category").execute()
+            # Rule 3: Explicit columns only
+            res = client.table("companies").select("company_id, company_name, category, is_pinned").execute()
             comp_list = res.data or []
             _MASTER_COMPANIES_CACHE = (now, comp_list)
-        except Exception as e:
-            logger.warning(f"_get_master_companies error: {e}")
+        except Exception:
+            try:
+                res = client.table("companies").select("company_id, company_name, category").execute()
+                comp_list = res.data or []
+                _MASTER_COMPANIES_CACHE = (now, comp_list)
+            except Exception as e:
+                logger.warning(f"_get_master_companies error: {e}")
     return comp_list or _MASTER_COMPANIES_CACHE[1]
 
 
@@ -193,9 +199,14 @@ async def get_companies_summary_async(
     # Pre-fetch master companies to ensure all active companies appear in grid
     mc_data = _get_master_companies()
     grouped_companies = {}
+    cid_to_pinned: Dict[str, bool] = {}
     for mc in mc_data:
         cid = str(mc.get("company_id") or "")
         cname = str(mc.get("company_name") or "").strip()
+        is_pin = bool(mc.get("is_pinned", False)) if "is_pinned" in mc else is_pinned_company(cname, cid)
+        if cid:
+            cid_to_pinned[cid] = is_pin
+
         if not cname or is_others_company(cname, category=mc.get("category")):
             continue
         if company_name and cname.lower() != company_name.strip().lower():
@@ -206,7 +217,7 @@ async def get_companies_summary_async(
             grouped_companies[norm_key] = {
                 "id": norm_key,
                 "name": norm_name,
-                "isPinned": is_pinned_company(norm_name, norm_key),
+                "isPinned": is_pin,
                 "hqLocation": selected_hq or "All Headquarters",
                 "company_ids": [],
                 "daily_cases": 0.0,
@@ -219,6 +230,9 @@ async def get_companies_summary_async(
                 "ytd_bottles": 0.0,
                 "ytd_bl": 0.0,
             }
+        elif is_pin:
+            grouped_companies[norm_key]["isPinned"] = True
+
         if cid and cid not in grouped_companies[norm_key]["company_ids"]:
             grouped_companies[norm_key]["company_ids"].append(cid)
 
@@ -281,12 +295,16 @@ async def get_companies_summary_async(
 
         norm_name = normalize_company_name(cname)
         norm_key = norm_name.lower().replace(" ", "-").replace("/", "-")
+        is_pin = (
+            bool(row.get("is_pinned")) if "is_pinned" in row
+            else cid_to_pinned.get(cid, is_pinned_company(norm_name, norm_key))
+        )
 
         if norm_key not in grouped_companies:
             grouped_companies[norm_key] = {
                 "id": norm_key,
                 "name": norm_name,
-                "isPinned": is_pinned_company(norm_name, norm_key),
+                "isPinned": is_pin,
                 "hqLocation": selected_hq or "All Headquarters",
                 "company_ids": [cid] if cid else [],
                 "daily_cases": 0.0,
@@ -300,6 +318,8 @@ async def get_companies_summary_async(
                 "ytd_bl": 0.0,
             }
         else:
+            if is_pin:
+                grouped_companies[norm_key]["isPinned"] = True
             if cid and cid not in grouped_companies[norm_key]["company_ids"]:
                 grouped_companies[norm_key]["company_ids"].append(cid)
 

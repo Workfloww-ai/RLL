@@ -1,6 +1,7 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Set
 import logging
 import re
+import time
 from backend.db.client import get_supabase
 
 logger = logging.getLogger(__name__)
@@ -80,27 +81,76 @@ def normalize_company_name(cname: str) -> str:
     return cleaned
 
 
-def is_pinned_company(company_name: str, norm_key: str = "") -> bool:
-    """
-    Checks if a company should be pinned to top in lists (RLL & Diageo).
-    """
-    name_upper = (company_name or "").strip().upper()
-    key_lower = (norm_key or "").strip().lower()
+# In-memory cached set of pinned company identifiers from DB (Rule 3: explicit columns only)
+_PINNED_COMPANIES_CACHE: Dict[str, Any] = {"timestamp": 0.0, "pinned_keys": set()}
+_PINNED_CACHE_TTL = 60.0  # 60-second TTL allows DB updates to reflect dynamically
 
-    pinned_keys = {
-        "rll", "rajasthan-liquor-limited", "rajasthan-liquors",
-        "diageo"
-    }
-    pinned_names = {
-        "RLL", "RAJASTHAN LIQUOR LIMITED", "RAJASTHAN LIQUORS",
-        "DIAGEO"
-    }
+
+def get_pinned_company_keys() -> Set[str]:
+    """
+    Fetches pinned company IDs, names, and normalized slugs from public.companies (where is_pinned = true).
+    Cached in-memory for 60 seconds so DB changes reflect without requiring server redeployment.
+    """
+    now = time.time()
+    if (
+        _PINNED_COMPANIES_CACHE["pinned_keys"]
+        and (now - _PINNED_COMPANIES_CACHE["timestamp"]) < _PINNED_CACHE_TTL
+    ):
+        return _PINNED_COMPANIES_CACHE["pinned_keys"]
+
+    client = get_supabase()
+    if not client:
+        return _PINNED_COMPANIES_CACHE["pinned_keys"]
+
+    try:
+        # Rule 3: Explicit columns only (never SELECT *)
+        res = client.table("companies").select("company_id, company_name, is_pinned").eq("is_pinned", True).execute()
+        keys: Set[str] = set()
+        for row in (res.data or []):
+            cid = str(row.get("company_id") or "").strip().lower()
+            cname = str(row.get("company_name") or "").strip()
+            if cid:
+                keys.add(cid)
+            if cname:
+                keys.add(cname.lower())
+                norm = normalize_company_name(cname).lower()
+                keys.add(norm)
+                keys.add(norm.replace(" ", "-").replace("/", "-"))
+                keys.add(cname.lower().replace(" ", "-").replace("/", "-"))
+
+        _PINNED_COMPANIES_CACHE["timestamp"] = now
+        _PINNED_COMPANIES_CACHE["pinned_keys"] = keys
+        return keys
+    except Exception as e:
+        logger.warning(f"get_pinned_company_keys DB lookup error: {e}")
+        return _PINNED_COMPANIES_CACHE["pinned_keys"]
+
+
+def is_pinned_company(
+    company_name: str,
+    norm_key: str = "",
+    is_pinned_db: Optional[bool] = None
+) -> bool:
+    """
+    Checks if a company is pinned. 100% database-driven.
+    - If is_pinned_db is explicitly passed (e.g. from DB row), uses it directly (0ms).
+    - Otherwise, verifies against cached pinned companies from public.companies.
+    """
+    if is_pinned_db is not None:
+        return bool(is_pinned_db)
+
+    pinned_keys = get_pinned_company_keys()
+    if not pinned_keys:
+        return False
+
+    name_lower = (company_name or "").strip().lower()
+    key_lower = (norm_key or "").strip().lower()
+    norm_lower = normalize_company_name(company_name).lower() if company_name else ""
 
     return (
         key_lower in pinned_keys
-        or name_upper in pinned_names
-        or "RAJASTHAN" in name_upper
-        or "DIAGEO" in name_upper
+        or name_lower in pinned_keys
+        or norm_lower in pinned_keys
     )
 
 
