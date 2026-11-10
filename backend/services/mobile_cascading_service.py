@@ -45,6 +45,15 @@ def _set_in_cache(cache_key: str, data: Any):
     _CACHE_STORE[cache_key] = (time.time(), data)
 
 
+def clear_cascading_cache():
+    """Clear in-memory cascading cache store and latest date memoization."""
+    global _CACHE_STORE, _LATEST_DATE_CACHE, _LATEST_DATE_CACHE_TIME
+    _CACHE_STORE.clear()
+    _LATEST_DATE_CACHE = None
+    _LATEST_DATE_CACHE_TIME = 0.0
+    logger.info("🧹 Cleared in-memory mobile cascading cache.")
+
+
 def _get_latest_sale_date(client) -> str:
     """Helper to fetch the latest available sale date dynamically with 5-minute caching."""
     global _LATEST_DATE_CACHE, _LATEST_DATE_CACHE_TIME
@@ -143,7 +152,8 @@ async def get_cascading_groups(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     period: Optional[str] = None,
-    selected_hq: Optional[str] = None
+    selected_hq: Optional[str] = None,
+    include_others: bool = False
 ) -> List[Dict[str, Any]]:
     client = get_supabase_client()
     if not client:
@@ -151,7 +161,7 @@ async def get_cascading_groups(
 
     try:
         target_date, mtd_start, ytd_start = _resolve_multi_period_dates(client, date_from, date_to, period)
-        cache_key = f"groups_json_{target_date}_{period or 'MTD'}_{selected_hq or 'All'}"
+        cache_key = f"v2_groups_json_{target_date}_{period or 'MTD'}_{selected_hq or 'All'}_{'inc1' if include_others else 'inc0'}"
 
         # 1. Fast Redis Lookup
         redis_cached = await get_json_cache(f"rll:cascading:{cache_key}")
@@ -174,11 +184,13 @@ async def get_cascading_groups(
             if cached is not None:
                 return cached
 
+            exclude_company = "" if include_others else "Others"
             raw_groups = await asyncio.to_thread(
                 fetch_cascading_groups_json_db,
                 target_date=target_date,
                 mtd_start=mtd_start,
                 ytd_start=ytd_start,
+                exclude_company=exclude_company,
                 hq_name=selected_hq
             )
             res = _map_period_metrics(raw_groups, period)
@@ -196,7 +208,8 @@ async def get_group_brand_sales(
     date_to: Optional[str] = None,
     period: Optional[str] = None,
     depot_name: Optional[str] = None,
-    selected_hq: Optional[str] = None
+    selected_hq: Optional[str] = None,
+    include_others: bool = False
 ) -> List[Dict[str, Any]]:
     client = get_supabase_client()
     if not client:
@@ -205,7 +218,7 @@ async def get_group_brand_sales(
     hq = selected_hq or depot_name
     try:
         target_date, mtd_start, ytd_start = _resolve_multi_period_dates(client, date_from, date_to, period)
-        cache_key = f"group_brands_json_{group_id}_{target_date}_{period or 'MTD'}_{hq or ''}"
+        cache_key = f"v2_group_brands_json_{group_id}_{target_date}_{period or 'MTD'}_{hq or ''}_{'inc1' if include_others else 'inc0'}"
 
         redis_cached = await get_json_cache(f"rll:cascading:{cache_key}")
         if redis_cached is not None:
@@ -224,13 +237,15 @@ async def get_group_brand_sales(
             if cached is not None:
                 return cached
 
+            exclude_company = "" if include_others else "Others"
             raw_brands = await asyncio.to_thread(
                 fetch_group_brand_sales_json_db,
                 group_id=group_id,
                 target_date=target_date,
                 mtd_start=mtd_start,
                 ytd_start=ytd_start,
-                depot_name=hq
+                depot_name=hq,
+                exclude_company=exclude_company
             )
             res = _map_period_metrics(raw_brands, period)
             _set_in_cache(cache_key, res)
@@ -247,7 +262,8 @@ async def get_group_licensees(
     date_to: Optional[str] = None,
     period: Optional[str] = None,
     depot_name: Optional[str] = None,
-    selected_hq: Optional[str] = None
+    selected_hq: Optional[str] = None,
+    include_others: bool = False
 ) -> List[Dict[str, Any]]:
     client = get_supabase_client()
     if not client:
@@ -256,7 +272,7 @@ async def get_group_licensees(
     hq = selected_hq or depot_name
     try:
         target_date, mtd_start, ytd_start = _resolve_multi_period_dates(client, date_from, date_to, period)
-        cache_key = f"group_lics_json_{group_id}_{target_date}_{period or 'MTD'}_{hq or ''}"
+        cache_key = f"v2_group_lics_json_{group_id}_{target_date}_{period or 'MTD'}_{hq or ''}_{'inc1' if include_others else 'inc0'}"
 
         redis_cached = await get_json_cache(f"rll:cascading:{cache_key}")
         if redis_cached is not None:
@@ -275,13 +291,15 @@ async def get_group_licensees(
             if cached is not None:
                 return cached
 
+            exclude_company = "" if include_others else "Others"
             raw_lics = await asyncio.to_thread(
                 fetch_group_licensees_json_db,
                 group_id=group_id,
                 target_date=target_date,
                 mtd_start=mtd_start,
                 ytd_start=ytd_start,
-                depot_name=hq
+                depot_name=hq,
+                exclude_company=exclude_company
             )
             res = _map_period_metrics(raw_lics, period)
             _set_in_cache(cache_key, res)
@@ -298,7 +316,8 @@ async def get_licensee_brand_sales(
     date_to: Optional[str] = None,
     period: Optional[str] = None,
     depot_name: Optional[str] = None,
-    selected_hq: Optional[str] = None
+    selected_hq: Optional[str] = None,
+    include_others: bool = False
 ) -> List[Dict[str, Any]]:
     client = get_supabase_client()
     if not client:
@@ -307,7 +326,7 @@ async def get_licensee_brand_sales(
     hq = selected_hq or depot_name
     try:
         target_date, mtd_start, ytd_start = _resolve_multi_period_dates(client, date_from, date_to, period)
-        cache_key = f"licensee_brands_json_{licensee_id}_{target_date}_{period or 'MTD'}_{hq or ''}"
+        cache_key = f"v2_licensee_brands_json_{licensee_id}_{target_date}_{period or 'MTD'}_{hq or ''}_{'inc1' if include_others else 'inc0'}"
 
         redis_cached = await get_json_cache(f"rll:cascading:{cache_key}")
         if redis_cached is not None:
@@ -326,13 +345,15 @@ async def get_licensee_brand_sales(
             if cached is not None:
                 return cached
 
+            exclude_company = "" if include_others else "Others"
             raw_brands = await asyncio.to_thread(
                 fetch_licensee_brand_sales_json_db,
                 licensee_id=licensee_id,
                 target_date=target_date,
                 mtd_start=mtd_start,
                 ytd_start=ytd_start,
-                depot_name=hq
+                depot_name=hq,
+                exclude_company=exclude_company
             )
             res = _map_period_metrics(raw_brands, period)
             _set_in_cache(cache_key, res)

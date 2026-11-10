@@ -139,6 +139,8 @@ class ChatbotAnalyticsService:
             pending_context=pending_context,
             explicit_entity_type=payload.entity_type,
             explicit_entity_id=payload.entity_id,
+            posthog_distinct_id=None if user_id == "anonymous" else user_id,
+            posthog_session_id=payload.conversation_id,
         )
 
         intent = parsed["intent"]

@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { UploadCloud, FileText, CheckCircle2, AlertCircle, Database, RefreshCw, Server, X, Check, Clock, Lock } from 'lucide-react';
+import { UploadCloud, FileText, CheckCircle2, AlertCircle, Database, RefreshCw, Server, X, Check, Clock, Lock, Layers } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { FileUploadState } from '../types';
 import { API_BASE_URL } from '../config';
 import { useSystemLock } from '../contexts/SystemLockContext';
 import { useToast } from '../contexts/ToastContext';
+import { trackUserClick } from '../lib/posthog';
 
 interface FileUploadProps {
   title: string;
@@ -24,6 +25,9 @@ function formatLaymanShortError(msg: string): string {
   const valMatch = msg.match(/'(.*?)'/);
   const val = valMatch ? valMatch[1] : '';
 
+  if (msg.includes('SHEET_ALREADY_UPLOADED') || msg.toLowerCase().includes('already present in database') || msg.toLowerCase().includes('sheet already present')) {
+    return 'Sheet already present in database. Sales records for these dates have already been loaded.';
+  }
   if (msg.includes('UNMAPPED_ASE')) {
     return `${rowNum ? rowNum + ': ' : ''}Unregistered ASE Personnel — '${val || 'Unknown'}'`;
   }
@@ -97,6 +101,11 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
   const { showToast } = useToast();
   const [isCancelling, setIsCancelling] = useState(false);
   const [showRollbackConfirm, setShowRollbackConfirm] = useState(false);
+  const [duplicateSheetModal, setDuplicateSheetModal] = useState<{
+    isOpen: boolean;
+    fileName: string;
+    remarks: string;
+  } | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const [uploadState, setUploadState] = useState<FileUploadState>(() => {
@@ -262,7 +271,17 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
           // Background ingestion encountered errors
           if (pollTimerRef.current) clearInterval(pollTimerRef.current);
           if (!uploadEndpoint) localStorage.removeItem('rll_active_sales_upload');
-          startCooldownManually(600, 'Validation issue detected. 10-minute rollback & purge buffer active.');
+
+          const remarksText = batchInfo.remarks || '';
+          const isDuplicateSheet = 
+            remarksText.includes('SHEET_ALREADY_UPLOADED') || 
+            remarksText.toLowerCase().includes('sheet already present') ||
+            remarksText.toLowerCase().includes('already present in database');
+
+          // Skip 10-minute lockout cooldown for duplicate sheet uploads so user can immediately upload another file
+          if (!isDuplicateSheet) {
+            startCooldownManually(600, 'Validation issue detected. 10-minute rollback & purge buffer active.');
+          }
 
           // Fetch error logs for detail if available
           let logs: string[] = [];
@@ -276,6 +295,20 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
             }
           } catch (logErr) {
             console.error('Error fetching logs:', logErr);
+          }
+
+          const hasDuplicateLog = logs.some(l => l.includes('SHEET_ALREADY_UPLOADED') || l.toLowerCase().includes('already present in database'));
+          if (isDuplicateSheet || hasDuplicateLog) {
+            trackUserClick('modal_opened', {
+              modal_name: 'DuplicateSheetModal',
+              file_name: fileName,
+              remarks: remarksText,
+            });
+            setDuplicateSheetModal({
+              isOpen: true,
+              fileName,
+              remarks: remarksText || 'Sales records for the dates in this file have already been uploaded into the database.'
+            });
           }
 
           setUploadState({
@@ -491,7 +524,26 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
             if (onUploadComplete) onUploadComplete(stored.fileName);
             return;
           } else if (isFailed) {
-            startCooldownManually(600, 'Validation issue detected. 10-minute rollback & purge buffer active.');
+            const remarksText = batchInfo.remarks || '';
+            const isDuplicateSheet = 
+              remarksText.includes('SHEET_ALREADY_UPLOADED') || 
+              remarksText.toLowerCase().includes('sheet already present') ||
+              remarksText.toLowerCase().includes('already present in database');
+
+            if (!isDuplicateSheet) {
+              startCooldownManually(600, 'Validation issue detected. 10-minute rollback & purge buffer active.');
+            } else {
+              trackUserClick('modal_opened', {
+                modal_name: 'DuplicateSheetModal',
+                file_name: stored.fileName,
+                remarks: remarksText,
+              });
+              setDuplicateSheetModal({
+                isOpen: true,
+                fileName: stored.fileName,
+                remarks: remarksText || 'Sales records for the dates in this file have already been uploaded into the database.'
+              });
+            }
             setUploadState({
               status: 'error',
               progress: 0,
@@ -1305,6 +1357,101 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
         </button>
       </div>
 
+      {/* Sheet Already Present Modal Popup */}
+      <AnimatePresence>
+        {duplicateSheetModal?.isOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              className="bg-white rounded-3xl border border-amber-200/90 shadow-2xl max-w-lg w-full p-6 text-center relative overflow-hidden"
+            >
+              <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-amber-400 via-orange-500 to-amber-600" />
+
+              <div className="w-16 h-16 bg-amber-500/10 text-amber-600 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-amber-200 shadow-inner">
+                <Layers className="w-8 h-8 text-amber-600" />
+              </div>
+
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-extrabold bg-amber-100 text-amber-800 border border-amber-300 uppercase tracking-wider mb-2">
+                <AlertCircle size={12} /> Duplicate Upload Prevented
+              </span>
+
+              <h3 className="text-lg font-extrabold text-slate-900 mb-1">
+                Sheet Already Present in Database
+              </h3>
+
+              <p className="text-xs text-slate-500 mb-4 font-medium">
+                Sales records for the dates in this sheet have already been uploaded.
+              </p>
+
+              {/* Sheet & Conflict Info Card */}
+              <div className="bg-amber-50/70 border border-amber-200/90 rounded-2xl p-4 text-left mb-4 shadow-2xs">
+                <div className="flex items-start gap-2.5 mb-2.5">
+                  <FileText className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider block">Uploaded File</span>
+                    <span className="text-xs font-bold text-slate-900 truncate block">{duplicateSheetModal.fileName}</span>
+                  </div>
+                </div>
+
+                <div className="border-t border-amber-200/60 pt-2.5">
+                  <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider block mb-1">Database Match Notice</span>
+                  <p className="text-xs text-amber-950 font-medium leading-relaxed">
+                    {duplicateSheetModal.remarks.replace(/^SHEET_ALREADY_UPLOADED:\s*/i, '')}
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-left mb-5">
+                <div className="flex items-center gap-2 text-slate-700 text-xs font-semibold">
+                  <Lock size={13} className="text-slate-500 shrink-0" />
+                  <span>Why was this upload stopped?</span>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                  Uploading the same sheet twice causes duplicate sales figures across all mobile reports and analytics. If you intended to re-upload or update this data, please delete or purge the existing batch first.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    trackUserClick('modal_action_clicked', {
+                      modal_name: 'DuplicateSheetModal',
+                      action: 'understood_and_dismiss',
+                      file_name: duplicateSheetModal.fileName,
+                    });
+                    setDuplicateSheetModal(null);
+                    resetUpload();
+                  }}
+                  className="flex-1 py-2.5 px-4 bg-[#0D3B8E] hover:bg-[#0A2F73] active:scale-[0.98] text-white text-xs font-bold rounded-xl transition-all cursor-pointer shadow-md shadow-[#0D3B8E]/20 flex items-center justify-center gap-1.5"
+                >
+                  <Check size={14} />
+                  Understood & Dismiss
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    trackUserClick('modal_action_clicked', {
+                      modal_name: 'DuplicateSheetModal',
+                      action: 'view_diagnostics',
+                      file_name: duplicateSheetModal.fileName,
+                    });
+                    setDuplicateSheetModal(null);
+                    const el = document.getElementById('unified-error-section');
+                    if (el) el.scrollIntoView({ behavior: 'smooth' });
+                  }}
+                  className="py-2.5 px-4 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+                >
+                  View Diagnostics
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* Rollback Confirmation Modal Popup */}
       <AnimatePresence>
         {showRollbackConfirm && (
@@ -1336,7 +1483,14 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
               <div className="flex items-center gap-3">
                 <button
                   type="button"
-                  onClick={() => setShowRollbackConfirm(false)}
+                  onClick={() => {
+                    trackUserClick('modal_action_clicked', {
+                      modal_name: 'RollbackConfirmModal',
+                      action: 'cancel_keep_uploading',
+                      batch_id: fileState.batchId,
+                    });
+                    setShowRollbackConfirm(false);
+                  }}
                   disabled={isCancelling}
                   className="flex-1 py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl transition-colors cursor-pointer border border-slate-200"
                 >
@@ -1345,6 +1499,11 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                 <button
                   type="button"
                   onClick={async () => {
+                    trackUserClick('modal_action_clicked', {
+                      modal_name: 'RollbackConfirmModal',
+                      action: 'confirm_rollback_and_cancel',
+                      batch_id: fileState.batchId,
+                    });
                     setShowRollbackConfirm(false);
                     await handleCancelUpload();
                   }}

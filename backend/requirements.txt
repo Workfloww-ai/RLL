@@ -15,4 +15,8 @@ httpx>=0.24.0
 pyxlsb>=1.0.10
 redis>=5.0.0
 python-calamine>=0.2.0
+posthog>=7.86.5
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-exporter-otlp
 

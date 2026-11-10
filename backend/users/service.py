@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 import pandas as pd
 from backend.db.client import get_supabase
+from backend.utils.name_matcher import UserNameMatcher
 
 
 logger = logging.getLogger(__name__)
@@ -312,33 +313,14 @@ class UserService:
         except Exception:
             pass
 
-        # 3. Check by full name matching across users in DB
+        # 3. Check by full name matching across users in DB using UserNameMatcher
         try:
-            res = client.table("users").select("user_id, first_name, last_name").execute()
+            res = client.table("users").select("user_id, first_name, last_name, is_active").execute()
             users_db = res.data or []
-            mgr_norm = mgr_clean.lower()
-
-            # 3a. Exact full name match (normalized whitespace)
-            for u in users_db:
-                full_n = f"{u.get('first_name', '')} {u.get('last_name', '')}".strip()
-                full_n_clean = re.sub(r'\s+', ' ', full_n).lower()
-                if full_n_clean == mgr_norm:
-                    return str(u["user_id"])
-
-            # 3b. Partial/Prefix name match (e.g., 'Manish Kumar' -> 'Manish Kumar Tailor')
-            for u in users_db:
-                full_n = f"{u.get('first_name', '')} {u.get('last_name', '')}".strip()
-                full_n_clean = re.sub(r'\s+', ' ', full_n).lower()
-                if mgr_norm in full_n_clean or full_n_clean in mgr_norm:
-                    return str(u["user_id"])
-
-            # 3c. First name or Last name substring match
-            for u in users_db:
-                fn = str(u.get("first_name", "")).strip().lower()
-                ln = str(u.get("last_name", "")).strip().lower()
-                if mgr_norm in fn or mgr_norm in ln:
-                    return str(u["user_id"])
-
+            matcher = UserNameMatcher(users_db)
+            matched_id = matcher.resolve(mgr_clean)
+            if matched_id:
+                return matched_id
         except Exception as e:
             logger.warning(f"Failed to resolve manager '{mgr_clean}': {e}")
 

@@ -7,6 +7,7 @@ import logging
 import time
 from typing import Any, Dict, Optional
 
+from backend.core.config import settings
 from backend.db.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
@@ -191,6 +192,8 @@ def get_tenant_config_service(
         "pinned_company_name": "Rajasthan Liquor Limited",
         "excluded_companies": excluded,
         "chatbot_enabled": chatbot_enabled,
+        "posthog_project_token": getattr(settings, "POSTHOG_PROJECT_TOKEN", ""),
+        "posthog_host": getattr(settings, "POSTHOG_HOST", "") or "https://us.i.posthog.com",
     }
 
     if not client:
@@ -219,6 +222,8 @@ def get_tenant_config_service(
                 "pinned_company_name": str(row.get("pinned_company_name") or ""),
                 "excluded_companies": excluded,
                 "chatbot_enabled": chatbot_enabled,
+                "posthog_project_token": getattr(settings, "POSTHOG_PROJECT_TOKEN", ""),
+                "posthog_host": getattr(settings, "POSTHOG_HOST", "") or "https://us.i.posthog.com",
             }
             _TENANT_CACHE[cache_key] = {"timestamp": now, "data": config_data}
             return config_data
@@ -241,6 +246,8 @@ def get_tenant_config_service(
                 "pinned_company_name": str(res.data.get("pinned_company_name") or "Rajasthan Liquor Limited"),
                 "excluded_companies": excluded,
                 "chatbot_enabled": chatbot_enabled,
+                "posthog_project_token": getattr(settings, "POSTHOG_PROJECT_TOKEN", ""),
+                "posthog_host": getattr(settings, "POSTHOG_HOST", "") or "https://us.i.posthog.com",
             }
             _TENANT_CACHE[cache_key] = {"timestamp": now, "data": config_data}
             return config_data

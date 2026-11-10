@@ -22,6 +22,7 @@ from backend.db.supabase_client import (
 )
 from backend.master_data.service import master_service
 from backend.services.cache_service import invalidate_analytics_cache
+from backend.utils.name_matcher import UserNameMatcher
 
 logger = logging.getLogger(__name__)
 
@@ -684,7 +685,7 @@ class ImportPipelineEngine:
             if client and batch_id:
                 b_str = str(batch_id).strip()
                 try:
-                    client.rpc("purge_batch_data_fast", {"p_batch_id": b_str}).execute()
+                    client.rpc("purge_batch_data_fast", {"p_batch_id": b_str, "p_chunk_size": 10000}).execute()
                     logger.info(f"Batch {batch_id}: Purged raw_sales_upload via purge_batch_data_fast RPC.")
                 except Exception:
                     client.table("raw_sales_upload").delete().eq("batch_id", b_str).execute()
@@ -1124,12 +1125,14 @@ class ImportPipelineEngine:
             hq_id_to_name: Dict[str, str] = {}
             user_is_active_by_id: Dict[str, bool] = {}
             user_deactivated_date_by_id: Dict[str, str] = {}
+            user_matcher: Optional[UserNameMatcher] = None
 
             if client:
                 try:
                     u_res = client.table("users").select("user_id, first_name, last_name, email, is_active, updated_at").execute()
                     if u_res and u_res.data:
                         all_users = u_res.data
+                        user_matcher = UserNameMatcher(all_users)
                         all_users.sort(key=lambda x: 0 if x.get("is_active") else 1)
                         for u in all_users:
                             uid = str(u["user_id"])
@@ -1229,16 +1232,20 @@ class ImportPipelineEngine:
                 return any(re.sub(r'[\s\-_.]+', '', a).upper() == target_no_sp for a in approved_set)
 
             def _resolve_user_id(name_str: str) -> Optional[str]:
-                if not name_str or name_str.lower() in ("unassigned", "none", "null", "nan"):
+                if not name_str or str(name_str).lower() in ("unassigned", "none", "null", "nan", ""):
                     return None
-                c_name = re.sub(r'\s+', ' ', name_str.strip()).lower()
+                if user_matcher:
+                    matched = user_matcher.resolve(name_str)
+                    if matched:
+                        return matched
+                c_name = re.sub(r'\s+', ' ', str(name_str).strip()).lower()
                 if c_name in user_id_by_name:
                     return user_id_by_name[c_name]
                 first_part = c_name.replace(",", "/").split("/")[0].strip()
                 if first_part in user_id_by_name:
                     return user_id_by_name[first_part]
                 words = first_part.split()
-                if len(words) > 2:
+                if len(words) >= 2:
                     fl = f"{words[0]} {words[-1]}"
                     if fl in user_id_by_name:
                         return user_id_by_name[fl]
@@ -1261,6 +1268,51 @@ class ImportPipelineEngine:
             sheet_ase_hqs: Dict[str, Dict[str, List[int]]] = {}
             sheet_tsm_hqs: Dict[str, Dict[str, List[int]]] = {}
             sheet_ase_managers: Dict[str, Dict[str, List[int]]] = {}
+
+            # Query DB for already loaded sales dates (Duplicate Sheet / Overlapping Upload Prevention)
+            # Exactly like checking ASM/TSM mappings against DB, verify if any date from this sheet already exists in DB
+            unique_sheet_dates = sorted(list({
+                str(d).strip() for d in map_date 
+                if d and str(d).strip() and str(d).strip() not in ("nan", "none", "null", "")
+            }))
+            existing_dates_in_db: Dict[str, Dict[str, Any]] = {}
+            prev_batch_info: Dict[str, Any] = {}
+            if client and unique_sheet_dates:
+                try:
+                    for i in range(0, len(unique_sheet_dates), 50):
+                        date_chunk = unique_sheet_dates[i:i+50]
+                        q_sf = client.table("sales_fact").select("sale_date, batch_id").in_("sale_date", date_chunk)
+                        if tenant_id:
+                            q_sf = q_sf.eq("tenant_id", str(tenant_id))
+                        if batch_id:
+                            q_sf = q_sf.neq("batch_id", str(batch_id))
+                        sf_res = q_sf.limit(50).execute()
+                        for r in (sf_res.data or []):
+                            dt = str(r.get("sale_date") or "").strip()
+                            b_id = str(r.get("batch_id") or "").strip()
+                            if dt and dt not in existing_dates_in_db:
+                                existing_dates_in_db[dt] = {"batch_id": b_id}
+
+                    # Secondary verification against sales_daily_summary if facts were pre-aggregated
+                    if not existing_dates_in_db:
+                        for i in range(0, len(unique_sheet_dates), 50):
+                            date_chunk = unique_sheet_dates[i:i+50]
+                            q_sds = client.table("sales_daily_summary").select("sale_date").in_("sale_date", date_chunk)
+                            if tenant_id:
+                                q_sds = q_sds.eq("tenant_id", str(tenant_id))
+                            sds_res = q_sds.limit(50).execute()
+                            for r in (sds_res.data or []):
+                                dt = str(r.get("sale_date") or "").strip()
+                                if dt and dt not in existing_dates_in_db:
+                                    existing_dates_in_db[dt] = {"batch_id": None}
+
+                    p_bid = next((v["batch_id"] for v in existing_dates_in_db.values() if v.get("batch_id")), None)
+                    if p_bid:
+                        pb_res = client.table("upload_batches").select("source_file, created_at, status").eq("batch_id", p_bid).limit(1).execute()
+                        if pb_res and pb_res.data:
+                            prev_batch_info = pb_res.data[0]
+                except Exception as e_date_chk:
+                    logger.warning(f"Batch {batch_id}: Notice querying existing sales dates from DB: {e_date_chk}")
 
             val_progress_step = max(2000, total_rows // 4)
             for idx in range(total_rows):
@@ -1409,6 +1461,35 @@ class ImportPipelineEngine:
                         "raw_id": r_id,
                         "error_message": f"[Row #{row_num}] DATE_ERROR: Invalid or unparseable sale date '{raw_date}'. Expected valid date format.",
                         "resolution": "Format the sale date column as a valid date in the Excel file."
+                    })
+
+                # A0-b. Duplicate Sheet Check: Check if sales data for this date is already present in DB
+                if parsed_dt_val and parsed_dt_val in existing_dates_in_db:
+                    prev_fname = prev_batch_info.get("source_file") or "previous upload"
+                    prev_created = str(prev_batch_info.get("created_at") or "")[:10]
+                    prev_time_str = f" on {prev_created}" if prev_created else ""
+                    validation_error_records.append({
+                        "upload_batch_id": str(batch_id),
+                        "batch_id": str(batch_id),
+                        "filename": filename,
+                        "excel_row_number": row_num,
+                        "error_code": "SHEET_ALREADY_UPLOADED",
+                        "severity": "CRITICAL",
+                        "field_name": "Date",
+                        "column_name": "sale_date_raw",
+                        "actual_value": str(raw_date),
+                        "expected_value": "New / Unloaded Date (No duplicate dates allowed)",
+                        "ase": raw_ase,
+                        "asm_tsm": raw_asm,
+                        "approved_asm_tsm": approved_tsm_name_curr,
+                        "hq": raw_hq,
+                        "depot": raw_depot,
+                        "licensee": raw_licensee,
+                        "company": raw_company,
+                        "brand": raw_brand,
+                        "raw_id": r_id,
+                        "error_message": f"[Row #{row_num}] SHEET_ALREADY_UPLOADED: Sales data for date '{parsed_dt_val}' is already present in the database (previously loaded from '{prev_fname}'{prev_time_str}). Uploading this sheet again would cause duplicate sales figures.",
+                        "resolution": "This sheet or its date range is already present in the database. Please purge previous upload before re-uploading."
                     })
 
                 # Inactive User Sales Prohibition Check (User Requirement A4):
@@ -1937,9 +2018,41 @@ class ImportPipelineEngine:
                 except Exception as e_err_log:
                     logger.warning(f"Batch {batch_id}: Exception logging detailed validation errors: {e_err_log}")
 
-                first_err = validation_error_records[0]["error_message"]
-                failure_reason = f"Validation issue detected: {failed_rows} record(s) need attention. First issue: {first_err}"
+                has_duplicate_sheet = any(r.get("error_code") == "SHEET_ALREADY_UPLOADED" for r in validation_error_records)
+                if has_duplicate_sheet:
+                    prev_fname = prev_batch_info.get("source_file") or "previous upload"
+                    conflicting_dates = sorted(list(existing_dates_in_db.keys()))
+                    sample_dts = ", ".join(conflicting_dates[:5])
+                    if len(conflicting_dates) > 5:
+                        sample_dts += f" (+{len(conflicting_dates) - 5} more dates)"
+                    prev_time_str = f" on {str(prev_batch_info.get('created_at') or '')[:10]}" if prev_batch_info.get("created_at") else ""
+                    failure_reason = (
+                        f"SHEET_ALREADY_UPLOADED: Sheet already present in database! "
+                        f"Sales records for {len(conflicting_dates)} date(s) ({sample_dts}) "
+                        f"already exist in the database from previous upload '{prev_fname}'{prev_time_str}. "
+                        f"Upload rejected to prevent duplicate sales."
+                    )
+                else:
+                    first_err = validation_error_records[0]["error_message"]
+                    failure_reason = f"Validation issue detected: {failed_rows} record(s) need attention. First issue: {first_err}"
                 logger.warning(f"Batch {batch_id}: {failure_reason}")
+
+                # Track upload validation rejection in PostHog
+                try:
+                    from backend.core.posthog import log_user_activity
+                    log_user_activity(
+                        distinct_id=str(user_id) if user_id else "system_uploader",
+                        action="excel_upload_rejected",
+                        properties={
+                            "batch_id": str(batch_id),
+                            "filename": filename,
+                            "error_type": "DUPLICATE_SHEET" if has_duplicate_sheet else "VALIDATION_ERROR",
+                            "failed_rows": failed_rows,
+                            "total_rows": total_rows,
+                        }
+                    )
+                except Exception as e_ph:
+                    logger.warning(f"PostHog validation rejection notice: {e_ph}")
 
                 # Rollback partial production writes (if any)
                 self._cleanup_failed_batch(batch_id)
@@ -1980,19 +2093,22 @@ class ImportPipelineEngine:
                 except Exception as e_purge:
                     logger.warning(f"Notice purging raw_sales_upload for batch {batch_id}: {e_purge}")
 
-                # Enforce 10-minute cooldown on validation error as requested:
-                # "agr validation error ajaye toh 10 minutes ka timer ajaye uske baad upload hoyegi dusri sheet. yeh purge wale task fir un 10 minute mai hojaye."
-                try:
-                    from backend.core.system_lock import record_upload_cooldown
-                    source_fname = (local_batch.get("source_file") if local_batch else None) or filename or "Sales Data File"
-                    record_upload_cooldown(
-                        upload_type="validation_error",
-                        filename=source_fname,
-                        cooldown_seconds=600,
-                        reason=f"Validation issue detected in '{source_fname}'. 10-minute rollback & purge buffer active."
-                    )
-                except Exception as e_cd:
-                    logger.warning(f"Notice setting validation error cooldown: {e_cd}")
+                # Enforce 10-minute cooldown on data corruption/mapping validation errors,
+                # but SKIP cooldown for duplicate sheet uploads so the user can immediately select the right file!
+                if has_duplicate_sheet:
+                    logger.info(f"Batch {batch_id}: Duplicate sheet detected. Skipping 10-minute cooldown lock so user can immediately select the correct sheet.")
+                else:
+                    try:
+                        from backend.core.system_lock import record_upload_cooldown
+                        source_fname = (local_batch.get("source_file") if local_batch else None) or filename or "Sales Data File"
+                        record_upload_cooldown(
+                            upload_type="validation_error",
+                            filename=source_fname,
+                            cooldown_seconds=600,
+                            reason=f"Validation issue detected in '{source_fname}'. 10-minute rollback & purge buffer active."
+                        )
+                    except Exception as e_cd:
+                        logger.warning(f"Notice setting validation error cooldown: {e_cd}")
 
                 self.release_pipeline_lock(batch_id)
                 return local_batch
@@ -2035,7 +2151,7 @@ class ImportPipelineEngine:
             # Populate user_sales_fact (including Company = Others)
             self._populate_user_sales_fact(
                 batch_id, s_date, s_company, s_ase, s_brand, s_cases, s_btl, s_bl,
-                company_cache, brand_cache, tenant_id=tenant_id
+                company_cache, brand_cache, tenant_id=tenant_id, s_asm=s_asm
             )
 
             # Auto-populate user_depot and user_headquarters_mapping from validated upload data
@@ -2065,22 +2181,30 @@ class ImportPipelineEngine:
                 if not agg_res.get("success"):
                     logger.warning(f"Incremental summary aggregation encountered minor issues for batch {batch_id}.")
 
-                # Run validation check on primary affected date
+                # Update status to loaded as soon as incremental aggregation finishes
+                processing_time = round(time.time() - start_time, 2)
+                if local_batch:
+                    local_batch["processing_time_seconds"] = processing_time
+
+                final_status = "loaded" if imported_rows > 0 else "failed"
+                self._update_batch(
+                    batch_id=batch_id,
+                    row_count=total_rows,
+                    status=final_status,
+
+                )
+                self._update_batch_progress(batch_id, remarks="Final verification: Checking dashboard figures...")
+
+                # Run fast non-blocking validation check on primary affected date
                 if distinct_dates:
-                    self._update_batch(batch_id=batch_id, status="validating")
-                    self._update_batch_progress(batch_id, remarks="Final verification: Checking dashboard figures...")
-                    val_res = analytics_validator.validate_date_accuracy(target_date=str(distinct_dates[0]).split("T")[0])
-                    if val_res.get("is_accurate"):
-                        logger.info(f"Batch {batch_id}: Incremental analytics 100% verified accurate against legacy RPC.")
-                    else:
-                        logger.warning(f"Batch {batch_id}: Accuracy validation notice: {val_res.get('mismatches')}")
-
-            processing_time = round(time.time() - start_time, 2)
-            if local_batch:
-                local_batch["processing_time_seconds"] = processing_time
-
-            final_status = "loaded" if imported_rows > 0 else "failed"
-            self._update_batch(batch_id=batch_id, row_count=total_rows, status=final_status)
+                    try:
+                        val_res = analytics_validator.validate_date_accuracy(target_date=str(distinct_dates[0]).split("T")[0])
+                        if val_res.get("is_accurate"):
+                            logger.info(f"Batch {batch_id}: Incremental analytics 100% verified accurate against legacy RPC.")
+                        else:
+                            logger.warning(f"Batch {batch_id}: Accuracy validation notice: {val_res.get('mismatches')}")
+                    except Exception as e_val:
+                        logger.warning(f"Batch {batch_id}: Non-fatal accuracy validation notice: {e_val}")
 
             # Phase 1 Automatic Post-Ingestion Cleanup: purge raw_sales_upload in non-blocking background thread
             if final_status == "loaded":
@@ -2165,6 +2289,24 @@ class ImportPipelineEngine:
                     record_upload_completion("sales_upload", filename)
                 except Exception as e_cd:
                     logger.warning(f"Failed to record upload completion cooldown: {e_cd}")
+
+            # Track completed upload in PostHog (1 single event per file to conserve quota)
+            try:
+                from backend.core.posthog import log_user_activity
+                log_user_activity(
+                    distinct_id=str(user_id) if user_id else "system_uploader",
+                    action="excel_upload_completed",
+                    properties={
+                        "batch_id": str(batch_id),
+                        "filename": filename,
+                        "imported_rows": imported_rows,
+                        "total_rows": total_rows,
+                        "failed_rows": failed_rows,
+                        "duration_seconds": round(total_elapsed, 2),
+                    }
+                )
+            except Exception as e_ph:
+                logger.warning(f"PostHog upload completion log notice: {e_ph}")
 
             return local_batch
 
@@ -2271,6 +2413,22 @@ class ImportPipelineEngine:
                 )
             except Exception:
                 pass
+
+            # Track unexpected upload failure in PostHog
+            try:
+                from backend.core.posthog import log_user_activity
+                log_user_activity(
+                    distinct_id=str(user_id) if user_id else "system_uploader",
+                    action="excel_upload_failed",
+                    properties={
+                        "batch_id": str(batch_id),
+                        "filename": filename,
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc)[:250],
+                    }
+                )
+            except Exception as e_ph:
+                logger.warning(f"PostHog upload failure notice: {e_ph}")
 
             try:
                 from backend.core.system_lock import invalidate_system_lock_cache, clear_roster_upload_active, record_upload_cooldown
@@ -3080,6 +3238,13 @@ class ImportPipelineEngine:
         b_str = str(batch_id).strip()
         logger.warning(f"Atomic Rollback: Purging all partial records to 0 for upload batch {b_str}...")
 
+        # Fast chunked RPC purge first to avoid HTTP statement timeouts on massive tables
+        try:
+            from backend.db.supabase_client import purge_batch_data_fast_rpc
+            purge_batch_data_fast_rpc(b_str)
+        except Exception as e_rpc:
+            logger.warning(f"Fast RPC purge notice in _cleanup_failed_batch: {e_rpc}")
+
         try:
             client.table("sales_fact").delete().eq("batch_id", b_str).execute()
         except Exception as exc:
@@ -3431,10 +3596,11 @@ class ImportPipelineEngine:
 
     def _update_batch(
         self,
-        batch_id: int,
+        batch_id: Any,
         row_count: Optional[int] = None,
         status: Optional[str] = None,
         remarks: Optional[str] = None,
+        **kwargs
     ):
         local_batch = upload_batches_db.get(batch_id)
         if local_batch:
@@ -3654,53 +3820,14 @@ class ImportPipelineEngine:
 
         effective_tenant = tenant_id or "a0000000-0000-0000-0000-000000000001"
         try:
-            u_res = client.table("users").select("user_id, first_name, last_name, email").execute()
+            u_res = client.table("users").select("user_id, first_name, last_name, email, is_active").execute()
             if not u_res or not u_res.data:
                 return
 
-            user_id_by_name = {}
-            for u in u_res.data:
-                uid = str(u["user_id"])
-                fn = (u.get("first_name") or "").strip()
-                ln = (u.get("last_name") or "").strip()
-                full_name = f"{fn} {ln}".strip()
-                full_name_clean = re.sub(r'\s+', ' ', full_name).lower()
-                email = str(u.get("email") or "").lower()
-                prefix = email.split("@")[0].strip()
-
-                if full_name_clean and full_name_clean not in user_id_by_name:
-                    user_id_by_name[full_name_clean] = uid
-                ln_parts = ln.split()
-                if len(ln_parts) > 1:
-                    short_name = f"{fn} {ln_parts[-1]}".strip().lower()
-                    if short_name and short_name not in user_id_by_name:
-                        user_id_by_name[short_name] = uid
-                if prefix and prefix not in user_id_by_name:
-                    user_id_by_name[prefix] = uid
-                if fn and fn.lower() not in user_id_by_name:
-                    user_id_by_name[fn.lower()] = uid
+            user_matcher = UserNameMatcher(u_res.data)
 
             def resolve_u(name_val):
-                if not name_val or str(name_val).lower() in ("unassigned", "none", "null", "nan", ""):
-                    return None
-                c_name = re.sub(r'\s+', ' ', str(name_val).strip()).lower()
-                if c_name in user_id_by_name:
-                    return user_id_by_name[c_name]
-                first_p = c_name.replace(",", "/").split("/")[0].strip()
-                if first_p in user_id_by_name:
-                    return user_id_by_name[first_p]
-                words = first_p.split()
-                if len(words) > 2:
-                    fl = f"{words[0]} {words[-1]}"
-                    if fl in user_id_by_name:
-                        return user_id_by_name[fl]
-                    if len(words) > 3:
-                        fl2 = f"{words[0]} {words[1]} {words[-1]}"
-                        if fl2 in user_id_by_name:
-                            return user_id_by_name[fl2]
-                if words and words[0] in user_id_by_name:
-                    return user_id_by_name[words[0]]
-                return None
+                return user_matcher.resolve(name_val)
 
             clean_fn = master_service._clean
             clean_no_space = master_service._clean_no_space
@@ -3717,6 +3844,18 @@ class ImportPipelineEngine:
 
             assigned_uhq_users = set(existing_uhq_users)
             user_hq_rows = []
+
+            # Track existing ASE -> TSM mappings to auto-heal missing reporting hierarchy
+            existing_ase_tsm = set()
+            try:
+                ex_atm = client.table("ase_tsm_mapping").select("ase_user_id, tsm_user_id").limit(10000).execute()
+                if ex_atm and ex_atm.data:
+                    existing_ase_tsm = {(str(r["ase_user_id"]), str(r["tsm_user_id"])) for r in ex_atm.data if r.get("ase_user_id") and r.get("tsm_user_id")}
+            except Exception as e_ex_atm:
+                logger.warning(f"Notice querying existing ase_tsm_mapping: {e_ex_atm}")
+
+            seen_ase_tsm_pairs = set()
+            new_atm_rows = []
 
             for ase_raw, asm_raw, depot_raw, hq_raw in zip(s_ase, s_asm, s_depot, s_hq):
                 c_dep = clean_fn(depot_raw)
@@ -3754,6 +3893,17 @@ class ImportPipelineEngine:
                             "is_active": True
                         })
 
+                # Process ASE-to-TSM Reporting Hierarchy
+                if ase_uid and asm_uid and ase_uid != asm_uid:
+                    pair = (ase_uid, asm_uid)
+                    if pair not in existing_ase_tsm and pair not in seen_ase_tsm_pairs:
+                        seen_ase_tsm_pairs.add(pair)
+                        new_atm_rows.append({
+                            "ase_user_id": ase_uid,
+                            "tsm_user_id": asm_uid,
+                            "is_active": True
+                        })
+
             # Upsert into user_depot in chunks of 100
             if user_depot_rows:
                 for i in range(0, len(user_depot_rows), 100):
@@ -3776,6 +3926,16 @@ class ImportPipelineEngine:
                         logger.warning(f"Error auto-syncing user_headquarters_mapping batch: {e_uhq_upsert}")
                 logger.info(f"Auto-synced {len(user_hq_rows)} user-headquarters assignments into user_headquarters_mapping.")
 
+            # Auto-sync newly discovered reporting hierarchy into ase_tsm_mapping
+            if new_atm_rows:
+                for i in range(0, len(new_atm_rows), 50):
+                    batch = new_atm_rows[i:i+50]
+                    try:
+                        client.table("ase_tsm_mapping").insert(batch).execute()
+                    except Exception as e_atm_ins:
+                        logger.warning(f"Error auto-syncing ase_tsm_mapping batch: {e_atm_ins}")
+                logger.info(f"Auto-synced {len(new_atm_rows)} new ASE-to-TSM hierarchy mappings into ase_tsm_mapping.")
+
         except Exception as e_sync:
             logger.warning(f"Notice in _sync_user_territory_mappings: {e_sync}")
 
@@ -3791,7 +3951,8 @@ class ImportPipelineEngine:
         s_bl: pd.Series,
         company_cache: Dict[str, str],
         brand_cache: Dict[str, str],
-        tenant_id: Optional[str] = None
+        tenant_id: Optional[str] = None,
+        s_asm: Optional[pd.Series] = None
     ):
         """
         Inserts normalized non-Others sales facts into public.user_sales_fact at the ASE/User level.
@@ -3812,10 +3973,10 @@ class ImportPipelineEngine:
                     all_u = client.table("users").select("user_id, first_name, last_name, email, is_active, updated_at, tenant_id").execute().data or []
             else:
                 all_u = q.execute().data or []
-            # Sort active users first so active user_ids take precedence in user_lookup
+            # Sort active users first so active user_ids take precedence in user_matcher
             all_u.sort(key=lambda x: 0 if x.get("is_active") else 1)
+            user_matcher = UserNameMatcher(all_u)
 
-            user_lookup = {}
             user_active_map = {}
             user_deact_date_map = {}
             for u in all_u:
@@ -3825,62 +3986,39 @@ class ImportPipelineEngine:
                 up_at = str(u.get("updated_at") or "")
                 user_deact_date_map[uid] = up_at[:10] if (not is_act and len(up_at) >= 10) else None
 
-                fn = (u.get("first_name") or "").strip().lower()
-                ln = (u.get("last_name") or "").strip().lower()
-                full_name = f"{fn} {ln}".strip()
-                email = str(u.get("email") or "").lower()
-                prefix = email.split("@")[0].strip()
-
-                if full_name and full_name not in user_lookup:
-                    user_lookup[full_name] = uid
-                ln_parts = ln.split()
-                if len(ln_parts) > 1:
-                    short_name = f"{fn} {ln_parts[-1]}".strip()
-                    if short_name and short_name not in user_lookup:
-                        user_lookup[short_name] = uid
-                if prefix and prefix not in user_lookup:
-                    user_lookup[prefix] = uid
-                if fn and fn not in user_lookup:
-                    user_lookup[fn] = uid
-
             def _resolve_ase_uid(name_str: str) -> Optional[str]:
-                if not name_str or str(name_str).lower() in ("unassigned", "none", "null", "nan", ""):
-                    return None
-                c_name = re.sub(r'\s+', ' ', str(name_str).strip()).lower()
-                if c_name in user_lookup:
-                    return user_lookup[c_name]
-                first_p = c_name.replace(",", "/").split("/")[0].strip()
-                if first_p in user_lookup:
-                    return user_lookup[first_p]
-                words = first_p.split()
-                if len(words) > 2:
-                    fl = f"{words[0]} {words[-1]}"
-                    if fl in user_lookup:
-                        return user_lookup[fl]
-                    if len(words) > 3:
-                        fl2 = f"{words[0]} {words[1]} {words[-1]}"
-                        if fl2 in user_lookup:
-                            return user_lookup[fl2]
-                if words and words[0] in user_lookup:
-                    return user_lookup[words[0]]
-                return None
+                return user_matcher.resolve(name_str)
 
             clean_fn = master_service._clean
 
             fact_records = []
-            for dt, comp_raw, ase_raw, brand_raw, cases, btl, bl in zip(
-                s_date, s_company, s_ase, s_brand, s_cases, s_btl, s_bl
+            unresolved_ases: Dict[str, float] = {}
+            unresolved_brands: Dict[str, float] = {}
+
+            asm_series = s_asm if (s_asm is not None and len(s_asm) == len(s_date)) else [None] * len(s_date)
+
+            for dt, comp_raw, ase_raw, asm_raw, brand_raw, cases, btl, bl in zip(
+                s_date, s_company, s_ase, asm_series, s_brand, s_cases, s_btl, s_bl
             ):
                 comp_clean = str(comp_raw or "").strip()
                 if not comp_clean:
                     continue
 
                 ase_clean = str(ase_raw or "").strip()
-                if not ase_clean or ase_clean.lower() in ("unassigned", "none", "null"):
-                    continue
+                asm_clean = str(asm_raw or "").strip() if asm_raw is not None else ""
 
-                user_id = _resolve_ase_uid(ase_clean)
+                # Try resolving ASE first
+                user_id = None
+                if ase_clean and ase_clean.lower() not in ("unassigned", "none", "null", "nan"):
+                    user_id = _resolve_ase_uid(ase_clean)
+
+                # Fallback to ASM/TSM if ASE was unassigned, vacant, or unresolved
+                if not user_id and asm_clean and asm_clean.lower() not in ("unassigned", "none", "null", "nan"):
+                    user_id = _resolve_ase_uid(asm_clean)
+
                 if not user_id:
+                    if ase_clean and ase_clean.lower() not in ("unassigned", "none", "null", "nan"):
+                        unresolved_ases[ase_clean] = round(unresolved_ases.get(ase_clean, 0.0) + float(cases or 0.0), 2)
                     continue
 
                 sale_dt_str = self._parse_date(dt)
@@ -3899,6 +4037,8 @@ class ImportPipelineEngine:
                 company_id = company_cache.get(master_service._clean_company(comp_clean)) or company_cache.get(clean_fn(comp_clean))
                 brand_id = brand_cache.get(clean_fn(brand_raw))
                 if not company_id or not brand_id:
+                    if not brand_id and brand_raw:
+                        unresolved_brands[str(brand_raw).strip()] = round(unresolved_brands.get(str(brand_raw).strip(), 0.0) + float(cases or 0.0), 2)
                     continue
 
                 fact_row = {
@@ -3914,6 +4054,17 @@ class ImportPipelineEngine:
                 if tenant_id:
                     fact_row["tenant_id"] = tenant_id
                 fact_records.append(fact_row)
+
+            if unresolved_ases:
+                logger.error(
+                    f"⚠️ [USER_SALES_FACT] Batch {batch_id}: Found {len(unresolved_ases)} unresolved ASE names "
+                    f"skipping total {sum(unresolved_ases.values()):.2f} cases: {unresolved_ases}"
+                )
+            if unresolved_brands:
+                logger.warning(
+                    f"⚠️ [USER_SALES_FACT] Batch {batch_id}: Found {len(unresolved_brands)} unresolved brands "
+                    f"skipping total {sum(unresolved_brands.values()):.2f} cases: {dict(list(unresolved_brands.items())[:20])}"
+                )
 
             if fact_records and client:
                 # Phase 3 Batch-Scoped Replacement: Purge existing user sales facts for this specific batch_id once before insert

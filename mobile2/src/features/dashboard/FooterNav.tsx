@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ViewMode } from '../../types';
 import {
   BuildingIcon,
@@ -15,6 +16,14 @@ interface FooterNavProps {
 }
 
 export function FooterNav({ viewMode, setViewMode, onLayout }: FooterNavProps) {
+  const insets = useSafeAreaInsets();
+
+  // Dynamically calculate bottom padding according to device safe area:
+  // - iOS devices with Home Indicator (modern iPhones): insets.bottom is 34-37pt, keeping buttons comfortably above the bar.
+  // - iOS devices with Home Button (iPhone SE, older models): insets.bottom is 0, using standard 12pt padding.
+  // - Android (gesture nav vs 3-button nav): adapts dynamically to gesture insets or defaults to 10pt.
+  const dynamicBottomPadding = insets.bottom > 0 ? insets.bottom : (Platform.OS === 'ios' ? 12 : 10);
+
   const tabs: { key: ViewMode; label: string; Icon: React.ComponentType<{ color: string; size: number }> }[] = [
     { key: 'companies', label: 'Companies', Icon: BuildingIcon },
     { key: 'depots', label: 'Groups', Icon: StoreIcon },
@@ -23,7 +32,13 @@ export function FooterNav({ viewMode, setViewMode, onLayout }: FooterNavProps) {
   ];
 
   return (
-    <View style={styles.container} onLayout={onLayout}>
+    <View
+      style={[
+        styles.container,
+        { paddingBottom: dynamicBottomPadding },
+      ]}
+      onLayout={onLayout}
+    >
       {tabs.map(({ key, label, Icon }) => {
         const isActive = viewMode === key;
         return (
@@ -61,7 +76,6 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: '#1E293B',
     paddingTop: 8,
-    paddingBottom: Platform.OS === 'ios' ? 24 : 10,
     paddingHorizontal: 12,
     flexDirection: 'row',
     justifyContent: 'space-around',

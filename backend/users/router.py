@@ -6,6 +6,7 @@ from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, Header,
 from backend.users.service import user_service
 from backend.db.redis_client import safe_get, safe_set, safe_delete, safe_delete_pattern
 from backend.core.security import RoleChecker, get_current_user
+from backend.core.posthog import capture_posthog_event
 from backend.core.route import EncryptedRoute
 from backend.core.system_lock import check_system_lock_or_raise, roster_upload_lock, check_upload_cooldown_or_raise, record_upload_completion
 
@@ -94,6 +95,7 @@ async def create_user(payload: Dict[str, Any], current_user: dict = Depends(get_
         acting_tenant_id = current_user.get("tenant_id") if current_user else None
         res = user_service.create_user(payload, created_by=acting_user_id)
         await refresh_users_list_cache(acting_tenant_id)
+        capture_posthog_event("user_created", {"creation_source": "admin_portal"})
         return res
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
@@ -184,6 +186,8 @@ async def upload_roster(file: UploadFile = File(...), current_user: dict = Depen
             res = user_service.process_excel_roster(contents, file.filename, uploaded_by=acting_user_id, tenant_id=acting_tenant_id)
             await refresh_users_list_cache(acting_tenant_id)
             record_upload_completion("roster_upload", file.filename)
+            file_extension = file.filename.rsplit(".", 1)[-1].lower()
+            capture_posthog_event("roster_uploaded", {"file_extension": file_extension})
             return res
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -257,6 +261,10 @@ async def update_user(user_id: str, payload: Dict[str, Any], current_user: dict 
         logger.info(f"Revocation flag cleared for reactivated user: {user_id}")
 
     await refresh_users_list_cache(acting_tenant_id)
+    capture_posthog_event(
+        "user_updated",
+        {"account_status_changed": is_active_val is not None},
+    )
     return res
 
 

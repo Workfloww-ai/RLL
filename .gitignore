@@ -34,6 +34,12 @@ coverage/
 # Logs
 *.log
 
+# Caches & Tooling
+.claude/
+.posthog-wizard-cache/
+.gemini/
+backend/.cooldown_state.json
+
 
 backend/.venv_fresh/
 backend/venv_sys/
@@ -77,3 +83,6 @@ mobile2/__mocks__/*
 mobile2/e2e/__mocks__/*
 mobile2/__tests__/TsmView.test.tsx
 backend/tests/test_system_bottlenecks_audit.py
+sheets
+scripts/backfill_hemant_sales_all_months.sql
+scripts/backfill_hemant_sales_all_months.py

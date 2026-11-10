@@ -19,6 +19,7 @@ from backend.db.supabase_client import resolve_latest_sale_date
 from backend.db.company_aliases import normalize_company_name, is_pinned_company
 from backend.services.company_cascading_service import is_others_company
 from backend.services.activity_log_service import auth_log_service
+from backend.utils.name_matcher import UserNameMatcher
 
 # Centralized Mobile Access Authorization Policies
 MOBILE_ACCESS_ROLES = [
@@ -175,6 +176,7 @@ def _build_master_lookups_dict(
 ) -> Dict[str, Any]:
     companies_lookup: Dict[str, str] = {}
     companies_category_lookup: Dict[str, str] = {}
+    companies_pinned_lookup: Dict[str, bool] = {}
     for c in (companies_data or []):
         if c.get("company_id") and c.get("company_name"):
             cid = str(c["company_id"])
@@ -184,6 +186,7 @@ def _build_master_lookups_dict(
                 cat = "Others" if cname.strip().lower() in ("others", "other") or cname.strip().lower().startswith("comp_") else "RLL"
             companies_lookup[cid] = cname
             companies_category_lookup[cid] = cat
+            companies_pinned_lookup[cid] = bool(c.get("is_pinned", False))
 
     brands_lookup: Dict[str, Dict[str, Any]] = {}
     for b in (brands_data or []):
@@ -204,11 +207,14 @@ def _build_master_lookups_dict(
             continue
         norm_name = normalize_company_name(c_name)
         c_key = norm_name.lower().replace(" ", "-").replace("/", "-")
+        is_pin = bool(companies_pinned_lookup.get(str(c_id_raw), False)) or is_pinned_company(
+            norm_name, c_key, is_pinned_db=companies_pinned_lookup.get(str(c_id_raw))
+        )
         master_companies[c_key] = {
             "id": c_key,
             "company_id": str(c_id_raw),
             "name": norm_name,
-            "isPinned": is_pinned_company(norm_name, c_key),
+            "isPinned": is_pin,
             "hqLocation": "All Headquarters",
             "data": {
                 "Daily": {"cases": 0, "bottles": 0, "bl": 0.0},
@@ -370,17 +376,7 @@ def _build_master_lookups_dict(
     user_alias_map = {}
     all_users = users_data or []
     active_users = [u for u in all_users if u.get("is_active")]
-
-    def _clean_str(s):
-        return "".join(c for c in str(s or "").lower() if c.isalnum())
-
-    def _first_word(s):
-        parts = str(s or "").strip().lower().replace(".", " ").replace("_", " ").split()
-        return _clean_str(parts[0]) if parts else ""
-
-    active_by_full = {_clean_str(f"{u.get('first_name','')} {u.get('last_name','')}"): str(u["user_id"]) for u in active_users}
-    active_by_first = {_first_word(u.get('first_name','')): str(u["user_id"]) for u in active_users if _first_word(u.get('first_name',''))}
-    active_by_prefix = {_first_word(str(u.get('email') or '').split('@')[0]): str(u["user_id"]) for u in active_users if _first_word(str(u.get('email') or '').split('@')[0])}
+    active_matcher = UserNameMatcher(active_users)
 
     for u in all_users:
         uid = str(u["user_id"])
@@ -393,12 +389,7 @@ def _build_master_lookups_dict(
             email = str(u.get("email") or "")
             prefix = email.split("@")[0]
 
-            act_id = (
-                active_by_full.get(_clean_str(full_name)) or
-                active_by_prefix.get(_first_word(prefix)) or
-                active_by_first.get(_first_word(fn)) or
-                active_by_first.get(_first_word(full_name))
-            )
+            act_id = active_matcher.resolve(full_name) or active_matcher.resolve(prefix) or active_matcher.resolve(fn)
             if act_id:
                 user_alias_map[uid] = act_id
             else:
@@ -416,6 +407,7 @@ def _build_master_lookups_dict(
     return {
         "companies_lookup": companies_lookup,
         "companies_category_lookup": companies_category_lookup,
+        "companies_pinned_lookup": companies_pinned_lookup,
         "brands_lookup": brands_lookup,
         "hq_lookup": hq_lookup,
         "hq_name_to_id": hq_name_to_id,
@@ -485,7 +477,13 @@ def _fetch_fresh_master_lookups() -> Dict[str, Any]:
     try:
         with ThreadPoolExecutor(max_workers=9) as executor:
             f_lookups = executor.submit(lambda: client.rpc("get_master_lookups_json").execute().data)
-            f_companies = executor.submit(lambda: client.table("companies").select("company_id, company_name, category").execute().data or [])
+            def _safe_fetch_companies():
+                try:
+                    return client.table("companies").select("company_id, company_name, category, is_pinned").execute().data or []
+                except Exception:
+                    return client.table("companies").select("company_id, company_name, category").execute().data or []
+
+            f_companies = executor.submit(_safe_fetch_companies)
             f_roles = executor.submit(lambda: client.table("roles").select("role_id, role_name").execute().data or [])
             f_user_roles = executor.submit(lambda: client.table("user_roles").select("user_id, role_id, is_active").execute().data or [])
             f_users = executor.submit(lambda: client.table("users").select("user_id, first_name, last_name, email, is_active, updated_at").execute().data or [])
@@ -732,6 +730,39 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
 
     # 3. Create Dual-Token Pair (1h Access Token + 30-day Rolling Refresh Token)
     token_pair = await create_token_pair(user_data, client_type="mobile")
+
+    # PostHog user identify and login event tracking
+    try:
+        from backend.core.posthog import capture_posthog_event, identify_posthog_user
+        first_n = user_data.get("first_name", "")
+        last_n = user_data.get("last_name", "")
+        full_n = f"{first_n} {last_n}".strip() or user_data.get("email") or str(user_data["user_id"])
+        identify_posthog_user(
+            distinct_id=str(user_data["user_id"]),
+            properties={
+                "email": user_data.get("email"),
+                "name": full_n,
+                "role": user_data.get("role_name"),
+                "depot_name": user_data.get("depot_name"),
+                "company_name": user_data.get("company_name"),
+                "tenant_id": user_data.get("tenant_id"),
+                "client_type": "mobile",
+            }
+        )
+        capture_posthog_event(
+            "user_logged_in",
+            properties={
+                "client_type": "mobile",
+                "login_method": "password",
+                "role": user_data.get("role_name"),
+                "phone_type": phone_type,
+                "depot_name": user_data.get("depot_name"),
+                "company_name": user_data.get("company_name"),
+            },
+            distinct_id=str(user_data["user_id"]),
+        )
+    except Exception as e_ph:
+        logger.warning(f"Notice tracking mobile login in PostHog: {e_ph}")
 
     return {
         "access_token": token_pair["access_token"],
@@ -1113,6 +1144,39 @@ async def verify_mobile_otp(req: VerifyOTPRequest, request: Request):
         status="SUCCESS",
     )
 
+    # PostHog user identify and login event tracking
+    try:
+        from backend.core.posthog import capture_posthog_event, identify_posthog_user
+        first_n = user_data.get("first_name", "")
+        last_n = user_data.get("last_name", "")
+        full_n = f"{first_n} {last_n}".strip() or user_data.get("email") or str(user_data["user_id"])
+        identify_posthog_user(
+            distinct_id=str(user_data["user_id"]),
+            properties={
+                "email": user_data.get("email"),
+                "name": full_n,
+                "role": user_data.get("role_name"),
+                "depot_name": user_data.get("depot_name"),
+                "company_name": user_data.get("company_name"),
+                "tenant_id": user_data.get("tenant_id"),
+                "client_type": "mobile",
+            }
+        )
+        capture_posthog_event(
+            "user_logged_in",
+            properties={
+                "client_type": "mobile",
+                "login_method": "otp",
+                "role": user_data.get("role_name"),
+                "phone_type": phone_type,
+                "depot_name": user_data.get("depot_name"),
+                "company_name": user_data.get("company_name"),
+            },
+            distinct_id=str(user_data["user_id"]),
+        )
+    except Exception as e_ph:
+        logger.warning(f"Notice tracking mobile OTP login in PostHog: {e_ph}")
+
     return {
         "access_token": token_pair["access_token"],
         "refresh_token": token_pair["refresh_token"],
@@ -1329,12 +1393,13 @@ async def get_mobile_companies(
     period: str = Query("Daily", description="Sales period: Daily, MTD, YTD"),
     date_to: Optional[str] = Query(None, alias="date"),
     selected_hq: Optional[str] = Query(None, alias="selected_hq"),
+    include_others: Optional[bool] = Query(None, description="Include company Others"),
     refresh: bool = Query(False, description="Bypass cache on explicit refresh"),
     current_user: dict = Depends(get_current_user)
 ):
     """
     Fetches period-specific company sales analytics (Daily, MTD, YTD).
-    Excludes Company 'Others' strictly. Scopes to user's assigned company if applicable.
+    Excludes Company 'Others' strictly when toggle is OFF. Scopes to user's assigned company if applicable.
     Caches response in Redis with single-flight stampede protection.
     """
     from backend.services.mobile_companies_service import get_companies_summary_async
@@ -1347,12 +1412,35 @@ async def get_mobile_companies(
     clean_hq = selected_hq.strip() if selected_hq else "All Headquarters"
     clean_date = date_to.strip() if date_to else "latest"
 
+    # Track companies list view in PostHog
+    try:
+        from backend.core.posthog import capture_posthog_event
+        user_email = current_user.get("email") or str(current_user.get("user_id"))
+        capture_posthog_event(
+            "mobile_companies_viewed",
+            properties={
+                "client_type": "mobile",
+                "period": clean_period,
+                "headquarters": clean_hq,
+                "date": clean_date,
+                "user_role": current_user.get("role_name"),
+            },
+            distinct_id=user_email,
+        )
+    except Exception:
+        pass
+
     # User company scoping: if user has assigned company, scope sales data strictly to that company
     user_role = (current_user.get("role_name") or current_user.get("role") or "").lower()
     user_company = current_user.get("company_name")
     effective_company = user_company if (user_company and user_role not in ["admin", "super_admin", "super admin", "developer"]) else None
 
-    inc_others_str = "inc1" if await get_include_others_setting_async() else "inc0"
+    if include_others is not None:
+        effective_inc = include_others
+    else:
+        effective_inc = await get_include_others_setting_async()
+
+    inc_others_str = "inc1" if effective_inc else "inc0"
     redis_key = f"rll:mobile:companies:{clean_period}:{clean_hq}:{clean_date}:{effective_company or 'all'}:{inc_others_str}"
 
     t0 = time.perf_counter()
@@ -1382,7 +1470,8 @@ async def get_mobile_companies(
                 period=clean_period,
                 date_to=date_to,
                 selected_hq=selected_hq,
-                company_name=effective_company
+                company_name=effective_company,
+                include_others=effective_inc
             )
             t_service_ms = (time.perf_counter() - t_service_start) * 1000
 
@@ -1462,6 +1551,7 @@ async def get_mobile_sales(
     page_size: Optional[int] = Query(None, description="Page size for depots pagination (1 to 100)"),
     test_limit: Optional[int] = Query(None, description="Diagnostic payload scaling test limit"),
     tsm_include_others: Optional[bool] = Query(None, description="Toggle to include or exclude others/competitor companies on TSM screen"),
+    include_others: Optional[bool] = Query(None, description="Toggle to include or exclude others/competitor companies on companies screen"),
     current_user: dict = Depends(mobile_access_checker)
 ):
     """
@@ -1496,6 +1586,40 @@ async def get_mobile_sales(
             status_code=400,
             detail="Page size parameter must be between 1 and 100"
         )
+
+    # Track mobile sales & TSM view in PostHog
+    try:
+        from backend.core.posthog import capture_posthog_event
+        user_email = current_user.get("email") or str(current_user.get("user_id"))
+        if clean_level == "tsms":
+            capture_posthog_event(
+                "mobile_tsm_tab_viewed",
+                properties={
+                    "client_type": "mobile",
+                    "period": period,
+                    "headquarters": selected_hq,
+                    "date_from": date_from,
+                    "date_to": date_to,
+                    "user_role": current_user.get("role_name"),
+                },
+                distinct_id=user_email,
+            )
+        else:
+            capture_posthog_event(
+                "mobile_sales_viewed",
+                properties={
+                    "client_type": "mobile",
+                    "level": clean_level or "companies",
+                    "period": period,
+                    "headquarters": selected_hq,
+                    "date_from": date_from,
+                    "date_to": date_to,
+                    "user_role": current_user.get("role_name"),
+                },
+                distinct_id=user_email,
+            )
+    except Exception:
+        pass
 
     t_api_start = time.perf_counter()
     request_id = request.headers.get("X-Request-ID") or f"req_{uuid.uuid4().hex[:8]}"
@@ -1537,7 +1661,8 @@ async def get_mobile_sales(
         selected_period = "Daily"
 
     from backend.services.tenant_service import get_include_others_setting_async, get_include_others_in_tsm_sales_async
-    inc_others_str = "inc1" if await get_include_others_setting_async() else "inc0"
+    effective_comp_inc = include_others if include_others is not None else await get_include_others_setting_async()
+    inc_others_str = "inc1" if effective_comp_inc else "inc0"
     tsm_inc_str = "tsm_default" if tsm_include_others is None else ("tsm_inc1" if tsm_include_others else "tsm_inc0")
     effective_cache_uid = "global" if user_role in ["leader", "admin", "super_admin", "developer"] else (user_id or "global")
     cache_key = f"{selected_period}:{clean_level or 'all'}:{page or 'all'}:{page_size or 'all'}:{selected_hq}:{date_from}:{date_to}:{user_role}:{effective_cache_uid}:{test_limit or 'all'}:{inc_others_str}:{tsm_inc_str}"
@@ -1620,6 +1745,7 @@ async def get_mobile_sales(
 
         companies_lookup = master_cache["companies_lookup"]
         companies_category_lookup = master_cache.get("companies_category_lookup", {})
+        companies_pinned_lookup = master_cache.get("companies_pinned_lookup", {})
         brands_lookup = master_cache["brands_lookup"]
         hq_lookup = master_cache["hq_lookup"]
         master_companies = master_cache["master_companies"]
@@ -1842,15 +1968,18 @@ async def get_mobile_sales(
 
     grouped_comp_rows = {}
     for cid_raw, cname_raw in companies_lookup.items():
-        if not cname_raw or is_others_company(cname_raw):
+        if not cname_raw or (not effective_comp_inc and is_others_company(cname_raw)):
             continue
         norm_name = normalize_company_name(cname_raw)
         comp_id = norm_name.lower().replace(" ", "-").replace("/", "-")
+        is_pin = bool(companies_pinned_lookup.get(str(cid_raw), False)) or is_pinned_company(
+            norm_name, comp_id, is_pinned_db=companies_pinned_lookup.get(str(cid_raw))
+        )
         if comp_id not in grouped_comp_rows:
             grouped_comp_rows[comp_id] = {
                 "id": comp_id,
                 "name": norm_name,
-                "isPinned": is_pinned_company(norm_name, comp_id),
+                "isPinned": is_pin,
                 "hqLocation": selected_hq or "All Headquarters",
                 "company_ids": [str(cid_raw)],
                 "data": {
@@ -1860,24 +1989,31 @@ async def get_mobile_sales(
                 },
                 "brands_map": {}
             }
-        else:
-            if str(cid_raw) not in grouped_comp_rows[comp_id]["company_ids"]:
-                grouped_comp_rows[comp_id]["company_ids"].append(str(cid_raw))
+        elif is_pin:
+            grouped_comp_rows[comp_id]["isPinned"] = True
+
+        if str(cid_raw) not in grouped_comp_rows[comp_id]["company_ids"]:
+            grouped_comp_rows[comp_id]["company_ids"].append(str(cid_raw))
 
     for row in company_records:
         cid = str(row.get("company_id") or "")
         cname = str(row.get("company_name") or "").strip()
-        if not cname or is_others_company(cname):
+        if not cname or (not effective_comp_inc and is_others_company(cname)):
             continue
 
         norm_name = normalize_company_name(cname)
         comp_id = norm_name.lower().replace(" ", "-").replace("/", "-")
+        is_pin = bool(row.get("is_pinned")) if "is_pinned" in row else (
+            bool(companies_pinned_lookup.get(cid, False)) or is_pinned_company(
+                norm_name, comp_id, is_pinned_db=companies_pinned_lookup.get(cid)
+            )
+        )
 
         if comp_id not in grouped_comp_rows:
             grouped_comp_rows[comp_id] = {
                 "id": comp_id,
                 "name": norm_name,
-                "isPinned": is_pinned_company(norm_name, comp_id),
+                "isPinned": is_pin,
                 "hqLocation": selected_hq or "All Headquarters",
                 "company_ids": [cid] if cid else [],
                 "data": {
@@ -1888,6 +2024,8 @@ async def get_mobile_sales(
                 "brands_map": {}
             }
         else:
+            if is_pin:
+                grouped_comp_rows[comp_id]["isPinned"] = True
             if cid and cid not in grouped_comp_rows[comp_id]["company_ids"]:
                 grouped_comp_rows[comp_id]["company_ids"].append(cid)
 
@@ -2277,6 +2415,11 @@ async def get_mobile_sales(
             if (b.get("data", {}).get(selected_period, {}).get("cases", 0) > 0 or
                 b.get("data", {}).get(selected_period, {}).get("bottles", 0) > 0)
         ]
+        if not effective_comp_inc:
+            active_b = [
+                b for b in active_b
+                if not (str(b.get("name") or b.get("brandName") or "").lower().startswith("comp_") or str(b.get("name") or b.get("brandName") or "").lower() == "others")
+            ]
         c_data["brands"] = active_b if active_b else all_b
         clean_sel_no_space = re.sub(r'[\s\-_.]+', '', selected_hq).lower() if selected_hq else ""
         if selected_hq != "All Headquarters" and c_data.get("hqLocation") and c_data["hqLocation"] != "All Headquarters":
@@ -2570,13 +2713,37 @@ async def get_cascading_groups_endpoint(
     date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     period: Optional[str] = Query(None, description="Period filter (Daily/MTD/YTD)"),
-    selected_hq: Optional[str] = Query(None, description="Filter by Headquarters name")
+    selected_hq: Optional[str] = Query(None, description="Filter by Headquarters name"),
+    include_others: Optional[bool] = Query(False, description="Whether to include company 'Others'")
 ):
     """
     Mobile endpoint: Fetch active groups with total licensees, linked depots, and sales summaries using optimized JSON RPC.
     """
+    try:
+        from backend.core.posthog import capture_posthog_event
+        capture_posthog_event(
+            "mobile_groups_tab_viewed",
+            properties={
+                "client_type": "mobile",
+                "period": period,
+                "headquarters": selected_hq,
+                "date_from": date_from,
+                "date_to": date_to,
+                "include_others": bool(include_others),
+            },
+            distinct_id="mobile_user",
+        )
+    except Exception:
+        pass
+
     from backend.services.mobile_cascading_service import get_cascading_groups
-    return await get_cascading_groups(date_from=date_from, date_to=date_to, period=period, selected_hq=selected_hq)
+    return await get_cascading_groups(
+        date_from=date_from,
+        date_to=date_to,
+        period=period,
+        selected_hq=selected_hq,
+        include_others=bool(include_others)
+    )
 
 
 @router.get("/cascading/groups/{group_id}/brands")
@@ -2586,11 +2753,31 @@ async def get_group_brands_endpoint(
     date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     period: Optional[str] = Query(None, description="Period filter (Daily/MTD/YTD)"),
     depot_name: Optional[str] = Query(None, description="Filter by depot name"),
-    selected_hq: Optional[str] = Query(None, description="Filter by HQ name")
+    selected_hq: Optional[str] = Query(None, description="Filter by HQ name"),
+    include_others: Optional[bool] = Query(False, description="Whether to include company 'Others'")
 ):
     """
     Mobile endpoint: Fetch aggregated brand-wise sales for all licensees in a group.
     """
+    # Track group drilldown view in PostHog
+    try:
+        from backend.core.posthog import capture_posthog_event
+        capture_posthog_event(
+            "mobile_group_clicked",
+            properties={
+                "client_type": "mobile",
+                "group_id": group_id,
+                "period": period,
+                "headquarters": selected_hq,
+                "date_from": date_from,
+                "date_to": date_to,
+                "include_others": bool(include_others),
+            },
+            distinct_id=group_id,
+        )
+    except Exception:
+        pass
+
     from backend.services.mobile_cascading_service import get_group_brand_sales
     return await get_group_brand_sales(
         group_id=group_id,
@@ -2598,7 +2785,8 @@ async def get_group_brands_endpoint(
         date_to=date_to,
         period=period,
         depot_name=depot_name,
-        selected_hq=selected_hq
+        selected_hq=selected_hq,
+        include_others=bool(include_others)
     )
 
 
@@ -2609,7 +2797,8 @@ async def get_group_licensees_endpoint(
     date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     period: Optional[str] = Query(None, description="Period filter (Daily/MTD/YTD)"),
     depot_name: Optional[str] = Query(None, description="Filter by depot name"),
-    selected_hq: Optional[str] = Query(None, description="Filter by HQ name")
+    selected_hq: Optional[str] = Query(None, description="Filter by HQ name"),
+    include_others: Optional[bool] = Query(False, description="Whether to include company 'Others'")
 ):
     """
     Mobile endpoint: Fetch licensees for a group with specific depot breakdown and sales stats.
@@ -2621,7 +2810,8 @@ async def get_group_licensees_endpoint(
         date_to=date_to,
         period=period,
         depot_name=depot_name,
-        selected_hq=selected_hq
+        selected_hq=selected_hq,
+        include_others=bool(include_others)
     )
 
 
@@ -2632,7 +2822,8 @@ async def get_licensee_brand_sales_endpoint(
     date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     period: Optional[str] = Query(None, description="Period filter (Daily/MTD/YTD)"),
     depot_name: Optional[str] = Query(None, description="Filter by depot name"),
-    selected_hq: Optional[str] = Query(None, description="Filter by HQ name")
+    selected_hq: Optional[str] = Query(None, description="Filter by HQ name"),
+    include_others: Optional[bool] = Query(False, description="Whether to include company 'Others'")
 ):
     """
     Mobile endpoint: Fetch brand-wise sales breakdown for a licensee.
@@ -2644,7 +2835,8 @@ async def get_licensee_brand_sales_endpoint(
         date_to=date_to,
         period=period,
         depot_name=depot_name,
-        selected_hq=selected_hq
+        selected_hq=selected_hq,
+        include_others=bool(include_others)
     )
 
 
@@ -2654,6 +2846,7 @@ def get_company_brands_endpoint(
     date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     hq_name: Optional[str] = Query(None, description="Optional Headquarter filter"),
+    include_others: Optional[bool] = Query(None, description="Include company Others"),
 ):
     """
     Mobile endpoint: Fetch brand sales breakdown for a selected company.
@@ -2668,11 +2861,30 @@ def get_company_brands_endpoint(
     if not clean_from:
         clean_from = clean_to
 
+    # Track company drill-down view in PostHog
+    try:
+        from backend.core.posthog import capture_posthog_event
+        capture_posthog_event(
+            "mobile_company_clicked",
+            properties={
+                "client_type": "mobile",
+                "company_id": company_id,
+                "headquarters": hq_name or "All Headquarters",
+                "date_from": clean_from,
+                "date_to": clean_to,
+                "include_others": include_others,
+            },
+            distinct_id=company_id,
+        )
+    except Exception:
+        pass
+
     return get_company_brands_sales_service(
         company_id=company_id,
         date_from=clean_from,
         date_to=clean_to,
         hq_name=hq_name,
+        include_others=include_others,
     )
 
 
@@ -2706,12 +2918,17 @@ def get_brand_licensees_endpoint(
 
 
 def clear_sales_response_cache():
-    """Clear all in-memory master lookups & mobile sales response caches."""
+    """Clear all in-memory master lookups, mobile sales response, and cascading caches."""
     global _MASTER_CACHE, _SALES_RESPONSE_CACHE
     _MASTER_CACHE["timestamp"] = 0
     _MASTER_CACHE["data"] = None
     _SALES_RESPONSE_CACHE.clear()
-    logger.info("🧹 Cleared in-memory mobile sales response & master caches.")
+    try:
+        from backend.services.mobile_cascading_service import clear_cascading_cache
+        clear_cascading_cache()
+    except Exception as e:
+        logger.warning(f"Notice clearing in-memory cascading cache: {e}")
+    logger.info("🧹 Cleared in-memory mobile sales response, cascading & master caches.")
 
 
 async def warm_master_cache():
@@ -2731,18 +2948,39 @@ async def warm_master_cache():
         logger.warning(f"Failed to pre-warm master lookup cache on startup: {e}")
 
 
+@router.api_route("/cache/flush", methods=["GET", "POST"])
+async def flush_mobile_cache_dev(request: Request):
+    """
+    Clears all in-memory and Redis caches immediately.
+    """
+    clear_sales_response_cache()
+    from backend.services.cache_service import invalidate_analytics_cache, invalidate_cascading_cache
+    purged = 0
+    try:
+        purged = await invalidate_analytics_cache()
+        purged += await invalidate_cascading_cache()
+    except Exception as e:
+        logger.warning(f"Notice purging Redis cache: {e}")
+    return {
+        "status": "ok",
+        "message": "All sales response, cascading, and master caches purged successfully",
+        "redis_keys_purged": purged
+    }
+
+
 @router.api_route("/cache/clear", methods=["GET", "POST"])
 async def clear_mobile_cache_endpoint(
     current_user: dict = Depends(mobile_admin_checker)
 ):
     """
-    Clear all in-memory and Redis sales/analytics caches (Admin only).
+    Clear all in-memory and Redis sales/analytics/cascading caches (Admin only).
     Does NOT flush database or delete any security/session state.
     """
     clear_sales_response_cache()
-    from backend.services.cache_service import invalidate_analytics_cache
+    from backend.services.cache_service import invalidate_analytics_cache, invalidate_cascading_cache
     try:
         await invalidate_analytics_cache()
+        await invalidate_cascading_cache()
     except Exception as e:
         logger.warning(f"Notice purging Redis cache via endpoint: {e}")
 

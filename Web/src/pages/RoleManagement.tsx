@@ -4,6 +4,7 @@ import { API_BASE_URL } from '../config';
 import { useToast } from '../contexts/ToastContext';
 import { secureFetch } from '../lib/apiClient';
 import { useSystemLock } from '../contexts/SystemLockContext';
+import { trackUserClick } from '../lib/posthog';
 
 interface Role {
   role_id: string;
@@ -154,7 +155,12 @@ export default function RoleManagement() {
         </div>
         <button
           disabled={isLocked}
-          onClick={() => !isLocked && setShowAddModal(true)}
+          onClick={() => {
+            if (!isLocked) {
+              trackUserClick('modal_opened', { modal_name: 'AddRoleModal' });
+              setShowAddModal(true);
+            }
+          }}
           title={isLocked ? "Role creation locked during active data ingestion" : "Add Role"}
           className={`px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors text-sm shadow-sm ${
             isLocked 
@@ -246,7 +252,10 @@ export default function RoleManagement() {
             <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center">
               <h3 className="text-lg font-bold text-slate-900">Add New Role</h3>
               <button
-                onClick={() => setShowAddModal(false)}
+                onClick={() => {
+                  trackUserClick('modal_closed', { modal_name: 'AddRoleModal' });
+                  setShowAddModal(false);
+                }}
                 className="text-slate-400 hover:text-slate-600"
               >
                 <XCircle className="h-6 w-6" />

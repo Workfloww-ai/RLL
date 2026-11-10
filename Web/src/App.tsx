@@ -15,6 +15,7 @@ import { ViewState } from './types';
 import { API_BASE_URL } from './config';
 import { logErrorToBackend } from './lib/logger';
 import { setTenantId, refreshWebToken } from './lib/apiClient';
+import { identifyWebUser, resetWebUser, trackUserClick } from './lib/posthog';
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -161,6 +162,7 @@ export default function App() {
               : (data.user.name || 'User');
             setUserName(displayName);
             setIsAuthenticated(true);
+            identifyWebUser(data.user);
             localStorage.setItem('user_name', displayName);
             localStorage.setItem('user', JSON.stringify(data.user));
             if (data.user?.tenant_id) {
@@ -191,6 +193,7 @@ export default function App() {
       setCurrentView('stock');
       return;
     }
+    trackUserClick('navigation_tab_clicked', { view });
     setCurrentView(view);
     localStorage.setItem('current_view', view);
   };
@@ -240,6 +243,7 @@ export default function App() {
     } catch (e) {
       console.error('Logout notice:', e);
     } finally {
+      resetWebUser();
       setIsAuthenticated(false);
       setUserName(null);
       localStorage.removeItem('token');

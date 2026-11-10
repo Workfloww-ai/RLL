@@ -277,11 +277,19 @@ class ChatbotSummaryRepository:
                     is_tsm = True
 
                 tsms[uid] = fullname
-                tsms_rev[fullname.lower()] = uid
+                fn_lower = fullname.lower()
+                tsms_rev[fn_lower] = uid
+                tokens = [w for w in re.sub(r'[^a-z0-9\s]', '', fn_lower).split() if w]
+                if len(tokens) >= 2:
+                    tsms_rev[f"{tokens[0]} {tokens[-1]}"] = uid
+                    tsms_rev[f"{tokens[0]}{tokens[-1]}"] = uid
 
                 if is_ase:
                     ases[uid] = {"name": fullname, "email": email}
-                    ases_rev[fullname.lower()] = uid
+                    ases_rev[fn_lower] = uid
+                    if len(tokens) >= 2:
+                        ases_rev[f"{tokens[0]} {tokens[-1]}"] = uid
+                        ases_rev[f"{tokens[0]}{tokens[-1]}"] = uid
                     ases_list.append({
                         "id": uid,
                         "name": fullname,

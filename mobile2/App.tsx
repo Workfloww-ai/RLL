@@ -41,6 +41,14 @@ import {
   checkAndProactivelyRefreshToken,
 } from './src/lib/api';
 import { preloadAllHeadquartersData } from './src/lib/prefetchService';
+import {
+  setMobileUserContext,
+  clearMobileUserContext,
+  trackMobileActivity,
+  trackScreenView,
+  trackFilterChange,
+  trackCardClick,
+} from './src/lib/posthog';
 
 import { Header } from './src/features/dashboard/Header';
 import { TenantProvider, useTenant } from './src/context/TenantContext';
@@ -122,6 +130,8 @@ function MainApp() {
   const [salesError, setSalesError] = useState<string | null>(null);
   const [retryTrigger, setRetryTrigger] = useState<number>(0);
   const [tsmIncludeOthers, setTsmIncludeOthers] = useState<boolean>(false);
+  const [companyIncludeOthers, setCompanyIncludeOthers] = useState<boolean>(false);
+  const [groupsIncludeOthers, setGroupsIncludeOthers] = useState<boolean>(false);
   const [refreshing, setRefreshing] = useState(false);
   const [showNoDataModal, setShowNoDataModal] = useState<boolean>(false);
   const [showChatbotModal, setShowChatbotModal] = useState<boolean>(false);
@@ -136,7 +146,7 @@ function MainApp() {
     try {
       await clearAllPhoneCaches();
       if (viewMode === 'companies') {
-        const compRes = await fetchMobileCompanies(period, dateTo, selectedHq, false, true);
+        const compRes = await fetchMobileCompanies(period, dateTo, selectedHq, false, true, companyIncludeOthers);
         if (compRes && Array.isArray(compRes.companies)) {
           setSuccessfulFetches((prev) => ({ ...prev, companies: true }));
           setApiData((prev: any) => ({ ...(prev || {}), ...compRes }));
@@ -151,7 +161,8 @@ function MainApp() {
           undefined,
           false,
           refreshLevel,
-          refreshLevel === 'tsms' ? tsmIncludeOthers : undefined
+          refreshLevel === 'tsms' ? tsmIncludeOthers : undefined,
+          refreshLevel === 'companies' ? companyIncludeOthers : undefined
         );
         if (res) {
           setSuccessfulFetches((prev) => ({ ...prev, [viewMode]: true }));
@@ -181,6 +192,7 @@ function MainApp() {
   const [showSortModal, setShowSortModal] = useState<boolean>(false);
 
   const handleTabChange = useCallback((newMode: ViewMode) => {
+    trackScreenView(newMode, { tab: newMode, period, selectedHq });
     setViewMode((currentMode) => {
       if (newMode !== currentMode) {
         setViewModeHistory((prev) => [...prev, newMode]);
@@ -188,31 +200,35 @@ function MainApp() {
       }
       return currentMode;
     });
-  }, []);
+  }, [period, selectedHq]);
 
   const handleHqChange = useCallback((hq: string) => {
     if (hq !== selectedHq) {
+      trackFilterChange('headquarters', hq, { period, viewMode });
       setLoadingSalesData(true);
       setSelectedHq(hq);
     }
-  }, [selectedHq]);
+  }, [selectedHq, period, viewMode]);
 
   const handlePeriodChange = useCallback((p: Period) => {
     if (p !== period) {
+      trackFilterChange('period', p, { previous_period: period, viewMode, selectedHq });
       setLoadingSalesData(true);
       setPeriod(p);
     }
-  }, [period]);
+  }, [period, viewMode, selectedHq]);
 
   const handleDateFromChange = useCallback((d: string) => {
+    trackFilterChange('date_from', d, { period, viewMode, selectedHq });
     setLoadingSalesData(true);
     setDateFrom(d);
-  }, []);
+  }, [period, viewMode, selectedHq]);
 
   const handleDateToChange = useCallback((d: string) => {
+    trackFilterChange('date_to', d, { period, viewMode, selectedHq });
     setLoadingSalesData(true);
     setDateTo(d);
-  }, []);
+  }, [period, viewMode, selectedHq]);
 
   // Hardware BackHandler for tab history & modals
   useEffect(() => {
@@ -301,6 +317,7 @@ function MainApp() {
           setViewMode('companies');
           const parsed = JSON.parse(cachedUser);
           setUser(parsed);
+          setMobileUserContext(parsed);
           updateWithUser(parsed);
         } else {
           logger.info('App: No active session found. Showing LoginScreen.');
@@ -337,16 +354,40 @@ function MainApp() {
     fetchUserProfile().then((profile) => {
       if (profile && (profile.email || profile.phone || profile.user_id)) {
         setUser(profile);
+        setMobileUserContext(profile);
         updateWithUser(profile);
       }
     });
   }, [Boolean(user)]);
+
+  // PostHog mobile screen tracking
+  useEffect(() => {
+    if (user) {
+      trackScreenView(viewMode, { selectedHq, period });
+    }
+  }, [viewMode, Boolean(user)]);
+
+  // PostHog mobile filter tracking
+  useEffect(() => {
+    if (user) {
+      trackFilterChange('period', period, { viewMode, selectedHq });
+    }
+  }, [period, Boolean(user)]);
+
+  useEffect(() => {
+    if (user && selectedHq && selectedHq !== 'All Headquarters') {
+      trackFilterChange('headquarters', selectedHq, { period, viewMode });
+    }
+  }, [selectedHq, Boolean(user)]);
 
   const prevFiltersRef = useRef({
     dateFrom: '',
     dateTo: '',
     period: 'Daily',
     selectedHq: 'All Headquarters',
+    tsmIncludeOthers: false,
+    companyIncludeOthers: false,
+    groupsIncludeOthers: false,
   });
 
   // Fetch sales data with microsecond performance instrumentation
@@ -364,9 +405,12 @@ function MainApp() {
         prev.dateTo !== dateTo ||
         prev.selectedHq !== selectedHq;
       const periodChanged = prev.period !== period;
-      const filtersChanged = dateOrHqChanged || periodChanged;
+      const tsmOthersChanged = prev.tsmIncludeOthers !== tsmIncludeOthers;
+      const companyOthersChanged = prev.companyIncludeOthers !== companyIncludeOthers;
+      const groupsOthersChanged = prev.groupsIncludeOthers !== groupsIncludeOthers;
+      const filtersChanged = dateOrHqChanged || periodChanged || tsmOthersChanged || companyOthersChanged || groupsOthersChanged;
 
-      prevFiltersRef.current = { dateFrom, dateTo, period, selectedHq };
+      prevFiltersRef.current = { dateFrom, dateTo, period, selectedHq, tsmIncludeOthers, companyIncludeOthers, groupsIncludeOthers };
 
       const hasDataForTab =
         viewMode === 'companies'
@@ -375,15 +419,15 @@ function MainApp() {
             ? successfulFetches.tsm
             : true;
 
-      // When date, period, or HQ changes, immediately show skeleton loaders
+      // When date, period, HQ, or Others toggle changes, immediately show skeleton loaders
       const cleanHq = (selectedHq || 'All Headquarters').trim();
-      if (dateOrHqChanged || periodChanged) {
+      if (dateOrHqChanged || periodChanged || (viewMode === 'tsm' && tsmOthersChanged) || (viewMode === 'companies' && companyOthersChanged)) {
         setSalesError(null);
         setSuccessfulFetches({ companies: false, tsm: false, depots: false });
         setLoadingSalesData(true);
-        const fastCompKey = `rll_fast_v4_companies_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}`;
+        const fastCompKey = `rll_fast_v4_companies_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}_${companyIncludeOthers ? 'inc1' : 'inc0'}`;
         const fastComp = FastStorage.getObject<any>(fastCompKey);
-        const fastTsmKey = `rll_fast_v4_tsms_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}`;
+        const fastTsmKey = `rll_fast_v4_tsms_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}_${tsmIncludeOthers ? 'inc1' : 'inc0'}`;
         const fastTsm = FastStorage.getObject<any[]>(fastTsmKey);
 
         const newPartial: any = {};
@@ -409,7 +453,7 @@ function MainApp() {
 
       // Fast-path: Concurrently fetch lightweight companies summary (12 KB, ~30ms)
       // This guarantees the header {period} TOTAL is populated in 30ms across ALL tabs without waiting for 7MB sales payload!
-      fetchMobileCompanies(period, dateTo || dateFrom, selectedHq).then((compRes) => {
+      fetchMobileCompanies(period, dateTo || dateFrom, selectedHq, false, false, companyIncludeOthers).then((compRes) => {
         if (compRes && Array.isArray(compRes.companies) && compRes.companies.length > 0 && isMounted) {
           setSuccessfulFetches((prev) => ({ ...prev, companies: true }));
           setApiData((prevData: any) => ({
@@ -418,14 +462,14 @@ function MainApp() {
             latest_sale_date: compRes.latest_sale_date || prevData?.latest_sale_date,
           }));
           FastStorage.setObject('rll_initial_companies_v4', { companies: compRes.companies, latest_sale_date: compRes.latest_sale_date });
-          const fastCompKey = `companies_v4_${cleanHq}_${period}_${dateTo || dateFrom || 'latest'}`;
+          const fastCompKey = `companies_v4_${cleanHq}_${period}_${dateTo || dateFrom || 'latest'}_${companyIncludeOthers ? 'inc1' : 'inc0'}`;
           FastStorage.setObject(fastCompKey, { companies: compRes.companies, latest_sale_date: compRes.latest_sale_date });
           if (compRes.latest_sale_date && (!dateFrom && !dateTo)) {
             setDateFrom(compRes.latest_sale_date);
             setDateTo(compRes.latest_sale_date);
           }
           if (viewMode === 'companies') {
-            if (dateOrHqChanged || periodChanged) {
+            if (dateOrHqChanged || periodChanged || companyOthersChanged) {
               setTimeout(() => {
                 if (isMounted) setLoadingSalesData(false);
               }, 300);
@@ -448,7 +492,8 @@ function MainApp() {
           undefined,
           false,
           targetLevel,
-          viewMode === 'tsm' ? tsmIncludeOthers : undefined
+          viewMode === 'tsm' ? tsmIncludeOthers : undefined,
+          viewMode === 'companies' ? companyIncludeOthers : undefined
         );
 
         if (res && isMounted) {
@@ -460,7 +505,7 @@ function MainApp() {
           const tStateStart = getNow();
           setApiData((prevData: any) => ({ ...(prevData || {}), ...res }));
           if (Array.isArray(res.tsms) && res.tsms.length > 0) {
-            const fastTsmKey = `rll_fast_v4_tsms_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}`;
+            const fastTsmKey = `rll_fast_v4_tsms_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}_${tsmIncludeOthers ? 'inc1' : 'inc0'}`;
             FastStorage.setObject(fastTsmKey, res.tsms);
           }
           if (res.latest_sale_date && (!dateFrom && !dateTo)) {
@@ -469,20 +514,13 @@ function MainApp() {
           }
 
           const userHasExplicitDate = Boolean(dateFrom || dateTo);
-          // NoDataModal is strictly intended for single Daily date queries with 0 sales.
-          // It must NEVER trigger for MTD/YTD date ranges or on the Groups tab (viewMode === 'depots').
-          const isEmptyData = period === 'Daily' && (
-            viewMode === 'companies'
-              ? (!res.companies || res.companies.length === 0 || res.companies.every((c: any) => {
-                const pData = c.data?.Daily || c.data?.[period] || { cases: 0 };
-                return (pData.cases || 0) === 0;
-              }))
-              : viewMode === 'tsm'
-                ? (!res.tsms || res.tsms.length === 0 || res.tsms.every((t: any) => {
-                  const pData = t.data?.Daily || t.data?.[period] || { cases: 0 };
-                  return (pData.cases || 0) === 0;
-                }))
-                : false
+          // NoDataModal is strictly intended for single Daily date queries on Companies view with 0 sales across the entire org.
+          // It must NEVER trigger for MTD/YTD date ranges, Groups tab, or TSM tab (which has its own inline empty state).
+          const isEmptyData = period === 'Daily' && viewMode === 'companies' && (
+            !res.companies || res.companies.length === 0 || res.companies.every((c: any) => {
+              const pData = c.data?.Daily || c.data?.[period] || { cases: 0 };
+              return (pData.cases || 0) === 0;
+            })
           );
 
           if (userHasExplicitDate && isEmptyData) {
@@ -554,7 +592,7 @@ function MainApp() {
         }
       } finally {
         if (isMounted) {
-          if (dateOrHqChanged || periodChanged) {
+          if (dateOrHqChanged || periodChanged || (viewMode === 'tsm' && tsmOthersChanged)) {
             setTimeout(() => {
               if (isMounted) setLoadingSalesData(false);
             }, 300);
@@ -577,14 +615,20 @@ function MainApp() {
           undefined,
           true,
           targetLevel,
-          viewMode === 'tsm' ? tsmIncludeOthers : undefined
+          viewMode === 'tsm' ? tsmIncludeOthers : undefined,
+          viewMode === 'companies' ? companyIncludeOthers : undefined
         ).then((res) => {
           if (res && isMounted) {
             setApiData((prevData: any) => ({ ...(prevData || {}), ...res }));
             if (Array.isArray(res.tsms) && res.tsms.length > 0) {
               const cleanHq = (selectedHq || 'All Headquarters').trim();
-              const fastTsmKey = `rll_fast_v4_tsms_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}`;
+              const fastTsmKey = `rll_fast_v4_tsms_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}_${tsmIncludeOthers ? 'inc1' : 'inc0'}`;
               FastStorage.setObject(fastTsmKey, res.tsms);
+            }
+            if (Array.isArray(res.companies) && res.companies.length > 0) {
+              const cleanHq = (selectedHq || 'All Headquarters').trim();
+              const fastCompKey = `rll_fast_v4_companies_${period}_${cleanHq}_${dateTo || dateFrom || 'latest'}_${companyIncludeOthers ? 'inc1' : 'inc0'}`;
+              FastStorage.setObject(fastCompKey, { companies: res.companies, latest_sale_date: res.latest_sale_date });
             }
           }
         });
@@ -595,10 +639,12 @@ function MainApp() {
       isMounted = false;
       clearInterval(intervalId);
     };
-  }, [user, dateFrom, dateTo, selectedHq, period, viewMode, retryTrigger, tsmIncludeOthers]);
+  }, [user, dateFrom, dateTo, selectedHq, period, viewMode, retryTrigger, tsmIncludeOthers, companyIncludeOthers]);
 
   const handleLogout = async () => {
     logger.info('App: User initiated logout.');
+    trackMobileActivity('user_logged_out', { client_type: 'mobile' });
+    clearMobileUserContext();
     await clearAuthSession();
     setUser(null);
     setApiData(null);
@@ -608,22 +654,41 @@ function MainApp() {
     setViewMode('companies');
   };
 
-  // Filter companies by search query
+  // Filter companies by search query and companyIncludeOthers toggle
   const filteredCompanies = useMemo(() => {
     const rawCompanies: Company[] = (apiData && apiData.companies) ? apiData.companies : [];
     const normalizedCompanies = normalizeCompanyList(rawCompanies, config.pinnedCompanyName, user?.company_name);
 
     return normalizedCompanies.filter((c) => {
+      // Exclude Others companies when toggle is OFF
+      if (!companyIncludeOthers) {
+        const compCat = (c.category || '').toLowerCase().trim();
+        const compName = (c.name || (c as any).company_name || '').toLowerCase().trim();
+        const compId = (c.id || '').toLowerCase().trim();
+        if (
+          compCat === 'others' ||
+          compName === 'others' ||
+          compName === 'other' ||
+          compName.startsWith('others ') ||
+          compName.startsWith('other ') ||
+          compName.startsWith('comp_') ||
+          compId === 'others' ||
+          compId.startsWith('comp_')
+        ) {
+          return false;
+        }
+      }
+
       if (!searchQuery.trim()) return true;
       const q = searchQuery.toLowerCase();
       const matchCompany = c.name.toLowerCase().includes(q);
       const matchBrands = c.brands && c.brands.some((b: any) => (b.name || b.brand_name || '').toLowerCase().includes(q));
       return matchCompany || matchBrands;
     });
-  }, [searchQuery, apiData, config.pinnedCompanyName, user?.company_name]);
+  }, [searchQuery, apiData, config.pinnedCompanyName, user?.company_name, companyIncludeOthers]);
 
-  // Sort companies: Default A-Z view pins RLL (#1) & Diageo (#2) at top.
-  // Explicit sort modes (volume_desc, volume_asc, name_desc) sort ALL companies purely by metric.
+  // Sort companies: Default A-Z view pins DB-pinned companies at the top.
+  // Explicit sort modes (cases_desc, cases_asc, za) sort ALL companies purely by metric.
   const sortedCompanies = useMemo(() => {
     const list = [...filteredCompanies];
 
@@ -660,7 +725,7 @@ function MainApp() {
         return b.name.localeCompare(a.name);
       }
 
-      // Default / 'az': Pinned first (RLL rank 1, Diageo rank 2), then Alphabetical A to Z
+      // Default / 'az': Pinned first (primary tenant rank 1, DB-pinned rank 2), then Alphabetical A to Z
       const rankA = getPinnedRank(a);
       const rankB = getPinnedRank(b);
 
@@ -725,6 +790,24 @@ function MainApp() {
       if (!list || !list.length) return null;
       const raw = list.reduce(
         (acc: any, item: any) => {
+          // If on companies view or groups view, respect includeOthers toggle
+          if ((viewMode === 'companies' && !companyIncludeOthers) || (viewMode === 'depots' && !groupsIncludeOthers)) {
+            const compCat = (item.category || '').toLowerCase().trim();
+            const compName = (item.companyName || item.name || (item as any).company_name || '').toLowerCase().trim();
+            const compId = (item.id || '').toLowerCase().trim();
+            if (
+              compCat === 'others' ||
+              compName === 'others' ||
+              compName === 'other' ||
+              compName.startsWith('others ') ||
+              compName.startsWith('other ') ||
+              compName.startsWith('comp_') ||
+              compId === 'others' ||
+              compId.startsWith('comp_')
+            ) {
+              return acc;
+            }
+          }
           const d = item.data?.[period] || { cases: 0, bottles: 0 };
           return {
             cases: acc.cases + (Number(d.cases) || 0),
@@ -782,20 +865,27 @@ function MainApp() {
     if (fromTsms) return fromTsms;
 
     return { cases: 0, bottles: 0 };
-  }, [viewMode, tsmIncludeOthers, apiData?.companies, apiData?.tsms, period, scaleFactor, selectedHq, dateTo, dateFrom]);
+  }, [viewMode, tsmIncludeOthers, companyIncludeOthers, groupsIncludeOthers, apiData?.companies, apiData?.tsms, period, scaleFactor, selectedHq, dateTo, dateFrom]);
 
   const renderCompanyItem = useCallback(
-    ({ item }: { item: Company }) => (
-      <CompanyCard
-        company={item}
-        period={period}
-        scaleFactor={scaleFactor}
-        onClick={() => setSelectedCompany(item)}
-        cardStyle={{
-          paddingVertical: cardDimensions.cardPaddingVertical,
-        }}
-      />
-    ),
+    ({ item }: { item: Company }) => {
+      const compName = item.company_name || item.name || 'Unknown Company';
+      const cCases = item.data?.[period]?.cases ?? item.cases ?? 0;
+      return (
+        <CompanyCard
+          company={item}
+          period={period}
+          scaleFactor={scaleFactor}
+          onClick={() => {
+            trackCardClick('company', compName, { total_cases: cCases });
+            setSelectedCompany(item);
+          }}
+          cardStyle={{
+            paddingVertical: cardDimensions.cardPaddingVertical,
+          }}
+        />
+      );
+    },
     [period, scaleFactor, cardDimensions.cardPaddingVertical]
   );
 
@@ -840,7 +930,10 @@ function MainApp() {
           {/* Inline Sort Pill Button */}
           <TouchableOpacity
             style={styles.sortDropdownPill}
-            onPress={() => setShowSortModal(true)}
+            onPress={() => {
+              trackMobileActivity('modal_opened', { modal_name: 'CompanySortModal', current_sort: sortBy });
+              setShowSortModal(true);
+            }}
             activeOpacity={0.75}
           >
             <SwapVertIcon size={14} color="#64748B" />
@@ -891,7 +984,7 @@ function MainApp() {
   return (
     <SafeAreaProvider>
       <View style={styles.appContainer}>
-        <StatusBar />
+        <StatusBar barStyle="light-content" />
 
         {!user ? (
           <LoginScreen
@@ -901,11 +994,13 @@ function MainApp() {
               setDateTo('');
               setViewMode('companies');
               setUser(loggedInUser);
+              setMobileUserContext(loggedInUser);
+              trackMobileActivity('user_logged_in', { login_method: 'mobile_app' });
               updateWithUser(loggedInUser);
             }}
           />
         ) : (
-          <SafeAreaView style={styles.safeArea}>
+          <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
             {/* Header section (HQ picker, period chooser, dates) */}
             {viewMode !== 'profile' && (
               <Header
@@ -954,6 +1049,12 @@ function MainApp() {
                     selectedHq={selectedHq}
                     companies={sortedCompanies}
                     loading={loadingSalesData}
+                    includeOthers={companyIncludeOthers}
+                    onToggleIncludeOthers={(val) => {
+                      setCompanyIncludeOthers(val);
+                      setSuccessfulFetches((prev) => ({ ...prev, companies: false }));
+                      setLoadingSalesData(true);
+                    }}
                     onRefresh={handleRefresh}
                   />
                 </View>
@@ -969,6 +1070,11 @@ function MainApp() {
                     scaleFactor={scaleFactor}
                     selectedHq={selectedHq}
                     loading={loadingSalesData}
+                    includeOthers={groupsIncludeOthers}
+                    onToggleIncludeOthers={(val) => {
+                      setGroupsIncludeOthers(val);
+                      setSuccessfulFetches((prev) => ({ ...prev, depots: false }));
+                    }}
                     onRefresh={handleRefresh}
                   />
                 </View>
@@ -1019,13 +1125,19 @@ function MainApp() {
               visible={showSortModal}
               transparent={true}
               animationType="fade"
-              onRequestClose={() => setShowSortModal(false)}
+              onRequestClose={() => {
+                trackMobileActivity('modal_closed', { modal_name: 'CompanySortModal', current_sort: sortBy });
+                setShowSortModal(false);
+              }}
               statusBarTranslucent
             >
               <TouchableOpacity
                 style={styles.sortModalOverlay}
                 activeOpacity={1}
-                onPress={() => setShowSortModal(false)}
+                onPress={() => {
+                  trackMobileActivity('modal_closed', { modal_name: 'CompanySortModal', current_sort: sortBy });
+                  setShowSortModal(false);
+                }}
               >
                 <TouchableOpacity
                   activeOpacity={1}
@@ -1037,7 +1149,10 @@ function MainApp() {
                     <Text style={styles.sortModalTitle}>Sort By</Text>
                     <TouchableOpacity
                       style={styles.sortModalCloseBtn}
-                      onPress={() => setShowSortModal(false)}
+                      onPress={() => {
+                        trackMobileActivity('modal_closed', { modal_name: 'CompanySortModal', current_sort: sortBy });
+                        setShowSortModal(false);
+                      }}
                       hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                     >
                       <XIcon size={18} color="#64748B" />
@@ -1055,6 +1170,11 @@ function MainApp() {
                           isSelected ? styles.sortOptionItemActive : null,
                         ]}
                         onPress={() => {
+                          trackMobileActivity('modal_option_selected', {
+                            modal_name: 'CompanySortModal',
+                            selected_sort: opt.key,
+                            sort_label: opt.label,
+                          });
                           setSortBy(opt.key as CompanySortOption);
                           setShowSortModal(false);
                         }}
@@ -1125,7 +1245,7 @@ function MainApp() {
                 setLoadingSalesData(true);
                 try {
                   if (viewMode === 'companies') {
-                    const compRes = await fetchMobileCompanies(period, targetLatest, 'All Headquarters', false, true);
+                    const compRes = await fetchMobileCompanies(period, targetLatest, 'All Headquarters', false, true, companyIncludeOthers);
                     if (compRes && Array.isArray(compRes.companies)) {
                       setApiData(compRes);
                     }
@@ -1164,7 +1284,7 @@ const styles = StyleSheet.create({
   },
   safeArea: {
     flex: 1,
-    backgroundColor: '#0F172A',
+    backgroundColor: '#090D16',
   },
   metricsBanner: {
     flexDirection: 'row',

@@ -3,10 +3,11 @@ import uuid
 import logging
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends, status, Response, Request
-from backend.core.security import create_access_token, get_current_user
+from backend.core.security import _identify_posthog_user, create_access_token, get_current_user
 from backend.db.client import get_supabase
 from backend.db.redis_client import safe_get, safe_set, safe_delete
 from backend.core.config import settings
+from backend.core.posthog import capture_posthog_event
 from backend.auth.schemas import LoginRequest, TokenResponse, ForgotPasswordRequest, ResetPasswordRequest, RefreshTokenRequest
 from backend.services.token_service import (
     create_token_pair,
@@ -154,6 +155,8 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
         "tenant_id": user_tenant_id,
         "is_active": True
     }
+    _identify_posthog_user(user_data)
+    capture_posthog_event("user_logged_in", {"client_type": "web", "role": role_name, "email": email}, distinct_id=user_id_str)
     logger.info(f"Web login successful for user: {email} with role: {role_name} (tenant: {user_tenant_id})")
 
     # Generate Dual-Token Pair (1h Access Token + 30-day Rolling Refresh Token)
@@ -530,6 +533,8 @@ async def reset_password(req: ResetPasswordRequest):
             detail="Failed to update password in database."
         )
 
+    _identify_posthog_user({"user_id": user_id})
+    capture_posthog_event("password_reset_completed", {"reset_method": "otp"})
     return {
         "success": True,
         "message": "Password reset successfully. You can now log in with your new password."
@@ -573,6 +578,20 @@ async def logout(request: Request, response: Response):
 
     response.delete_cookie(key="rll_session")
     response.delete_cookie(key="rll_refresh")
+
+    # Capture PostHog logout event
+    try:
+        user_id = None
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+            import jwt
+            payload = jwt.decode(token, settings.JWT_SECRET, algorithms=["HS256"], options={"verify_signature": False})
+            user_id = payload.get("user_id") or payload.get("sub")
+        if user_id:
+            capture_posthog_event("user_logged_out", {"client_type": "web"}, distinct_id=str(user_id))
+    except Exception:
+        pass
 
     # If an upload is active when the user signs out, cancel and rollback immediately
     try:

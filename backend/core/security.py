@@ -10,8 +10,10 @@ from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from backend.core.config import settings
+from backend.core.posthog import posthog_client
 from backend.db.client import get_supabase
 from backend.db.redis_client import safe_get
+from posthog import identify_context
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,46 @@ def validate_password_complexity(password: str) -> None:
 
 _LOCAL_USER_PROFILES: Dict[str, Any] = {}
 _LOCAL_USER_PROFILE_TTL = 300.0  # 5 minutes
+_IDENTIFIED_USERS_CACHE: set = set()
+
+
+def _identify_posthog_user(user: Dict[str, Any]) -> None:
+    """Attach the verified stable user ID to the active request context and enrich PostHog profile."""
+    user_id = user.get("user_id")
+    if not posthog_client or not user_id:
+        return
+
+    uid_str = str(user_id).strip()
+
+    # 1. Attach to async/thread context (zero PostHog events generated)
+    try:
+        from posthog import identify_context
+        identify_context(uid_str)
+    except Exception:
+        pass
+
+    # 2. Only send person profile properties to PostHog ONCE to avoid spamming "Set person properties"
+    if uid_str not in _IDENTIFIED_USERS_CACHE:
+        try:
+            from backend.core.posthog import identify_posthog_user
+            first = user.get("first_name", "")
+            last = user.get("last_name", "")
+            name = f"{first} {last}".strip() or user.get("email") or uid_str
+            identify_posthog_user(
+                distinct_id=uid_str,
+                properties={
+                    "email": user.get("email"),
+                    "name": name,
+                    "role": user.get("role") or user.get("role_name"),
+                    "tenant_id": user.get("tenant_id"),
+                    "company_name": user.get("company_name"),
+                    "depot_name": user.get("depot_name"),
+                }
+            )
+            _IDENTIFIED_USERS_CACHE.add(uid_str)
+        except Exception as exc:
+            logger.warning("PostHog user identification failed: %s", type(exc).__name__)
+
 
 async def get_current_user(
     request: Request,
@@ -134,6 +176,7 @@ async def get_current_user(
         }
         if payload and isinstance(payload, dict) and payload.get("allowed_hqs"):
             review_profile["allowed_hqs"] = payload["allowed_hqs"]
+        _identify_posthog_user(review_profile)
         return review_profile
 
     email_key = email.lower()
@@ -144,6 +187,7 @@ async def get_current_user(
         ts, prof = _LOCAL_USER_PROFILES[email_key]
         if now_t - ts < _LOCAL_USER_PROFILE_TTL:
             if prof and prof.get("is_active"):
+                _identify_posthog_user(prof)
                 return prof
 
     # 3. Fast Redis Profile Cache HIT (< 1ms)
@@ -156,6 +200,7 @@ async def get_current_user(
                 if payload and isinstance(payload, dict) and payload.get("allowed_hqs"):
                     user_info["allowed_hqs"] = payload["allowed_hqs"]
                 _LOCAL_USER_PROFILES[email_key] = (now_t, user_info)
+                _identify_posthog_user(user_info)
                 return user_info
         except Exception:
             pass
@@ -282,6 +327,7 @@ async def get_current_user(
     except Exception:
         pass
     _LOCAL_USER_PROFILES[email_key] = (now_t, user_info)
+    _identify_posthog_user(user_info)
 
     return user_info
 

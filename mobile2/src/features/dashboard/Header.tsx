@@ -25,6 +25,7 @@ import LogoSvg from '../../assets/rll logo.svg';
 
 import { useTenant } from '../../context/TenantContext';
 import { Image } from 'react-native';
+import { trackMobileActivity } from '../../lib/posthog';
 
 interface HeaderProps {
   period: Period;
@@ -146,9 +147,21 @@ export function Header({
   const openDatePicker = (target: 'from' | 'to') => {
     setPickerTarget(target);
     setShowDatePicker(true);
+    trackMobileActivity('modal_opened', {
+      modal_name: 'DatePickerModal',
+      target,
+      period,
+      current_date_from: dateFrom,
+      current_date_to: dateTo,
+    });
   };
 
   const handlePeriodChange = (p: Period) => {
+    trackMobileActivity('period_filter_changed', {
+      previous_period: period,
+      selected_period: p,
+      selected_hq: selectedHq,
+    });
     setPeriod(p);
     const targetDate = dateTo || latestSaleDate || '';
 
@@ -197,6 +210,13 @@ export function Header({
   };
 
   const handleSelectDay = (dateStr: string) => {
+    trackMobileActivity('modal_option_selected', {
+      modal_name: 'DatePickerModal',
+      option_type: 'calendar_date',
+      target: pickerTarget,
+      selected_date: dateStr,
+      period,
+    });
     if (pickerTarget === 'to') {
       setDateTo(dateStr);
     } else {
@@ -268,7 +288,14 @@ export function Header({
         {/* Minimalist Headquarters Selector Pill */}
         <TouchableOpacity
           style={styles.hqSelectorPill}
-          onPress={() => setShowHqModal(true)}
+          onPress={() => {
+            trackMobileActivity('modal_opened', {
+              modal_name: 'HeadquartersPickerModal',
+              current_hq: selectedHq,
+              total_hqs: headquartersList.length,
+            });
+            setShowHqModal(true);
+          }}
           activeOpacity={0.75}
         >
           <View style={styles.iconBox}>
@@ -611,6 +638,12 @@ export function Header({
                       isActive ? styles.hqModalItemActive : null,
                     ]}
                     onPress={() => {
+                      trackMobileActivity('modal_option_selected', {
+                        modal_name: 'HeadquartersPickerModal',
+                        option_type: 'headquarters',
+                        selected_hq: item,
+                        previous_hq: selectedHq,
+                      });
                       setSelectedHq(item);
                       setShowHqModal(false);
                     }}
@@ -640,10 +673,8 @@ const styles = StyleSheet.create({
   header: {
     backgroundColor: '#090D16',
     paddingHorizontal: 16,
-    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 28) + 8 : 14,
+    paddingTop: 8,
     paddingBottom: 14,
-    borderBottomLeftRadius: 24,
-    borderBottomRightRadius: 24,
     borderBottomWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.08)',
     shadowColor: '#000000',

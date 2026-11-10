@@ -77,11 +77,17 @@ def _get_master_companies() -> List[Dict[str, Any]]:
     comp_list = []
     if client:
         try:
-            res = client.table("companies").select("company_id, company_name, category").execute()
+            # Rule 3: Explicit columns only
+            res = client.table("companies").select("company_id, company_name, category, is_pinned").execute()
             comp_list = res.data or []
             _MASTER_COMPANIES_CACHE = (now, comp_list)
-        except Exception as e:
-            logger.warning(f"_get_master_companies error: {e}")
+        except Exception:
+            try:
+                res = client.table("companies").select("company_id, company_name, category").execute()
+                comp_list = res.data or []
+                _MASTER_COMPANIES_CACHE = (now, comp_list)
+            except Exception as e:
+                logger.warning(f"_get_master_companies error: {e}")
     return comp_list or _MASTER_COMPANIES_CACHE[1]
 
 
@@ -126,11 +132,12 @@ async def get_companies_summary_async(
     period: str = "Daily",
     date_to: Optional[str] = None,
     selected_hq: Optional[str] = None,
-    company_name: Optional[str] = None
+    company_name: Optional[str] = None,
+    include_others: Optional[bool] = None
 ) -> Tuple[List[Dict[str, Any]], str]:
     """
     Asynchronous, period-optimized Companies sales analytics service.
-    Excludes company 'Others' strictly. Supports single company scoping.
+    Excludes company 'Others' strictly when toggle is OFF. Supports single company scoping.
     Executes RPC calls concurrently and caches master data in-memory.
     """
     t_start = time.perf_counter()
@@ -142,6 +149,12 @@ async def get_companies_summary_async(
     clean_period = period.strip() if period else "Daily"
     if clean_period not in ("Daily", "MTD", "YTD"):
         clean_period = "Daily"
+
+    if include_others is not None:
+        exclude_others = not include_others
+    else:
+        from backend.services.tenant_service import get_include_others_setting_async
+        exclude_others = not await get_include_others_setting_async()
 
     # 1. Resolve HQ filter if provided
     hq_id_filter = None
@@ -193,10 +206,17 @@ async def get_companies_summary_async(
     # Pre-fetch master companies to ensure all active companies appear in grid
     mc_data = _get_master_companies()
     grouped_companies = {}
+    cid_to_pinned: Dict[str, bool] = {}
     for mc in mc_data:
         cid = str(mc.get("company_id") or "")
         cname = str(mc.get("company_name") or "").strip()
-        if not cname or is_others_company(cname, category=mc.get("category")):
+        is_pin = bool(mc.get("is_pinned", False)) if "is_pinned" in mc else is_pinned_company(cname, cid)
+        if cid:
+            cid_to_pinned[cid] = is_pin
+
+        if not cname:
+            continue
+        if exclude_others and (is_others_company(cname, category=mc.get("category")) or cname.lower() == "others" or cname.lower().startswith("comp_")):
             continue
         if company_name and cname.lower() != company_name.strip().lower():
             continue
@@ -206,7 +226,7 @@ async def get_companies_summary_async(
             grouped_companies[norm_key] = {
                 "id": norm_key,
                 "name": norm_name,
-                "isPinned": is_pinned_company(norm_name, norm_key),
+                "isPinned": is_pin,
                 "hqLocation": selected_hq or "All Headquarters",
                 "company_ids": [],
                 "daily_cases": 0.0,
@@ -219,6 +239,9 @@ async def get_companies_summary_async(
                 "ytd_bottles": 0.0,
                 "ytd_bl": 0.0,
             }
+        elif is_pin:
+            grouped_companies[norm_key]["isPinned"] = True
+
         if cid and cid not in grouped_companies[norm_key]["company_ids"]:
             grouped_companies[norm_key]["company_ids"].append(cid)
 
@@ -276,17 +299,23 @@ async def get_companies_summary_async(
     for row in comp_summary_data:
         cid = str(row.get("company_id") or "")
         cname = str(row.get("company_name") or "").strip()
-        if not cname or is_others_company(cname, category=row.get("category")):
+        if not cname:
+            continue
+        if exclude_others and (is_others_company(cname, category=row.get("category")) or cname.lower() == "others" or cname.lower().startswith("comp_")):
             continue
 
         norm_name = normalize_company_name(cname)
         norm_key = norm_name.lower().replace(" ", "-").replace("/", "-")
+        is_pin = (
+            bool(row.get("is_pinned")) if "is_pinned" in row
+            else cid_to_pinned.get(cid, is_pinned_company(norm_name, norm_key))
+        )
 
         if norm_key not in grouped_companies:
             grouped_companies[norm_key] = {
                 "id": norm_key,
                 "name": norm_name,
-                "isPinned": is_pinned_company(norm_name, norm_key),
+                "isPinned": is_pin,
                 "hqLocation": selected_hq or "All Headquarters",
                 "company_ids": [cid] if cid else [],
                 "daily_cases": 0.0,
@@ -300,6 +329,8 @@ async def get_companies_summary_async(
                 "ytd_bl": 0.0,
             }
         else:
+            if is_pin:
+                grouped_companies[norm_key]["isPinned"] = True
             if cid and cid not in grouped_companies[norm_key]["company_ids"]:
                 grouped_companies[norm_key]["company_ids"].append(cid)
 
@@ -403,6 +434,16 @@ async def get_companies_summary_async(
         comp_brands = list(comp_brands_map.values())
         comp_brands.sort(key=lambda x: x["cases"], reverse=True)
 
+        active_comp_brands = [
+            b for b in comp_brands
+            if (b.get("cases", 0.0) > 0 or b.get("bottles", 0.0) > 0)
+        ]
+        if exclude_others:
+            active_comp_brands = [
+                b for b in active_comp_brands
+                if not (b.get("name", "").lower().startswith("comp_") or b.get("name", "").lower() == "others")
+            ]
+
         if clean_period == "Daily":
             p_cases = g["daily_cases"]
             p_bottles = g["daily_bottles"]
@@ -426,7 +467,7 @@ async def get_companies_summary_async(
                 "MTD": {"cases": round(g["mtd_cases"], 2), "bottles": round(g["mtd_bottles"], 2), "bl": round(g["mtd_bl"], 2)},
                 "YTD": {"cases": round(g["ytd_cases"], 2), "bottles": round(g["ytd_bottles"], 2), "bl": round(g["ytd_bl"], 2)},
             },
-            "brands": comp_brands
+            "brands": active_comp_brands if active_comp_brands else comp_brands
         })
 
     response_list.sort(key=lambda x: (not x["isPinned"], -x["cases"]))

@@ -17,6 +17,7 @@ import { Company, Period } from '../../types';
 import { formatNumber } from '../../lib/utils';
 import { GroupListSkeletonList, CompanyListSkeletonList } from '../../components/SkeletonLoaders';
 import { fetchCompanyBrands, fetchBrandLicensees } from '../../lib/api';
+import { trackMobileActivity } from '../../lib/posthog';
 import { MetricsCard } from '../../components/MetricsCard';
 import { PaginationBar } from '../../components/PaginationBar';
 import { SortModal, SortOptionValue } from '../../components/SortModal';
@@ -26,6 +27,7 @@ import {
   XIcon,
   SearchIcon,
   ChevronLeftIcon,
+  ChevronDownIcon,
   WineIcon,
   UsersIcon,
   RefreshIcon,
@@ -44,6 +46,8 @@ interface CompanyCascadingViewProps {
   selectedCompanyFromParent?: Company | null;
   onClearParentSelectedCompany?: () => void;
   onRefresh?: () => Promise<void> | void;
+  includeOthers?: boolean;
+  onToggleIncludeOthers?: (include: boolean) => void;
 }
 
 export function CompanyCascadingView({
@@ -57,8 +61,24 @@ export function CompanyCascadingView({
   selectedCompanyFromParent,
   onClearParentSelectedCompany,
   onRefresh,
+  includeOthers: propIncludeOthers,
+  onToggleIncludeOthers,
 }: CompanyCascadingViewProps) {
   const { config } = useTenant();
+  const [localIncludeOthers, setLocalIncludeOthers] = useState<boolean>(false);
+  const includeOthers = propIncludeOthers !== undefined ? propIncludeOthers : localIncludeOthers;
+
+  const handleToggleIncludeOthers = (val: boolean) => {
+    setLocalIncludeOthers(val);
+    if (onToggleIncludeOthers) {
+      onToggleIncludeOthers(val);
+    }
+  };
+
+  const scaledFontSize = useCallback(
+    (base: number) => Math.round(base * scaleFactor),
+    [scaleFactor]
+  );
   // Navigation level:
   // Level 1 = Companies List
   // Level 2 = Company Detail (Brands List)
@@ -84,7 +104,7 @@ export function CompanyCascadingView({
   const [currentPage, setCurrentPage] = useState<number>(1);
 
   // Caching refs
-  const cacheKey = `${dateFrom}_${dateTo}_${period}_${selectedHq || 'All'}`;
+  const cacheKey = `${dateFrom}_${dateTo}_${period}_${selectedHq || 'All'}_${includeOthers ? 'inc1' : 'inc0'}`;
   const companyBrandsCacheRef = useRef<Map<string, any[]>>(new Map());
   const brandLicenseesCacheRef = useRef<Map<string, any[]>>(new Map());
 
@@ -95,7 +115,7 @@ export function CompanyCascadingView({
     setCurrentPage(1);
   };
 
-  // Reset navigation to main screen (Level 1) and clear cache on date/period/HQ changes
+  // Reset navigation to main screen (Level 1) and clear cache on date/period/HQ/toggle changes
   useEffect(() => {
     setLevel(1);
     setSelectedCompany(null);
@@ -108,7 +128,7 @@ export function CompanyCascadingView({
     if (onClearParentSelectedCompany) {
       onClearParentSelectedCompany();
     }
-  }, [dateFrom, dateTo, period, selectedHq]);
+  }, [dateFrom, dateTo, period, selectedHq, includeOthers]);
 
   // Handle drilldown trigger from parent
   useEffect(() => {
@@ -151,7 +171,7 @@ export function CompanyCascadingView({
 
     setLoading(true);
     try {
-      const data = await fetchCompanyBrands(targetId, dateFrom, dateTo, selectedHq);
+      const data = await fetchCompanyBrands(targetId, dateFrom, dateTo, selectedHq, includeOthers);
       const result = data || [];
       companyBrandsCacheRef.current.set(key, result);
       setCompanyBrands(result);
@@ -198,6 +218,15 @@ export function CompanyCascadingView({
 
   // Selection handlers
   const handleSelectCompany = (c: Company) => {
+    const cCases = (c as any).total_cases ?? c.data?.[period]?.cases ?? c.cases ?? 0;
+    trackMobileActivity('mobile_company_clicked', {
+      company_name: c.company_name || (c as any).name,
+      company_id: c.company_id || (c as any).id,
+      total_cases: cCases,
+      rank: (c as any).rank,
+      period,
+      selectedHq,
+    });
     setSelectedCompany(c);
     setSelectedBrand(null);
     setLevel(2);
@@ -206,6 +235,13 @@ export function CompanyCascadingView({
   };
 
   const handleSelectBrand = (brand: any) => {
+    trackMobileActivity('mobile_brand_clicked', {
+      company_name: activeSelectedCompany?.company_name || selectedCompany?.company_name,
+      brand_name: brand.brand_name || brand.name,
+      total_cases: brand.total_cases,
+      period,
+      selectedHq,
+    });
     setSelectedBrand(brand);
     setLevel(3);
     resetFilters();
@@ -327,6 +363,35 @@ export function CompanyCascadingView({
   const filteredAndSortedList = useMemo(() => {
     let result = [...activeRawList];
 
+    // Dedicated Others Company Filter: Exclude Others company when toggle is OFF
+    if (!includeOthers) {
+      result = result.filter(item => {
+        const name = String(item.name || item.company_name || item.brand_name || '').toLowerCase().trim();
+        const cat = String(item.category || '').toLowerCase().trim();
+        const id = String(item.id || item.company_id || item.brand_id || '').toLowerCase().trim();
+        const isOthers = (
+          cat === 'others' ||
+          name === 'others' ||
+          name === 'other' ||
+          name.startsWith('others ') ||
+          name.startsWith('other ') ||
+          name.startsWith('comp_') ||
+          id === 'others' ||
+          id.startsWith('comp_')
+        );
+        return !isOthers;
+      });
+    }
+
+    // Level 2 (Company Brands): Strictly show brands that recorded sales in the period so Level 1 and 2 match
+    if (level === 2) {
+      result = result.filter(item => {
+        const bCases = getScaledCases(item);
+        const bBottles = getScaledBottles(item);
+        return bCases > 0 || bBottles > 0;
+      });
+    }
+
     // Search query filter
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
@@ -376,7 +441,7 @@ export function CompanyCascadingView({
     });
 
     return result;
-  }, [activeRawList, level, searchQuery, sortOption, period, scaleFactor]);
+  }, [activeRawList, level, searchQuery, sortOption, period, scaleFactor, includeOthers]);
 
   // Paginated dataset
   const totalItems = filteredAndSortedList.length;
@@ -436,7 +501,7 @@ export function CompanyCascadingView({
         </View>
       )}
 
-      {/* Search Bar & Sort Bar */}
+      {/* Search Bar & Sort Bar Row */}
       <View style={styles.searchControlsRow}>
         <View style={styles.searchInputContainer}>
           <SearchIcon size={16} color="#64748B" />
@@ -463,14 +528,38 @@ export function CompanyCascadingView({
           ) : null}
         </View>
 
+        {/* Sort Pill */}
         <TouchableOpacity
           style={styles.sortButton}
           onPress={() => setShowSortModal(true)}
           activeOpacity={0.7}
         >
-          <SwapVertIcon size={15} color="#0F172A" />
-          <Text style={styles.sortButtonText}>
+          <SwapVertIcon size={14} color="#64748B" />
+          <Text style={styles.sortButtonText} numberOfLines={1}>
             {getSortOptionLabel(sortOption)}
+          </Text>
+          <ChevronDownIcon size={14} color="#94A3B8" />
+        </TouchableOpacity>
+
+        {/* Dedicated Company Include/Exclude Others Toggle */}
+        <TouchableOpacity
+          style={[
+            styles.othersTogglePill,
+            includeOthers ? styles.othersTogglePillActive : styles.othersTogglePillInactive,
+          ]}
+          onPress={() => handleToggleIncludeOthers(!includeOthers)}
+          activeOpacity={0.75}
+        >
+          <View style={[styles.toggleDot, includeOthers ? styles.toggleDotActive : styles.toggleDotInactive]} />
+          <Text
+            style={[
+              styles.othersToggleText,
+              includeOthers ? styles.othersToggleTextActive : styles.othersToggleTextInactive,
+              { fontSize: scaledFontSize(11) }
+            ]}
+            numberOfLines={1}
+          >
+            {includeOthers ? 'Others: ON' : 'Others: OFF'}
           </Text>
         </TouchableOpacity>
       </View>
@@ -580,7 +669,15 @@ export function CompanyCascadingView({
           totalItems={totalItems}
           perPage={perPage}
           onPageChange={setCurrentPage}
-          onOpenPerPageModal={() => setShowPerPageModal(true)}
+          onOpenPerPageModal={() => {
+            trackMobileActivity('modal_opened', {
+              modal_name: 'PerPageModal',
+              view: 'CompanyCascadingView',
+              level,
+              current_per_page: perPage,
+            });
+            setShowPerPageModal(true);
+          }}
         />
       )}
 
@@ -620,6 +717,12 @@ export function CompanyCascadingView({
                       perPage === num && styles.perPageOptionSelected,
                     ]}
                     onPress={() => {
+                      trackMobileActivity('modal_option_selected', {
+                        modal_name: 'PerPageModal',
+                        view: 'CompanyCascadingView',
+                        level,
+                        selected_items_per_page: num,
+                      });
                       setPerPage(num);
                       setCurrentPage(1);
                       setShowPerPageModal(false);
@@ -735,11 +838,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
-    borderRadius: 10,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: '#E2E8F0',
     paddingHorizontal: 10,
-    height: 38,
+    height: 40,
     gap: 8,
   },
   searchInput: {
@@ -752,27 +855,64 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
-    borderRadius: 10,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: '#E2E8F0',
     paddingHorizontal: 10,
-    height: 38,
+    height: 40,
   },
   sortButton: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
-    borderRadius: 10,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: '#E2E8F0',
     paddingHorizontal: 10,
-    height: 38,
-    gap: 6,
+    height: 40,
+    gap: 4,
   },
   sortButtonText: {
     fontSize: 12,
     fontWeight: '700',
     color: '#0F172A',
+  },
+  othersTogglePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    height: 40,
+    gap: 5,
+  },
+  othersTogglePillInactive: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#E2E8F0',
+  },
+  othersTogglePillActive: {
+    backgroundColor: '#EFF6FF',
+    borderColor: '#38BDF8',
+  },
+  toggleDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  toggleDotInactive: {
+    backgroundColor: '#94A3B8',
+  },
+  toggleDotActive: {
+    backgroundColor: '#0284C7',
+  },
+  othersToggleText: {
+    fontWeight: '700',
+  },
+  othersToggleTextInactive: {
+    color: '#64748B',
+  },
+  othersToggleTextActive: {
+    color: '#0284C7',
   },
   scrollContainer: {
     flex: 1,

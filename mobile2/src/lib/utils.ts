@@ -129,21 +129,22 @@ export function normalizeCompanyList(rawCompanies: any[], pinnedCompanyName?: st
     }
   }
 
-  const targetPinned = (pinnedCompanyName || userCompanyName || 'Rajasthan Liquor Limited').toLowerCase().trim();
+  const targetPinned = (pinnedCompanyName || userCompanyName || '').toLowerCase().trim();
   const map = new Map<string, any>();
   for (const c of source) {
     if (!c || !c.name) continue;
     const normName = normalizeCompanyName(c.name || '');
     const normId = normName.toLowerCase().replace(/\s+/g, '-').replace(/\//g, '-');
 
-    const isMatchPinned = normName.toLowerCase().trim() === targetPinned || (targetPinned === 'rajasthan liquor limited' && normName === 'Diageo');
+    const isMatchPinned = targetPinned ? normName.toLowerCase().trim() === targetPinned : false;
+    const isCompanyPinned = Boolean(c.isPinned || isMatchPinned);
 
     if (!map.has(normId)) {
       map.set(normId, {
         ...c,
         id: normId,
         name: normName,
-        isPinned: Boolean(c.isPinned || isMatchPinned),
+        isPinned: isCompanyPinned,
         brands: [...(c.brands || [])],
         data: {
           Daily: { ...(c.data?.Daily || { cases: 0, bottles: 0, bl: 0 }) },
@@ -153,6 +154,9 @@ export function normalizeCompanyList(rawCompanies: any[], pinnedCompanyName?: st
       });
     } else {
       const existing = map.get(normId)!;
+      if (isCompanyPinned) {
+        existing.isPinned = true;
+      }
       // Merge brands without duplication
       const existingBrandIds = new Set(existing.brands.map((b: any) => b.id || b.brand_id || b.name || b.brand_name));
       for (const b of (c.brands || [])) {

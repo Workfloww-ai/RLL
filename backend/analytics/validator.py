@@ -34,12 +34,14 @@ class AnalyticsValidator:
 
 
     def _fetch_all_daily_summary_rows(self, client, target_date: str, hq_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Paginated fetcher for sales_daily_summary excluding company 'Others'."""
+        """Paginated fetcher for sales_daily_summary excluding company 'Others' (capped to prevent worker timeouts)."""
         all_rows = []
         offset = 0
         limit = 1000
+        max_pages = 10
         others_id = self._get_others_company_id(client)
-        while True:
+        page = 0
+        while page < max_pages:
             q = client.table("sales_daily_summary").select("summary_id, company_id, brand_id, depot_id, total_cases, total_bottles, total_bl").eq("sale_date", target_date)
             if hq_id:
                 q = q.eq("headquarters_id", hq_id)
@@ -52,15 +54,18 @@ class AnalyticsValidator:
             if len(rows) < limit:
                 break
             offset += limit
+            page += 1
         return all_rows
 
     def _fetch_all_monthly_summary_rows(self, client, month_start: str, hq_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Paginated fetcher for sales_monthly_summary excluding company 'Others'."""
+        """Paginated fetcher for sales_monthly_summary excluding company 'Others' (capped to prevent worker timeouts)."""
         all_rows = []
         offset = 0
         limit = 1000
+        max_pages = 10
         others_id = self._get_others_company_id(client)
-        while True:
+        page = 0
+        while page < max_pages:
             q = client.table("sales_monthly_summary").select("summary_id, company_id, brand_id, depot_id, total_cases, total_bottles, total_bl").eq("month_start", month_start)
             if hq_id:
                 q = q.eq("headquarters_id", hq_id)
@@ -73,15 +78,21 @@ class AnalyticsValidator:
             if len(rows) < limit:
                 break
             offset += limit
+            page += 1
         return all_rows
 
     def _fetch_mtd_daily_summary_rows(self, client, mtd_start: str, target_date: str, hq_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Paginated fetcher for sales_daily_summary from mtd_start up to target_date excluding company 'Others'."""
+        """
+        Fast fetcher for sales_daily_summary MTD total.
+        Limits pagination to prevent unbounded HTTP request loops on 300k+ row datasets.
+        """
         all_rows = []
         offset = 0
         limit = 1000
+        max_pages = 10  # Cap pagination to prevent worker timeouts
         others_id = self._get_others_company_id(client)
-        while True:
+        page = 0
+        while page < max_pages:
             q = client.table("sales_daily_summary").select("summary_id, total_cases").gte("sale_date", mtd_start).lte("sale_date", target_date)
             if hq_id:
                 q = q.eq("headquarters_id", hq_id)
@@ -94,6 +105,7 @@ class AnalyticsValidator:
             if len(rows) < limit:
                 break
             offset += limit
+            page += 1
         return all_rows
 
     def validate_date_accuracy(

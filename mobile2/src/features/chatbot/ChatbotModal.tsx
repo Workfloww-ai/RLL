@@ -18,6 +18,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { sendChatMessage } from './chatbotApi';
+import { trackMobileActivity } from '../../lib/posthog';
 
 interface QuickReply {
   label: string;
@@ -112,19 +113,43 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
     },
   ]);
 
-  const scrollViewRef = useRef<ScrollView>(null);
+  const scrollViewRef = useRef<React.ComponentRef<typeof ScrollView>>(null);
+  const conversationIdRef = useRef(
+    `mobile-chatbot-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  );
 
   useEffect(() => {
     if (visible) {
+      trackMobileActivity('modal_opened', {
+        modal_name: 'ChatbotModal',
+        period,
+        selected_hq: selectedHq,
+      });
       setTimeout(() => {
         scrollViewRef.current?.scrollToEnd({ animated: true });
       }, 200);
     }
-  }, [visible, messages]);
+  }, [visible, period, selectedHq]);
+
+  const handleCloseChatbot = () => {
+    trackMobileActivity('modal_closed', {
+      modal_name: 'ChatbotModal',
+      total_messages: messages.length,
+    });
+    onClose();
+  };
 
   const handleSend = async (queryText?: string, entityType?: string, entityId?: string) => {
     const textToSend = (queryText || inputQuery).trim();
     if (!textToSend || loading) return;
+
+    trackMobileActivity('chatbot_query_sent', {
+      query: textToSend,
+      period,
+      selected_hq: selectedHq,
+      entity_type: entityType,
+      entity_id: entityId,
+    });
 
     const userMsgId = `usr_${Date.now()}`;
     const userTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -148,7 +173,8 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
         undefined,
         undefined,
         entityType,
-        entityId
+        entityId,
+        conversationIdRef.current
       );
 
       const aiMsgId = `ai_${Date.now()}`;
@@ -181,6 +207,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
   };
 
   const handleReset = () => {
+    conversationIdRef.current = `mobile-chatbot-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setMessages([
       {
         id: `welcome_${Date.now()}`,
@@ -219,7 +246,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
       visible={visible}
       animationType="slide"
       transparent={false}
-      onRequestClose={onClose}
+      onRequestClose={handleCloseChatbot}
       statusBarTranslucent
     >
       <View style={styles.modalBackground}>
@@ -249,7 +276,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
               <TouchableOpacity onPress={handleReset} style={styles.iconBtn} activeOpacity={0.7}>
                 <RefreshOutlineIcon />
               </TouchableOpacity>
-              <TouchableOpacity onPress={onClose} style={styles.closeBtn} activeOpacity={0.7}>
+              <TouchableOpacity onPress={handleCloseChatbot} style={styles.closeBtn} activeOpacity={0.7}>
                 <CloseOutlineIcon />
               </TouchableOpacity>
             </View>

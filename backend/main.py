@@ -38,6 +38,12 @@ import logging
 logger = logging.getLogger("main")
 
 from backend.core.config import settings
+from backend.core.posthog import (
+    posthog_client,
+    posthog_logs_logger,
+    posthog_logs_provider,
+    shutdown_posthog_logs,
+)
 from backend.auth.router import router as auth_router
 from backend.users.router import router as users_router
 from backend.master_data.router import router as master_data_router
@@ -72,7 +78,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Master cache warming initiation notice: {e}")
 
+    if posthog_logs_provider:
+        posthog_logs_logger.info(
+            "FastAPI service started",
+            extra={"service_event": "started", "environment": settings.ENVIRONMENT},
+        )
+
     yield
+    if posthog_logs_provider:
+        posthog_logs_logger.info(
+            "FastAPI service shutting down",
+            extra={"service_event": "stopping", "environment": settings.ENVIRONMENT},
+        )
+        shutdown_posthog_logs()
+    if posthog_client:
+        try:
+            posthog_client.flush()
+        except Exception as exc:
+            logger.warning("PostHog flush failed during shutdown: %s", exc)
     logger.info("Closing Redis connection pool...")
     await close_redis()
 
@@ -89,6 +112,16 @@ app = FastAPI(
 from fastapi.middleware.gzip import GZipMiddleware
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+if posthog_client:
+    from posthog.integrations.asgi import PosthogASGIMiddleware
+    from backend.core.posthog import posthog_request_filter
+
+    app.add_middleware(
+        PosthogASGIMiddleware,
+        client=posthog_client,
+        request_filter=posthog_request_filter,
+    )
 
 allowed_origins = [
     "https://lucidx360.workfloww.ai",

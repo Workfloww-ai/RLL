@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from backend.analytics.service import analytics_service
 from backend.core.security import get_current_user
+from backend.core.posthog import capture_posthog_event
 
 router = APIRouter(
     prefix="/reports", 
@@ -31,6 +32,7 @@ async def export_sales_report(
     format: str = Query("csv", pattern="^(csv|json|excel)$")
 ):
     overview = analytics_service.get_dashboard_overview()
+    capture_posthog_event("sales_report_exported", {"format": format})
     if format == "json":
         return JSONResponse(content=overview)
     return {

@@ -16,6 +16,7 @@ class ChatMessageRequest(BaseModel):
     selected_hq: Optional[str] = Field("All Headquarters", description="Selected Headquarters filter")
     entity_type: Optional[str] = Field(None, description="Optional explicit entity type: licensee, ase, brand, company, group, tsm, depot")
     entity_id: Optional[str] = Field(None, description="Optional explicit entity ID")
+    conversation_id: Optional[str] = Field(None, description="Optional client conversation identifier for AI observability")
 
 
 class ChatbotQuickReply(BaseModel):

@@ -19,6 +19,7 @@ import { MetricsCard } from '../../components/MetricsCard';
 import { SegmentedTabs } from '../../components/SegmentedTabs';
 import { PaginationBar } from '../../components/PaginationBar';
 import { SortModal, SortOptionValue } from '../../components/SortModal';
+import { trackMobileActivity } from '../../lib/posthog';
 import {
   UserIcon,
   UsersIcon,
@@ -110,6 +111,16 @@ export function TsmView({
 
   // Selection Handlers
   const handleSelectTsm = (tsm: TSM) => {
+    const tCases = (tsm as any).total_cases ?? tsm.data?.[period]?.cases ?? 0;
+    const tAses = (tsm as any).total_ases ?? tsm.ases?.length ?? 0;
+    const tName = (tsm as any).tsm_name || tsm.name;
+    trackMobileActivity('mobile_tsm_clicked', {
+      tsm_name: tName,
+      total_cases: tCases,
+      total_ases: tAses,
+      period,
+      selectedHq,
+    });
     setSelectedTsm(tsm);
     setSelectedAse(null);
     setActiveTsmTab('companies'); // Default tab on opening TSM as shown in Image 2!
@@ -118,6 +129,16 @@ export function TsmView({
   };
 
   const handleSelectAse = (ase: ASE) => {
+    const aCases = (ase as any).total_cases ?? ase.data?.[period]?.cases ?? 0;
+    const aName = (ase as any).ase_name || ase.name;
+    const parentTsmName = (selectedTsm as any)?.tsm_name || selectedTsm?.name;
+    trackMobileActivity('mobile_ase_clicked', {
+      tsm_name: parentTsmName,
+      ase_name: aName,
+      total_cases: aCases,
+      period,
+      selectedHq,
+    });
     setSelectedAse(ase);
     setLevel(3);
     resetFilters();
@@ -627,7 +648,15 @@ export function TsmView({
         totalItems={totalItems}
         perPage={perPage}
         onPageChange={(page) => setCurrentPage(page)}
-        onOpenPerPageModal={() => setShowPerPageModal(true)}
+        onOpenPerPageModal={() => {
+          trackMobileActivity('modal_opened', {
+            modal_name: 'PerPageModal',
+            view: 'TsmView',
+            level,
+            current_per_page: perPage,
+          });
+          setShowPerPageModal(true);
+        }}
         scaleFactor={scaleFactor}
       />
 
@@ -668,6 +697,12 @@ export function TsmView({
                       perPage === num && styles.perPageOptionSelected,
                     ]}
                     onPress={() => {
+                      trackMobileActivity('modal_option_selected', {
+                        modal_name: 'PerPageModal',
+                        view: 'TsmView',
+                        level,
+                        selected_items_per_page: num,
+                      });
                       setPerPage(num);
                       setCurrentPage(1);
                       setShowPerPageModal(false);

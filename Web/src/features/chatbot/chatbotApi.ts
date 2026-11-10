@@ -10,7 +10,8 @@ export async function sendChatMessage(
   period?: string,
   selectedHq?: string,
   entityType?: string,
-  entityId?: string
+  entityId?: string,
+  conversationId?: string
 ) {
   const token = localStorage.getItem('token');
   const res = await fetch(`${API_BASE_URL}/chatbot/query`, {
@@ -25,6 +26,7 @@ export async function sendChatMessage(
       selected_hq: selectedHq,
       entity_type: entityType,
       entity_id: entityId,
+      conversation_id: conversationId,
     }),
   });
   return res.json();
