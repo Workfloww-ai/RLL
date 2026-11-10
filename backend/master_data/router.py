@@ -9,6 +9,7 @@ from backend.master_data.schemas import (
 )
 from backend.db.redis_client import safe_get, safe_set, safe_delete
 from backend.core.security import get_current_user, RoleChecker, developer_only
+from backend.core.posthog import capture_posthog_event
 from backend.core.route import EncryptedRoute
 from backend.core.system_lock import check_system_lock_or_raise
 from backend.services.cache_service import invalidate_others_toggle_cache
@@ -250,6 +251,10 @@ async def update_include_others_tsm_setting(
         f"changed_by={user_email}, user_id={user_id}"
     )
 
+    capture_posthog_event(
+        "system_setting_updated",
+        {"setting": "include_others_in_tsm_sales", "enabled": new_val_bool},
+    )
     return {
         "success": True,
         "setting_key": "include_others_in_tsm_sales",
@@ -308,6 +313,10 @@ async def update_include_others_setting(
         f"changed_by={user_email}, user_id={user_id}"
     )
 
+    capture_posthog_event(
+        "system_setting_updated",
+        {"setting": "include_others_in_sales", "enabled": new_val_bool},
+    )
     return {
         "success": True,
         "setting_key": "include_others_in_sales",

@@ -15,6 +15,7 @@ import { Depot, Period } from '../../types';
 import { formatNumber } from '../../lib/utils';
 import { XIcon, SearchIcon, LocationIcon, ChevronRightIcon } from '../../components/Icons';
 import { DepotListSkeletonList } from '../../components/SkeletonLoaders';
+import { trackMobileActivity } from '../../lib/posthog';
 
 interface DepotsViewProps {
   depots: Depot[];
@@ -34,16 +35,40 @@ export function DepotsView({
   const [searchTerm, setSearchTerm] = useState('');
   const [activeDepot, setActiveDepot] = useState<Depot | null>(null);
 
+  // Track depot detail modal open / close
+  useEffect(() => {
+    if (activeDepot) {
+      trackMobileActivity('modal_opened', {
+        modal_name: 'DepotDetailModal',
+        depot_id: activeDepot.id,
+        depot_name: activeDepot.name,
+        hq_name: activeDepot.hqName,
+        total_brands: activeDepot.brands?.length || 0,
+        period,
+      });
+    }
+  }, [activeDepot, period]);
+
+  const handleCloseDepot = useCallback(() => {
+    if (activeDepot) {
+      trackMobileActivity('modal_closed', {
+        modal_name: 'DepotDetailModal',
+        depot_name: activeDepot.name,
+      });
+    }
+    setActiveDepot(null);
+  }, [activeDepot]);
+
   // Hardware BackHandler to close active depot modal
   useEffect(() => {
     if (!activeDepot) return;
     const onBackPress = () => {
-      setActiveDepot(null);
+      handleCloseDepot();
       return true;
     };
     const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => subscription.remove();
-  }, [activeDepot]);
+  }, [activeDepot, handleCloseDepot]);
 
   // Swipe-down PanResponder gesture to close modal
   const depotPanResponder = useRef(
@@ -53,7 +78,7 @@ export function DepotsView({
       },
       onPanResponderRelease: (_, gestureState) => {
         if (gestureState.dy > 25) {
-          setActiveDepot(null);
+          handleCloseDepot();
         }
       },
     })
@@ -77,7 +102,17 @@ export function DepotsView({
       return (
         <TouchableOpacity
           style={styles.depotCard}
-          onPress={() => setActiveDepot(depot)}
+          onPress={() => {
+            trackMobileActivity('mobile_depot_clicked', {
+              depot_id: depot.id,
+              depot_name: depot.name,
+              hq_name: depot.hqName,
+              cases,
+              bottles,
+              period,
+            });
+            setActiveDepot(depot);
+          }}
           activeOpacity={0.7}
         >
           <View style={styles.depotMainRow}>
@@ -152,12 +187,12 @@ export function DepotsView({
         visible={activeDepot !== null}
         transparent={true}
         animationType="slide"
-        onRequestClose={() => setActiveDepot(null)}
+        onRequestClose={handleCloseDepot}
       >
         <TouchableOpacity
           style={styles.modalOverlay}
           activeOpacity={1}
-          onPress={() => setActiveDepot(null)}
+          onPress={handleCloseDepot}
         >
           <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
             <View style={styles.modalContent}>
@@ -175,7 +210,7 @@ export function DepotsView({
                   <Text style={styles.modalSubtitle}>HQ: {activeDepot?.hqName}</Text>
                 </View>
                 <TouchableOpacity
-                  onPress={() => setActiveDepot(null)}
+                  onPress={handleCloseDepot}
                   style={styles.closeModalBtn}
                   activeOpacity={0.7}
                   hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
@@ -196,7 +231,21 @@ export function DepotsView({
                   const bBottles = Math.round(bRaw.bottles * scaleFactor);
 
                   return (
-                    <View style={styles.brandSalesItem}>
+                    <TouchableOpacity
+                      style={styles.brandSalesItem}
+                      activeOpacity={0.7}
+                      onPress={() => {
+                        trackMobileActivity('modal_item_clicked', {
+                          modal_name: 'DepotDetailModal',
+                          depot_name: activeDepot?.name,
+                          brand_name: item.brandName,
+                          brand_id: item.brandId,
+                          cases: bCases,
+                          bottles: bBottles,
+                          period,
+                        });
+                      }}
+                    >
                       <View style={styles.depotMainRow}>
                         <View style={styles.depotTitleWrapper}>
                           <Text style={styles.brandName}>{item.brandName}</Text>
@@ -208,14 +257,14 @@ export function DepotsView({
                           </View>
                         </View>
                       </View>
-                    </View>
+                    </TouchableOpacity>
                   );
                 }}
               />
 
               {/* Close Button */}
               <TouchableOpacity
-                onPress={() => setActiveDepot(null)}
+                onPress={handleCloseDepot}
                 style={styles.closeBtn}
                 activeOpacity={0.8}
               >

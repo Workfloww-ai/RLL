@@ -6,6 +6,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { X, RefreshCw, Send, Mic, Sparkles } from 'lucide-react';
 import { sendChatMessage } from './chatbotApi';
+import { trackUserClick } from '../../lib/posthog';
 
 interface QuickReply {
   label: string;
@@ -66,9 +67,17 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
   ]);
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const conversationIdRef = useRef(
+    `web-chatbot-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  );
 
   useEffect(() => {
     if (isOpen) {
+      trackUserClick('modal_opened', {
+        modal_name: 'WebChatbotModal',
+        period,
+        selected_hq: selectedHq,
+      });
       setTimeout(() => {
         chatContainerRef.current?.scrollTo({
           top: chatContainerRef.current.scrollHeight,
@@ -76,11 +85,28 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
         });
       }, 150);
     }
-  }, [isOpen, messages]);
+  }, [isOpen, messages, period, selectedHq]);
+
+  const handleCloseChatbot = () => {
+    trackUserClick('modal_closed', {
+      modal_name: 'WebChatbotModal',
+      total_messages: messages.length,
+    });
+    onClose();
+  };
 
   const handleSend = async (queryText?: string, entityType?: string, entityId?: string) => {
     const textToSend = (queryText || inputQuery).trim();
     if (!textToSend || loading) return;
+
+    trackUserClick('chatbot_query_sent', {
+      modal_name: 'WebChatbotModal',
+      query: textToSend,
+      period,
+      selected_hq: selectedHq,
+      entity_type: entityType,
+      entity_id: entityId,
+    });
 
     const userMsgId = `usr_${Date.now()}`;
     const userTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -97,7 +123,14 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
     setLoading(true);
 
     try {
-      const res = await sendChatMessage(textToSend, period, selectedHq, entityType, entityId);
+      const res = await sendChatMessage(
+        textToSend,
+        period,
+        selectedHq,
+        entityType,
+        entityId,
+        conversationIdRef.current
+      );
 
       const aiMsgId = `ai_${Date.now()}`;
       const aiTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -129,6 +162,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
   };
 
   const handleReset = () => {
+    conversationIdRef.current = `web-chatbot-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setMessages([
       {
         id: `welcome_${Date.now()}`,
@@ -192,7 +226,7 @@ export const ChatbotModal: React.FC<ChatbotModalProps> = ({
               <RefreshCw className="w-4 h-4" />
             </button>
             <button
-              onClick={onClose}
+              onClick={handleCloseChatbot}
               className="w-8 h-8 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-center text-slate-500 hover:text-slate-700 transition"
               title="Close"
             >

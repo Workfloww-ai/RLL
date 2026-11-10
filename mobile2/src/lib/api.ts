@@ -589,7 +589,8 @@ export async function fetchMobileSales(
   testLimit?: number,
   isPrefetch: boolean = false,
   level?: string,
-  tsmIncludeOthers?: boolean
+  tsmIncludeOthers?: boolean,
+  includeOthers?: boolean
 ) {
   const token = await getAuthToken();
   if (!token) {
@@ -627,6 +628,9 @@ export async function fetchMobileSales(
     }
     if (tsmIncludeOthers !== undefined) {
       queryParams['tsm_include_others'] = String(tsmIncludeOthers);
+    }
+    if (includeOthers !== undefined) {
+      queryParams['include_others'] = String(includeOthers);
     }
 
     const query = new URLSearchParams(queryParams);
@@ -841,14 +845,15 @@ export async function clearAuthSession() {
   invalidateApiCache();
 }
 
-export async function fetchCascadingGroups(dateFrom?: string, dateTo?: string, period?: string, selectedHq?: string) {
-  logger.info(`fetchCascadingGroups: Fetching active groups (dateFrom: ${dateFrom}, dateTo: ${dateTo}, period: ${period}, selectedHq: ${selectedHq})`);
+export async function fetchCascadingGroups(dateFrom?: string, dateTo?: string, period?: string, selectedHq?: string, includeOthers?: boolean) {
+  logger.info(`fetchCascadingGroups: Fetching active groups (dateFrom: ${dateFrom}, dateTo: ${dateTo}, period: ${period}, selectedHq: ${selectedHq}, includeOthers: ${includeOthers})`);
   try {
     const params = new URLSearchParams();
     if (dateFrom) params.append('date_from', dateFrom);
     if (dateTo) params.append('date_to', dateTo);
     if (period) params.append('period', period);
     if (selectedHq && selectedHq !== 'All Headquarters') params.append('selected_hq', selectedHq);
+    if (includeOthers !== undefined) params.append('include_others', String(includeOthers));
 
     const queryStr = params.toString() ? `?${params.toString()}` : '';
     const res = await apiFetch(`/mobile/cascading/groups${queryStr}`);
@@ -864,8 +869,8 @@ export async function fetchCascadingGroups(dateFrom?: string, dateTo?: string, p
   }
 }
 
-export async function fetchGroupBrands(groupId: string, dateFrom?: string, dateTo?: string, period?: string, selectedHq?: string) {
-  logger.info(`fetchGroupBrands: Fetching brand sales for group ${groupId}`);
+export async function fetchGroupBrands(groupId: string, dateFrom?: string, dateTo?: string, period?: string, selectedHq?: string, includeOthers?: boolean) {
+  logger.info(`fetchGroupBrands: Fetching brand sales for group ${groupId} (includeOthers: ${includeOthers})`);
   try {
     const params = new URLSearchParams();
     if (dateFrom) params.append('date_from', dateFrom);
@@ -875,6 +880,7 @@ export async function fetchGroupBrands(groupId: string, dateFrom?: string, dateT
       params.append('selected_hq', selectedHq);
       params.append('depot_name', selectedHq);
     }
+    if (includeOthers !== undefined) params.append('include_others', String(includeOthers));
 
     const queryStr = params.toString() ? `?${params.toString()}` : '';
     const res = await apiFetch(`/mobile/cascading/groups/${encodeURIComponent(groupId)}/brands${queryStr}`);
@@ -890,8 +896,8 @@ export async function fetchGroupBrands(groupId: string, dateFrom?: string, dateT
   }
 }
 
-export async function fetchGroupLicensees(groupId: string, dateFrom?: string, dateTo?: string, period?: string, selectedHq?: string) {
-  logger.info(`fetchGroupLicensees: Fetching licensees for group ${groupId}`);
+export async function fetchGroupLicensees(groupId: string, dateFrom?: string, dateTo?: string, period?: string, selectedHq?: string, includeOthers?: boolean) {
+  logger.info(`fetchGroupLicensees: Fetching licensees for group ${groupId} (includeOthers: ${includeOthers})`);
   try {
     const params = new URLSearchParams();
     if (dateFrom) params.append('date_from', dateFrom);
@@ -901,6 +907,7 @@ export async function fetchGroupLicensees(groupId: string, dateFrom?: string, da
       params.append('selected_hq', selectedHq);
       params.append('depot_name', selectedHq);
     }
+    if (includeOthers !== undefined) params.append('include_others', String(includeOthers));
 
     const queryStr = params.toString() ? `?${params.toString()}` : '';
     const res = await apiFetch(`/mobile/cascading/groups/${encodeURIComponent(groupId)}/licensees${queryStr}`);
@@ -916,8 +923,8 @@ export async function fetchGroupLicensees(groupId: string, dateFrom?: string, da
   }
 }
 
-export async function fetchLicenseeBrandSales(licenseeId: string, dateFrom?: string, dateTo?: string, period?: string, selectedHq?: string) {
-  logger.info(`fetchLicenseeBrandSales: Fetching brand sales for licensee ${licenseeId}`);
+export async function fetchLicenseeBrandSales(licenseeId: string, dateFrom?: string, dateTo?: string, period?: string, selectedHq?: string, includeOthers?: boolean) {
+  logger.info(`fetchLicenseeBrandSales: Fetching brand sales for licensee ${licenseeId} (includeOthers: ${includeOthers})`);
   try {
     const params = new URLSearchParams();
     if (dateFrom) params.append('date_from', dateFrom);
@@ -927,6 +934,7 @@ export async function fetchLicenseeBrandSales(licenseeId: string, dateFrom?: str
       params.append('selected_hq', selectedHq);
       params.append('depot_name', selectedHq);
     }
+    if (includeOthers !== undefined) params.append('include_others', String(includeOthers));
 
     const queryStr = params.toString() ? `?${params.toString()}` : '';
     const res = await apiFetch(`/mobile/cascading/licensees/${encodeURIComponent(licenseeId)}/brand-sales${queryStr}`);
@@ -947,11 +955,12 @@ export async function fetchMobileCompanies(
   dateTo?: string,
   selectedHq: string = 'All Headquarters',
   isPrefetch: boolean = false,
-  forceRefresh: boolean = false
+  forceRefresh: boolean = false,
+  includeOthers?: boolean
 ) {
   const cleanHq = selectedHq ? selectedHq.trim() : 'All Headquarters';
-  const fastKey = `companies_v4_${cleanHq}_${period}_${dateTo || 'latest'}`;
-  logger.info(`fetchMobileCompanies: period=${period}, dateTo=${dateTo}, selectedHq=${cleanHq}, isPrefetch=${isPrefetch}, forceRefresh=${forceRefresh}`);
+  const fastKey = `companies_v4_${cleanHq}_${period}_${dateTo || 'latest'}_${includeOthers ? 'inc1' : 'inc0'}`;
+  logger.info(`fetchMobileCompanies: period=${period}, dateTo=${dateTo}, selectedHq=${cleanHq}, isPrefetch=${isPrefetch}, forceRefresh=${forceRefresh}, includeOthers=${includeOthers}`);
 
   // 1. FastStorage 0ms synchronous read (pre-fetched background queue or previous session)
   if (!forceRefresh) {
@@ -961,7 +970,7 @@ export async function fetchMobileCompanies(
       // Background silent revalidation
       if (!isPrefetch) {
         setTimeout(() => {
-          fetchMobileCompaniesNetwork(period, dateTo, cleanHq, fastKey, true).catch(() => {});
+          fetchMobileCompaniesNetwork(period, dateTo, cleanHq, fastKey, true, false, includeOthers).catch(() => {});
         }, 50);
       }
       return cachedObj;
@@ -969,7 +978,7 @@ export async function fetchMobileCompanies(
   }
 
   // 2. Fetch from live network
-  return fetchMobileCompaniesNetwork(period, dateTo, cleanHq, fastKey, isPrefetch, forceRefresh);
+  return fetchMobileCompaniesNetwork(period, dateTo, cleanHq, fastKey, isPrefetch, forceRefresh, includeOthers);
 }
 
 async function fetchMobileCompaniesNetwork(
@@ -978,7 +987,8 @@ async function fetchMobileCompaniesNetwork(
   selectedHq: string = 'All Headquarters',
   fastKey?: string,
   isPrefetch: boolean = false,
-  forceRefresh: boolean = false
+  forceRefresh: boolean = false,
+  includeOthers?: boolean
 ) {
   let signal: AbortSignal | undefined = undefined;
 
@@ -997,6 +1007,7 @@ async function fetchMobileCompaniesNetwork(
     if (dateTo) params.append('date', dateTo);
     if (selectedHq) params.append('selected_hq', selectedHq);
     if (forceRefresh) params.append('refresh', 'true');
+    if (includeOthers !== undefined) params.append('include_others', String(includeOthers));
 
     const res = await apiFetch(`/mobile/companies?${params.toString()}`, signal ? { signal } : undefined);
     if (!res.ok) {
@@ -1033,14 +1044,21 @@ async function fetchMobileCompaniesNetwork(
   }
 }
 
-export async function fetchCompanyBrands(companyId: string, dateFrom?: string, dateTo?: string, selectedHq?: string) {
-  logger.info(`fetchCompanyBrands: Fetching brand sales for company ${companyId} (dateFrom: ${dateFrom}, dateTo: ${dateTo}, hq: ${selectedHq})`);
+export async function fetchCompanyBrands(
+  companyId: string,
+  dateFrom?: string,
+  dateTo?: string,
+  selectedHq?: string,
+  includeOthers?: boolean
+) {
+  logger.info(`fetchCompanyBrands: Fetching brand sales for company ${companyId} (dateFrom: ${dateFrom}, dateTo: ${dateTo}, hq: ${selectedHq}, includeOthers: ${includeOthers})`);
   try {
     const params = new URLSearchParams();
     params.append('company_id', companyId);
     if (dateFrom) params.append('date_from', dateFrom);
     if (dateTo) params.append('date_to', dateTo);
     if (selectedHq && selectedHq !== 'All Headquarters') params.append('hq_name', selectedHq);
+    if (includeOthers !== undefined) params.append('include_others', String(includeOthers));
 
     const token = await getAuthToken();
     const res = await apiFetch(`/mobile/cascading/company-brands?${params.toString()}`, {

@@ -15,6 +15,7 @@ import {
 import { Company, Period } from '../../types';
 import { formatNumber } from '../../lib/utils';
 import { GroupListSkeletonList } from '../../components/SkeletonLoaders';
+import { trackMobileActivity } from '../../lib/posthog';
 import {
   XIcon,
   SearchIcon,
@@ -47,6 +48,39 @@ export function BrandModal({
   const [showSortDropdown, setShowSortDropdown] = useState<boolean>(false);
   const [dropdownPos, setDropdownPos] = useState<{ top: number; right: number }>({ top: 250, right: 16 });
   const sortBtnRef = useRef<React.ComponentRef<typeof View>>(null);
+  const modalOpenTimeRef = useRef<number>(0);
+
+  // Track modal open with specified company metrics
+  useEffect(() => {
+    if (company) {
+      const compName = company.company_name || (company as any).name || 'Unknown Company';
+      const compId = company.company_id || (company as any).id;
+      const compCases = company.data?.[period]?.cases ?? company.cases ?? 0;
+      modalOpenTimeRef.current = Date.now();
+      trackMobileActivity('modal_opened', {
+        modal_name: 'BrandModal',
+        company_name: compName,
+        company_id: compId,
+        total_cases: compCases,
+        rank: (company as any).rank,
+        growth: (company as any).growth,
+        period,
+        total_brands: company.brands?.length || 0,
+      });
+    }
+  }, [company, period]);
+
+  const handleCloseModal = () => {
+    if (company) {
+      const durationSec = Math.round((Date.now() - modalOpenTimeRef.current) / 1000);
+      trackMobileActivity('modal_closed', {
+        modal_name: 'BrandModal',
+        company_name: company.company_name || (company as any).name,
+        duration_seconds: durationSec,
+      });
+    }
+    onClose();
+  };
 
   // Reset search and sort when company changes
   useEffect(() => {
@@ -65,12 +99,12 @@ export function BrandModal({
         setShowSortDropdown(false);
         return true;
       }
-      onClose();
+      handleCloseModal();
       return true;
     };
     const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => subscription.remove();
-  }, [company, showSortDropdown, onClose]);
+  }, [company, showSortDropdown, handleCloseModal]);
 
   // Swipe-down PanResponder gesture to close modal on swipe down from header
   const panResponder = useRef(
@@ -80,7 +114,7 @@ export function BrandModal({
       },
       onPanResponderRelease: (_, gestureState) => {
         if (gestureState.dy > 25) {
-          onClose();
+          handleCloseModal();
         }
       },
     })
@@ -160,7 +194,7 @@ export function BrandModal({
       visible={company !== null}
       transparent={true}
       animationType="slide"
-      onRequestClose={onClose}
+      onRequestClose={handleCloseModal}
       statusBarTranslucent
     >
       <KeyboardAvoidingView
@@ -171,7 +205,7 @@ export function BrandModal({
         <TouchableOpacity
           style={StyleSheet.absoluteFill}
           activeOpacity={1}
-          onPress={onClose}
+          onPress={handleCloseModal}
         />
 
         {/* Modal Bottom Sheet Content */}
@@ -193,7 +227,7 @@ export function BrandModal({
             </View>
 
             <TouchableOpacity
-              onPress={onClose}
+              onPress={handleCloseModal}
               style={styles.closeModalBtn}
               activeOpacity={0.7}
               hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
@@ -279,7 +313,21 @@ export function BrandModal({
                 const bBottles = Math.round(rawBData.bottles * scaleFactor);
 
                 return (
-                  <View style={styles.brandCard}>
+                  <TouchableOpacity
+                    style={styles.brandCard}
+                    activeOpacity={0.7}
+                    onPress={() => {
+                      trackMobileActivity('modal_item_clicked', {
+                        modal_name: 'BrandModal',
+                        company_name: company.name,
+                        brand_name: item.name,
+                        brand_id: item.id,
+                        cases: bCases,
+                        bottles: bBottles,
+                        period,
+                      });
+                    }}
+                  >
                     <View style={styles.brandMainRow}>
                       <View style={styles.brandTitleWrapper}>
                         <Text style={styles.brandName}>{item.name}</Text>
@@ -292,7 +340,7 @@ export function BrandModal({
                         </View>
                       </View>
                     </View>
-                  </View>
+                  </TouchableOpacity>
                 );
               }}
             />
@@ -332,6 +380,13 @@ export function BrandModal({
                   onPress={() => {
                     setSortBy(opt.key as BrandSortOption);
                     setShowSortDropdown(false);
+                    trackMobileActivity('modal_option_selected', {
+                      modal_name: 'BrandModal',
+                      company_name: company.name,
+                      option_type: 'sort',
+                      option_value: opt.key,
+                      option_label: opt.label,
+                    });
                   }}
                   activeOpacity={0.75}
                 >

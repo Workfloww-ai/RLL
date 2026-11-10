@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { setTenantId } from '../lib/apiClient';
 import { API_BASE_URL } from '../config';
+import { initPosthog } from '../lib/posthog';
 
 export interface TenantConfig {
   tenantId: string;
@@ -54,6 +55,10 @@ export function useTenantConfig() {
             const resolvedId = data.tenant_id || storedTenantId || '';
             if (resolvedId) {
               setTenantId(resolvedId);
+            }
+
+            if (data.posthog_project_token) {
+              initPosthog(data.posthog_project_token, data.posthog_host);
             }
 
             setConfig({

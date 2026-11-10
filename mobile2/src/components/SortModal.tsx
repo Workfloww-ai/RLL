@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   TouchableWithoutFeedback,
 } from 'react-native';
 import { XIcon } from './Icons';
+import { trackMobileActivity } from '../lib/posthog';
 
 export type SortOptionValue = string;
 
@@ -44,14 +45,33 @@ export function SortModal<T extends string = string>({
 }: SortModalProps<T>) {
   const scaledFontSize = (base: number) => Math.round(base * scaleFactor);
 
+  useEffect(() => {
+    if (visible) {
+      trackMobileActivity('modal_opened', {
+        modal_name: 'SortModal',
+        title,
+        current_sort: String(selectedOption),
+      });
+    }
+  }, [visible, title, selectedOption]);
+
+  const handleClose = () => {
+    trackMobileActivity('modal_closed', {
+      modal_name: 'SortModal',
+      title,
+      selected_sort: String(selectedOption),
+    });
+    onClose();
+  };
+
   return (
     <Modal
       visible={visible}
       transparent
       animationType="fade"
-      onRequestClose={onClose}
+      onRequestClose={handleClose}
     >
-      <TouchableWithoutFeedback onPress={onClose}>
+      <TouchableWithoutFeedback onPress={handleClose}>
         <View style={styles.overlay}>
           <TouchableWithoutFeedback>
             <View style={styles.modalCard}>
@@ -59,7 +79,7 @@ export function SortModal<T extends string = string>({
                 <Text style={[styles.headerTitle, { fontSize: scaledFontSize(16) }]}>
                   {title}
                 </Text>
-                <TouchableOpacity onPress={onClose} activeOpacity={0.7} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <TouchableOpacity onPress={handleClose} activeOpacity={0.7} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                   <XIcon size={scaledFontSize(18)} color="#64748B" />
                 </TouchableOpacity>
               </View>
@@ -74,6 +94,12 @@ export function SortModal<T extends string = string>({
                       isSelected && styles.selectedOptionRow,
                     ]}
                     onPress={() => {
+                      trackMobileActivity('modal_option_selected', {
+                        modal_name: 'SortModal',
+                        title,
+                        selected_sort: String(opt.value),
+                        sort_label: opt.label,
+                      });
                       onSelectOption(opt.value);
                       onClose();
                     }}

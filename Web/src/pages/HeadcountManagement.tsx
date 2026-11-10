@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import FileUpload from '../components/FileUpload';
-import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X, RefreshCw, RotateCcw, ChevronUp, ChevronDown, ArrowUpDown, ChevronLeft, ChevronRight, Mail, Phone, ArrowLeft, Clock, Lock, Eye, EyeOff, Key } from 'lucide-react';
+import { UserPlus, Search, Trash2, Edit2, UploadCloud, User as UserIcon, Check, X, RefreshCw, RotateCcw, ChevronUp, ChevronDown, ArrowUpDown, ChevronLeft, ChevronRight, Mail, Phone, ArrowLeft, Clock, Lock, Eye, EyeOff, Key, AlertCircle } from 'lucide-react';
 import { User } from '../types';
 import { API_BASE_URL } from '../config';
 import { useToast } from '../contexts/ToastContext';
 import { useSystemLock } from '../contexts/SystemLockContext';
+import { trackUserClick } from '../lib/posthog';
 
 const INITIAL_USERS: User[] = [];
 
@@ -552,6 +553,17 @@ export default function HeadcountManagement() {
     return Array.from(managers).sort();
   }, [users]);
 
+  // Active ASEs without a reporting manager / TSM assigned
+  const unmappedAseUsers = useMemo(() => {
+    return users.filter((u) => {
+      if (!u || !u.isActive) return false;
+      const r = (u.role || '').toUpperCase();
+      const isAse = r === 'ASE' || r === 'TERRITORY EXECUTIVE' || r.includes('ASE');
+      const isUnmapped = !u.reportingManager || u.reportingManager === 'Unassigned' || u.reportingManager.toLowerCase() === 'none';
+      return isAse && isUnmapped;
+    });
+  }, [users]);
+
   // Comprehensive manager options for dropdowns (prioritizes TSMs, Leaders, and Admins)
   const managerOptions = useMemo(() => {
     const list: { id: string; name: string; role: string }[] = [];
@@ -643,7 +655,12 @@ export default function HeadcountManagement() {
       if (statusFilter === 'inactive' && u.isActive !== false) return false;
 
       // Manager filter
-      if (managerFilter !== 'all' && u.reportingManager !== managerFilter) return false;
+      if (managerFilter === '__unassigned_tsm__') {
+        const isUnmapped = !u.reportingManager || u.reportingManager === 'Unassigned' || u.reportingManager.toLowerCase() === 'none';
+        if (!isUnmapped) return false;
+      } else if (managerFilter !== 'all' && u.reportingManager !== managerFilter) {
+        return false;
+      }
 
       return true;
     });
@@ -723,6 +740,58 @@ export default function HeadcountManagement() {
         </div>
       )}
 
+      {/* Unmapped ASE Warning Alert */}
+      {unmappedAseUsers.length > 0 && (
+        <div className="bg-amber-50 border border-amber-300 text-amber-950 rounded-xl px-4 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shrink-0 shadow-2xs">
+          <div className="flex items-start sm:items-center gap-2.5">
+            <div className="p-1.5 bg-amber-100 rounded-lg shrink-0 text-amber-800">
+              <AlertCircle className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-bold text-amber-950 text-xs">
+                  TSM Mapping Issue: {unmappedAseUsers.length} Active ASE{unmappedAseUsers.length > 1 ? 's' : ''} Missing Reporting Manager
+                </span>
+                <span className="px-2 py-0.5 bg-amber-200 text-amber-900 font-extrabold text-[10px] rounded-full uppercase tracking-wider">
+                  Needs Action
+                </span>
+              </div>
+              <p className="text-[11px] text-amber-800 mt-0.5 leading-snug">
+                Sales for ASEs without an assigned TSM are omitted from TSM views in the mobile app and dashboards.
+                {unmappedAseUsers.length <= 3 ? (
+                  <> Affected: <strong className="font-semibold text-amber-950">{unmappedAseUsers.map(u => u.name).join(', ')}</strong></>
+                ) : (
+                  <> Affected: <strong className="font-semibold text-amber-950">{unmappedAseUsers.slice(0, 3).map(u => u.name).join(', ')}</strong> and {unmappedAseUsers.length - 3} more</>
+                )}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+            {managerFilter === '__unassigned_tsm__' ? (
+              <button
+                type="button"
+                onClick={() => setManagerFilter('all')}
+                className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 font-bold rounded-lg text-xs shadow-2xs transition-all cursor-pointer whitespace-nowrap"
+              >
+                Show All Users
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setManagerFilter('__unassigned_tsm__');
+                  setRoleFilter('all');
+                  setStatusFilter('active');
+                }}
+                className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-lg text-xs shadow-2xs transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5"
+              >
+                <span>Filter Unmapped ASEs ({unmappedAseUsers.length})</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Integrated Control Toolbar */}
       <div className="bg-white py-2 px-3 rounded-xl border border-slate-200/80 shadow-2xs flex flex-wrap items-center gap-3 text-xs shrink-0">
         <div className="relative flex-1 min-w-[180px]">
@@ -785,6 +854,35 @@ export default function HeadcountManagement() {
           >
             Inactive <span className="ml-1 text-[10px] px-1.5 py-0.2 rounded-full bg-rose-100 text-rose-800">{users.filter(u => !u.isActive).length}</span>
           </button>
+          {unmappedAseUsers.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                if (managerFilter === '__unassigned_tsm__') {
+                  setManagerFilter('all');
+                } else {
+                  setManagerFilter('__unassigned_tsm__');
+                  setStatusFilter('active');
+                  setRoleFilter('all');
+                }
+              }}
+              className={`px-2 py-1 text-xs font-bold rounded-md transition-all cursor-pointer flex items-center gap-1 ${
+                managerFilter === '__unassigned_tsm__'
+                  ? 'bg-amber-500 text-white shadow-2xs'
+                  : 'text-amber-800 hover:bg-amber-100'
+              }`}
+              title="Click to toggle unassigned ASEs"
+            >
+              <span>⚠️ Needs TSM</span>
+              <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                managerFilter === '__unassigned_tsm__'
+                  ? 'bg-white/30 text-white'
+                  : 'bg-amber-200 text-amber-900'
+              }`}>
+                {unmappedAseUsers.length}
+              </span>
+            </button>
+          )}
         </div>
 
         <div className="flex items-center gap-1.5">
@@ -792,9 +890,18 @@ export default function HeadcountManagement() {
           <select
             value={managerFilter}
             onChange={(e) => setManagerFilter(e.target.value)}
-            className="px-2.5 py-1 bg-slate-50 border border-slate-200/80 rounded-lg font-bold text-slate-700 text-xs focus:outline-none focus:border-[#0D3B8E]"
+            className={`px-2.5 py-1 border rounded-lg font-bold text-xs focus:outline-none focus:border-[#0D3B8E] ${
+              managerFilter === '__unassigned_tsm__'
+                ? 'bg-amber-100 border-amber-400 text-amber-900'
+                : 'bg-slate-50 border-slate-200/80 text-slate-700'
+            }`}
           >
             <option value="all">All Managers</option>
+            {unmappedAseUsers.length > 0 && (
+              <option value="__unassigned_tsm__" className="font-bold text-amber-800 bg-amber-50">
+                ⚠️ Unassigned / Needs TSM ({unmappedAseUsers.length})
+              </option>
+            )}
             {uniqueManagers.map(m => (
               <option key={m} value={m}>{m}</option>
             ))}
@@ -1384,9 +1491,28 @@ export default function HeadcountManagement() {
                               ))}
                           </select>
                         ) : (
-                          <p className={`text-xs font-bold truncate ${!user.reportingManager || user.reportingManager === "Unassigned" ? "text-slate-400 italic" : "text-slate-700"}`}>
-                            {user.reportingManager || "Unassigned"}
-                          </p>
+                          (() => {
+                            const r = (user.role || '').toUpperCase();
+                            const isAse = r === 'ASE' || r === 'TERRITORY EXECUTIVE' || r.includes('ASE');
+                            const isUnmapped = !user.reportingManager || user.reportingManager === 'Unassigned' || user.reportingManager.toLowerCase() === 'none';
+                            if (isAse && user.isActive && isUnmapped) {
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={() => handleEditClick(user)}
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-200 transition-colors cursor-pointer"
+                                  title="Click to assign TSM / Reporting Manager"
+                                >
+                                  <span>⚠️ Needs TSM</span>
+                                </button>
+                              );
+                            }
+                            return (
+                              <p className={`text-xs font-bold truncate ${!user.reportingManager || user.reportingManager === "Unassigned" ? "text-slate-400 italic" : "text-slate-700"}`}>
+                                {user.reportingManager || "Unassigned"}
+                              </p>
+                            );
+                          })()
                         )}
                       </td>
 
@@ -1450,6 +1576,12 @@ export default function HeadcountManagement() {
                                 disabled={isLocked || savingId === user.id}
                                 onMouseDown={(e) => e.preventDefault()}
                                 onClick={() => {
+                                  trackUserClick('modal_opened', {
+                                    modal_name: 'ResetAdminPasswordModal',
+                                    target_user_id: user.id,
+                                    target_user_name: user.name,
+                                    target_user_email: user.email,
+                                  });
                                   setResetPasswordModalUser(user);
                                   setNewPasswordVal('');
                                   setConfirmPasswordVal('');
@@ -1590,7 +1722,13 @@ export default function HeadcountManagement() {
               </div>
               <button
                 type="button"
-                onClick={() => setResetPasswordModalUser(null)}
+                onClick={() => {
+                  trackUserClick('modal_closed', {
+                    modal_name: 'ResetAdminPasswordModal',
+                    target_user_name: resetPasswordModalUser.name,
+                  });
+                  setResetPasswordModalUser(null);
+                }}
                 className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 cursor-pointer"
               >
                 <X className="w-4 h-4" />

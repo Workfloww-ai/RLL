@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
   Modal,
   View,
@@ -8,6 +8,7 @@ import {
   TouchableWithoutFeedback,
 } from 'react-native';
 import { CalendarIcon, RefreshIcon } from './Icons';
+import { trackMobileActivity } from '../lib/posthog';
 
 interface NoDataModalProps {
   visible: boolean;
@@ -22,14 +23,40 @@ export const NoDataModal: React.FC<NoDataModalProps> = ({
   onClose,
   selectedDate,
 }) => {
+  useEffect(() => {
+    if (visible) {
+      trackMobileActivity('modal_opened', {
+        modal_name: 'NoDataModal',
+        selected_date: selectedDate,
+      });
+    }
+  }, [visible, selectedDate]);
+
+  const handleReset = () => {
+    trackMobileActivity('modal_action_clicked', {
+      modal_name: 'NoDataModal',
+      action: 'reset_to_latest_date',
+      selected_date: selectedDate,
+    });
+    onReset();
+  };
+
+  const handleClose = () => {
+    trackMobileActivity('modal_closed', {
+      modal_name: 'NoDataModal',
+      selected_date: selectedDate,
+    });
+    onClose();
+  };
+
   return (
     <Modal
       visible={visible}
       transparent
       animationType="fade"
-      onRequestClose={onClose}
+      onRequestClose={handleClose}
     >
-      <TouchableWithoutFeedback onPress={onClose}>
+      <TouchableWithoutFeedback onPress={handleClose}>
         <View style={styles.overlay}>
           <TouchableWithoutFeedback>
             <View style={styles.modalCard}>
@@ -52,7 +79,7 @@ export const NoDataModal: React.FC<NoDataModalProps> = ({
               {/* Action Buttons */}
               <TouchableOpacity
                 style={styles.resetBtn}
-                onPress={onReset}
+                onPress={handleReset}
                 activeOpacity={0.8}
               >
                 <RefreshIcon size={16} color="#FFFFFF" />
@@ -61,7 +88,7 @@ export const NoDataModal: React.FC<NoDataModalProps> = ({
 
               <TouchableOpacity
                 style={styles.dismissBtn}
-                onPress={onClose}
+                onPress={handleClose}
                 activeOpacity={0.7}
               >
                 <Text style={styles.dismissBtnText}>Dismiss</Text>

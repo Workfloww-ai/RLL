@@ -25,6 +25,14 @@ export const CompanyCard = React.memo(function CompanyCard({
 
   const isPinned = Boolean(company.isPinned);
 
+  // Derive active sold brand count for current period to match Level 2 drilldown perfectly
+  const activeBrands = (company.brands || []).filter((b: any) => {
+    const pCases = b.data?.[period]?.cases ?? b.cases ?? 0;
+    const pBottles = b.data?.[period]?.bottles ?? b.bottles ?? 0;
+    return pCases > 0 || pBottles > 0;
+  });
+  const brandCount = (activeBrands.length > 0 || cases > 0) ? activeBrands.length : (company.brands?.length || 0);
+
   return (
     <TouchableOpacity
       style={[
@@ -51,7 +59,7 @@ export const CompanyCard = React.memo(function CompanyCard({
 
           <View style={styles.subtextRow}>
             <Text style={styles.subtext}>
-              {company.brands.length} {company.brands.length === 1 ? 'Brand' : 'Brands'}
+              {brandCount} {brandCount === 1 ? 'Brand' : 'Brands'}
             </Text>
           </View>
         </View>

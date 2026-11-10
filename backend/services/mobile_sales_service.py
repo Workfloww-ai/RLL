@@ -443,38 +443,8 @@ def build_sales_response(
 
 def prewarm_mobile_sales() -> Dict[str, Any]:
     """
-    Phase 4 Cache Egress Pre-Warming:
-    Pre-warms the mobile sales response cache for primary periods (Daily, MTD, YTD)
-    immediately after summary generation to guarantee <20ms API egress latency.
+    Deprecated: Modern mobile endpoints consume mobile_companies_service and
+    mobile_tsm_sales_json_rpc. Retained as safe no-op to prevent running
+    unindexed legacy queries that saturate database connections.
     """
-    client = get_supabase_client()
-    if not client:
-        return {"prewarmed": 0, "status": "mock"}
-
-    _MASTER_CACHE["timestamp"] = 0.0
-    latest_date = _resolve_target_date(client, None, None)
-
-    prewarmed_count = 0
-    periods = ["Daily", "MTD", "YTD"]
-    for p in periods:
-        try:
-            res = build_sales_response(period=p, date_from=None, date_to=latest_date, selected_hq="All Headquarters")
-            if res:
-                prewarmed_count += 1
-                redis_key = f"rll:mobile:sales:{p}:All Headquarters:{latest_date}"
-                try:
-                    import asyncio
-                    from backend.db.redis_client import safe_set
-                    try:
-                        loop = asyncio.get_running_loop()
-                        import json
-                        loop.create_task(safe_set(redis_key, json.dumps(res, default=str), ttl=300))
-                    except RuntimeError:
-                        pass
-                except Exception as e_red:
-                    logger.debug(f"Redis prewarm set notice for key {redis_key}: {e_red}")
-        except Exception as e:
-            logger.warning(f"prewarm_mobile_sales error for period {p}: {e}")
-
-    logger.info(f"Phase 4 Cache Egress Pre-Warming: Pre-warmed {prewarmed_count} mobile sales cache responses for latest date {latest_date}.")
-    return {"prewarmed": prewarmed_count, "latest_date": latest_date}
+    return {"prewarmed": 0, "status": "deprecated"}

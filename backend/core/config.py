@@ -1,4 +1,5 @@
 import logging
+from functools import lru_cache
 from typing import Any
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -32,6 +33,10 @@ class Settings(BaseSettings):
     PORT: int = 8000
     ENVIRONMENT: str = "development"
     PAYLOAD_ENCRYPTION_KEY: str = ""
+
+    # PostHog analytics (optional so missing configuration never blocks startup)
+    POSTHOG_PROJECT_TOKEN: str = ""
+    POSTHOG_HOST: str = ""
     
     # Supabase credentials (strictly decoupled from application JWT signing)
     SUPABASE_URL: str = ""
@@ -201,4 +206,10 @@ class Settings(BaseSettings):
         # (SUPABASE_SECRET_KEY, SUPABASE_KEY, etc.) be reused as JWT_SECRET.
         # Application JWT signing and Supabase DB access remain strictly decoupled.
 
-settings = Settings()
+@lru_cache
+def get_settings() -> Settings:
+    """Get cached application settings for dependency injection and tests."""
+    return Settings()
+
+
+settings = get_settings()

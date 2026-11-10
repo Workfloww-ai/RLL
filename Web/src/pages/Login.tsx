@@ -3,6 +3,7 @@ import { LogIn, Mail, ArrowLeft, CheckCircle2, Lock, Send, KeyRound, Eye, EyeOff
 import { motion, AnimatePresence } from 'motion/react';
 import { API_BASE_URL } from '../config';
 import { secureFetch, setTenantId } from '../lib/apiClient';
+import { identifyWebUser } from '../lib/posthog';
 
 interface LoginProps {
   onLogin: (userName: string) => void;
@@ -86,6 +87,7 @@ export default function Login({ onLogin }: LoginProps) {
           localStorage.setItem('refresh_token', data.refresh_token);
         }
         if (data.user) {
+          identifyWebUser(data.user);
           localStorage.setItem('user', JSON.stringify(data.user));
           if (data.user.tenant_id) {
             localStorage.setItem('rll_tenant_id', String(data.user.tenant_id));

@@ -104,6 +104,20 @@ async def invalidate_analytics_cache() -> int:
     return total_purged
 
 
+async def invalidate_cascading_cache() -> int:
+    """
+    Invalidate all cascading Redis and in-memory caches.
+    """
+    cascading_count = await safe_delete_pattern("rll:cascading:*")
+    try:
+        from backend.services.mobile_cascading_service import clear_cascading_cache
+        clear_cascading_cache()
+    except Exception as e:
+        logger.warning(f"Notice clearing in-memory cascading cache: {e}")
+    logger.info(f"Invalidated {cascading_count} cached cascading entries.")
+    return cascading_count
+
+
 async def invalidate_others_toggle_cache() -> int:
     """
     Purges system settings dict cache and all analytics/mobile sales caches when include_others_in_sales setting changes,
@@ -117,6 +131,8 @@ async def invalidate_others_toggle_cache() -> int:
     except Exception as e:
         logger.debug(f"Notice clearing tenant cache: {e}")
     total_purged = await invalidate_analytics_cache()
+    cascading_purged = await invalidate_cascading_cache()
+    total_purged += cascading_purged
     try:
         await prewarm_cache_egress()
     except Exception as e:
@@ -159,15 +175,7 @@ async def prewarm_cache_egress() -> Dict[str, Any]:
     except Exception as e_c:
         logger.warning(f"prewarm_cache_egress mobile companies notice: {e_c}")
 
-    # 2. Pre-warm legacy mobile sales cache responses
-    try:
-        from backend.services.mobile_sales_service import prewarm_mobile_sales
-        m_res = prewarm_mobile_sales()
-        results["mobile_sales"] = m_res
-    except Exception as e_m:
-        logger.warning(f"prewarm_cache_egress mobile sales notice: {e_m}")
-
-    # 2. Pre-warm analytics cache patterns
+    # 2. Analytics summary cache indicator
     try:
         import time as _t
         analytics_prewarm_key = "rll:analytics:summary:latest"

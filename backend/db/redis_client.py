@@ -450,6 +450,7 @@ ALLOWED_CACHE_PREFIXES = (
     "rll:dashboard:",
     "rll:mobile:sales:",
     "rll:mobile:companies:",
+    "rll:cascading:",
     "rll:cache:",
 )
 

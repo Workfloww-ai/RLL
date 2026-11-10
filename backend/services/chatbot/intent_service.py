@@ -11,9 +11,11 @@ Architecture:
 
 import logging
 import re
+import time
 from typing import Any, Dict, Optional, Tuple
 
 from backend.core.config import settings
+from backend.core.posthog import capture_posthog_ai_generation
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +146,8 @@ class ChatbotIntentService:
         pending_context: Optional[Dict[str, Any]] = None,
         explicit_entity_type: Optional[str] = None,
         explicit_entity_id: Optional[str] = None,
+        posthog_distinct_id: Optional[str] = None,
+        posthog_session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Parses user prompt into target intent name and parameters.
@@ -695,7 +699,12 @@ class ChatbotIntentService:
             try:
                 from concurrent.futures import ThreadPoolExecutor
                 with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(cls._llm_intent_fallback, user_message)
+                    future = executor.submit(
+                        cls._llm_intent_fallback,
+                        user_message,
+                        posthog_distinct_id,
+                        posthog_session_id,
+                    )
                     llm_parsed = future.result(timeout=1.5)
                     if llm_parsed and llm_parsed.get("intent") in VALID_INTENTS:
                         return {
@@ -765,10 +774,16 @@ class ChatbotIntentService:
         return None
 
     @classmethod
-    def _llm_intent_fallback(cls, prompt: str) -> Optional[Dict[str, Any]]:
+    def _llm_intent_fallback(
+        cls,
+        prompt: str,
+        posthog_distinct_id: Optional[str] = None,
+        posthog_session_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Optional Gemini LLM intent extractor. Returns intent & parameters dict."""
         import json
         import urllib.request
+        import uuid
 
         api_key = getattr(settings, "GEMINI_API_KEY", None)
         if not api_key:
@@ -793,9 +808,49 @@ class ChatbotIntentService:
             }],
             "generationConfig": {"response_mime_type": "application/json"}
         }
+        generation_properties = {
+            "$ai_trace_id": str(uuid.uuid4()),
+            "$ai_session_id": posthog_session_id,
+            "$ai_model": "gemini-1.5-flash",
+            "$ai_provider": "gemini",
+            "$ai_span_name": "chatbot_intent_fallback",
+            "$ai_input": [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": prompt},
+            ],
+        }
+        started_at = time.perf_counter()
 
-        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
-        with urllib.request.urlopen(req, timeout=2.0) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        try:
+            req = urllib.request.Request(
+                url, data=json.dumps(payload).encode("utf-8"), headers=headers
+            )
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                http_status = getattr(resp, "status", 200)
+
             text = data["candidates"][0]["content"]["parts"][0]["text"]
+            usage = data.get("usageMetadata") or {}
+            generation_properties.update(
+                {
+                    "$ai_output_choices": [{"role": "assistant", "content": text}],
+                    "$ai_latency": time.perf_counter() - started_at,
+                    "$ai_http_status": http_status,
+                }
+            )
+            if isinstance(usage.get("promptTokenCount"), int):
+                generation_properties["$ai_input_tokens"] = usage["promptTokenCount"]
+            if isinstance(usage.get("candidatesTokenCount"), int):
+                generation_properties["$ai_output_tokens"] = usage["candidatesTokenCount"]
+            capture_posthog_ai_generation(posthog_distinct_id, generation_properties)
             return json.loads(text)
+        except Exception as exc:
+            generation_properties.update(
+                {
+                    "$ai_latency": time.perf_counter() - started_at,
+                    "$ai_is_error": True,
+                    "$ai_error": type(exc).__name__,
+                }
+            )
+            capture_posthog_ai_generation(posthog_distinct_id, generation_properties)
+            raise

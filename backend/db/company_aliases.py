@@ -66,6 +66,10 @@ def normalize_company_name(cname: str) -> str:
     if sanitized in COMPANY_ALIASES:
         return COMPANY_ALIASES[sanitized]
 
+    # Guardrail: Competitor companies prefixed with COMP_ must never be aliased to primary manufacturers
+    if lowered.startswith("comp_"):
+        return cleaned
+
     # 3. Heuristic / regex fallback checks
     if "rajasthan" in lowered and "liquor" in lowered:
         return "Rajasthan Liquor Limited"
@@ -73,7 +77,7 @@ def normalize_company_name(cname: str) -> str:
         return "Rajasthan Liquor Limited"
     if "diageo" in lowered:
         return "Diageo"
-    if "inbrew" in lowered or ("in" in lowered and "brew" in lowered):
+    if "inbrew" in lowered or "in brew" in lowered or "in-brew" in lowered:
         return "Inbrew"
     if "willam" in lowered and "grant" in lowered:
         return "William Grants"

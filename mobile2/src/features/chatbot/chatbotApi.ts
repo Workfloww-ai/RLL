@@ -12,7 +12,8 @@ export async function sendChatMessage(
   dateFrom?: string,
   dateTo?: string,
   entityType?: string,
-  entityId?: string
+  entityId?: string,
+  conversationId?: string
 ) {
   const res = await apiFetch('/chatbot/query', {
     method: 'POST',
@@ -25,6 +26,7 @@ export async function sendChatMessage(
       date_to: dateTo,
       entity_type: entityType,
       entity_id: entityId,
+      conversation_id: conversationId,
     }),
   });
   if (!res.ok) {

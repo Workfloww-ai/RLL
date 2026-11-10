@@ -7,6 +7,7 @@ import time
 from typing import Dict, Any, List
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from backend.core.security import get_current_user
+from backend.core.posthog import capture_posthog_event
 from backend.schemas.chatbot import ChatMessageRequest, ChatMessageResponse
 from backend.services.chatbot.analytics_service import ChatbotAnalyticsService
 from backend.services.tenant_service import get_chatbot_enabled_setting_async
@@ -58,6 +59,15 @@ async def query_sales_chatbot(
             tenant_id=current_user.get("tenant_id"),
             execution_time_ms=latency_ms,
             is_successful=not response.clarification_needed
+        )
+
+        capture_posthog_event(
+            "chatbot_query_completed",
+            {
+                "intent": response.intent or "unknown",
+                "cache_hit": bool(response.cache_hit),
+                "clarification_needed": bool(response.clarification_needed),
+            },
         )
 
         cache_status_str = "HIT (Served from Redis RAM)" if response.cache_hit else "MISS (Fetched from PostgreSQL DB)"

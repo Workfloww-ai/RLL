@@ -6,6 +6,7 @@ from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks, status, Header, Query
 from backend.uploads.service import import_pipeline, upload_batches_db, upload_logs_db
 from backend.core.security import RoleChecker, get_current_user
+from backend.core.posthog import capture_posthog_event
 from backend.core.system_lock import check_system_lock_or_raise, check_upload_cooldown_or_raise
 from backend.db.client import get_supabase
 from backend.db.supabase_client import _clean_error_msg
@@ -146,6 +147,10 @@ async def upload_excel(
         )
 
         logger.info(f"[UPLOAD-ENDPOINT] File '{filename}' successfully queued (Batch ID: {batch_record['upload_batch_id']})")
+        capture_posthog_event(
+            "upload_queued",
+            {"file_extension": file_ext, "file_size_mb": round(file_mb, 2)},
+        )
         return batch_record
     except ValueError as ve:
         logger.warning(f"Excel upload failed validation for file {filename} by user {user_id}: {str(ve)}")
@@ -325,6 +330,7 @@ async def cancel_upload_batch(
     """
     logger.info(f"User {current_user.get('user_id')} requested cancellation and rollback for batch {batch_id}")
     result = import_pipeline.cancel_batch(batch_id)
+    capture_posthog_event("upload_cancelled", {"cancellation_scope": "batch"})
     return result
 
 
@@ -350,6 +356,7 @@ async def cancel_active_upload(
 
     b_id = active_batch.get("batch_id") or active_batch.get("upload_batch_id")
     result = import_pipeline.cancel_batch(b_id)
+    capture_posthog_event("upload_cancelled", {"cancellation_scope": "active_batch"})
     return result
 
 
@@ -398,6 +405,21 @@ def humanize_upload_error(column_name: Optional[str], raw_message: str) -> Dict[
             "suggested_action": "Check database health and network latency.",
             "entity": "Database Request",
             "group_key": "db_timeout"
+        }
+
+    # 1b. Duplicate Sheet / Overlapping Data Detection
+    if "SHEET_ALREADY_UPLOADED" in msg or "already present in database" in msg.lower() or "sheet already present" in msg.lower():
+        m_file = re.search(r"(?:from previous upload|previously loaded from|from previous file|from)\s*['\"]([^'\"]+)['\"]", msg, re.IGNORECASE)
+        prev_file = m_file.group(1) if m_file else ""
+        return {
+            "category": "Duplicate Sheet Guard",
+            "category_key": "duplicate_sheet",
+            "severity": "critical",
+            "friendly_title": f"Sheet Already Present: {prev_file or 'Duplicate Sales Data'}",
+            "friendly_explanation": msg,
+            "suggested_action": f"This sheet or its sales dates already exist in the database ({prev_file or 'previous upload'}). Do not upload the same sheet twice to avoid doubling sales numbers. Purge the existing batch first if you intend to replace it.",
+            "entity": f"Existing Sheet: {prev_file or val}",
+            "group_key": "sheet_already_uploaded"
         }
 
     # 2. 1:1 Constraints & Hierarchy Integrity Checks

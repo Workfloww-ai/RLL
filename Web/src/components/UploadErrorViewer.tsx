@@ -202,6 +202,8 @@ export default function UploadErrorViewer({ initialBatchId, refreshTrigger = 0, 
 
   const getCategoryBadgeClass = (category: string) => {
     switch (category) {
+      case 'Duplicate Sheet Guard':
+        return 'bg-amber-100 text-amber-900 border-amber-300 font-bold';
       case 'Master Data Mapping':
         return 'bg-amber-50 text-amber-800 border-amber-200';
       case 'Employee Hierarchy':
@@ -221,6 +223,8 @@ export default function UploadErrorViewer({ initialBatchId, refreshTrigger = 0, 
 
   const getCategoryIcon = (category: string) => {
     switch (category) {
+      case 'Duplicate Sheet Guard':
+        return <Layers className="w-4 h-4 text-amber-600 shrink-0" />;
       case 'Master Data Mapping':
         return <HelpCircle className="w-4 h-4 text-amber-600 shrink-0" />;
       case 'Employee Hierarchy':

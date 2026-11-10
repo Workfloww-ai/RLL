@@ -41,11 +41,18 @@ def _get_cached_company_categories() -> Dict[str, str]:
     return _COMPANY_CATEGORIES_CACHE
 
 
-def is_others_company(company_name: Optional[str] = None, category: Optional[str] = None) -> bool:
+def is_others_company(
+    company_name: Optional[str] = None,
+    category: Optional[str] = None,
+    include_others: Optional[bool] = None
+) -> bool:
     """Helper to check if company matches 'Others' exclusion criteria (category == 'Others') when inclusion toggle is OFF."""
-    from backend.services.tenant_service import get_include_others_setting_sync
-    if get_include_others_setting_sync():
+    if include_others is True:
         return False
+    if include_others is None:
+        from backend.services.tenant_service import get_include_others_setting_sync
+        if get_include_others_setting_sync():
+            return False
     if category is not None and str(category).strip():
         return str(category).strip().lower() == "others"
     if not company_name:
@@ -74,23 +81,28 @@ def get_company_brands_sales_service(
     date_from: str,
     date_to: str,
     hq_name: Optional[str] = None,
-    exclude_company: str = "Others"
+    exclude_company: str = "Others",
+    include_others: Optional[bool] = None,
 ) -> List[Dict[str, Any]]:
     """
     Fetches brand sales metrics for a selected company.
     Supports system_settings include_others_in_sales toggle and explicit company drilldowns.
+    Strictly filters out brands with 0 sales for the active period so Level 1 and Level 2 match.
     """
     if not company_id:
         return []
 
-    from backend.services.tenant_service import get_include_others_setting_sync
-    include_others = get_include_others_setting_sync()
+    if include_others is None:
+        from backend.services.tenant_service import get_include_others_setting_sync
+        effective_inc = get_include_others_setting_sync()
+    else:
+        effective_inc = include_others
 
     clean_target = str(company_id).strip().lower()
     is_target_others = clean_target in ("others", "other") or clean_target == "30739e78-c438-4a60-a5cb-6d9e9e79d1c6"
 
     # If include_others is True OR the user explicitly drilled into Others, do NOT exclude Others
-    eff_exclude = "" if (include_others or is_target_others) else exclude_company
+    eff_exclude = "" if (effective_inc or is_target_others) else exclude_company
 
     try:
         raw_data = fetch_company_brand_sales_db(
@@ -104,21 +116,23 @@ def get_company_brands_sales_service(
         result = []
         for item in raw_data:
             comp_name = item.get("company_name", "")
-            if not is_target_others and is_others_company(comp_name):
+            if not is_target_others and is_others_company(comp_name, include_others=effective_inc):
                 continue
             
             cases = round(float(item.get("total_cases") or 0.0), 2)
             bottles = round(float(item.get("total_bottles") or 0.0), 2)
             lic_count = int(item.get("selling_licensees_count") or 0)
 
-            result.append({
-                "brand_id": str(item.get("brand_id")),
-                "brand_name": str(item.get("brand_name")),
-                "company_name": str(comp_name),
-                "selling_licensees_count": lic_count,
-                "total_cases": cases,
-                "total_bottles": bottles,
-            })
+            # Strictly include only brands that actually recorded sales in the period
+            if cases > 0 or bottles > 0:
+                result.append({
+                    "brand_id": str(item.get("brand_id")),
+                    "brand_name": str(item.get("brand_name")),
+                    "company_name": str(comp_name),
+                    "selling_licensees_count": lic_count,
+                    "total_cases": cases,
+                    "total_bottles": bottles,
+                })
 
         return result
     except Exception as e:

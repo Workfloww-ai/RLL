@@ -23,6 +23,7 @@ import {
   fetchGroupLicensees,
   fetchLicenseeBrandSales,
 } from '../../lib/api';
+import { trackMobileActivity } from '../../lib/posthog';
 import { MetricsCard } from '../../components/MetricsCard';
 import { SegmentedTabs, GroupTabType } from '../../components/SegmentedTabs';
 import { PaginationBar } from '../../components/PaginationBar';
@@ -45,6 +46,8 @@ interface GroupsCascadingViewProps {
   scaleFactor: number;
   selectedHq?: string;
   loading?: boolean;
+  includeOthers?: boolean;
+  onToggleIncludeOthers?: (include: boolean) => void;
   onRefresh?: () => Promise<void> | void;
 }
 
@@ -55,8 +58,27 @@ export function GroupsCascadingView({
   scaleFactor,
   selectedHq,
   loading: parentLoading = false,
+  includeOthers: propIncludeOthers,
+  onToggleIncludeOthers,
   onRefresh,
 }: GroupsCascadingViewProps) {
+  const [localIncludeOthers, setLocalIncludeOthers] = useState<boolean>(false);
+  const includeOthers = propIncludeOthers !== undefined ? propIncludeOthers : localIncludeOthers;
+
+  const handleToggleIncludeOthers = (val: boolean) => {
+    trackMobileActivity('filter_changed', {
+      filter_name: 'groups_include_others',
+      value: val,
+      period,
+      selected_hq: selectedHq,
+    });
+    if (onToggleIncludeOthers) {
+      onToggleIncludeOthers(val);
+    } else {
+      setLocalIncludeOthers(val);
+    }
+  };
+
   // Navigation level:
   // Level 1 = Groups List
   // Level 2 = Group Detail (Brands Tab & Licensees Tab)
@@ -90,7 +112,7 @@ export function GroupsCascadingView({
   );
 
   // Caching refs
-  const cacheKey = `${dateFrom}_${dateTo}_${period}_${selectedHq || 'All'}`;
+  const cacheKey = `v2_${dateFrom}_${dateTo}_${period}_${selectedHq || 'All'}_${includeOthers ? 'inc1' : 'inc0'}`;
   const groupsCacheRef = useRef<{ key: string; data: any[] } | null>(null);
   const groupLicenseesCacheRef = useRef<Map<string, any[]>>(new Map());
   const groupBrandsCacheRef = useRef<Map<string, any[]>>(new Map());
@@ -111,6 +133,23 @@ export function GroupsCascadingView({
     setLicenseeBrands([]);
     setLoading(true);
   }, [dateFrom, dateTo, period, selectedHq]);
+
+  // When includeOthers toggle changes: refresh data for the currently active level in-place!
+  useEffect(() => {
+    groupsCacheRef.current = null;
+    groupLicenseesCacheRef.current.clear();
+    groupBrandsCacheRef.current.clear();
+    licenseeBrandsCacheRef.current.clear();
+    setCurrentPage(1);
+
+    if (level === 1) {
+      loadGroups(true, true);
+    } else if (level === 2 && selectedGroup) {
+      loadGroupDetails(selectedGroup.group_id, true);
+    } else if (level === 3 && selectedLicensee) {
+      loadLicenseeBrands(selectedLicensee.licensee_id, true);
+    }
+  }, [includeOthers]);
 
   // Reset search and pagination
   const resetFilters = () => {
@@ -135,7 +174,7 @@ export function GroupsCascadingView({
     setLoading(true);
 
     try {
-      const data = await fetchCascadingGroups(dateFrom, dateTo, period, selectedHq);
+      const data = await fetchCascadingGroups(dateFrom, dateTo, period, selectedHq, includeOthers);
       const result = data || [];
       if (result.length > 0) {
         groupsCacheRef.current = { key: cacheKey, data: result };
@@ -167,8 +206,8 @@ export function GroupsCascadingView({
     try {
       // Fetch licensees and brand sales for group concurrently
       const [licsData, brandsData] = await Promise.all([
-        fetchGroupLicensees(groupId, dateFrom, dateTo, period, selectedHq),
-        fetchGroupBrands(groupId, dateFrom, dateTo, period, selectedHq),
+        fetchGroupLicensees(groupId, dateFrom, dateTo, period, selectedHq, includeOthers),
+        fetchGroupBrands(groupId, dateFrom, dateTo, period, selectedHq, includeOthers),
       ]);
 
       const lics = licsData || [];
@@ -198,7 +237,7 @@ export function GroupsCascadingView({
 
     setLoading(true);
     try {
-      const data = await fetchLicenseeBrandSales(licenseeId, dateFrom, dateTo, period, selectedHq);
+      const data = await fetchLicenseeBrandSales(licenseeId, dateFrom, dateTo, period, selectedHq, includeOthers);
       const result = data || [];
       licenseeBrandsCacheRef.current.set(key, result);
       setLicenseeBrands(result);
@@ -217,6 +256,14 @@ export function GroupsCascadingView({
 
   // Selection handlers
   const handleSelectGroup = (g: any) => {
+    trackMobileActivity('mobile_group_clicked', {
+      group_name: g.group_name || g.name,
+      group_id: g.group_id,
+      total_cases: g.total_cases,
+      total_licensees: g.total_licensees,
+      period,
+      selectedHq,
+    });
     setSelectedGroup(g);
     setSelectedLicensee(null);
     setActiveGroupTab('brands'); // Default to Brands tab as shown in Image 2!
@@ -226,6 +273,14 @@ export function GroupsCascadingView({
   };
 
   const handleSelectLicensee = (l: any) => {
+    trackMobileActivity('mobile_licensee_clicked', {
+      group_name: selectedGroup?.group_name,
+      licensee_name: l.licensee_name || l.name,
+      licensee_id: l.licensee_id,
+      total_cases: l.total_cases,
+      period,
+      selectedHq,
+    });
     setSelectedLicensee(l);
     setLevel(3);
     resetFilters();
@@ -303,12 +358,39 @@ export function GroupsCascadingView({
     return licenseeBrands; // Level 3
   }, [level, activeGroupTab, groups, groupBrands, licensees, licenseeBrands]);
 
+  // Helper to determine if an item is an 'Others' competitor brand
+  const isOthersBrand = useCallback((item: any): boolean => {
+    if (!item) return false;
+    const name = String(item.company_name || item.companyName || item.name || '').toLowerCase().trim();
+    const cat = String(item.category || '').toLowerCase().trim();
+    const id = String(item.company_id || item.companyId || item.brand_id || item.brandId || '').toLowerCase().trim();
+    return (
+      cat === 'others' ||
+      name === 'others' ||
+      name === 'other' ||
+      name.startsWith('others ') ||
+      name.startsWith('other ') ||
+      name.startsWith('comp_') ||
+      name.startsWith('comp ') ||
+      id === 'others' ||
+      id.startsWith('comp_') ||
+      id.startsWith('comp ')
+    );
+  }, []);
+
   // Filter & Sort active list
   const filteredAndSortedList = useMemo(() => {
     let result = [...activeRawList];
 
+    // Dedicated Others Company Filter: Exclude Others / COMP_ brands when toggle is OFF
+    if (!includeOthers) {
+      if ((level === 2 && activeGroupTab === 'brands') || level === 3) {
+        result = result.filter((item) => !isOthersBrand(item));
+      }
+    }
+
     if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
+      const q = searchQuery.toLowerCase().trim();
       result = result.filter((item) => {
         const name = (
           item.group_name ||
@@ -339,7 +421,7 @@ export function GroupsCascadingView({
     });
 
     return result;
-  }, [activeRawList, searchQuery, sortOption]);
+  }, [activeRawList, searchQuery, sortOption, includeOthers, level, activeGroupTab, isOthersBrand]);
 
   // Pagination calculations
   const totalItems = filteredAndSortedList.length;
@@ -368,9 +450,25 @@ export function GroupsCascadingView({
   // Header breadcrumb summary metrics (for Level 2 & Level 3 drilldown)
   const headerMetrics = useMemo(() => {
     if (level === 2 && selectedGroup) {
-      const cases = getItemCases(selectedGroup);
       const licCount = Math.round(Number(selectedGroup.total_licensees || selectedGroup.licensee_count || 0));
-      const brandCount = Math.round(Number(selectedGroup.total_brands || selectedGroup.brand_count || 0));
+
+      let brandCount = Math.round(Number(selectedGroup.total_brands || selectedGroup.brand_count || 0));
+      if (groupBrands && groupBrands.length > 0) {
+        if (!includeOthers) {
+          brandCount = groupBrands.filter((b) => !isOthersBrand(b)).length;
+        } else {
+          brandCount = groupBrands.length;
+        }
+      }
+
+      let cases = getItemCases(selectedGroup);
+      if (activeGroupTab === 'brands' && groupBrands && groupBrands.length > 0 && !includeOthers) {
+        const nonOthersCases = groupBrands
+          .filter((b) => !isOthersBrand(b))
+          .reduce((sum, b) => sum + getItemCases(b), 0);
+        cases = Number(nonOthersCases.toFixed(2));
+      }
+
       const licText = `${licCount} ${licCount === 1 ? 'Outlet' : 'Outlets'}`;
       const brandText = `${brandCount} ${brandCount === 1 ? 'Brand' : 'Brands'}`;
       const subtitle = `${licText}  •  ${brandText}`;
@@ -381,7 +479,13 @@ export function GroupsCascadingView({
       };
     }
     if (level === 3 && selectedLicensee) {
-      const cases = getItemCases(selectedLicensee);
+      let cases = getItemCases(selectedLicensee);
+      if (licenseeBrands && licenseeBrands.length > 0 && !includeOthers) {
+        const nonOthersCases = licenseeBrands
+          .filter((b) => !isOthersBrand(b))
+          .reduce((sum, b) => sum + getItemCases(b), 0);
+        cases = Number(nonOthersCases.toFixed(2));
+      }
       const trade = selectedLicensee.trade || selectedLicensee.Trade || 'Off';
       const depot = selectedLicensee.depot_name ? `Depot: ${selectedLicensee.depot_name}` : null;
       const subtitle = depot ? `Trade: ${trade}  •  ${depot}` : `Trade: ${trade}`;
@@ -392,7 +496,7 @@ export function GroupsCascadingView({
       };
     }
     return null;
-  }, [level, selectedGroup, selectedLicensee, getItemCases]);
+  }, [level, selectedGroup, selectedLicensee, getItemCases, groupBrands, licenseeBrands, activeGroupTab, includeOthers, isOthersBrand]);
 
   const getSortOptionLabel = (option: SortOptionValue): string => {
     switch (option) {
@@ -500,6 +604,28 @@ export function GroupsCascadingView({
             {getSortOptionLabel(sortOption)}
           </Text>
           <ChevronDownIcon size={14} color="#94A3B8" />
+        </TouchableOpacity>
+
+        {/* Dedicated Groups Include/Exclude Others Toggle */}
+        <TouchableOpacity
+          style={[
+            styles.othersTogglePill,
+            includeOthers ? styles.othersTogglePillActive : styles.othersTogglePillInactive,
+          ]}
+          onPress={() => handleToggleIncludeOthers(!includeOthers)}
+          activeOpacity={0.75}
+        >
+          <View style={[styles.toggleDot, includeOthers ? styles.toggleDotActive : styles.toggleDotInactive]} />
+          <Text
+            style={[
+              styles.othersToggleText,
+              includeOthers ? styles.othersToggleTextActive : styles.othersToggleTextInactive,
+              { fontSize: scaledFontSize(11) }
+            ]}
+            numberOfLines={1}
+          >
+            {includeOthers ? 'Others: ON' : 'Others: OFF'}
+          </Text>
         </TouchableOpacity>
       </View>
 
@@ -652,7 +778,15 @@ export function GroupsCascadingView({
         totalItems={totalItems}
         perPage={perPage}
         onPageChange={(page) => setCurrentPage(page)}
-        onOpenPerPageModal={() => setShowPerPageModal(true)}
+        onOpenPerPageModal={() => {
+          trackMobileActivity('modal_opened', {
+            modal_name: 'PerPageModal',
+            view: 'GroupsCascadingView',
+            level,
+            current_per_page: perPage,
+          });
+          setShowPerPageModal(true);
+        }}
         scaleFactor={scaleFactor}
       />
 
@@ -693,6 +827,12 @@ export function GroupsCascadingView({
                       perPage === num && styles.perPageOptionSelected,
                     ]}
                     onPress={() => {
+                      trackMobileActivity('modal_option_selected', {
+                        modal_name: 'PerPageModal',
+                        view: 'GroupsCascadingView',
+                        level,
+                        selected_items_per_page: num,
+                      });
                       setPerPage(num);
                       setCurrentPage(1);
                       setShowPerPageModal(false);
@@ -963,5 +1103,42 @@ const styles = StyleSheet.create({
     fontSize: 12.5,
     fontWeight: '800',
     color: '#1D4ED8',
+  },
+  othersTogglePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    height: 40,
+    gap: 5,
+  },
+  othersTogglePillInactive: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#E2E8F0',
+  },
+  othersTogglePillActive: {
+    backgroundColor: '#EFF6FF',
+    borderColor: '#38BDF8',
+  },
+  toggleDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  toggleDotInactive: {
+    backgroundColor: '#94A3B8',
+  },
+  toggleDotActive: {
+    backgroundColor: '#0284C7',
+  },
+  othersToggleText: {
+    fontWeight: '700',
+  },
+  othersToggleTextInactive: {
+    color: '#64748B',
+  },
+  othersToggleTextActive: {
+    color: '#0284C7',
   },
 });
