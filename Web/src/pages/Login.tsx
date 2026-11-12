@@ -511,6 +511,25 @@ export default function Login({ onLogin }: LoginProps) {
           </AnimatePresence>
         </div>
       </motion.div>
+
+      {/* Portal Homepage Footer */}
+      <footer className="mt-8 text-center text-xs text-slate-500 relative z-10 space-y-1.5 pb-6">
+        <div className="flex items-center justify-center gap-3 font-medium">
+          <a
+            href="/termsandservices"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-slate-500 hover:text-[#0D3B8E] hover:underline transition-colors"
+          >
+            Terms of Service
+          </a>
+          <span className="text-slate-300">•</span>
+          <span className="text-slate-400">Enterprise Portal</span>
+        </div>
+        <p className="text-[11px] text-slate-400">
+          © {new Date().getFullYear()} LucidX360 • Workfloww.ai & Rajasthan Liquor Limited. All rights reserved.
+        </p>
+      </footer>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Package, Map, Users, LogOut, Settings, Shield } from 'lucide-react';
+import { Package, Map, Users, LogOut, Settings, Shield, ExternalLink } from 'lucide-react';
 import { ViewState } from '../types';
 import { useTenantConfig } from '../hooks/useTenantConfig';
 import { useSystemLock } from '../contexts/SystemLockContext';
@@ -105,7 +105,7 @@ export default function DashboardLayout({ currentView, onViewChange, onLogout, u
         </nav>
 
         {/* Footer Actions */}
-        <div className="p-3 border-t border-blue-900/40">
+        <div className="p-3 border-t border-blue-900/40 space-y-1">
           <button 
             onClick={onLogout}
             className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-blue-100/80 hover:bg-red-500/20 hover:text-white transition-all duration-200 cursor-pointer"
@@ -113,6 +113,19 @@ export default function DashboardLayout({ currentView, onViewChange, onLogout, u
             <LogOut className="w-4 h-4 shrink-0 text-blue-200/70" />
             <span className="truncate text-left">Sign Out</span>
           </button>
+
+          <div className="px-3.5 pt-1.5 flex items-center justify-between text-[10px] text-blue-200/60">
+            <a
+              href="/termsandservices"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-white hover:underline transition-colors flex items-center gap-1"
+            >
+              <span>Terms of Service</span>
+              <ExternalLink className="w-2.5 h-2.5 opacity-70" />
+            </a>
+            <span>v1.0</span>
+          </div>
         </div>
       </aside>
 
