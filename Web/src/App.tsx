@@ -10,6 +10,7 @@ import TerritoryManagement from './pages/TerritoryManagement';
 import HeadcountManagement from './pages/HeadcountManagement';
 import RoleManagement from './pages/RoleManagement';
 import SystemSettings from './pages/SystemSettings';
+import TermsAndServices from './pages/TermsAndServices';
 import Login from './pages/Login';
 import { ViewState } from './types';
 import { API_BASE_URL } from './config';
@@ -96,6 +97,10 @@ function getUserRoleFromStorage(): string {
 }
 
 export default function App() {
+  const [currentPath, setCurrentPath] = useState<string>(() => {
+    return window.location.pathname.toLowerCase();
+  });
+
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
     return Boolean(localStorage.getItem('token'));
   });
@@ -113,6 +118,15 @@ export default function App() {
 
   const userRole = getUserRoleFromStorage();
   const isDeveloper = userRole === 'developer';
+
+  // Listen for browser navigation changes (Back/Forward)
+  useEffect(() => {
+    const handlePopState = () => {
+      setCurrentPath(window.location.pathname.toLowerCase());
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   // Listen for background session expiration events from apiClient interceptor
   useEffect(() => {
@@ -258,6 +272,21 @@ export default function App() {
       document.title = 'LucidX360 Admin Portal';
     }
   };
+
+  const isTermsRoute = currentPath === '/termsandservices' || 
+                       currentPath === '/termsandservices/' || 
+                       currentPath === '/terms-and-services' || 
+                       currentPath === '/terms-and-services/' || 
+                       currentPath === '/terms' || 
+                       currentPath === '/terms/';
+
+  if (isTermsRoute) {
+    return (
+      <ErrorBoundary>
+        <TermsAndServices />
+      </ErrorBoundary>
+    );
+  }
 
   if (!isAuthenticated) {
     return <Login onLogin={handleLogin} />;

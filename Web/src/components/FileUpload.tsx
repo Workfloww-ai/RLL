@@ -1487,7 +1487,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                     trackUserClick('modal_action_clicked', {
                       modal_name: 'RollbackConfirmModal',
                       action: 'cancel_keep_uploading',
-                      batch_id: fileState.batchId,
+                      batch_id: uploadState.batchId,
                     });
                     setShowRollbackConfirm(false);
                   }}
@@ -1502,7 +1502,7 @@ export default function FileUpload({ title, instructions, accept = ".xlsx, .xls,
                     trackUserClick('modal_action_clicked', {
                       modal_name: 'RollbackConfirmModal',
                       action: 'confirm_rollback_and_cancel',
-                      batch_id: fileState.batchId,
+                      batch_id: uploadState.batchId,
                     });
                     setShowRollbackConfirm(false);
                     await handleCancelUpload();
