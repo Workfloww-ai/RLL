@@ -106,6 +106,7 @@ export function Header({
   const [showHqModal, setShowHqModal] = useState(false);
   const [pickerTarget, setPickerTarget] = useState<'from' | 'to' | null>(null);
   const [showDatePicker, setShowDatePicker] = useState<boolean>(false);
+  const [validationNotice, setValidationNotice] = useState<string | null>(null);
   const [calendarViewDate, setCalendarViewDate] = useState<Date>(() => new Date(2026, 4, 31));
   const [pickerViewMode, setPickerViewMode] = useState<'days' | 'months' | 'years'>('days');
   const [yearRangeStart, setYearRangeStart] = useState<number>(2020);
@@ -146,6 +147,7 @@ export function Header({
 
   const openDatePicker = (target: 'from' | 'to') => {
     setPickerTarget(target);
+    setValidationNotice(null);
     setShowDatePicker(true);
     trackMobileActivity('modal_opened', {
       modal_name: 'DatePickerModal',
@@ -217,14 +219,40 @@ export function Header({
       selected_date: dateStr,
       period,
     });
-    if (pickerTarget === 'to') {
-      setDateTo(dateStr);
-    } else {
+
+    if (period === 'Daily') {
+      setValidationNotice(null);
       setDateFrom(dateStr);
-      if (period === 'Daily') {
-        setDateTo(dateStr);
-      }
+      setDateTo(dateStr);
+      return;
     }
+
+    if (pickerTarget === 'from') {
+      // Start date must always be strictly less than end date
+      if (dateTo && dateStr >= dateTo) {
+        setValidationNotice(`Start date must be earlier than End date (${formatShortDateDisplay(dateTo, true)}).`);
+        return;
+      }
+      setValidationNotice(null);
+      setDateFrom(dateStr);
+    } else {
+      // End date must always be strictly greater than start date
+      if (dateFrom && dateStr <= dateFrom) {
+        setValidationNotice(`End date must be later than Start date (${formatShortDateDisplay(dateFrom, true)}).`);
+        return;
+      }
+      setValidationNotice(null);
+      setDateTo(dateStr);
+    }
+  };
+
+  const handleDoneDatePicker = () => {
+    if (period !== 'Daily' && dateFrom && dateTo && dateFrom >= dateTo) {
+      setValidationNotice('Start date must always be earlier than End date.');
+      return;
+    }
+    setValidationNotice(null);
+    setShowDatePicker(false);
   };
 
   const getCalendarDays = () => {
@@ -426,13 +454,115 @@ export function Header({
                 </Text>
               </View>
               <TouchableOpacity
-                onPress={() => setShowDatePicker(false)}
+                onPress={() => {
+                  setValidationNotice(null);
+                  setShowDatePicker(false);
+                }}
                 style={styles.closeHqModalBtn}
                 activeOpacity={0.7}
               >
                 <XIcon size={16} color="#0D3B8E" />
               </TouchableOpacity>
             </View>
+
+            {/* In-Modal Start Date / End Date Switcher Tabs for Multi-Day Range */}
+            {period !== 'Daily' && (
+              <View style={styles.modalRangeTabs}>
+                <TouchableOpacity
+                  style={[styles.modalRangeTab, pickerTarget === 'from' ? styles.modalRangeTabActive : null]}
+                  onPress={() => {
+                    setPickerTarget('from');
+                    setValidationNotice(null);
+                    if (dateFrom) {
+                      const parts = dateFrom.split('-');
+                      if (parts.length === 3) {
+                        setCalendarViewDate(new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1));
+                      }
+                    }
+                  }}
+                  activeOpacity={0.75}
+                >
+                  <Text style={[styles.modalRangeTabLabel, pickerTarget === 'from' ? styles.modalRangeTabLabelActive : null]}>
+                    Start Date
+                  </Text>
+                  <Text style={[styles.modalRangeTabVal, pickerTarget === 'from' ? styles.modalRangeTabValActive : null]} numberOfLines={1}>
+                    {formatShortDateDisplay(dateFrom, true) || 'Select'}
+                  </Text>
+                </TouchableOpacity>
+
+                <View style={styles.modalRangeArrowContainer}>
+                  <Text style={styles.modalRangeArrow}>→</Text>
+                </View>
+
+                <TouchableOpacity
+                  style={[styles.modalRangeTab, pickerTarget === 'to' ? styles.modalRangeTabActive : null]}
+                  onPress={() => {
+                    setPickerTarget('to');
+                    setValidationNotice(null);
+                    if (dateTo) {
+                      const parts = dateTo.split('-');
+                      if (parts.length === 3) {
+                        setCalendarViewDate(new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1));
+                      }
+                    }
+                  }}
+                  activeOpacity={0.75}
+                >
+                  <Text style={[styles.modalRangeTabLabel, pickerTarget === 'to' ? styles.modalRangeTabLabelActive : null]}>
+                    End Date
+                  </Text>
+                  <Text style={[styles.modalRangeTabVal, pickerTarget === 'to' ? styles.modalRangeTabValActive : null]} numberOfLines={1}>
+                    {formatShortDateDisplay(dateTo, true) || 'Select'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Validation Notice Banner */}
+            {validationNotice && (
+              <View style={styles.validationNoticeBanner}>
+                <Text style={styles.validationNoticeIcon}>⚠️</Text>
+                <Text style={styles.validationNoticeText} numberOfLines={2}>
+                  {validationNotice}
+                </Text>
+                {pickerTarget === 'from' && dateTo && (
+                  <TouchableOpacity
+                    style={styles.switchTargetBtn}
+                    onPress={() => {
+                      setPickerTarget('to');
+                      setValidationNotice(null);
+                      if (dateTo) {
+                        const parts = dateTo.split('-');
+                        if (parts.length === 3) {
+                          setCalendarViewDate(new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1));
+                        }
+                      }
+                    }}
+                    activeOpacity={0.75}
+                  >
+                    <Text style={styles.switchTargetBtnText}>Adjust End Date</Text>
+                  </TouchableOpacity>
+                )}
+                {pickerTarget === 'to' && dateFrom && (
+                  <TouchableOpacity
+                    style={styles.switchTargetBtn}
+                    onPress={() => {
+                      setPickerTarget('from');
+                      setValidationNotice(null);
+                      if (dateFrom) {
+                        const parts = dateFrom.split('-');
+                        if (parts.length === 3) {
+                          setCalendarViewDate(new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1));
+                        }
+                      }
+                    }}
+                    activeOpacity={0.75}
+                  >
+                    <Text style={styles.switchTargetBtnText}>Adjust Start Date</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
 
             <View style={styles.customCalendarCard}>
               <View style={styles.monthNavHeader}>
@@ -552,23 +682,38 @@ export function Header({
                         const todayStr = new Date().toISOString().split('T')[0];
                         const isToday = cell.dateStr === todayStr;
 
+                        const isRangeMode = period !== 'Daily';
+                        const isDisabled = isRangeMode && (
+                          (pickerTarget === 'from' && Boolean(dateTo && cell.dateStr >= dateTo)) ||
+                          (pickerTarget === 'to' && Boolean(dateFrom && cell.dateStr <= dateFrom))
+                        );
+                        const isInRange = isRangeMode && Boolean(
+                          dateFrom && dateTo && cell.dateStr > dateFrom && cell.dateStr < dateTo
+                        );
+                        const isBoundary = isRangeMode && (cell.dateStr === dateFrom || cell.dateStr === dateTo);
+
                         return (
                           <TouchableOpacity
                             key={idx}
                             style={[
                               styles.dayCell,
+                              isInRange && !isSelected ? styles.dayCellInRange : null,
+                              isBoundary && !isSelected ? styles.dayCellBoundary : null,
                               isSelected ? styles.dayCellSelected : null,
-                              isToday && !isSelected ? styles.dayCellToday : null,
+                              isToday && !isSelected && !isInRange ? styles.dayCellToday : null,
+                              isDisabled ? styles.dayCellDisabled : null,
                             ]}
                             onPress={() => handleSelectDay(cell.dateStr)}
-                            activeOpacity={0.7}
+                            activeOpacity={isDisabled ? 0.9 : 0.7}
                           >
                             <Text
                               style={[
                                 styles.dayCellText,
                                 !cell.isCurrent ? styles.dayCellTextMuted : null,
+                                isInRange && !isSelected ? styles.dayCellTextInRange : null,
                                 isToday && !isSelected ? styles.dayCellTextToday : null,
                                 isSelected ? styles.dayCellTextSelected : null,
+                                isDisabled ? styles.dayCellTextDisabled : null,
                               ]}
                             >
                               {cell.day}
@@ -584,7 +729,7 @@ export function Header({
 
             <TouchableOpacity
               style={styles.confirmDateBtn}
-              onPress={() => setShowDatePicker(false)}
+              onPress={handleDoneDatePicker}
               activeOpacity={0.8}
             >
               <Text style={styles.confirmDateBtnText}>Done</Text>
@@ -1038,6 +1183,18 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#0D3B8E',
   },
+  dayCellInRange: {
+    backgroundColor: '#EFF6FF',
+    borderRadius: 4,
+  },
+  dayCellBoundary: {
+    backgroundColor: '#DBEAFE',
+    borderRadius: 17.5,
+  },
+  dayCellDisabled: {
+    opacity: 0.28,
+    backgroundColor: '#F8FAFC',
+  },
   dayCellText: {
     fontSize: 12.5,
     fontWeight: '700',
@@ -1054,6 +1211,104 @@ const styles = StyleSheet.create({
   dayCellTextToday: {
     color: '#0D3B8E',
     fontWeight: '800',
+  },
+  dayCellTextInRange: {
+    color: '#0D3B8E',
+    fontWeight: '700',
+  },
+  dayCellTextDisabled: {
+    color: '#94A3B8',
+    textDecorationLine: 'line-through',
+  },
+  modalRangeTabs: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F1F5F9',
+    borderRadius: 14,
+    padding: 4,
+    marginHorizontal: 16,
+    marginTop: 10,
+    marginBottom: 4,
+  },
+  modalRangeTab: {
+    flex: 1,
+    paddingVertical: 7,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalRangeTabActive: {
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  modalRangeTabLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#64748B',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  modalRangeTabLabelActive: {
+    color: '#0D3B8E',
+    fontWeight: '800',
+  },
+  modalRangeTabVal: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#334155',
+    marginTop: 1,
+  },
+  modalRangeTabValActive: {
+    color: '#0D3B8E',
+    fontWeight: '800',
+  },
+  modalRangeArrowContainer: {
+    paddingHorizontal: 6,
+  },
+  modalRangeArrow: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#94A3B8',
+  },
+  validationNoticeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+    borderRadius: 12,
+    marginHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 2,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 8,
+  },
+  validationNoticeIcon: {
+    fontSize: 14,
+  },
+  validationNoticeText: {
+    flex: 1,
+    fontSize: 11.5,
+    fontWeight: '700',
+    color: '#B91C1C',
+    lineHeight: 15,
+  },
+  switchTargetBtn: {
+    backgroundColor: '#DC2626',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  switchTargetBtnText: {
+    fontSize: 10.5,
+    fontWeight: '800',
+    color: '#FFFFFF',
   },
   confirmDateBtn: {
     backgroundColor: '#0D3B8E',

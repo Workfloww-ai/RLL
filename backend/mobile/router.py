@@ -1774,6 +1774,12 @@ async def get_mobile_sales(
             latest_sale_date = resolve_latest_sale_date(client)
             _MASTER_CACHE["latest_sale_date"] = latest_sale_date
 
+        
+        if date_from and date_to and date_from.strip() and date_to.strip():
+            if date_from.strip() > date_to.strip():
+                logger.warning(f"Inverted date range detected ({date_from} > {date_to}). Normalizing.")
+                date_from, date_to = date_to, date_from
+
         end_date = latest_sale_date
         if date_to and date_to.strip():
             end_date = date_to.strip()
@@ -2117,12 +2123,14 @@ async def get_mobile_sales(
     for comp_id, g in grouped_comp_rows.items():
         master_companies[comp_id] = {
             "id": comp_id,
+            "company_id": g["company_ids"][0] if g.get("company_ids") else None,
+            "company_ids": g.get("company_ids", []),
             "name": g["name"],
             "isPinned": g["isPinned"],
             "hqLocation": g["hqLocation"],
             "data": {
                 "Daily": {"cases": round(g["data"]["Daily"]["cases"], 2), "bottles": round(g["data"]["Daily"]["bottles"], 2), "bl": round(g["data"]["Daily"]["bl"], 2)},
-                "MTD": {"cases": round(g["data"]["MTD"]["cases"], 2), "bottles": round(g["data"]["MTD"]["bottles"], 2), "bl": round(g["data"]["MTD"]["bl"], 2)},
+                "MTD": {"cases": round(g["data"]["MTD"]["cases"], 2), "bottles": round(g["data"]["MTD"]["bottles"], 2), "bl": round(g["data"]["Daily"]["bl"], 2)},
                 "YTD": {"cases": round(g["data"]["YTD"]["cases"], 2), "bottles": round(g["data"]["YTD"]["bottles"], 2), "bl": round(g["data"]["YTD"]["bl"], 2)},
             },
             "brands_map": g["brands_map"]
@@ -2736,10 +2744,16 @@ async def get_cascading_groups_endpoint(
     except Exception:
         pass
 
+    clean_from = date_from.strip() if date_from and date_from.strip() else None
+    clean_to = date_to.strip() if date_to and date_to.strip() else None
+    if clean_from and clean_to and clean_from > clean_to:
+        logger.warning(f"Inverted groups date range detected ({clean_from} > {clean_to}). Swapping.")
+        clean_from, clean_to = clean_to, clean_from
+
     from backend.services.mobile_cascading_service import get_cascading_groups
     return await get_cascading_groups(
-        date_from=date_from,
-        date_to=date_to,
+        date_from=clean_from,
+        date_to=clean_to,
         period=period,
         selected_hq=selected_hq,
         include_others=bool(include_others)
@@ -2856,6 +2870,9 @@ def get_company_brands_endpoint(
 
     clean_to = date_to.strip() if date_to and date_to.strip() else ""
     clean_from = date_from.strip() if date_from and date_from.strip() else ""
+    if clean_from and clean_to and clean_from > clean_to:
+        logger.warning(f"Inverted company-brands date range detected ({clean_from} > {clean_to}). Swapping.")
+        clean_from, clean_to = clean_to, clean_from
     if not clean_to:
         clean_to = _get_latest_sale_date()
     if not clean_from:
@@ -2903,6 +2920,9 @@ def get_brand_licensees_endpoint(
 
     clean_to = date_to.strip() if date_to and date_to.strip() else ""
     clean_from = date_from.strip() if date_from and date_from.strip() else ""
+    if clean_from and clean_to and clean_from > clean_to:
+        logger.warning(f"Inverted company-brands date range detected ({clean_from} > {clean_to}). Swapping.")
+        clean_from, clean_to = clean_to, clean_from
     if not clean_to:
         clean_to = _get_latest_sale_date()
     if not clean_from:
