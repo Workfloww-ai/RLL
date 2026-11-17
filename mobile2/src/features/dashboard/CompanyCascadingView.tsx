@@ -156,9 +156,17 @@ export function CompanyCascadingView({
   const loadCompanyBrands = async (companyObjOrId: any, forceRefresh = false) => {
     const targetId = typeof companyObjOrId === 'string'
       ? companyObjOrId
-      : (companyObjOrId?.company_id || companyObjOrId?.id || companyObjOrId?.name || '');
+      : (companyObjOrId?.company_id || companyObjOrId?.name || companyObjOrId?.id || '');
 
     if (!targetId) return;
+
+    // Optimistically seed from existing company.brands if present
+    if (typeof companyObjOrId === 'object' && companyObjOrId !== null) {
+      const existingBrands = companyObjOrId.brands;
+      if (Array.isArray(existingBrands) && existingBrands.length > 0 && companyBrands.length === 0) {
+        setCompanyBrands(existingBrands);
+      }
+    }
 
     const normKey = getNormalizedCompanyKey(companyObjOrId);
     const key = `${normKey}_${cacheKey}`;
@@ -564,11 +572,7 @@ export function CompanyCascadingView({
         </TouchableOpacity>
       </View>
 
-      {(loading ||
-        parentLoading ||
-        (level === 1 && (companies.length === 0 && !searchQuery.trim())) ||
-        (level === 2 && companyBrands.length === 0 && !searchQuery.trim()) ||
-        (level === 3 && brandLicensees.length === 0 && !searchQuery.trim())) ? (
+      {(loading || parentLoading) ? (
         <View style={styles.scrollContent}>
           {level === 1 ? <CompanyListSkeletonList count={6} /> : <GroupListSkeletonList count={6} />}
         </View>

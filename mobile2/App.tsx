@@ -219,16 +219,24 @@ function MainApp() {
   }, [period, viewMode, selectedHq]);
 
   const handleDateFromChange = useCallback((d: string) => {
+    if (period !== 'Daily' && dateTo && d >= dateTo) {
+      logger.warn(`[DateGuard] Blocked invalid dateFrom (${d}) >= dateTo (${dateTo})`);
+      return;
+    }
     trackFilterChange('date_from', d, { period, viewMode, selectedHq });
     setLoadingSalesData(true);
     setDateFrom(d);
-  }, [period, viewMode, selectedHq]);
+  }, [period, dateTo, viewMode, selectedHq]);
 
   const handleDateToChange = useCallback((d: string) => {
+    if (period !== 'Daily' && dateFrom && d <= dateFrom) {
+      logger.warn(`[DateGuard] Blocked invalid dateTo (${d}) <= dateFrom (${dateFrom})`);
+      return;
+    }
     trackFilterChange('date_to', d, { period, viewMode, selectedHq });
     setLoadingSalesData(true);
     setDateTo(d);
-  }, [period, viewMode, selectedHq]);
+  }, [period, dateFrom, viewMode, selectedHq]);
 
   // Hardware BackHandler for tab history & modals
   useEffect(() => {
