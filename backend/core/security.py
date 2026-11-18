@@ -126,18 +126,30 @@ async def get_current_user(
             except Exception:
                 pass
 
+    auth_detail = "Not authenticated"
     if not email and credentials and credentials.credentials:
         token = credentials.credentials
         if not (token.startswith("demo-token-") or token.startswith("google-token-")):
-            payload = decode_access_token(token)
-            if payload:
-                email = payload.get("sub")
-                user_id = payload.get("user_id")
+            try:
+                payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.ALGORITHM])
+                if payload:
+                    email = payload.get("sub")
+                    user_id = payload.get("user_id")
+            except jwt.ExpiredSignatureError:
+                auth_detail = "Not authenticated: Access token has expired. Please refresh session."
+            except jwt.InvalidSignatureError:
+                auth_detail = "Not authenticated: Invalid token signature or tampered token."
+            except jwt.DecodeError:
+                auth_detail = "Not authenticated: Malformed authentication token."
+            except jwt.PyJWTError as e_jwt:
+                auth_detail = f"Not authenticated: Token verification error ({e_jwt})"
+    elif not email and not session_token:
+        auth_detail = "Not authenticated: Missing Bearer token or session cookie."
 
     if not email:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
+            detail=auth_detail,
             headers={"WWW-Authenticate": "Bearer"},
         )
 

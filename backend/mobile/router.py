@@ -638,6 +638,9 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
     email = credentials.email.lower().strip()
     logger.info(f"Mobile login attempt initiated for user: {email}")
     client = get_supabase()
+    client_ip = request.client.host if (request and request.client) else None
+    user_agent = request.headers.get("user-agent") if request else None
+    req_path = request.url.path if request else "/api/v1/mobile/login"
     
     user_data = None
     
@@ -648,14 +651,33 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
             auth_response = temp_client.auth.sign_in_with_password({"email": email, "password": credentials.password})
             if not auth_response or not auth_response.user:
                 logger.warning(f"Mobile login failed for user {email} (invalid credentials / empty response)")
+                auth_log_service.record_login_failure(
+                    email=email,
+                    reason="Invalid email or password",
+                    client_type="mobile",
+                    login_method="password",
+                    ip_address=client_ip,
+                    user_agent=user_agent,
+                    path=req_path
+                )
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
 
             # 2. Get user profile and role
-            res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active").ilike("email", email).execute()
+            res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, tenant_id, company_id, company_name").ilike("email", email).execute()
             if res.data and len(res.data) > 0:
                 db_user = res.data[0]
                 if not db_user.get("is_active", True):
                     logger.warning(f"Mobile login failed for user {email} (deactivated account)")
+                    auth_log_service.record_login_failure(
+                        email=email,
+                        user_id=str(db_user.get("user_id")),
+                        reason="User account is deactivated",
+                        client_type="mobile",
+                        login_method="password",
+                        ip_address=client_ip,
+                        user_agent=user_agent,
+                        path=req_path
+                    )
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,
                         detail="User account is deactivated"
@@ -668,6 +690,16 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
                 normalized_active = {normalize_role_name(r) for r in active_roles}
                 if not normalized_active.intersection(MOBILE_ACCESS_ROLES_NORMALIZED):
                     logger.warning(f"Mobile login access denied for user {mask_email(email)} (roles {active_roles} lack Mobile permissions)")
+                    auth_log_service.record_login_failure(
+                        email=email,
+                        user_id=str(db_user.get("user_id")),
+                        reason="Access Denied: Mobile app is restricted to field personnel, administrators, and developers.",
+                        client_type="mobile",
+                        login_method="password",
+                        ip_address=client_ip,
+                        user_agent=user_agent,
+                        path=req_path
+                    )
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="Access Denied: Mobile app is restricted to field personnel, administrators, and developers."
@@ -705,10 +737,28 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
         except Exception as e:
             logger.error(f"Error during mobile login for user {email}: {e}")
             if "Invalid login credentials" in str(e):
+                auth_log_service.record_login_failure(
+                    email=email,
+                    reason="Invalid email or password",
+                    client_type="mobile",
+                    login_method="password",
+                    ip_address=client_ip,
+                    user_agent=user_agent,
+                    path=req_path
+                )
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
             logger.warning(f"Supabase users lookup error: {e}")
 
     if not user_data:
+        auth_log_service.record_login_failure(
+            email=email,
+            reason="Invalid email or password",
+            client_type="mobile",
+            login_method="password",
+            ip_address=client_ip,
+            user_agent=user_agent,
+            path=req_path
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password"
@@ -1016,9 +1066,23 @@ async def verify_mobile_otp(req: VerifyOTPRequest, request: Request):
         )
 
     # Standard database OTP verification for all other numbers
+    client_ip = request.client.host if (request and request.client) else None
+    user_agent = request.headers.get("user-agent") if request else None
+    req_path = request.url.path if request else "/api/v1/mobile/verify-otp"
+
     is_valid = verify_otp_from_db(phone, otp_code)
     if not is_valid:
         logger.warning(f"Mobile OTP verification failed for phone: {mask_phone(phone)} - Invalid or expired OTP code")
+        auth_log_service.record_login_failure(
+            phone=phone,
+            email=email,
+            reason="Invalid or expired 6-digit OTP code",
+            client_type="mobile",
+            login_method="otp",
+            ip_address=client_ip,
+            user_agent=user_agent,
+            path=req_path
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired 6-digit OTP code")
 
     # Verification succeeded: clear distributed attempt counter
@@ -1046,6 +1110,17 @@ async def verify_mobile_otp(req: VerifyOTPRequest, request: Request):
             if db_user:
                 if not db_user.get("is_active", True):
                     logger.warning(f"Mobile OTP verification failed for phone: {mask_phone(phone)} - Account deactivated")
+                    auth_log_service.record_login_failure(
+                        phone=phone,
+                        email=db_user.get("email") or email,
+                        user_id=str(db_user["user_id"]),
+                        reason="User account is deactivated",
+                        client_type="mobile",
+                        login_method="otp",
+                        ip_address=client_ip,
+                        user_agent=user_agent,
+                        path=req_path
+                    )
                     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User account is deactivated")
 
                 # 2. Resolve Active Roles and Deterministic Priority
@@ -1057,6 +1132,17 @@ async def verify_mobile_otp(req: VerifyOTPRequest, request: Request):
                     logger.warning(
                         f"Mobile OTP access denied for user {mask_email(db_user.get('email'))}: "
                         f"active roles {active_roles} lack Mobile permissions"
+                    )
+                    auth_log_service.record_login_failure(
+                        phone=phone,
+                        email=db_user.get("email") or email,
+                        user_id=str(db_user["user_id"]),
+                        reason="Access Denied: Mobile app is restricted to field personnel, administrators, and developers.",
+                        client_type="mobile",
+                        login_method="otp",
+                        ip_address=client_ip,
+                        user_agent=user_agent,
+                        path=req_path
                     )
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
@@ -1121,6 +1207,16 @@ async def verify_mobile_otp(req: VerifyOTPRequest, request: Request):
 
     if not user_data:
         logger.warning(f"Mobile OTP verification failed for phone: {mask_phone(phone)} - User profile not registered")
+        auth_log_service.record_login_failure(
+            phone=phone,
+            email=email,
+            reason="This mobile number is not registered.",
+            client_type="mobile",
+            login_method="otp",
+            ip_address=client_ip,
+            user_agent=user_agent,
+            path=req_path
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This mobile number is not registered."
