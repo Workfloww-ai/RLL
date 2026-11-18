@@ -165,23 +165,6 @@ export function Header({
       selected_hq: selectedHq,
     });
     setPeriod(p);
-    const targetDate = dateTo || latestSaleDate || '';
-
-    if (p === 'Daily') {
-      setDateFrom(targetDate);
-      setDateTo(targetDate);
-    } else if (p === 'MTD') {
-      const year = targetDate.substring(0, 4);
-      const month = targetDate.substring(5, 7);
-      setDateFrom(`${year}-${month}-01`);
-      setDateTo(targetDate);
-    } else if (p === 'YTD') {
-      const year = parseInt(targetDate.substring(0, 4), 10);
-      const month = parseInt(targetDate.substring(5, 7), 10);
-      const fyStartYear = month >= 4 ? year : year - 1;
-      setDateFrom(`${fyStartYear}-04-01`);
-      setDateTo(targetDate);
-    }
   };
 
   const adjustDate = (days: number) => {
