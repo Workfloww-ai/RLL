@@ -58,12 +58,11 @@ def is_others_company(
     if not company_name:
         return False
     name = company_name.strip().lower()
-    # Fast-path for competitor brand prefixes and others company
+    # Fast-path for others company
     if (
         name in ("others", "other", "others company", "other company")
         or name.startswith("others ")
         or name.startswith("other ")
-        or name.startswith("comp_")
     ):
         return True
 
@@ -99,10 +98,11 @@ def get_company_brands_sales_service(
         effective_inc = include_others
 
     clean_target = str(company_id).strip().lower()
+    is_target_competitor = clean_target.startswith("comp_") or clean_target.startswith("comp-")
     is_target_others = clean_target in ("others", "other") or clean_target == "30739e78-c438-4a60-a5cb-6d9e9e79d1c6"
 
-    # If include_others is True OR the user explicitly drilled into Others, do NOT exclude Others
-    eff_exclude = "" if (effective_inc or is_target_others) else exclude_company
+    # If include_others is True OR the user explicitly drilled into Others/Competitor, do NOT exclude Others
+    eff_exclude = "" if (effective_inc or is_target_others or is_target_competitor) else exclude_company
 
     try:
         raw_data = fetch_company_brand_sales_db(
@@ -113,28 +113,36 @@ def get_company_brands_sales_service(
             exclude_company=eff_exclude,
         )
         
-        result = []
+        active_brands = []
+        all_brands = []
         for item in raw_data:
             comp_name = item.get("company_name", "")
-            if not is_target_others and is_others_company(comp_name, include_others=effective_inc):
-                continue
+            # When the user explicitly drilled down into a specific company (including competitor companies),
+            # never discard that company's own brands.
+            if not is_target_others:
+                clean_cname = str(comp_name).strip().lower()
+                if clean_cname in ("others", "other") and not effective_inc:
+                    continue
             
             cases = round(float(item.get("total_cases") or 0.0), 2)
             bottles = round(float(item.get("total_bottles") or 0.0), 2)
             lic_count = int(item.get("selling_licensees_count") or 0)
 
-            # Strictly include only brands that actually recorded sales in the period
+            brand_entry = {
+                "brand_id": str(item.get("brand_id")),
+                "brand_name": str(item.get("brand_name")),
+                "company_name": str(comp_name),
+                "selling_licensees_count": lic_count,
+                "total_cases": cases,
+                "total_bottles": bottles,
+            }
+            all_brands.append(brand_entry)
             if cases > 0 or bottles > 0:
-                result.append({
-                    "brand_id": str(item.get("brand_id")),
-                    "brand_name": str(item.get("brand_name")),
-                    "company_name": str(comp_name),
-                    "selling_licensees_count": lic_count,
-                    "total_cases": cases,
-                    "total_bottles": bottles,
-                })
+                active_brands.append(brand_entry)
 
-        return result
+        # Return active selling brands if available; otherwise fallback to all registered master brands
+        # so companies with 0 sales for the period still display their catalog instead of "No brands recorded"
+        return active_brands if active_brands else all_brands
     except Exception as e:
         logger.error(f"get_company_brands_sales_service error for company {company_id}: {e}")
         return []

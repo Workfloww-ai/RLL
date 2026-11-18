@@ -104,7 +104,9 @@ export function CompanyCascadingView({
   const [currentPage, setCurrentPage] = useState<number>(1);
 
   // Caching refs
-  const cacheKey = `${dateFrom}_${dateTo}_${period}_${selectedHq || 'All'}_${includeOthers ? 'inc1' : 'inc0'}`;
+  const effectiveDateFrom = period === 'Daily' ? (dateTo || dateFrom) : dateFrom;
+  const effectiveDateTo = dateTo || dateFrom;
+  const cacheKey = `${effectiveDateFrom}_${effectiveDateTo}_${period}_${selectedHq || 'All'}_${includeOthers ? 'inc1' : 'inc0'}`;
   const companyBrandsCacheRef = useRef<Map<string, any[]>>(new Map());
   const brandLicenseesCacheRef = useRef<Map<string, any[]>>(new Map());
 
@@ -156,9 +158,17 @@ export function CompanyCascadingView({
   const loadCompanyBrands = async (companyObjOrId: any, forceRefresh = false) => {
     const targetId = typeof companyObjOrId === 'string'
       ? companyObjOrId
-      : (companyObjOrId?.company_id || companyObjOrId?.id || companyObjOrId?.name || '');
+      : (companyObjOrId?.company_id || companyObjOrId?.name || companyObjOrId?.id || '');
 
     if (!targetId) return;
+
+    // Optimistically seed from existing company.brands if present
+    if (typeof companyObjOrId === 'object' && companyObjOrId !== null) {
+      const existingBrands = companyObjOrId.brands;
+      if (Array.isArray(existingBrands) && existingBrands.length > 0 && companyBrands.length === 0) {
+        setCompanyBrands(existingBrands);
+      }
+    }
 
     const normKey = getNormalizedCompanyKey(companyObjOrId);
     const key = `${normKey}_${cacheKey}`;
@@ -171,7 +181,7 @@ export function CompanyCascadingView({
 
     setLoading(true);
     try {
-      const data = await fetchCompanyBrands(targetId, dateFrom, dateTo, selectedHq, includeOthers);
+      const data = await fetchCompanyBrands(targetId, effectiveDateFrom, effectiveDateTo, selectedHq, includeOthers);
       const result = data || [];
       companyBrandsCacheRef.current.set(key, result);
       setCompanyBrands(result);
@@ -195,7 +205,7 @@ export function CompanyCascadingView({
 
     setLoading(true);
     try {
-      const data = await fetchBrandLicensees(brandId, dateFrom, dateTo, selectedHq);
+      const data = await fetchBrandLicensees(brandId, effectiveDateFrom, effectiveDateTo, selectedHq);
       const result = data || [];
       brandLicenseesCacheRef.current.set(key, result);
       setBrandLicensees(result);
@@ -375,21 +385,31 @@ export function CompanyCascadingView({
           name === 'other' ||
           name.startsWith('others ') ||
           name.startsWith('other ') ||
-          name.startsWith('comp_') ||
-          id === 'others' ||
-          id.startsWith('comp_')
+          id === 'others'
         );
         return !isOthers;
       });
     }
 
-    // Level 2 (Company Brands): Strictly show brands that recorded sales in the period so Level 1 and 2 match
-    if (level === 2) {
+    // Level 1 (Companies): Strictly exclude companies with 0 cases and 0 bottles sold for the active period (unless pinned tenant company)
+    if (level === 1) {
       result = result.filter(item => {
+        const cCases = getScaledCases(item);
+        const cBottles = getScaledBottles(item);
+        return cCases > 0 || cBottles > 0 || Boolean(item.isPinned);
+      });
+    }
+
+    // Level 2 (Company Brands): Show active selling brands; fallback to all registered brands if none recorded sales
+    if (level === 2) {
+      const activeBrands = result.filter(item => {
         const bCases = getScaledCases(item);
         const bBottles = getScaledBottles(item);
         return bCases > 0 || bBottles > 0;
       });
+      if (activeBrands.length > 0) {
+        result = activeBrands;
+      }
     }
 
     // Search query filter
@@ -564,11 +584,7 @@ export function CompanyCascadingView({
         </TouchableOpacity>
       </View>
 
-      {(loading ||
-        parentLoading ||
-        (level === 1 && (companies.length === 0 && !searchQuery.trim())) ||
-        (level === 2 && companyBrands.length === 0 && !searchQuery.trim()) ||
-        (level === 3 && brandLicensees.length === 0 && !searchQuery.trim())) ? (
+      {(loading || parentLoading) ? (
         <View style={styles.scrollContent}>
           {level === 1 ? <CompanyListSkeletonList count={6} /> : <GroupListSkeletonList count={6} />}
         </View>

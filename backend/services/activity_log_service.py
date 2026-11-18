@@ -222,6 +222,119 @@ class AuthLogService:
                 status=status,
             )
 
+    @classmethod
+    def record_login_failure(
+        cls,
+        email: Optional[str] = None,
+        phone: Optional[str] = None,
+        user_id: Optional[str] = None,
+        reason: str = "Invalid credentials",
+        client_type: str = "mobile",
+        login_method: str = "password",
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        path: Optional[str] = None,
+    ) -> None:
+        """
+        Authoritatively records failed login attempts:
+        1. Resolves person identity (name, user_id, active status) if known in database.
+        2. Logs to error_logs table (source='LOGIN_FAILED') with full user context.
+        3. Updates user_auth_logs table with status='FAILED' (if user_id resolved).
+        4. Captures PostHog audit event.
+        Guarantees fast non-blocking execution.
+        """
+        try:
+            client = get_supabase()
+            resolved_user_id = user_id
+            person_name = None
+            is_active = None
+
+            if client and not resolved_user_id:
+                try:
+                    if email and str(email).strip():
+                        res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active").ilike("email", str(email).strip().lower()).limit(1).execute()
+                        if res and res.data:
+                            u = res.data[0]
+                            resolved_user_id = str(u.get("user_id"))
+                            first = u.get("first_name") or ""
+                            last = u.get("last_name") or ""
+                            person_name = f"{first} {last}".strip()
+                            is_active = u.get("is_active")
+                    elif phone and str(phone).strip():
+                        clean_ph = str(phone).strip()
+                        res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active").eq("phone", clean_ph).limit(1).execute()
+                        if res and res.data:
+                            u = res.data[0]
+                            resolved_user_id = str(u.get("user_id"))
+                            first = u.get("first_name") or ""
+                            last = u.get("last_name") or ""
+                            person_name = f"{first} {last}".strip()
+                            is_active = u.get("is_active")
+                            if not email and u.get("email"):
+                                email = u.get("email")
+                except Exception as e_lookup:
+                    logger.warning(f"Error looking up user in record_login_failure: {e_lookup}")
+
+            from backend.db.supabase_client import log_system_error
+            identifier = email or phone or (f"User ID {resolved_user_id}" if resolved_user_id else "Unknown person")
+            display_name = f"{person_name} ({identifier})" if person_name else identifier
+            error_message = f"Login failed for {display_name}: {reason}"
+
+            log_system_error(
+                source="LOGIN_FAILED",
+                error_message=error_message,
+                stack_trace=None,
+                user_id=resolved_user_id,
+                context={
+                    "person_email": email,
+                    "person_phone": phone,
+                    "person_name": person_name,
+                    "person_user_id": resolved_user_id,
+                    "is_account_active": is_active,
+                    "failure_reason": reason,
+                    "client_type": client_type,
+                    "login_method": login_method,
+                    "client_ip": ip_address,
+                    "user_agent": user_agent,
+                    "path": path or ("/api/v1/mobile/login" if client_type == "mobile" else "/api/v1/auth/login")
+                }
+            )
+
+            # Record in user_auth_logs if user_id is known
+            if resolved_user_id:
+                phone_type = cls.detect_phone_type(None, user_agent, client_type)
+                cls.dispatch_background(
+                    user_id=resolved_user_id,
+                    email=email,
+                    phone_type=phone_type,
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                    action=f"LOGIN_FAILED | {reason[:50]}",
+                    status="FAILED",
+                )
+
+            # Capture PostHog security audit event
+            try:
+                from backend.core.posthog import capture_posthog_event
+                capture_posthog_event(
+                    "user_login_failed",
+                    properties={
+                        "email": email,
+                        "phone": phone,
+                        "name": person_name,
+                        "reason": reason,
+                        "client_type": client_type,
+                        "login_method": login_method,
+                        "user_id": resolved_user_id,
+                        "client_ip": ip_address,
+                    },
+                    distinct_id=resolved_user_id or email or phone or "anonymous"
+                )
+            except Exception:
+                pass
+        except Exception as e_main:
+            logger.error(f"Error in record_login_failure: {e_main}")
+
 auth_log_service = AuthLogService()
 # Backward-compatibility alias
 activity_log_service = auth_log_service

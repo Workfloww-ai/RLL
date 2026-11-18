@@ -638,6 +638,9 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
     email = credentials.email.lower().strip()
     logger.info(f"Mobile login attempt initiated for user: {email}")
     client = get_supabase()
+    client_ip = request.client.host if (request and request.client) else None
+    user_agent = request.headers.get("user-agent") if request else None
+    req_path = request.url.path if request else "/api/v1/mobile/login"
     
     user_data = None
     
@@ -648,14 +651,33 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
             auth_response = temp_client.auth.sign_in_with_password({"email": email, "password": credentials.password})
             if not auth_response or not auth_response.user:
                 logger.warning(f"Mobile login failed for user {email} (invalid credentials / empty response)")
+                auth_log_service.record_login_failure(
+                    email=email,
+                    reason="Invalid email or password",
+                    client_type="mobile",
+                    login_method="password",
+                    ip_address=client_ip,
+                    user_agent=user_agent,
+                    path=req_path
+                )
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
 
             # 2. Get user profile and role
-            res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active").ilike("email", email).execute()
+            res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, tenant_id, company_id, company_name").ilike("email", email).execute()
             if res.data and len(res.data) > 0:
                 db_user = res.data[0]
                 if not db_user.get("is_active", True):
                     logger.warning(f"Mobile login failed for user {email} (deactivated account)")
+                    auth_log_service.record_login_failure(
+                        email=email,
+                        user_id=str(db_user.get("user_id")),
+                        reason="User account is deactivated",
+                        client_type="mobile",
+                        login_method="password",
+                        ip_address=client_ip,
+                        user_agent=user_agent,
+                        path=req_path
+                    )
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,
                         detail="User account is deactivated"
@@ -668,6 +690,16 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
                 normalized_active = {normalize_role_name(r) for r in active_roles}
                 if not normalized_active.intersection(MOBILE_ACCESS_ROLES_NORMALIZED):
                     logger.warning(f"Mobile login access denied for user {mask_email(email)} (roles {active_roles} lack Mobile permissions)")
+                    auth_log_service.record_login_failure(
+                        email=email,
+                        user_id=str(db_user.get("user_id")),
+                        reason="Access Denied: Mobile app is restricted to field personnel, administrators, and developers.",
+                        client_type="mobile",
+                        login_method="password",
+                        ip_address=client_ip,
+                        user_agent=user_agent,
+                        path=req_path
+                    )
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="Access Denied: Mobile app is restricted to field personnel, administrators, and developers."
@@ -705,10 +737,28 @@ async def mobile_login(credentials: MobileLoginRequest, request: Request):
         except Exception as e:
             logger.error(f"Error during mobile login for user {email}: {e}")
             if "Invalid login credentials" in str(e):
+                auth_log_service.record_login_failure(
+                    email=email,
+                    reason="Invalid email or password",
+                    client_type="mobile",
+                    login_method="password",
+                    ip_address=client_ip,
+                    user_agent=user_agent,
+                    path=req_path
+                )
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
             logger.warning(f"Supabase users lookup error: {e}")
 
     if not user_data:
+        auth_log_service.record_login_failure(
+            email=email,
+            reason="Invalid email or password",
+            client_type="mobile",
+            login_method="password",
+            ip_address=client_ip,
+            user_agent=user_agent,
+            path=req_path
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password"
@@ -1016,9 +1066,23 @@ async def verify_mobile_otp(req: VerifyOTPRequest, request: Request):
         )
 
     # Standard database OTP verification for all other numbers
+    client_ip = request.client.host if (request and request.client) else None
+    user_agent = request.headers.get("user-agent") if request else None
+    req_path = request.url.path if request else "/api/v1/mobile/verify-otp"
+
     is_valid = verify_otp_from_db(phone, otp_code)
     if not is_valid:
         logger.warning(f"Mobile OTP verification failed for phone: {mask_phone(phone)} - Invalid or expired OTP code")
+        auth_log_service.record_login_failure(
+            phone=phone,
+            email=email,
+            reason="Invalid or expired 6-digit OTP code",
+            client_type="mobile",
+            login_method="otp",
+            ip_address=client_ip,
+            user_agent=user_agent,
+            path=req_path
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired 6-digit OTP code")
 
     # Verification succeeded: clear distributed attempt counter
@@ -1046,6 +1110,17 @@ async def verify_mobile_otp(req: VerifyOTPRequest, request: Request):
             if db_user:
                 if not db_user.get("is_active", True):
                     logger.warning(f"Mobile OTP verification failed for phone: {mask_phone(phone)} - Account deactivated")
+                    auth_log_service.record_login_failure(
+                        phone=phone,
+                        email=db_user.get("email") or email,
+                        user_id=str(db_user["user_id"]),
+                        reason="User account is deactivated",
+                        client_type="mobile",
+                        login_method="otp",
+                        ip_address=client_ip,
+                        user_agent=user_agent,
+                        path=req_path
+                    )
                     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User account is deactivated")
 
                 # 2. Resolve Active Roles and Deterministic Priority
@@ -1057,6 +1132,17 @@ async def verify_mobile_otp(req: VerifyOTPRequest, request: Request):
                     logger.warning(
                         f"Mobile OTP access denied for user {mask_email(db_user.get('email'))}: "
                         f"active roles {active_roles} lack Mobile permissions"
+                    )
+                    auth_log_service.record_login_failure(
+                        phone=phone,
+                        email=db_user.get("email") or email,
+                        user_id=str(db_user["user_id"]),
+                        reason="Access Denied: Mobile app is restricted to field personnel, administrators, and developers.",
+                        client_type="mobile",
+                        login_method="otp",
+                        ip_address=client_ip,
+                        user_agent=user_agent,
+                        path=req_path
                     )
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
@@ -1121,6 +1207,16 @@ async def verify_mobile_otp(req: VerifyOTPRequest, request: Request):
 
     if not user_data:
         logger.warning(f"Mobile OTP verification failed for phone: {mask_phone(phone)} - User profile not registered")
+        auth_log_service.record_login_failure(
+            phone=phone,
+            email=email,
+            reason="This mobile number is not registered.",
+            client_type="mobile",
+            login_method="otp",
+            ip_address=client_ip,
+            user_agent=user_agent,
+            path=req_path
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This mobile number is not registered."
@@ -1774,6 +1870,12 @@ async def get_mobile_sales(
             latest_sale_date = resolve_latest_sale_date(client)
             _MASTER_CACHE["latest_sale_date"] = latest_sale_date
 
+        
+        if date_from and date_to and date_from.strip() and date_to.strip():
+            if date_from.strip() > date_to.strip():
+                logger.warning(f"Inverted date range detected ({date_from} > {date_to}). Normalizing.")
+                date_from, date_to = date_to, date_from
+
         end_date = latest_sale_date
         if date_to and date_to.strip():
             end_date = date_to.strip()
@@ -2117,12 +2219,14 @@ async def get_mobile_sales(
     for comp_id, g in grouped_comp_rows.items():
         master_companies[comp_id] = {
             "id": comp_id,
+            "company_id": g["company_ids"][0] if g.get("company_ids") else None,
+            "company_ids": g.get("company_ids", []),
             "name": g["name"],
             "isPinned": g["isPinned"],
             "hqLocation": g["hqLocation"],
             "data": {
                 "Daily": {"cases": round(g["data"]["Daily"]["cases"], 2), "bottles": round(g["data"]["Daily"]["bottles"], 2), "bl": round(g["data"]["Daily"]["bl"], 2)},
-                "MTD": {"cases": round(g["data"]["MTD"]["cases"], 2), "bottles": round(g["data"]["MTD"]["bottles"], 2), "bl": round(g["data"]["MTD"]["bl"], 2)},
+                "MTD": {"cases": round(g["data"]["MTD"]["cases"], 2), "bottles": round(g["data"]["MTD"]["bottles"], 2), "bl": round(g["data"]["Daily"]["bl"], 2)},
                 "YTD": {"cases": round(g["data"]["YTD"]["cases"], 2), "bottles": round(g["data"]["YTD"]["bottles"], 2), "bl": round(g["data"]["YTD"]["bl"], 2)},
             },
             "brands_map": g["brands_map"]
@@ -2418,7 +2522,7 @@ async def get_mobile_sales(
         if not effective_comp_inc:
             active_b = [
                 b for b in active_b
-                if not (str(b.get("name") or b.get("brandName") or "").lower().startswith("comp_") or str(b.get("name") or b.get("brandName") or "").lower() == "others")
+                if str(b.get("name") or b.get("brandName") or "").lower() not in ("others", "other")
             ]
         c_data["brands"] = active_b if active_b else all_b
         clean_sel_no_space = re.sub(r'[\s\-_.]+', '', selected_hq).lower() if selected_hq else ""
@@ -2426,6 +2530,13 @@ async def get_mobile_sales(
             c_loc_no_space = re.sub(r'[\s\-_.]+', '', c_data["hqLocation"]).lower()
             if c_data["hqLocation"].lower() != selected_hq.lower() and c_loc_no_space != clean_sel_no_space:
                 continue
+
+        # Filter out companies with 0 cases and 0 bottles for the active period (unless pinned tenant company)
+        comp_period_cases = c_data.get("data", {}).get(selected_period, {}).get("cases", 0)
+        comp_period_bottles = c_data.get("data", {}).get(selected_period, {}).get("bottles", 0)
+        if not c_data.get("isPinned") and comp_period_cases <= 0 and comp_period_bottles <= 0:
+            continue
+
         formatted_companies.append(c_data)
 
     formatted_depots = []
@@ -2736,10 +2847,16 @@ async def get_cascading_groups_endpoint(
     except Exception:
         pass
 
+    clean_from = date_from.strip() if date_from and date_from.strip() else None
+    clean_to = date_to.strip() if date_to and date_to.strip() else None
+    if clean_from and clean_to and clean_from > clean_to:
+        logger.warning(f"Inverted groups date range detected ({clean_from} > {clean_to}). Swapping.")
+        clean_from, clean_to = clean_to, clean_from
+
     from backend.services.mobile_cascading_service import get_cascading_groups
     return await get_cascading_groups(
-        date_from=date_from,
-        date_to=date_to,
+        date_from=clean_from,
+        date_to=clean_to,
         period=period,
         selected_hq=selected_hq,
         include_others=bool(include_others)
@@ -2856,6 +2973,9 @@ def get_company_brands_endpoint(
 
     clean_to = date_to.strip() if date_to and date_to.strip() else ""
     clean_from = date_from.strip() if date_from and date_from.strip() else ""
+    if clean_from and clean_to and clean_from > clean_to:
+        logger.warning(f"Inverted company-brands date range detected ({clean_from} > {clean_to}). Swapping.")
+        clean_from, clean_to = clean_to, clean_from
     if not clean_to:
         clean_to = _get_latest_sale_date()
     if not clean_from:
@@ -2903,6 +3023,9 @@ def get_brand_licensees_endpoint(
 
     clean_to = date_to.strip() if date_to and date_to.strip() else ""
     clean_from = date_from.strip() if date_from and date_from.strip() else ""
+    if clean_from and clean_to and clean_from > clean_to:
+        logger.warning(f"Inverted company-brands date range detected ({clean_from} > {clean_to}). Swapping.")
+        clean_from, clean_to = clean_to, clean_from
     if not clean_to:
         clean_to = _get_latest_sale_date()
     if not clean_from:

@@ -219,6 +219,7 @@ from backend.db.supabase_client import log_system_error
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     user_id = None
+    user_email = None
     try:
         auth_header = request.headers.get("Authorization")
         if auth_header and auth_header.startswith("Bearer "):
@@ -226,28 +227,67 @@ async def http_exception_handler(request: Request, exc: HTTPException):
             import jwt
             payload = jwt.decode(token, settings.JWT_SECRET, algorithms=["HS256"], options={"verify_signature": False})
             user_id = payload.get("user_id") or payload.get("sub")
+            user_email = payload.get("email") or payload.get("sub")
     except Exception:
         pass
 
-    if exc.status_code >= 400:
-        source_name = f"HTTP_{exc.status_code}"
-        if exc.status_code in [401, 403]:
-            source_name = "AUTH_ERROR"
+    path = request.url.path
+    method = request.method
+    client_ip = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+
+    # Don't duplicate failed login attempts since they are already recorded with full person details by record_login_failure
+    is_login_endpoint = path in ["/api/v1/mobile/login", "/api/v1/auth/login", "/api/v1/mobile/verify-otp"]
+    should_log = (exc.status_code >= 400) and not (is_login_endpoint and exc.status_code in [400, 401, 403])
+
+    if should_log:
+        detail_str = str(exc.detail) if exc.detail else "No error detail provided"
+        detail_low = detail_str.lower()
+
+        # Categorize source
+        if exc.status_code >= 500:
+            source_name = f"SERVER_ERROR_{exc.status_code}"
         elif exc.status_code == 400:
             source_name = "BAD_REQUEST"
+        elif exc.status_code == 401:
+            if "expired" in detail_low:
+                source_name = "TOKEN_EXPIRED"
+            elif "revoked" in detail_low:
+                source_name = "SESSION_REVOKED"
+            elif "missing" in detail_low:
+                source_name = "AUTH_MISSING_TOKEN"
+            else:
+                source_name = "AUTH_UNAUTHORIZED"
+        elif exc.status_code == 403:
+            source_name = "ACCESS_DENIED"
+        elif exc.status_code == 404:
+            source_name = "NOT_FOUND"
+        elif exc.status_code == 429:
+            source_name = "RATE_LIMIT_EXCEEDED"
+        else:
+            source_name = f"HTTP_{exc.status_code}"
+
+        # Build clear, actionable error message for maintenance phase
+        user_info = f" for user '{user_email or user_id}'" if (user_email or user_id) else ""
+        formatted_msg = f"HTTP {exc.status_code} [{source_name}] on {method} {path}{user_info}: {detail_str}"
 
         log_system_error(
             source=source_name,
-            error_message=str(exc.detail),
+            error_message=formatted_msg,
             stack_trace=None,
             user_id=user_id,
             context={
-                "path": request.url.path,
-                "method": request.method,
+                "path": path,
+                "method": method,
                 "status_code": exc.status_code,
-                "client_ip": request.client.host if request.client else None
+                "error_detail": detail_str,
+                "user_id": user_id,
+                "user_email": user_email,
+                "client_ip": client_ip,
+                "user_agent": user_agent,
             }
         )
+
     return JSONResponse(
         status_code=exc.status_code,
         content={"detail": exc.detail},

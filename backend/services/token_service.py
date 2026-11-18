@@ -57,6 +57,9 @@ async def create_token_pair(
         token_claims["is_review_user"] = True
         token_claims["allowed_hqs"] = user_data.get("allowed_hqs", ["All Headquarters"])
         access_delta = timedelta(hours=settings.APP_REVIEW_TOKEN_EXPIRE_HOURS)
+    elif client_type == "mobile":
+        # Mobile sessions: access token valid for 30 days to avoid premature 401s on mobile devices
+        access_delta = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     else:
         access_delta = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
 

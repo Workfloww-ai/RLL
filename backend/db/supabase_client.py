@@ -1371,10 +1371,18 @@ def call_mobile_tsm_sales_json_rpc(
 
 
 import re
+import time
 
 _UUID_REGEX = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+_COMPANIES_LOOKUP_CACHE: Dict[str, Any] = {"data": [], "timestamp": 0.0}
+_COMPANIES_LOOKUP_CACHE_TTL = 300.0  # 5 minutes cache
 
 def resolve_company_id_uuid(client: Any, target_company: str) -> str:
+    """
+    Robust resolver that matches company slugs, names, or competitor IDs
+    (e.g., 'comp_ace-beverage', 'comp-ace-beverage', 'COMP_ACE BEVERAGE')
+    to their real Supabase company UUID. Uses alphanumeric cleaning and in-memory TTL caching.
+    """
     if not target_company:
         return target_company
     target_str = str(target_company).strip()
@@ -1382,26 +1390,51 @@ def resolve_company_id_uuid(client: Any, target_company: str) -> str:
         return target_str
 
     try:
-        from backend.db.company_aliases import normalize_company_name
-        norm_target = normalize_company_name(target_str)
-        res = client.table("companies").select("company_id, company_name").execute()
-        data = res.data or []
+        now = time.time()
+        if _COMPANIES_LOOKUP_CACHE["data"] and (now - _COMPANIES_LOOKUP_CACHE["timestamp"]) < _COMPANIES_LOOKUP_CACHE_TTL:
+            data = _COMPANIES_LOOKUP_CACHE["data"]
+        else:
+            res = client.table("companies").select("company_id, company_name").execute()
+            data = res.data or []
+            if data:
+                _COMPANIES_LOOKUP_CACHE["data"] = data
+                _COMPANIES_LOOKUP_CACHE["timestamp"] = now
 
-        # 1. Match by normalized name
-        for c in data:
-            cname = c.get("company_name", "").strip()
-            cid = str(c.get("company_id"))
-            if normalize_company_name(cname) == norm_target:
-                return cid
+        def _clean_key(s: str) -> str:
+            return re.sub(r'[^a-z0-9]+', '', str(s).strip().lower())
 
-        # 2. Fallback substring/exact match
-        t_low = target_str.lower()
-        cleaned = t_low.replace("-", " ").replace("_", " ")
+        target_clean = _clean_key(target_str)
+
+        # 1. Exact clean match (alphanumeric only)
         for c in data:
-            cname = c.get("company_name", "").strip().lower()
-            cid = str(c.get("company_id"))
-            if cname == t_low or cname in cleaned or cleaned in cname:
-                return cid
+            if _clean_key(c.get("company_name", "")) == target_clean:
+                return str(c.get("company_id"))
+
+        # 2. Match with "comp" prefix stripped
+        target_stripped = target_clean[4:] if target_clean.startswith("comp") else target_clean
+        if target_stripped:
+            for c in data:
+                c_clean = _clean_key(c.get("company_name", ""))
+                c_stripped = c_clean[4:] if c_clean.startswith("comp") else c_clean
+                if c_stripped and c_stripped == target_stripped:
+                    return str(c.get("company_id"))
+
+        # 3. Normalized alias matching
+        try:
+            from backend.db.company_aliases import normalize_company_name
+            norm_target = normalize_company_name(target_str)
+            for c in data:
+                cname = c.get("company_name", "").strip()
+                if normalize_company_name(cname) == norm_target:
+                    return str(c.get("company_id"))
+        except Exception:
+            pass
+
+        # 4. Fallback substring match
+        for c in data:
+            c_clean = _clean_key(c.get("company_name", ""))
+            if c_clean and (c_clean in target_clean or target_clean in c_clean):
+                return str(c.get("company_id"))
     except Exception as e:
         logger.warning(f"Error resolving company UUID for '{target_company}': {e}")
 
@@ -1430,9 +1463,12 @@ def fetch_company_brand_sales_db(
     from backend.services.tenant_service import get_include_others_setting_sync
     include_others = get_include_others_setting_sync()
 
+    raw_comp_id = str(company_id).strip().lower()
+    is_target_competitor = raw_comp_id.startswith("comp_") or raw_comp_id.startswith("comp-")
     is_target_others = (
-        str(company_id).strip().lower() in ("others", "other")
+        raw_comp_id in ("others", "other")
         or str(resolved_company_uuid) == "30739e78-c438-4a60-a5cb-6d9e9e79d1c6"
+        or is_target_competitor
     )
     eff_exclude = "" if (include_others or is_target_others) else exclude_company
 

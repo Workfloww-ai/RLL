@@ -630,12 +630,7 @@ export function GroupsCascadingView({
       </View>
 
       {/* Main List Container */}
-      {(loading ||
-        parentLoading ||
-        (level === 1 && groups.length === 0 && !searchQuery.trim()) ||
-        (level === 2 && activeGroupTab === 'brands' && groupBrands.length === 0 && !searchQuery.trim()) ||
-        (level === 2 && activeGroupTab === 'licensees' && licensees.length === 0 && !searchQuery.trim()) ||
-        (level === 3 && licenseeBrands.length === 0 && !searchQuery.trim())) ? (
+      {(loading || parentLoading) ? (
         <View style={styles.scrollContent}>
           <GroupListSkeletonList count={6} />
         </View>

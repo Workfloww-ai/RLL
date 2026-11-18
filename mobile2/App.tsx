@@ -211,24 +211,46 @@ function MainApp() {
   }, [selectedHq, period, viewMode]);
 
   const handlePeriodChange = useCallback((p: Period) => {
-    if (p !== period) {
-      trackFilterChange('period', p, { previous_period: period, viewMode, selectedHq });
-      setLoadingSalesData(true);
-      setPeriod(p);
+    trackFilterChange('period', p, { previous_period: period, viewMode, selectedHq });
+    setLoadingSalesData(true);
+    setPeriod(p);
+    const targetDate = dateTo || dateFrom || FastStorage.getString('rll_latest_sale_date') || '';
+    if (p === 'Daily') {
+      setDateFrom(targetDate);
+      setDateTo(targetDate);
+    } else if (p === 'MTD') {
+      const year = targetDate.substring(0, 4);
+      const month = targetDate.substring(5, 7);
+      setDateFrom(`${year}-${month}-01`);
+      setDateTo(targetDate);
+    } else if (p === 'YTD') {
+      const year = parseInt(targetDate.substring(0, 4), 10);
+      const month = parseInt(targetDate.substring(5, 7), 10);
+      const fyStartYear = month >= 4 ? year : year - 1;
+      setDateFrom(`${fyStartYear}-04-01`);
+      setDateTo(targetDate);
     }
-  }, [period, viewMode, selectedHq]);
+  }, [period, dateTo, dateFrom, viewMode, selectedHq]);
 
   const handleDateFromChange = useCallback((d: string) => {
+    if (period !== 'Daily' && dateTo && d >= dateTo) {
+      logger.warn(`[DateGuard] Blocked invalid dateFrom (${d}) >= dateTo (${dateTo})`);
+      return;
+    }
     trackFilterChange('date_from', d, { period, viewMode, selectedHq });
     setLoadingSalesData(true);
     setDateFrom(d);
-  }, [period, viewMode, selectedHq]);
+  }, [period, dateTo, viewMode, selectedHq]);
 
   const handleDateToChange = useCallback((d: string) => {
+    if (period !== 'Daily' && dateFrom && d <= dateFrom) {
+      logger.warn(`[DateGuard] Blocked invalid dateTo (${d}) <= dateFrom (${dateFrom})`);
+      return;
+    }
     trackFilterChange('date_to', d, { period, viewMode, selectedHq });
     setLoadingSalesData(true);
     setDateTo(d);
-  }, [period, viewMode, selectedHq]);
+  }, [period, dateFrom, viewMode, selectedHq]);
 
   // Hardware BackHandler for tab history & modals
   useEffect(() => {

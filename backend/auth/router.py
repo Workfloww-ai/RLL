@@ -78,12 +78,25 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
         except Exception as rpc_err:
             logger.error(f"Error executing verify_user_credentials RPC for {email}: {rpc_err}")
 
+    from backend.services.activity_log_service import auth_log_service
+    user_agent = request.headers.get("user-agent") if request else None
+    req_path = request.url.path if request else "/api/v1/auth/login"
+
     if not authenticated:
         if not is_dev_or_local:
             attempts = await safe_get(redis_key)
             new_count = (int(attempts) + 1) if attempts else 1
             await safe_set(redis_key, str(new_count), ttl=300)
         logger.warning(f"Web login failed for user {email} (invalid credentials)")
+        auth_log_service.record_login_failure(
+            email=email,
+            reason="Invalid email or password",
+            client_type="web",
+            login_method="password",
+            ip_address=client_ip,
+            user_agent=user_agent,
+            path=req_path
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password"
@@ -93,6 +106,15 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
     res = client.table("users").select("user_id, email, first_name, last_name, phone, is_active, tenant_id").ilike("email", email).execute()
     if not res.data or len(res.data) == 0:
         logger.warning(f"Web login failed for user {email} (user profile not found)")
+        auth_log_service.record_login_failure(
+            email=email,
+            reason="User profile not found",
+            client_type="web",
+            login_method="password",
+            ip_address=client_ip,
+            user_agent=user_agent,
+            path=req_path
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password"
@@ -101,6 +123,16 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
     db_user = res.data[0]
     if not db_user.get("is_active", True):
         logger.warning(f"Web login failed for user {email} (deactivated account)")
+        auth_log_service.record_login_failure(
+            email=email,
+            user_id=str(db_user.get("user_id")),
+            reason="User account is deactivated",
+            client_type="web",
+            login_method="password",
+            ip_address=client_ip,
+            user_agent=user_agent,
+            path=req_path
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User account is deactivated"
@@ -136,6 +168,16 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
     # Guardrail: Enforce Web-only roles (Admin, Super Admin, Leader, Team Leader, Developer)
     if role_name.lower() not in ["admin", "super_admin", "super admin", "leader", "team_leader", "team leader", "developer"]:
         logger.warning(f"Web login access denied for user {email} (role '{role_name}' lacks Web permissions)")
+        auth_log_service.record_login_failure(
+            email=email,
+            user_id=user_id_str,
+            reason="Access Denied: Web Dashboard is restricted to Administrators and Developers only.",
+            client_type="web",
+            login_method="password",
+            ip_address=client_ip,
+            user_agent=user_agent,
+            path=req_path
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access Denied: Web Dashboard is restricted to Administrators and Developers only."

@@ -216,7 +216,7 @@ async def get_companies_summary_async(
 
         if not cname:
             continue
-        if exclude_others and (is_others_company(cname, category=mc.get("category")) or cname.lower() == "others" or cname.lower().startswith("comp_")):
+        if exclude_others and (is_others_company(cname, category=mc.get("category")) or cname.lower() in ("others", "other")):
             continue
         if company_name and cname.lower() != company_name.strip().lower():
             continue
@@ -301,7 +301,7 @@ async def get_companies_summary_async(
         cname = str(row.get("company_name") or "").strip()
         if not cname:
             continue
-        if exclude_others and (is_others_company(cname, category=row.get("category")) or cname.lower() == "others" or cname.lower().startswith("comp_")):
+        if exclude_others and (is_others_company(cname, category=row.get("category")) or cname.lower() in ("others", "other")):
             continue
 
         norm_name = normalize_company_name(cname)
@@ -441,7 +441,7 @@ async def get_companies_summary_async(
         if exclude_others:
             active_comp_brands = [
                 b for b in active_comp_brands
-                if not (b.get("name", "").lower().startswith("comp_") or b.get("name", "").lower() == "others")
+                if not (b.get("name", "").lower() in ("others", "other"))
             ]
 
         if clean_period == "Daily":
@@ -453,6 +453,10 @@ async def get_companies_summary_async(
         else:
             p_cases = g["ytd_cases"]
             p_bottles = g["ytd_bottles"]
+
+        # Filter out companies with 0 cases and 0 bottles sold for the active period (unless pinned tenant company)
+        if round(p_cases, 2) <= 0 and round(p_bottles, 2) <= 0 and not g.get("isPinned"):
+            continue
 
         response_list.append({
             "id": g["id"],
