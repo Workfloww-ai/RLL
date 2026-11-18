@@ -58,12 +58,11 @@ def is_others_company(
     if not company_name:
         return False
     name = company_name.strip().lower()
-    # Fast-path for competitor brand prefixes and others company
+    # Fast-path for others company
     if (
         name in ("others", "other", "others company", "other company")
         or name.startswith("others ")
         or name.startswith("other ")
-        or name.startswith("comp_")
     ):
         return True
 
@@ -120,9 +119,9 @@ def get_company_brands_sales_service(
             comp_name = item.get("company_name", "")
             # When the user explicitly drilled down into a specific company (including competitor companies),
             # never discard that company's own brands.
-            if not is_target_others and not is_target_competitor:
+            if not is_target_others:
                 clean_cname = str(comp_name).strip().lower()
-                if clean_cname != clean_target and is_others_company(comp_name, include_others=effective_inc):
+                if clean_cname in ("others", "other") and not effective_inc:
                     continue
             
             cases = round(float(item.get("total_cases") or 0.0), 2)

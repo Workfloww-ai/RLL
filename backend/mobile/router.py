@@ -2522,7 +2522,7 @@ async def get_mobile_sales(
         if not effective_comp_inc:
             active_b = [
                 b for b in active_b
-                if not (str(b.get("name") or b.get("brandName") or "").lower().startswith("comp_") or str(b.get("name") or b.get("brandName") or "").lower() == "others")
+                if str(b.get("name") or b.get("brandName") or "").lower() not in ("others", "other")
             ]
         c_data["brands"] = active_b if active_b else all_b
         clean_sel_no_space = re.sub(r'[\s\-_.]+', '', selected_hq).lower() if selected_hq else ""
@@ -2530,6 +2530,13 @@ async def get_mobile_sales(
             c_loc_no_space = re.sub(r'[\s\-_.]+', '', c_data["hqLocation"]).lower()
             if c_data["hqLocation"].lower() != selected_hq.lower() and c_loc_no_space != clean_sel_no_space:
                 continue
+
+        # Filter out companies with 0 cases and 0 bottles for the active period (unless pinned tenant company)
+        comp_period_cases = c_data.get("data", {}).get(selected_period, {}).get("cases", 0)
+        comp_period_bottles = c_data.get("data", {}).get(selected_period, {}).get("bottles", 0)
+        if not c_data.get("isPinned") and comp_period_cases <= 0 and comp_period_bottles <= 0:
+            continue
+
         formatted_companies.append(c_data)
 
     formatted_depots = []
