@@ -1,6 +1,7 @@
 {
   "cli": {
-    "version": ">= 22.6.0"
+    "version": ">= 22.6.0",
+    "appVersionSource": "local"
   },
   "build": {
     "development": {
@@ -12,6 +13,7 @@
       "android": {
         "buildType": "apk"
       },
+      "autoIncrement": true,
       "env": {
         "EXPO_PUBLIC_API_URL": "https://rll-backend-dev-414899512001.asia-south2.run.app"
       }
@@ -20,6 +22,7 @@
       "android": {
         "buildType": "app-bundle"
       },
+      "autoIncrement": true,
       "env": {
         "EXPO_PUBLIC_API_URL": "https://rll-backend-dev-414899512001.asia-south2.run.app"
       }
